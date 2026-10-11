@@ -80,7 +80,7 @@ backend-check:
 
 frontend-check:
 	cd frontend && $(PNPM) typecheck
-	cd frontend && $(PNPM) exec rstest run tests/unit/core/tea/api.test.ts tests/unit/components/tea/draft-safety.dom.test.tsx
+	cd frontend && $(PNPM) exec rstest run tests/unit/core/tea tests/unit/components/tea
 
 check: backend-check frontend-check
 

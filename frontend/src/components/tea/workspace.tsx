@@ -52,6 +52,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { ArtifactPanel } from "./artifact-panel";
 import { CitationCard } from "./library";
 import { Busy, dateLabel, ErrorNotice, taskStatus, Trace } from "./shared";
+import { StageAnalysisPanel } from "./stage-analysis";
 import { TaskPanel } from "./task-panel";
 type PanelTab = "flow" | "task" | "document" | "facts";
 
@@ -379,6 +380,12 @@ function StageChat({
               </button>
             ))}
           </div>
+          <StageAnalysisPanel
+            key={`${record.id}:${stage.id}`}
+            record={record}
+            stage={stage}
+            onUpdate={onUpdate}
+          />
           <div className="tea-chat-divider">
             <span />
             本节点对话

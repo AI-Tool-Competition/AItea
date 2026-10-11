@@ -20,6 +20,7 @@ import {
   Upload,
   UserRound,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -46,11 +47,12 @@ import {
   type User,
 } from "@/core/tea/types";
 
+import { Admin, type AdminPage } from "./admin";
 import { clearArtifactDrafts } from "./artifact-panel";
 import { Library, UploadDialog } from "./library";
 import { ActionButton, Brand, Busy, ErrorNotice } from "./shared";
 import { Sources } from "./sources";
-import { Studio, clearStudioDrafts } from "./studio";
+import { clearStudioDrafts } from "./studio";
 import { clearTaskDrafts } from "./task-panel";
 import { UpgradeAccount } from "./upgrade-account";
 import { Workspace, clearChatDrafts } from "./workspace";
@@ -408,12 +410,18 @@ function NewCase({
   );
 }
 
-export function TeaApp() {
+export function TeaApp({
+  initialAdminPage,
+  requestedStage,
+}: { initialAdminPage?: AdminPage; requestedStage?: string } = {}) {
+  const router = useRouter();
   const [bootstrap, setBootstrap] = useState<Bootstrap>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [sessionKey, setSessionKey] = useState(0);
-  const [view, setView] = useState<View>("workspace");
+  const [view, setView] = useState<View>(
+    initialAdminPage ? "studio" : "workspace",
+  );
   const [caseId, setCaseId] = useState("");
   const [record, setRecord] = useState<CaseDetail>();
   const [recordLoading, setRecordLoading] = useState(false);
@@ -545,10 +553,37 @@ export function TeaApp() {
         />
       </div>
     );
+  if (initialAdminPage || view === "studio")
+    return (
+      <Admin
+        key={bootstrap.user.id}
+        bootstrap={bootstrap}
+        page={initialAdminPage ?? "workflow"}
+        requestedStage={requestedStage}
+        onLogout={logout}
+        logoutBusy={logoutBusy}
+        onPublished={(template) =>
+          setBootstrap((current) =>
+            current
+              ? {
+                  ...current,
+                  templates: current.templates.some(
+                    (item) => item.id === template.id,
+                  )
+                    ? current.templates.map((item) =>
+                        item.id === template.id ? template : item,
+                      )
+                    : [...current.templates, template],
+                }
+              : current,
+          )
+        }
+      />
+    );
   const nav = [
     { id: "workspace", icon: MessageSquare, label: "出口业务" },
     { id: "library", icon: BookOpen, label: "资料库" },
-    { id: "studio", icon: Settings2, label: "法务工作台" },
+    { id: "studio", icon: Settings2, label: "管理后台" },
     { id: "sources", icon: Globe2, label: "来源管理" },
   ] as const;
   const businessList = (
@@ -646,7 +681,11 @@ export function TeaApp() {
             <button
               key={item.id}
               className={view === item.id ? "active" : ""}
-              onClick={() => setView(item.id)}
+              onClick={() =>
+                item.id === "studio"
+                  ? router.push("/tea/admin/workflow")
+                  : setView(item.id)
+              }
               aria-label={item.label}
               title={item.label}
             >
@@ -754,25 +793,6 @@ export function TeaApp() {
               setUploadScope(scope);
               setUploadOpen(true);
             }}
-          />
-        ) : view === "studio" ? (
-          <Studio
-            ownerId={bootstrap.user.id}
-            templates={bootstrap.templates}
-            onPublished={(template) =>
-              setBootstrap((b) =>
-                b
-                  ? {
-                      ...b,
-                      templates: b.templates.some((t) => t.id === template.id)
-                        ? b.templates.map((t) =>
-                            t.id === template.id ? template : t,
-                          )
-                        : [...b.templates, template],
-                    }
-                  : b,
-              )
-            }
           />
         ) : view === "sources" ? (
           <Sources />

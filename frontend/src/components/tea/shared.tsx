@@ -82,7 +82,10 @@ export function Checks({ checks }: { checks: CheckResult[] }) {
   return (
     <div className="tea-checks">
       {checks.map((check) => (
-        <div className={`tea-check ${check.status}`} key={check.id}>
+        <div
+          className={`tea-check ${check.status}`}
+          key={`${check.task_id ?? "task"}:${check.id}`}
+        >
           <span>
             {check.status === "passed" ? (
               <Check size={15} />
@@ -91,6 +94,9 @@ export function Checks({ checks }: { checks: CheckResult[] }) {
             )}
           </span>
           <div>
+            {check.task_title && (
+              <small className="tea-check-task">{check.task_title}</small>
+            )}
             <strong>{check.label}</strong>
             <p>{check.reason}</p>
             {check.evidence_refs.length > 0 && (

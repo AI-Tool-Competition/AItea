@@ -3299,3 +3299,59 @@
 .tea-document-editor { font-size: 14px; color: #3e573f; }
 .tea-check strong { font-size: 12px; color: #526b45; }
 .tea-check p { font-size: 12px; color: #6d7a62; }
+
+/* Persisted stage-entry analysis, driven by the frozen workflow configuration. */
+.tea-proactive {
+  margin: 22px 0;
+  padding: 18px;
+  border: 1px solid #dfe7d5;
+  border-radius: 12px;
+  background: #f5f8ef;
+}
+.tea-proactive > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #5d7851;
+  margin-bottom: 14px;
+}
+.tea-proactive > header > strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.tea-proactive > header > span {
+  margin-left: auto;
+  font-size: 10px;
+  color: #87977d;
+}
+.tea-proactive-result {
+  font-size: 12px;
+  line-height: 1.9;
+  color: #607453;
+}
+.tea-proactive > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid #e5ebdd;
+  margin-top: 14px;
+  padding-top: 9px;
+  font-size: 10px;
+  color: #8c9b81;
+}
+.tea-proactive > footer [data-slot="button"] {
+  font-size: 10px;
+}
+.tea-proactive-locked {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: #8a9780;
+  font-size: 11px;
+  padding: 17px 0;
+}
+.tea-check-task {
+  display: block;
+  margin-bottom: 4px;
+}

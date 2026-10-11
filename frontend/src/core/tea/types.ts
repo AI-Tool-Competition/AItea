@@ -199,6 +199,20 @@ export interface Message {
   citations: Citation[];
   trace: TraceStep[];
 }
+export interface MessageInput {
+  stage_id: string;
+  task_id?: string;
+  content: string;
+  client_message_id: string;
+}
+export interface MessageResult {
+  messages: Message[];
+  case: CaseDetail;
+}
+export type MessageStreamEvent =
+  | { event: "status"; data: { label: string; step_id?: string } }
+  | { event: "start"; data: { step_id: string } }
+  | { event: "delta"; data: { text: string } };
 export interface Capabilities {
   assistant_mode: "demo" | "live";
   retrieval_mode: "lexical" | "hybrid";

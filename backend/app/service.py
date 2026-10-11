@@ -5,6 +5,7 @@ import math
 import mimetypes
 import os
 import re
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,8 @@ class Service:
         self.db = Database(Path(data_dir))
         self.catalog = LegalCatalog(self.db)
         self.studio = AdminStudio(self)
+        self._chat_lock = threading.Lock()
+        self._active_chats = set()
 
     @property
     def capabilities(self):
@@ -981,7 +984,7 @@ class Service:
 
         return run_workflow(self, owner, template, stage, content, tasks, **options)
 
-    def post_message(self, owner, case_id, payload):
+    def prepare_message(self, owner, case_id, payload):
         payload_hash = hashlib.sha256(dump(payload).encode()).hexdigest()
         with closing(self.db.connect()) as conn:
             case = self.case_detail(owner, case_id, conn)
@@ -992,7 +995,7 @@ class Service:
             if existing:
                 if existing["payload_hash"] != payload_hash:
                     fail(409, "idempotency_conflict", "同一消息编号不能提交不同内容")
-                return {"messages": json.loads(existing["response"]), "case": case}
+                return {"response": {"messages": json.loads(existing["response"]), "case": case}}
             stage = next((s for s in case["stages"] if s["id"] == payload["stage_id"]), None)
             if stage is None:
                 fail(422, "invalid_stage", "无效的对话节点")
@@ -1008,23 +1011,59 @@ class Service:
                 {"role": message["role"], "content": message["content"][:3000]}
                 for message in reversed(recent)
             ]
+        return {"case": case, "stage": stage, "selected": selected, "history": history,
+                "task_id": task_id, "payload_hash": payload_hash}
+
+    def post_message(self, owner, case_id, payload, *, emit=None, check_cancelled=None):
+        # Authenticate before inspecting the in-flight registry. Both JSON and
+        # streaming callers use the same claim and persisted idempotency key.
+        prepared = self.prepare_message(owner, case_id, payload)
+        if "response" in prepared:
+            return prepared["response"]
+        with self._chat_lock:
+            if case_id in self._active_chats:
+                fail(409, "message_in_progress", "此业务正在生成回复，请稍后重试。")
+            if len(self._active_chats) >= 4:
+                fail(503, "chat_busy", "当前对话较多，请稍后重试。")
+            self._active_chats.add(case_id)
+        try:
+            # Reload after claiming: a prior request may have committed while
+            # this request was reading its initial snapshot.
+            prepared = self.prepare_message(owner, case_id, payload)
+            if "response" in prepared:
+                return prepared["response"]
+            return self.finish_message(owner, case_id, payload, prepared, emit, check_cancelled)
+        finally:
+            with self._chat_lock:
+                self._active_chats.discard(case_id)
+
+    def finish_message(self, owner, case_id, payload, prepared, emit, check_cancelled):
+        case, stage = prepared["case"], prepared["stage"]
+        task_id, payload_hash = prepared["task_id"], prepared["payload_hash"]
+        if check_cancelled:
+            check_cancelled()
         result = self.run_workflow(
             owner,
             case["template"],
             stage,
             payload["content"],
-            [selected],
+            [prepared["selected"]],
             case_id=case_id,
+            **({"emit": emit, "check_cancelled": check_cancelled} if emit else {}),
             context={
                 "facts": case["facts"],
                 "mode": next(
                     (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
                 ),
-                "recent_messages": history,
+                "recent_messages": prepared["history"],
             },
         )
+        if emit and any(step["status"] == "failed" for step in result["trace"]):
+            fail(502, "assistant_failed", "回复未能完成，已收到的内容仅供参考。请重试。")
         output, trace, citations = result["output"], result["trace"], result["citations"]
         with self.db.transaction() as conn:
+            if check_cancelled:
+                check_cancelled()
             current = self.case_detail(owner, case_id, conn)
             existing = conn.execute(
                 "SELECT * FROM message_requests WHERE case_id=? AND client_id=?",

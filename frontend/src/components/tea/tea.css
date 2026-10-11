@@ -465,6 +465,7 @@
 }
 .tea-conversation {
   min-height: 0;
+  min-width: 0;
 }
 .tea-conversation-content {
   width: 100%;
@@ -481,7 +482,6 @@
 .tea-message-avatar {
   flex-shrink: 0;
   background: var(--muted);
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   display: grid;
   place-items: center;
@@ -489,11 +489,6 @@
   font-size: 12px;
   width: 28px;
   height: 28px;
-}
-.tea-message.user .tea-message-avatar {
-  background: var(--muted);
-  color: var(--foreground);
-  border-color: var(--border);
 }
 .tea-message-body {
   min-width: 0;
@@ -508,20 +503,32 @@
   margin: 6px 0 12px;
 }
 .tea-message-content {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--foreground);
-  font-size: 14px;
-  line-height: 1.75;
+  font-size: 15px;
+  line-height: 1.85;
+}
+.tea-message-content pre,
+.tea-message-content [data-streamdown="table-wrapper"] {
+  max-width: 100%;
+  overflow-x: auto;
 }
 .tea-message.user .tea-message-content {
+  white-space: pre-wrap;
   padding: 12px 15px;
   color: var(--foreground);
   background: var(--muted);
   border-radius: var(--radius);
 }
 .tea-message.user {
-  margin-left: 22px;
+  align-self: flex-end;
+  max-width: 85%;
+  margin-left: 40px;
+}
+.tea-message.user .tea-message-label {
+  justify-content: flex-end;
+  margin-top: 0;
+  margin-bottom: 6px;
 }
 .tea-message-citations {
   margin-top: 12px;
@@ -610,7 +617,7 @@
 .tea-composer-area {
   flex-shrink: 0;
   background: var(--background);
-  padding: 16px 24px;
+  padding: 12px 24px max(16px, env(safe-area-inset-bottom));
 }
 .tea-composer {
   border: 1px solid var(--border);
@@ -628,8 +635,8 @@
   display: block;
   width: 100%;
   resize: none;
-  min-height: 67px;
-  max-height: 150px;
+  min-height: 56px;
+  max-height: 200px;
   outline: none !important;
   padding: 14px 16px 3px;
   border: 0;
@@ -643,8 +650,8 @@
 .tea-composer-toolbar {
   display: flex;
   align-items: center;
-  gap: 13px;
-  padding: 6px 10px 10px;
+  gap: 12px;
+  padding: 4px 8px 8px;
 }
 .tea-composer-toolbar > button:first-child {
   display: flex;
@@ -657,10 +664,11 @@
 .tea-composer .tea-send {
   display: grid;
   place-items: center;
-  border-radius: var(--radius-md);
+  border-radius: 50%;
   margin-left: auto;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
   background: var(--primary);
   color: var(--primary-foreground);
 }
@@ -687,18 +695,109 @@
   max-width: var(--container-width-md);
 }
 .tea-current-task > button {
-  margin-left: 4px;
-}
-.tea-composer-error {
-  padding: 0 27px;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  min-height: 36px;
 }
 .tea-scroll-bottom {
   background: var(--background) !important;
   color: var(--foreground) !important;
   border: 1px solid var(--border) !important;
-  width: 30px !important;
-  height: 30px !important;
+  width: 40px !important;
+  height: 40px !important;
   bottom: 9px !important;
+}
+.tea-chat-analysis > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 13px;
+  list-style: none;
+}
+.tea-chat-analysis > summary::-webkit-details-marker {
+  display: none;
+}
+.tea-chat-analysis > summary > span {
+  flex: 1;
+}
+.tea-chat-analysis[open] > summary > svg:last-child {
+  transform: rotate(180deg);
+}
+.tea-chat-welcome {
+  padding-block: 24px 48px;
+}
+.tea-chat-welcome h2 {
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.4;
+  margin: 0 0 12px;
+}
+.tea-chat-welcome p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--muted-foreground);
+}
+.tea-chat-suggestions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 24px;
+  gap: 4px;
+}
+.tea-chat-suggestions > button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  font-size: 14px;
+  text-align: left;
+  color: var(--muted-foreground);
+}
+.tea-chat-suggestions > button:hover {
+  color: var(--foreground);
+}
+.tea-turn-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin-top: 12px;
+}
+.tea-turn-feedback > span {
+  flex: 1 1 200px;
+}
+.tea-composer-shortcut {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.tea-composer-toolbar > button:first-child {
+  width: 40px;
+  height: 40px;
+}
+.tea-composer-area > .tea-error {
+  max-width: var(--container-width-md);
+  margin: 0 auto 12px;
+}
+.tea-earlier-messages {
+  align-self: center;
+}
+@media (max-width: 767px) {
+  .tea-composer .tea-send,
+  .tea-composer-toolbar > button:first-child {
+    width: 44px;
+    height: 44px;
+  }
+  .tea-composer-shortcut {
+    display: none;
+  }
 }
 /* Flow side panel */
 .tea-sidepanel {
@@ -1824,8 +1923,8 @@
     gap: 24px;
   }
   .tea-message-content {
-    font-size: 14px;
-    line-height: 1.75;
+    font-size: 15px;
+    line-height: 1.85;
   }
   .tea-flow {
     padding: 30px;
@@ -1956,14 +2055,14 @@
     line-height: 1.75;
   }
   .tea-message.user {
-    margin-left: 9px;
+    margin-left: 28px;
   }
   .tea-composer-area {
     background: var(--background);
     padding: 16px 24px;
   }
   .tea-composer textarea {
-    min-height: 65px;
+    min-height: 52px;
     padding: 12px 12px 2px;
     font-size: 14px;
   }
@@ -2427,7 +2526,7 @@
     padding: 24px 20px;
   }
   .tea-composer-area {
-    padding: 12px 16px 16px;
+    padding: 8px 12px max(12px, env(safe-area-inset-bottom));
   }
   .tea-welcome {
     padding-inline: 20px;

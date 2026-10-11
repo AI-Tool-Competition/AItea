@@ -183,6 +183,18 @@ class MessageInput(StrictModel):
     client_message_id: str = Field(min_length=1, max_length=100)
 
 
+class MessageStreamEvent(StrictModel):
+    """SSE envelope; `done` carries the same result as POST /messages."""
+
+    event: Literal["status", "start", "delta", "done", "error"]
+    data: dict
+
+    def encode(self):
+        import json
+
+        return f"event: {self.event}\ndata: {json.dumps(self.data, ensure_ascii=False)}\n\n"
+
+
 class NewArtifact(StrictModel):
     task_id: str = Field(min_length=1, max_length=64)
     title: str | None = Field(default=None, max_length=200)

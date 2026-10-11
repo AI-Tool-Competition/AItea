@@ -254,10 +254,7 @@ export function Studio({
       disabled={!!busy}
       style={{ minWidth: 0 }}
     >
-      <SectionHeading
-        eyebrow="DESIGNED BY EXPERTS"
-        title="把专业经验，变成办理路径。"
-      >
+      <SectionHeading title="法务工作台">
         <div className="tea-heading-actions">
           <Button
             variant="outline"

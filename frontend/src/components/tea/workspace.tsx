@@ -38,6 +38,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { errorMessage, post, teaRequest } from "@/core/tea/api";
 import {
   type Artifact,
@@ -73,8 +74,7 @@ function Flow({
     <div className="tea-flow">
       <div className="tea-flow-intro">
         <div>
-          <span className="tea-eyebrow">YOUR EXPORT JOURNEY</span>
-          <h3>每一步，清晰可见。</h3>
+          <h3>办理进度</h3>
         </div>
         <span className="tea-progress-value">
           {percent}
@@ -89,7 +89,7 @@ function Flow({
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <span style={{ width: `${percent}%` }} />
+        <span style={{ transform: `scaleX(${percent / 100})` }} />
       </div>
       <div className="tea-flow-count">
         {record.completed_tasks} / {record.total_tasks} 项任务完成
@@ -325,17 +325,12 @@ function StageChat({
       >
         <ConversationContent className="tea-conversation-content">
           <div className="tea-stage-intro">
-            <span className="tea-eyebrow">
+            <h1>{stage.name}</h1>
+            <p>{stage.description}</p>
+            <div className="tea-stage-route">
               {record.template.origin} <ArrowRight size={12} />{" "}
               {record.template.destination} <span> / </span> 面向{stage.actor}
-            </span>
-            <h1>
-              {stage.name}
-              <span>，</span>
-              <br className="tea-mobile-break" />
-              从这里开始。
-            </h1>
-            <p>{stage.description}</p>
+            </div>
             <div className="tea-stage-context">
               <span>
                 <FolderOpen size={13} />
@@ -567,13 +562,14 @@ export function Workspace({
   const [artifactId, setArtifactId] = useState("");
   const isMobile = useIsMobile();
   const panelRef = usePanelRef();
+  const openPanelSize = useRef("40%");
   const stage = record.stages.find((s) => s.id === stageId) ?? record.stages[0];
   const task = stage?.tasks.find((t) => t.id === taskId);
   const selectedArtifact =
     record.artifacts.find((a) => a.id === artifactId) ?? record.artifacts[0];
   useEffect(() => {
     if (isMobile) return;
-    if (panelOpen) panelRef.current?.resize("39%");
+    if (panelOpen) panelRef.current?.resize(openPanelSize.current);
     else panelRef.current?.collapse();
   }, [panelOpen, isMobile, panelRef]);
   function openPanel(next: PanelTab) {
@@ -735,22 +731,32 @@ export function Workspace({
   );
   return (
     <div className="tea-workspace">
-      <div className="tea-workspace-toolbar">
-        <span>
-          <span className={`tea-stage-dot ${stage.status}`} />
-          {stage.actor} <ChevronRight size={12} />
-          {stage.name}
-        </span>
-        <button
-          onClick={() => {
-            if (isMobile) setMobileOpen(true);
-            else setPanelOpen(!panelOpen);
-          }}
-        >
-          <PanelRightOpen size={15} />
-          {panelOpen && !isMobile ? "收起流程" : "办理流程"}
-        </button>
-      </div>
+      <header className="tea-workspace-toolbar">
+        <div className="tea-workspace-heading">
+          <SidebarTrigger className="md:hidden" aria-label="展开导航" />
+          <span className="tea-workspace-title">{record.title}</span>
+          <span className="tea-workspace-stage">{stage.name}</span>
+        </div>
+        <div className="tea-workspace-actions">
+          <span className="tea-mode-indicator">
+            {capabilities.assistant_mode === "demo" ? "演示助手" : "AI 助手"}
+          </span>
+          <button
+            aria-expanded={isMobile ? mobileOpen : panelOpen}
+            onClick={() => {
+              if (isMobile) setMobileOpen(true);
+              else setPanelOpen(!panelOpen);
+            }}
+          >
+            {panelOpen && !isMobile ? (
+              <PanelRightClose size={16} />
+            ) : (
+              <PanelRightOpen size={16} />
+            )}
+            {panelOpen && !isMobile ? "收起流程" : "办理流程"}
+          </button>
+        </div>
+      </header>
       {isMobile ? (
         <>
           <StageChat
@@ -780,7 +786,7 @@ export function Workspace({
           orientation="horizontal"
           className="tea-workspace-panels"
         >
-          <ResizablePanel id="conversation" minSize="42%" defaultSize="61%">
+          <ResizablePanel id="conversation" minSize="30%" defaultSize="60%">
             <StageChat
               key={stage.id}
               record={record}
@@ -792,20 +798,29 @@ export function Workspace({
               capabilities={capabilities}
             />
           </ResizablePanel>
-          <ResizableHandle className="tea-resize-handle" />
+          <ResizableHandle
+            withHandle
+            disabled={!panelOpen}
+            className="tea-resize-handle"
+          />
           <ResizablePanel
             id="tea-details"
             panelRef={panelRef}
             collapsible
             collapsedSize={0}
-            minSize="28%"
-            maxSize="55%"
-            defaultSize="39%"
+            minSize="20%"
+            maxSize="70%"
+            defaultSize="40%"
             onResize={(size) => {
-              if (size.asPercentage > 0 && !panelOpen) setPanelOpen(true);
+              if (size.asPercentage > 0) {
+                openPanelSize.current = `${size.asPercentage}%`;
+              }
+              setPanelOpen(size.asPercentage > 0);
             }}
           >
-            {panel}
+            <div className="tea-details-content" hidden={!panelOpen}>
+              {panel}
+            </div>
           </ResizablePanel>
         </ResizablePanelGroup>
       )}

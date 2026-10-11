@@ -479,8 +479,16 @@ def test_live_assistant_receives_prior_stage_messages(client, monkeypatch):
         def raise_for_status(self):
             return None
 
-        def json(self):
-            return {"choices": [{"message": {"content": "先准备产品说明书。"}}]}
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def iter_bytes(self):
+            import json
+
+            yield json.dumps({"choices": [{"message": {"content": "先准备产品说明书。"}}]}).encode()
 
     class ProviderClient:
         def __init__(self, **kwargs):
@@ -492,7 +500,7 @@ def test_live_assistant_receives_prior_stage_messages(client, monkeypatch):
         def __exit__(self, *args):
             pass
 
-        def post(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
             captured.append(kwargs["json"])
             return ProviderResponse()
 
@@ -577,7 +585,7 @@ def test_live_provider_failure_is_visible_and_does_not_complete_task(client, mon
         def __exit__(self, *args):
             pass
 
-        def post(self, *args, **kwargs):
+        def stream(self, *args, **kwargs):
             raise httpx.TimeoutException("unavailable")
 
     monkeypatch.setattr(httpx, "Client", BrokenProvider)

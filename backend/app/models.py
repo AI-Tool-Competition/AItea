@@ -1,7 +1,17 @@
+import json
 from typing import Literal
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 
 class StrictModel(BaseModel):
@@ -36,14 +46,6 @@ class TaskDefinition(StrictModel):
         return self
 
 
-class StageDefinition(StrictModel):
-    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
-    name: str = Field(min_length=1, max_length=100)
-    actor: str = Field(min_length=1, max_length=100)
-    description: str = Field(max_length=2000)
-    tasks: list[TaskDefinition] = Field(min_length=1, max_length=30)
-
-
 class Mode(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=100)
@@ -56,6 +58,7 @@ class AgentStep(StrictModel):
     type: Literal["retrieve", "check", "guide", "draft", "verify"]
     label: str = Field(min_length=1, max_length=100)
     enabled: bool = True
+    instructions: str = Field(default="", max_length=3000)
 
 
 class AgentConfig(StrictModel):
@@ -63,6 +66,23 @@ class AgentConfig(StrictModel):
     instructions: str = Field(max_length=10000)
     retrieval_limit: int = Field(ge=1, le=20)
     steps: list[AgentStep] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def executable_steps(self):
+        if len({step.id for step in self.steps}) != len(self.steps):
+            raise ValueError("工作流步骤编号不可重复")
+        if not any(step.enabled for step in self.steps):
+            raise ValueError("工作流至少启用一个步骤")
+        return self
+
+
+class StageDefinition(StrictModel):
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    name: str = Field(min_length=1, max_length=100)
+    actor: str = Field(min_length=1, max_length=100)
+    description: str = Field(max_length=2000)
+    tasks: list[TaskDefinition] = Field(min_length=1, max_length=30)
+    analysis: AgentConfig | None = None
 
 
 class Template(StrictModel):
@@ -90,6 +110,40 @@ class Template(StrictModel):
         if not any(mode.enabled for mode in self.modes):
             raise ValueError("至少启用一种模式")
         return self
+
+
+class TemplateInput(StrictModel):
+    # Kept as JSON so incomplete editor forms can receive path-specific validation.
+    template: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def bounded_template(self):
+        if len(json.dumps(self.template, ensure_ascii=False, allow_nan=False).encode()) > 512 * 1024:
+            raise ValueError("配置内容不能超过 512 KB")
+        return self
+
+
+class TemplateDraftInput(TemplateInput):
+    expected_revision: int = Field(ge=0)
+
+
+class TemplatePublishInput(TemplateInput):
+    expected_draft_revision: int | None = Field(default=None, ge=0)
+
+
+class TemplateDebugInput(StrictModel):
+    template: Template
+    input: str = Field(default="", max_length=20000)
+    stage_id: str | None = Field(default=None, min_length=1, max_length=64)
+    task_values: dict[str, dict[str, StrictStr | StrictInt | StrictFloat]] = Field(
+        default_factory=dict, max_length=30
+    )
+    stop_after_step_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class StageAnalysisInput(StrictModel):
+    expected_revision: int = Field(ge=1)
+    retry: bool = False
 
 
 class Register(StrictModel):

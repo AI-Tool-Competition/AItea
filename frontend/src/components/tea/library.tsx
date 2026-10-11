@@ -196,9 +196,9 @@ export function UploadDialog({
     <Dialog open={open} onOpenChange={busy ? undefined : onOpenChange}>
       <DialogContent className="tea-theme tea-dialog">
         <DialogHeader>
-          <DialogTitle>把资料带进工作台</DialogTitle>
+          <DialogTitle>上传资料</DialogTitle>
           <DialogDescription>
-            主文件会解析并建立检索索引；关联附件仅保存原文件。
+            主文件解析正文；关联附件保存原件。
           </DialogDescription>
         </DialogHeader>
         <label className="tea-field">

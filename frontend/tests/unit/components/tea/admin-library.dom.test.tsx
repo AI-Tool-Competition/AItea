@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 
 import { AdminLibrary } from "@/components/tea/admin-library";
+import { Sources } from "@/components/tea/sources";
 import { type Document } from "@/core/tea/types";
 
 afterEach(() => {
@@ -32,6 +33,60 @@ const parent: Document = {
   chunk_count: 1,
 };
 describe("admin library", () => {
+  it("browses sample structure and related files without sending library requests", async () => {
+    const fetch = rs.spyOn(globalThis, "fetch");
+    render(
+      <AdminLibrary
+        cases={[]}
+        revision={0}
+        onUpload={() => undefined}
+        samples
+      />,
+    );
+    fireEvent.click(screen.getByText("茶叶进口登记 · 主资料样例"));
+    expect(screen.getByText(/不是真实法规/, { selector: "p" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "下载原件" })).toBeNull();
+    expect(screen.queryByText(/资料分类与适用性/)).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "二级资料" }));
+    fireEvent.click(await screen.findByText("名词定义 · 引用资料样例"));
+    expect(screen.getByRole("heading", { name: "关联原件" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "查看所属一级资料" }));
+    expect(
+      screen.getByRole("heading", { name: "茶叶进口登记 · 主资料样例" }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "返回资料目录" }));
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "搜索一级资料名称" }),
+      { target: { value: "标签" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "搜索" }));
+    expect(screen.queryByText("茶叶进口登记 · 主资料样例")).toBeNull();
+    expect(screen.getByText("产品标签规范 · 主资料样例")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "上传资料" })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps source samples read-only and restores the real source list on exit", async () => {
+    const fetch = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ items: [], total: 0 })));
+    const view = render(<Sources key="samples" compact samples />);
+    expect(screen.getByText("进口登记资料 · 开发样例")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "立即抓取" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加来源" })).toBeNull();
+    expect(
+      screen
+        .getAllByRole<HTMLInputElement>("checkbox")
+        .every((input) => input.disabled),
+    ).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    view.rerender(<Sources key="real" compact />);
+    await screen.findByText("暂无来源");
+    expect(screen.queryByText("进口登记资料 · 开发样例")).toBeNull();
+    expect(screen.getByRole("button", { name: "添加来源" })).toBeTruthy();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes the open secondary list after an attachment upload without losing the selected view", async () => {
     let uploaded = false;
     rs.spyOn(globalThis, "fetch").mockImplementation(async (url) => {

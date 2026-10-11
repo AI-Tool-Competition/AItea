@@ -371,10 +371,7 @@ export function Library({
   }
   return (
     <div className="tea-page tea-library">
-      <SectionHeading
-        eyebrow="YOUR KNOWLEDGE, CONNECTED"
-        title="每一份资料，都有来处。"
-      >
+      <SectionHeading title="资料库">
         <Button onClick={() => onUpload(scope || undefined)}>
           <Upload size={15} />
           上传资料

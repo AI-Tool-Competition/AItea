@@ -1,0 +1,17 @@
+tmp/
+.worktrees/
+.dev/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+.env
+data/
+node_modules/
+.next/
+*.tsbuildinfo
+output/
+.playwright-mcp/
+playwright-report/
+test-results/

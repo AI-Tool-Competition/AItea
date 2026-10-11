@@ -1,0 +1,36 @@
+name: Tea workspace checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.10"
+      - run: uv sync --project backend --frozen
+      - run: uv run --project backend pytest backend/tests -q
+      - run: uv run --project backend ruff check backend/app backend/tests
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm install -g pnpm@10.26.2
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: pnpm typecheck
+        working-directory: frontend
+      - run: pnpm exec rstest run tests/unit/core/tea/api.test.ts tests/unit/components/tea/draft-safety.dom.test.tsx
+        working-directory: frontend
+      - run: pnpm build
+        working-directory: frontend
+        env:
+          SKIP_ENV_VALIDATION: "1"
+          NEXT_TELEMETRY_DISABLED: "1"

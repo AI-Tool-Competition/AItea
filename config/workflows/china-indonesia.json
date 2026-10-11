@@ -1,0 +1,194 @@
+{
+  "id": "china-indonesia-demo",
+  "version": 1,
+  "title": "中国 → 印度尼西亚 · 茶叶出口准备",
+  "description": "用于演示资料准备与核验协作。主体、任务和模式均可配置；此模板不代表实际法定出口手续。",
+  "origin": "中国",
+  "destination": "印度尼西亚",
+  "is_demo": true,
+  "modes": [
+    {
+      "id": "mode-a",
+      "name": "模式 A（待配置）",
+      "description": "业务规则由法务同学后续配置。",
+      "enabled": true
+    },
+    {
+      "id": "mode-b",
+      "name": "模式 B（待配置）",
+      "description": "业务规则由法务同学后续配置。",
+      "enabled": true
+    }
+  ],
+  "stages": [
+    {
+      "id": "business_materials",
+      "name": "业务资料",
+      "actor": "企业",
+      "description": "明确本批次产品与企业信息，建立可复用的业务档案。",
+      "tasks": [
+        {
+          "id": "product_profile",
+          "title": "整理产品信息",
+          "description": "核对产品资料、包装信息和数量，确认适用于本批次。",
+          "required": true,
+          "fields": [
+            {
+              "key": "product_name",
+              "label": "产品名称",
+              "type": "text",
+              "required": true,
+              "placeholder": "例如：乌龙茶"
+            },
+            {
+              "key": "ingredients",
+              "label": "成分",
+              "type": "textarea",
+              "required": true,
+              "placeholder": "按实际产品资料填写"
+            },
+            {
+              "key": "net_weight_g",
+              "label": "每袋净含量（克）",
+              "type": "number",
+              "required": true,
+              "min": 0.001
+            },
+            {
+              "key": "bag_count",
+              "label": "袋数",
+              "type": "number",
+              "required": true,
+              "min": 1
+            }
+          ],
+          "require_document": true,
+          "require_confirmation": true,
+          "output_template": "# 产品信息卡\n\n产品：{{product_name}}\n成分：{{ingredients}}\n每袋净含量：{{net_weight_g}} 克\n袋数：{{bag_count}}\n\n此文稿仅用于整理用户提供的业务资料。"
+        },
+        {
+          "id": "company_profile",
+          "title": "确认企业与联系人",
+          "description": "整理本次业务对接所需的企业名称和联系人。",
+          "required": true,
+          "fields": [
+            {
+              "key": "company_name",
+              "label": "企业名称",
+              "type": "text",
+              "required": true
+            },
+            {
+              "key": "contact_name",
+              "label": "联系人",
+              "type": "text",
+              "required": true
+            }
+          ],
+          "require_document": false,
+          "require_confirmation": true,
+          "output_template": null
+        }
+      ]
+    },
+    {
+      "id": "partner_preparation",
+      "name": "对接准备",
+      "actor": "对接主体",
+      "description": "整理需要与对接方核实的问题；具体主体及要求由正式配置确定。",
+      "tasks": [
+        {
+          "id": "partner_questions",
+          "title": "整理对接问题",
+          "description": "记录对接对象和需要确认的事项。",
+          "required": true,
+          "fields": [
+            {
+              "key": "partner_name",
+              "label": "对接对象",
+              "type": "text",
+              "required": true
+            },
+            {
+              "key": "questions",
+              "label": "待确认事项",
+              "type": "textarea",
+              "required": true
+            }
+          ],
+          "require_document": false,
+          "require_confirmation": true,
+          "output_template": "# 对接问题清单\n\n对接对象：{{partner_name}}\n\n{{questions}}"
+        }
+      ]
+    },
+    {
+      "id": "delivery",
+      "name": "材料交付",
+      "actor": "接收主体",
+      "description": "记录实际材料交接及结果；完成本示例不表示已获任何机构审批。",
+      "tasks": [
+        {
+          "id": "delivery_record",
+          "title": "记录交付结果",
+          "description": "上传交接记录并说明接收对象和实际结果。",
+          "required": true,
+          "fields": [
+            {
+              "key": "recipient",
+              "label": "接收对象",
+              "type": "text",
+              "required": true
+            },
+            {
+              "key": "delivery_result",
+              "label": "实际交付结果",
+              "type": "textarea",
+              "required": true
+            }
+          ],
+          "require_document": true,
+          "require_confirmation": true,
+          "output_template": null
+        }
+      ]
+    }
+  ],
+  "agent": {
+    "language": "简体中文",
+    "instructions": "围绕当前任务给出可执行指导；区分用户陈述、已核验资料和法规依据。缺少原文依据时明确说明，不补造法条。",
+    "retrieval_limit": 5,
+    "steps": [
+      {
+        "id": "retrieve",
+        "type": "retrieve",
+        "label": "查找相关资料",
+        "enabled": true
+      },
+      {
+        "id": "check",
+        "type": "check",
+        "label": "检查缺项与冲突",
+        "enabled": true
+      },
+      {
+        "id": "guide",
+        "type": "guide",
+        "label": "生成办理指导",
+        "enabled": true
+      },
+      {
+        "id": "draft",
+        "type": "draft",
+        "label": "整理文稿",
+        "enabled": true
+      },
+      {
+        "id": "verify",
+        "type": "verify",
+        "label": "核验完成条件",
+        "enabled": true
+      }
+    ]
+  }
+}

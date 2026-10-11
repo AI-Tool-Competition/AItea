@@ -199,7 +199,7 @@ export function AnalysisEditor({
         <div className="ta-inspector-body">
           {inherited && (
             <div className="ta-inheritance">
-              <p>此节点沿用默认分析。要修改，可以单独配置或编辑默认流程。</p>
+              <p>沿用默认分析</p>
               <Button
                 size="sm"
                 variant="outline"
@@ -222,7 +222,7 @@ export function AnalysisEditor({
           )}
           {editingDefault && (
             <div className="ta-inheritance">
-              <p>修改会应用到所有沿用默认的节点。</p>
+              <p>修改影响所有沿用默认的节点。</p>
               <Button
                 size="sm"
                 variant="ghost"

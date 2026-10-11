@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { errorMessage, patch, post, teaRequest } from "@/core/tea/api";
+import { sourceSamples } from "@/core/tea/library-samples";
 import { type ListResult, type Source } from "@/core/tea/types";
 
 import {
@@ -16,7 +17,10 @@ import {
   SectionHeading,
 } from "./shared";
 
-export function Sources({ compact = false }: { compact?: boolean } = {}) {
+export function Sources({
+  compact = false,
+  samples = false,
+}: { compact?: boolean; samples?: boolean } = {}) {
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -30,6 +34,11 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
   const [revision, setRevision] = useState(0);
   const pending = useRef(false);
   useEffect(() => {
+    if (samples) {
+      setSources(sourceSamples);
+      setLoading(false);
+      return;
+    }
     const abort = new AbortController();
     setLoading(true);
     teaRequest<ListResult<Source>>("/sources", { signal: abort.signal })
@@ -44,9 +53,9 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [revision]);
+  }, [revision, samples]);
   async function add() {
-    if (pending.current) return;
+    if (pending.current || samples) return;
     pending.current = true;
     setBusy("add");
     setError("");
@@ -74,7 +83,7 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
     }
   }
   async function mutate(source: Source, fetch: boolean) {
-    if (pending.current) return;
+    if (pending.current || samples) return;
     pending.current = true;
     setBusy(source.id);
     setError("");
@@ -90,10 +99,7 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
           setError(
             `抓取未全部完成。已保存 ${result.documents.length} 份文件。${result.source.last_error ?? "请检查来源后重试。"}`,
           );
-        else
-          setNotice(
-            `抓取已完成，保存 ${result.documents.length} 份文件；相同内容会自动去重。`,
-          );
+        else setNotice(`已保存 ${result.documents.length} 份文件。`);
       } else
         next = await patch<Source>(`/sources/${source.id}`, {
           enabled: !source.enabled,
@@ -110,23 +116,26 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
     <div className="tea-page tea-sources">
       {compact ? (
         <div className="ta-source-toolbar">
+          <span>{loading ? "读取中…" : `${sources.length} 个来源`}</span>
+          {!samples && (
+            <Button onClick={() => setAdding(!adding)}>
+              <Plus size={15} />
+              {adding ? "取消添加" : "添加来源"}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <SectionHeading title="来源管理">
           <Button onClick={() => setAdding(!adding)}>
             <Plus size={15} />
             添加来源
           </Button>
-        </div>
-      ) : (
-        <>
-          <SectionHeading title="来源管理">
-            <Button onClick={() => setAdding(!adding)}>
-              <Plus size={15} />
-              添加来源
-            </Button>
-          </SectionHeading>
-          <p className="tea-page-intro">
-            配置固定的公开 HTTPS 来源，保存主文件及关联附件，保留抓取记录。
-          </p>
-        </>
+        </SectionHeading>
+      )}
+      {!compact && (
+        <p className="tea-page-intro">
+          配置固定的公开 HTTPS 来源，保存主文件及关联附件，保留抓取记录。
+        </p>
       )}
       {error && (
         <ErrorNotice
@@ -211,7 +220,7 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
                   <input
                     type="checkbox"
                     checked={source.enabled}
-                    disabled={!!busy}
+                    disabled={!!busy || samples}
                     onChange={() => mutate(source, false)}
                   />
                   启用
@@ -222,33 +231,44 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
                   <Clock3 size={13} />每 {source.interval_hours} 小时检查
                 </span>
                 <span>
-                  {source.last_fetched_at
-                    ? `上次 ${dateLabel(source.last_fetched_at)}`
-                    : "尚未抓取"}
+                  {samples
+                    ? "未抓取"
+                    : source.last_fetched_at
+                      ? `上次 ${dateLabel(source.last_fetched_at)}`
+                      : "尚未抓取"}
                 </span>
-                <ActionButton
-                  variant="outline"
-                  size="sm"
-                  busy={busy === source.id}
-                  disabled={!!busy}
-                  onClick={() => mutate(source, true)}
-                >
-                  <RefreshCw size={13} />
-                  立即抓取
-                </ActionButton>
+                {!samples && (
+                  <ActionButton
+                    variant="outline"
+                    size="sm"
+                    busy={busy === source.id}
+                    disabled={!!busy}
+                    onClick={() => mutate(source, true)}
+                  >
+                    <RefreshCw size={13} />
+                    立即抓取
+                  </ActionButton>
+                )}
               </div>
               {source.last_error && <ErrorNotice message={source.last_error} />}
             </article>
           ))}
         </div>
       ) : (
-        <Empty icon={<Globe2 size={34} />} title="从可靠的来源开始">
-          添加法学同学确认过的官方页面或文件地址。
+        <Empty
+          icon={<Globe2 size={34} />}
+          title={compact ? "暂无来源" : "从可靠的来源开始"}
+        >
+          {compact
+            ? "添加官方页面或文件地址。"
+            : "添加法学同学确认过的官方页面或文件地址。"}
         </Empty>
       )}
-      <div className="tea-note">
-        一级文件解析并建立检索索引，二级附件仅存原文。后台采集进程启动后，按配置的时间间隔检查更新。
-      </div>
+      {!compact && (
+        <div className="tea-note">
+          一级文件解析并建立检索索引，二级附件仅存原文。后台采集进程启动后，按配置的时间间隔检查更新。
+        </div>
+      )}
     </div>
   );
 }

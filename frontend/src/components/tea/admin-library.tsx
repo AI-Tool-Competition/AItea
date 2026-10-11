@@ -24,6 +24,7 @@ import {
   safeSourceUrl,
   teaRequest,
 } from "@/core/tea/api";
+import { librarySamples } from "@/core/tea/library-samples";
 import {
   type CaseSummary,
   type Document,
@@ -41,10 +42,12 @@ export function AdminLibrary({
   cases,
   revision,
   onUpload,
+  samples = false,
 }: {
   cases: CaseSummary[];
   revision: number;
   onUpload: (scope?: string, parent?: string) => void;
+  samples?: boolean;
 }) {
   const [scope, setScope] = useState("");
   const [query, setQuery] = useState("");
@@ -60,6 +63,20 @@ export function AdminLibrary({
   const [selected, setSelected] = useState<Document>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
+    if (samples) {
+      const items = librarySamples
+        .map((item) => item.document)
+        .filter(
+          (item) => item.role === "primary" && item.title.includes(search),
+        );
+      setData({
+        items: items.slice(offset, offset + PAGE_SIZE),
+        total: items.length,
+      });
+      setLoading(false);
+      setError("");
+      return;
+    }
     const abort = new AbortController();
     setLoading(true);
     setError("");
@@ -83,12 +100,13 @@ export function AdminLibrary({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [scope, offset, search, revision, retry]);
+  }, [scope, offset, search, revision, retry, samples]);
   if (selected)
     return (
       <DocumentInspector
         key={selected.id}
         document={selected}
+        samples={samples}
         revision={revision}
         onBack={() => setSelected(undefined)}
         onSelect={setSelected}
@@ -126,25 +144,29 @@ export function AdminLibrary({
             搜索
           </Button>
         </form>
-        <select
-          aria-label="资料范围"
-          value={scope}
-          onChange={(e) => {
-            setScope(e.target.value);
-            setOffset(0);
-          }}
-        >
-          <option value="">账号公共资料库</option>
-          {cases.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.title}
-            </option>
-          ))}
-        </select>
-        <Button onClick={() => onUpload(scope || undefined)}>
-          <Upload size={14} />
-          上传资料
-        </Button>
+        {!samples && (
+          <select
+            aria-label="资料范围"
+            value={scope}
+            onChange={(e) => {
+              setScope(e.target.value);
+              setOffset(0);
+            }}
+          >
+            <option value="">公共资料</option>
+            {cases.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.title}
+              </option>
+            ))}
+          </select>
+        )}
+        {!samples && (
+          <Button onClick={() => onUpload(scope || undefined)}>
+            <Upload size={14} />
+            上传资料
+          </Button>
+        )}
       </div>
       {error && (
         <ErrorNotice
@@ -154,8 +176,11 @@ export function AdminLibrary({
       )}
       <div className="ta-library-table">
         <div className="ta-table-heading">
-          <h3>资料目录</h3>
-          <span>{loading ? "读取中…" : `${data.total} 份一级资料`}</span>
+          <span>
+            {loading
+              ? "读取中…"
+              : `${data.total} 份${samples ? "开发样例" : "一级资料"}`}
+          </span>
           {search && (
             <button
               onClick={() => {
@@ -254,10 +279,13 @@ export function AdminLibrary({
                         <td colSpan={5}>
                           <SecondaryDocuments
                             parent={doc}
+                            samples={samples}
                             revision={revision}
                             onSelect={setSelected}
-                            onUpload={() =>
-                              onUpload(scope || undefined, doc.id)
+                            onUpload={
+                              samples
+                                ? undefined
+                                : () => onUpload(scope || undefined, doc.id)
                             }
                           />
                         </td>
@@ -271,11 +299,11 @@ export function AdminLibrary({
         ) : (
           <Empty
             icon={<BookOpen size={30} />}
-            title={search ? "没有匹配的资料" : "从第一份资料开始"}
+            title={search ? "无匹配资料" : "暂无资料"}
           >
             {search
-              ? "试试文件名称中的关键词，或清除筛选。"
-              : "先上传一级资料，再为它添加二级附件。"}
+              ? "更换关键词或清除筛选。"
+              : "上传资料后查看正文与关联文件。"}
           </Empty>
         )}
         <Pagination
@@ -321,6 +349,7 @@ function Pagination({
   busy: boolean;
   onChange: (offset: number) => void;
 }) {
+  if (total <= limit) return null;
   return (
     <div className="ta-pagination">
       <span>
@@ -354,11 +383,13 @@ function SecondaryDocuments({
   revision,
   onSelect,
   onUpload,
+  samples = false,
 }: {
   parent: Document;
   revision: number;
   onSelect: (doc: Document) => void;
   onUpload?: () => void;
+  samples?: boolean;
 }) {
   const [data, setData] = useState<ListResult<Document>>({
     items: [],
@@ -369,6 +400,14 @@ function SecondaryDocuments({
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
+    if (samples) {
+      const items = librarySamples
+        .map((item) => item.document)
+        .filter((item) => item.parent_id === parent.id);
+      setData({ items: items.slice(offset, offset + 10), total: items.length });
+      setLoading(false);
+      return;
+    }
     const abort = new AbortController();
     setLoading(true);
     setError("");
@@ -392,7 +431,7 @@ function SecondaryDocuments({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [parent.id, parent.case_id, offset, retry, revision]);
+  }, [parent.id, parent.case_id, offset, retry, revision, samples]);
   return (
     <div className="ta-secondary-list">
       <div className="ta-subheading">
@@ -427,9 +466,7 @@ function SecondaryDocuments({
           </button>
         ))
       ) : (
-        <p className="ta-hint">
-          尚未添加二级资料。关联附件会完整保存，不进行正文解析。
-        </p>
+        <p className="ta-hint">尚未添加二级资料。</p>
       )}
       {data.total > 10 && (
         <Pagination
@@ -451,6 +488,7 @@ function DocumentInspector({
   onSelect,
   onUpload,
   onSaved,
+  samples,
 }: {
   document: Document;
   revision: number;
@@ -458,6 +496,7 @@ function DocumentInspector({
   onSelect: (doc: Document) => void;
   onUpload: () => void;
   onSaved: (doc: Document) => void;
+  samples: boolean;
 }) {
   const [data, setData] = useState<DocumentDetail>();
   const [tab, setTab] = useState<"elements" | "chunks" | "attachments">(
@@ -472,6 +511,11 @@ function DocumentInspector({
   const parentRequest = useRef<AbortController | null>(null);
   useEffect(() => () => parentRequest.current?.abort(), []);
   useEffect(() => {
+    if (samples) {
+      setData(librarySamples.find((item) => item.document.id === document.id));
+      setLoading(false);
+      return;
+    }
     const abort = new AbortController();
     setLoading(true);
     setError("");
@@ -489,7 +533,7 @@ function DocumentInspector({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [document.id, offsets, retry]);
+  }, [document.id, offsets, retry, samples]);
   const parts =
     tab === "chunks" ? (data?.chunks ?? []) : (data?.elements ?? []);
   const part = parts[selectedPart] ?? parts[0];
@@ -517,12 +561,14 @@ function DocumentInspector({
             {dateLabel(document.created_at)}
           </p>
         </div>
-        <Button asChild variant="outline" size="sm">
-          <a href={downloadUrl(document.id)}>
-            <ArrowDownToLine size={14} />
-            下载原件
-          </a>
-        </Button>
+        {!samples && (
+          <Button asChild variant="outline" size="sm">
+            <a href={downloadUrl(document.id)}>
+              <ArrowDownToLine size={14} />
+              下载原件
+            </a>
+          </Button>
+        )}
       </div>
       {document.error && <ErrorNotice message={document.error} />}
       {error && (
@@ -545,12 +591,19 @@ function DocumentInspector({
       {document.role === "secondary" ? (
         <div className="ta-secondary-detail">
           <Paperclip size={30} />
-          <h3>与一级资料关联的原件</h3>
-          <p>这份附件已完整保存，不参与正文解析和检索。</p>
+          <h3>关联原件</h3>
+          <p>{samples ? "开发样例" : "仅保存原件"}</p>
           {document.parent_id && (
             <Button
               variant="outline"
               onClick={async () => {
+                if (samples) {
+                  const parent = librarySamples.find(
+                    (item) => item.document.id === document.parent_id,
+                  );
+                  if (parent) onSelect(parent.document);
+                  return;
+                }
                 parentRequest.current?.abort();
                 const abort = new AbortController();
                 parentRequest.current = abort;
@@ -597,11 +650,13 @@ function DocumentInspector({
               <strong>v{document.version}</strong>
             </div>
           </div>
-          <DocumentMetadataEditor
-            key={`${document.id}:${document.metadata_revision}`}
-            document={document}
-            onSaved={onSaved}
-          />
+          {!samples && (
+            <DocumentMetadataEditor
+              key={`${document.id}:${document.metadata_revision}`}
+              document={document}
+              onSaved={onSaved}
+            />
+          )}
           {data?.warnings?.map((warning, index) => (
             <div className="tea-note" key={index}>
               {warning}
@@ -635,9 +690,10 @@ function DocumentInspector({
           {tab === "attachments" ? (
             <SecondaryDocuments
               parent={document}
+              samples={samples}
               revision={revision}
               onSelect={onSelect}
-              onUpload={onUpload}
+              onUpload={samples ? undefined : onUpload}
             />
           ) : loading ? (
             <Busy label="读取结构化拆解…" />
@@ -704,12 +760,10 @@ function DocumentInspector({
                       <Empty
                         icon={<Layers size={28} />}
                         title={
-                          document.status === "failed"
-                            ? "这份资料尚未成功解析"
-                            : "暂无可显示的拆解内容"
+                          document.status === "failed" ? "解析失败" : "暂无正文"
                         }
                       >
-                        可以下载原件核对，解析失败时请根据上方原因修正文件后重新上传。
+                        下载原件核对后重新上传。
                       </Empty>
                     )}
                   </div>

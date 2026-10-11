@@ -118,7 +118,6 @@ export function ConfigurationDebugger({
           <h3>试运行</h3>
           <span className="ta-badge">独立测试</span>
         </div>
-        <p>使用当前草稿与样例资料，不修改实际业务。</p>
       </div>
       <div className="ta-debug-grid">
         <fieldset disabled={busy} className="ta-debug-input">
@@ -145,9 +144,7 @@ export function ConfigurationDebugger({
                 项
               </small>
             </summary>
-            <p className="ta-hint">
-              留空可以测试缺项提示。材料关联和人工确认仍由实际业务核验。
-            </p>
+            <p className="ta-hint">留空可测试缺项提示。</p>
             {stage.tasks.map((task) => (
               <div key={task.id}>
                 <h4>{task.title}</h4>
@@ -288,7 +285,7 @@ export function ConfigurationDebugger({
                     ))
                   ) : (
                     <p className="ta-hint">
-                      本次没有找到可引用的原文。可检查资料是否已审核、在适用期内，或调整检索关注点。
+                      未找到原文。请检查审核状态、适用日期或检索条件。
                     </p>
                   )
                 ) : (
@@ -335,21 +332,12 @@ export function ConfigurationDebugger({
           ) : !busy && !error ? (
             <div className="ta-debug-empty">
               <FlaskConical size={30} strokeWidth={1.2} />
-              <h4>先试一遍，再交给办理人。</h4>
-              <p>选择节点、填写样例，查看分析结果、缺项提示和引用依据。</p>
-              <div>
-                <span>样例资料</span>
-                <ChevronRight size={13} />
-                <span>逐步分析</span>
-                <ChevronRight size={13} />
-                <span>结果与依据</span>
-              </div>
+              <h4>暂无运行结果</h4>
             </div>
           ) : busy ? (
             <div className="ta-debug-empty">
               <FlaskConical size={30} />
-              <h4>正在运行实际配置…</h4>
-              <p>完成后会显示每一步的结果；这期间可以继续查看流程。</p>
+              <h4>运行中…</h4>
             </div>
           ) : null}
         </div>

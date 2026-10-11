@@ -5,13 +5,12 @@ import {
   BookOpen,
   ChevronRight,
   GitBranch,
-  Globe2,
   LogOut,
   PanelLeft,
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -40,11 +39,6 @@ const pages = {
     icon: BookOpen,
     group: "内容管理",
   },
-  sources: {
-    title: "来源管理",
-    icon: Globe2,
-    group: "内容管理",
-  },
 };
 
 // Layout reference: tmp/ui dashboard-01/sidebar-07. Uses the existing Tea and
@@ -65,10 +59,15 @@ export function Admin({
   logoutBusy: boolean;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const samples =
+    process.env.NODE_ENV === "development" &&
+    searchParams.get("sample") === "1";
   const [menuOpen, setMenuOpen] = useState(false);
   const [upload, setUpload] = useState<{ scope?: string; parent?: string }>();
   const [libraryRevision, setLibraryRevision] = useState(0);
-  const current = pages[page];
+  const navigationPage = page === "sources" ? "library" : page;
+  const current = pages[navigationPage];
   return (
     <div
       className={`tea-theme ta-admin ${page === "workflow" || page === "analysis" ? "is-editor" : ""}`}
@@ -94,8 +93,8 @@ export function Admin({
               <span>{group}</span>
               {(
                 Object.entries(pages) as [
-                  AdminPage,
-                  (typeof pages)[AdminPage],
+                  keyof typeof pages,
+                  (typeof pages)[keyof typeof pages],
                 ][]
               )
                 .filter(([, item]) => item.group === group)
@@ -103,12 +102,12 @@ export function Admin({
                   <Link
                     key={id}
                     href={`/tea/admin/${id}`}
-                    aria-current={page === id ? "page" : undefined}
+                    aria-current={navigationPage === id ? "page" : undefined}
                     onClick={() => setMenuOpen(false)}
                   >
                     <item.icon size={18} strokeWidth={1.7} />
                     <span>{item.title}</span>
-                    {page === id && <ChevronRight size={13} />}
+                    {navigationPage === id && <ChevronRight size={13} />}
                   </Link>
                 ))}
             </div>
@@ -124,15 +123,13 @@ export function Admin({
         </div>
         <Link className="ta-return-link" href="/tea">
           <ArrowLeft size={16} />
-          返回办理工作台
+          返回工作台
         </Link>
         <div className="ta-admin-user">
           <span>{bootstrap.user.name.slice(0, 1)}</span>
           <div>
             <strong>{bootstrap.user.name}</strong>
-            <small>
-              {bootstrap.user.is_demo ? "独立演示账号" : "我的管理工作区"}
-            </small>
+            <small>{bootstrap.user.is_demo ? "体验账号" : "个人账号"}</small>
           </div>
           <Button
             variant="ghost"
@@ -156,6 +153,45 @@ export function Admin({
         </button>
         <main className="ta-admin-content">
           <h1 className="sr-only">{current.title}</h1>
+          {navigationPage === "library" && (
+            <nav className="ta-library-nav" aria-label="资料库视图">
+              <Link
+                href={`/tea/admin/library${samples ? "?sample=1" : ""}`}
+                aria-current={page === "library" ? "page" : undefined}
+              >
+                资料
+              </Link>
+              <Link
+                href={`/tea/admin/sources${samples ? "?sample=1" : ""}`}
+                aria-current={page === "sources" ? "page" : undefined}
+              >
+                来源
+              </Link>
+              {samples && (
+                <span className="ta-sample-label">开发样例 · 仅预览</span>
+              )}
+              {samples ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => router.replace(`/tea/admin/${page}`)}
+                >
+                  退出样例
+                </Button>
+              ) : process.env.NODE_ENV === "development" ? (
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    href={`/tea/admin/${page}?sample=1`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="在新标签页查看开发样例"
+                  >
+                    开发样例
+                  </Link>
+                </Button>
+              ) : null}
+            </nav>
+          )}
           {page === "workflow" || page === "analysis" ? (
             <Studio
               ownerId={bootstrap.user.id}
@@ -171,13 +207,18 @@ export function Admin({
             />
           ) : page === "library" ? (
             <AdminLibrary
-              key={bootstrap.user.id}
+              key={`${bootstrap.user.id}:${samples}`}
               cases={bootstrap.cases}
               revision={libraryRevision}
+              samples={samples}
               onUpload={(scope, parent) => setUpload({ scope, parent })}
             />
           ) : (
-            <Sources compact />
+            <Sources
+              key={`${bootstrap.user.id}:${samples}`}
+              compact
+              samples={samples}
+            />
           )}
         </main>
       </div>

@@ -116,7 +116,7 @@ export function StageAnalysisPanel({
     <section className="tea-proactive" aria-label="节点开始分析">
       <header>
         <Sparkles size={16} />
-        <strong>开始前，先理清这一步</strong>
+        <strong>节点分析</strong>
         <span>
           {analysis?.assistant_mode === "live" ? "模型分析" : "规则分析"}
         </span>

@@ -125,10 +125,7 @@ export function Sources({
           )}
         </div>
       ) : (
-        <SectionHeading
-          eyebrow="STAY CONNECTED TO THE SOURCE"
-          title="让依据，跟上变化。"
-        >
+        <SectionHeading title="来源管理">
           <Button onClick={() => setAdding(!adding)}>
             <Plus size={15} />
             添加来源

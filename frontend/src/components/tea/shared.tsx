@@ -11,11 +11,7 @@ export function Brand({ compact = false }: { compact?: boolean }) {
       <span className="tea-brand-mark">
         <Leaf size={22} strokeWidth={1.6} />
       </span>
-      {!compact && (
-        <span>
-          茶渡<small>TEA, BEYOND BORDERS</small>
-        </span>
-      )}
+      {!compact && <span>茶渡</span>}
     </div>
   );
 }
@@ -60,18 +56,15 @@ export function Empty({
   );
 }
 export function SectionHeading({
-  eyebrow,
   title,
   children,
 }: {
-  eyebrow?: string;
   title: string;
   children?: ReactNode;
 }) {
   return (
     <div className="tea-section-heading">
       <div>
-        {eyebrow && <span className="tea-eyebrow">{eyebrow}</span>}
         <h2>{title}</h2>
       </div>
       {children}

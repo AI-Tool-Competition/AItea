@@ -1,23 +1,11 @@
 "use client";
 import {
   ArrowRight,
-  BookOpen,
-  Check,
-  ChevronDown,
   ChevronRight,
-  FolderClosed,
-  FolderOpen,
-  Globe2,
-  Leaf,
-  LockKeyhole,
   LogOut,
-  Menu,
-  MessageSquare,
   Plus,
-  Settings2,
   ShieldCheck,
   Sprout,
-  Upload,
   UserRound,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -33,12 +21,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
 import { errorMessage, post, TeaApiError, teaRequest } from "@/core/tea/api";
 import {
   type Bootstrap,
@@ -50,13 +36,13 @@ import {
 import { Admin, type AdminPage } from "./admin";
 import { clearArtifactDrafts } from "./artifact-panel";
 import { Library, UploadDialog } from "./library";
+import { TeaNavigation, teaNavigationItems, type TeaView } from "./navigation";
 import { ActionButton, Brand, Busy, ErrorNotice } from "./shared";
 import { Sources } from "./sources";
 import { clearStudioDrafts } from "./studio";
 import { clearTaskDrafts } from "./task-panel";
 import { UpgradeAccount } from "./upgrade-account";
 import { Workspace, clearChatDrafts } from "./workspace";
-type View = "workspace" | "library" | "studio" | "sources" | "account";
 
 function Welcome({
   onAuthenticated,
@@ -102,19 +88,8 @@ function Welcome({
       </header>
       <main>
         <div className="tea-welcome-copy">
-          <span className="tea-eyebrow">
-            <span className="tea-live-dot" /> YOUR NEXT CHAPTER, OVERSEAS
-          </span>
-          <h1>
-            好茶的下一站，
-            <br />
-            <em>是更远的世界。</em>
-          </h1>
-          <p>
-            从一份资料，到一条清晰的出口路径。
-            <br />
-            茶渡陪你理清手续、找到依据，把每一步稳稳做好。
-          </p>
+          <h1>茶叶出口工作台</h1>
+          <p>集中管理出口业务、材料与办理进度。</p>
           <div className="tea-welcome-actions">
             <ActionButton
               size="lg"
@@ -140,42 +115,8 @@ function Welcome({
           </div>
           {error && <ErrorNotice message={error} />}
         </div>
-        <div className="tea-welcome-art" aria-hidden="true">
-          <div className="tea-orbit orbit-one" />
-          <div className="tea-orbit orbit-two" />
-          <div className="tea-art-label label-origin">
-            CHINA<small>始于一片好茶</small>
-          </div>
-          <div className="tea-art-leaf">
-            <Leaf strokeWidth={0.7} />
-            <span>茶</span>
-          </div>
-          <div className="tea-art-label label-destination">
-            INDONESIA<small>抵达新的可能</small>
-          </div>
-          <div className="tea-art-coordinate">
-            30°16′ N &nbsp; / &nbsp; 106°49′ E
-          </div>
-        </div>
       </main>
-      <footer>
-        <div>
-          <span>01</span>
-          <strong>流程清晰</strong>
-          <p>面向主体，逐步推进</p>
-        </div>
-        <div>
-          <span>02</span>
-          <strong>回答有据</strong>
-          <p>引用原文，保留版本</p>
-        </div>
-        <div>
-          <span>03</span>
-          <strong>成果可用</strong>
-          <p>协同起草，逐项核验</p>
-        </div>
-        <small>茶渡 · TEA BEYOND BORDERS</small>
-      </footer>
+      <footer>茶渡 · 出口业务办理空间</footer>
       <Dialog
         open={!!auth}
         onOpenChange={(open) => {
@@ -419,7 +360,7 @@ export function TeaApp({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [sessionKey, setSessionKey] = useState(0);
-  const [view, setView] = useState<View>(
+  const [view, setView] = useState<TeaView>(
     initialAdminPage ? "studio" : "workspace",
   );
   const [caseId, setCaseId] = useState("");
@@ -428,7 +369,6 @@ export function TeaApp({
   const [recordError, setRecordError] = useState("");
   const [recordReload, setRecordReload] = useState(0);
   const [stageId, setStageId] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadScope, setUploadScope] = useState<string>();
@@ -515,7 +455,6 @@ export function TeaApp({
     }
     setCaseId(id);
     setView("workspace");
-    setSidebarOpen(false);
   }
   async function logout() {
     if (logoutBusy) return;
@@ -580,178 +519,46 @@ export function TeaApp({
         }
       />
     );
-  const nav = [
-    { id: "workspace", icon: MessageSquare, label: "出口业务" },
-    { id: "library", icon: BookOpen, label: "资料库" },
-    { id: "studio", icon: Settings2, label: "管理后台" },
-    { id: "sources", icon: Globe2, label: "来源管理" },
-  ] as const;
-  const businessList = (
-    <>
-      <div className="tea-sidebar-heading">
-        <span>我的出口业务</span>
-        <button aria-label="新建出口业务" onClick={() => setCreateOpen(true)}>
-          <Plus size={17} />
-        </button>
-      </div>
-      <Button
-        variant="outline"
-        className="tea-new-case"
-        onClick={() => setCreateOpen(true)}
-      >
-        <Plus size={15} />
-        新建出口业务
-      </Button>
-      <div className="tea-businesses">
-        {bootstrap.cases.map((c) => (
-          <div className="tea-business" key={c.id}>
-            <button
-              className={`tea-business-title ${caseId === c.id && view === "workspace" ? "active" : ""}`}
-              onClick={() => selectCase(c.id)}
-            >
-              {caseId === c.id ? (
-                <FolderOpen size={17} />
-              ) : (
-                <FolderClosed size={17} />
-              )}
-              <span>{c.title}</span>
-              {caseId === c.id ? (
-                <ChevronDown size={13} />
-              ) : (
-                <ChevronRight size={13} />
-              )}
-            </button>
-            {caseId === c.id && record?.id === c.id && (
-              <div className="tea-subconversations">
-                {record.stages.map((stage) => (
-                  <button
-                    key={stage.id}
-                    className={
-                      stageId === stage.id && view === "workspace"
-                        ? "active"
-                        : ""
-                    }
-                    onClick={() => {
-                      setStageId(stage.id);
-                      setView("workspace");
-                      setSidebarOpen(false);
-                    }}
-                  >
-                    <span className={`tea-tree-dot ${stage.status}`} />
-                    <span>{stage.name}</span>
-                    {stage.status === "locked" && <LockKeyhole size={11} />}
-                    {stage.status === "completed" && <Check size={12} />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="tea-sidebar-bottom">
-        <div className="tea-route-small">
-          <span>CN</span>
-          <div>
-            <small>当前演示路线</small>
-            <strong>
-              中国 <ArrowRight size={12} /> 印度尼西亚
-            </strong>
-          </div>
-          <span>ID</span>
-        </div>
-        <p>
-          <ShieldCheck size={13} />
-          每一步，都有依据可循
-        </p>
-      </div>
-    </>
-  );
   return (
-    <div className="tea-theme tea-app">
-      <aside className="tea-rail">
-        <button
-          className="tea-logo-button"
-          onClick={() => setView("workspace")}
-          aria-label="茶渡工作台"
-        >
-          <Brand compact />
-        </button>
-        <nav>
-          {nav.map((item) => (
-            <button
-              key={item.id}
-              className={view === item.id ? "active" : ""}
-              onClick={() =>
-                item.id === "studio"
-                  ? router.push("/tea/admin/workflow")
-                  : setView(item.id)
-              }
-              aria-label={item.label}
-              title={item.label}
-            >
-              <item.icon size={21} strokeWidth={1.7} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-          <button
-            onClick={() => setUploadOpen(true)}
-            aria-label="上传资料"
-            title="上传资料"
-          >
-            <Upload size={21} strokeWidth={1.7} />
-            <span>上传</span>
-          </button>
-        </nav>
-        <button
-          className={`tea-account-button ${view === "account" ? "active" : ""}`}
-          onClick={() => setView("account")}
-          aria-label="账号管理"
-          title="账号管理"
-        >
-          {bootstrap.user.name.slice(0, 1)}
-        </button>
-      </aside>
-      <aside className="tea-sidebar">
-        <div className="tea-sidebar-brand">
-          茶渡<span>出口工作台</span>
-        </div>
-        {businessList}
-      </aside>
-      <div className="tea-main">
-        <header className="tea-topbar">
-          <button
-            className="tea-mobile-menu"
-            aria-label="展开业务目录"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu size={20} />
-          </button>
-          <div className="tea-breadcrumb">
-            {view === "workspace" ? (
-              <>
-                <span>出口业务</span>
-                <ChevronRight size={13} />
-                <strong>{record?.title ?? "开始新业务"}</strong>
-              </>
-            ) : (
-              <strong>
-                {view === "account"
-                  ? "账号管理"
-                  : nav.find((n) => n.id === view)?.label}
-              </strong>
-            )}
-          </div>
-          <div className="tea-topbar-meta">
-            <span className="tea-mode-indicator">
-              <span />
-              {bootstrap.capabilities.assistant_mode === "demo"
-                ? "演示助手"
-                : "AI 助手"}
-            </span>
-            <span className="tea-topbar-divider" />
-            <span>{bootstrap.user.name}</span>
-          </div>
-        </header>
+    <SidebarProvider className="tea-theme tea-app">
+      <TeaNavigation
+        view={view}
+        user={bootstrap.user}
+        cases={bootstrap.cases}
+        caseId={caseId}
+        record={record}
+        stageId={stageId}
+        onNavigate={(next) =>
+          next === "studio" ? router.push("/tea/admin/workflow") : setView(next)
+        }
+        onCase={selectCase}
+        onStage={(id) => {
+          setStageId(id);
+          setView("workspace");
+        }}
+        onCreate={() => setCreateOpen(true)}
+      />
+      <SidebarInset className="tea-main min-w-0">
+        {(view !== "workspace" || !record || recordLoading || recordError) && (
+          <header className="tea-topbar">
+            <SidebarTrigger className="md:hidden" aria-label="展开导航" />
+            <div className="tea-breadcrumb">
+              {view === "workspace" ? (
+                <>
+                  <span>出口业务</span>
+                  <ChevronRight size={13} />
+                  <strong>{record?.title ?? "开始新业务"}</strong>
+                </>
+              ) : (
+                <strong>
+                  {view === "account"
+                    ? "账号管理"
+                    : teaNavigationItems.find((n) => n.id === view)?.label}
+                </strong>
+              )}
+            </div>
+          </header>
+        )}
         {error && <ErrorNotice message={error} />}
         {view === "workspace" ? (
           recordLoading ? (
@@ -776,7 +583,7 @@ export function TeaApp({
           ) : (
             <div className="tea-no-cases">
               <Sprout size={40} strokeWidth={1.3} />
-              <h1>从这里，走向新的市场。</h1>
+              <h1>还没有出口业务</h1>
               <p>创建一次出口业务，把资料、对话和进度放在一起。</p>
               <Button onClick={() => setCreateOpen(true)}>
                 <Plus size={16} />
@@ -798,8 +605,7 @@ export function TeaApp({
           <Sources />
         ) : (
           <div className="tea-page tea-account-page">
-            <span className="tea-eyebrow">YOUR WORKSPACE</span>
-            <h1>你好，{bootstrap.user.name}。</h1>
+            <h1>账号管理</h1>
             <p>
               {bootstrap.user.is_demo
                 ? "你正在使用独立的演示账号。"
@@ -829,16 +635,7 @@ export function TeaApp({
             </ActionButton>
           </div>
         )}
-      </div>
-      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="tea-theme tea-mobile-sidebar">
-          <SheetHeader>
-            <SheetTitle>茶渡 · 业务目录</SheetTitle>
-            <SheetDescription>一次业务，一个完整的办理空间。</SheetDescription>
-          </SheetHeader>
-          {businessList}
-        </SheetContent>
-      </Sheet>
+      </SidebarInset>
       <NewCase
         key={createOpen ? "new-open" : "new-closed"}
         open={createOpen}
@@ -862,6 +659,6 @@ export function TeaApp({
           setRecordReload((r) => r + 1);
         }}
       />
-    </div>
+    </SidebarProvider>
   );
 }

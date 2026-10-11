@@ -106,7 +106,9 @@ export function ArtifactPanel({
   return (
     <div className="tea-artifact">
       <div className="tea-artifact-bar">
-        <span className="tea-eyebrow">DOCUMENT · V{artifact.version}</span>
+        <span className="tea-artifact-version">
+          文稿版本 {artifact.version}
+        </span>
         <span
           className={`tea-status ${artifact.confirmed ? "completed" : "pending"}`}
         >

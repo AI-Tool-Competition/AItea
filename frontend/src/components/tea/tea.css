@@ -1,34 +1,37 @@
-/* Tea export workspace: scoped theme, reusing DeerFlow's primitives and conversation. */
+/* Tea business layouts reuse DeerFlow's unchanged globals.css theme and UI primitives.
+   Source: tmp/deer-flow/frontend; license: frontend/DEERFLOW_LICENSE. */
 .tea-theme {
-  --background: #fbfaf7;
-  --foreground: #243b31;
-  --card: #fffefa;
-  --primary: #244b3b;
-  --primary-foreground: #fffdf7;
-  --secondary: #eaf0e8;
-  --secondary-foreground: #244b3b;
-  --muted: #f0f1e9;
-  --muted-foreground: #778077;
-  --accent: #e9eee6;
-  --accent-foreground: #244b3b;
-  --destructive: #b55442;
-  --border: #e3e6dc;
-  --input: #d9dfd3;
-  --ring: #799278;
-  --tea-ink: #263e32;
-  --tea-muted: #7b8379;
-  --tea-green: #2c5540;
-  --tea-line: #e4e7de;
-  --tea-paper: #fbfaf7;
-  color: var(--tea-ink);
-  background: var(--tea-paper);
-  font-family:
-    "Avenir Next", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", "WenQuanYi Zen Hei",
-    sans-serif;
+  --tea-success: oklch(0.45 0.11 155);
+  --tea-warning: oklch(0.47 0.1 70);
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
   font-size: 14px;
-  color-scheme: light;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
+  scrollbar-color: var(--border) transparent;
+  caret-color: var(--foreground);
 }
+.dark .tea-theme {
+  --tea-success: oklch(0.78 0.12 155);
+  --tea-warning: oklch(0.8 0.11 70);
+}
+.tea-theme ::selection {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.tea-theme :is(h1, h2, h3) {
+  text-wrap: balance;
+}
+.tea-theme [data-slot="textarea"] {
+  field-sizing: fixed;
+  min-height: 82px;
+  resize: vertical;
+}
+.tea-theme :where(a) {
+  text-underline-offset: 3px;
+}
+
 .tea-theme * {
   box-sizing: border-box;
 }
@@ -49,7 +52,7 @@
 .tea-theme input:focus-visible,
 .tea-theme textarea:focus-visible,
 .tea-theme select:focus-visible {
-  outline: 2px solid #779978;
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 .tea-theme button:disabled {
@@ -57,7 +60,7 @@
   opacity: 0.5;
 }
 .tea-theme input[type="checkbox"] {
-  accent-color: #315b43;
+  accent-color: var(--primary);
   width: 15px;
   height: 15px;
   flex-shrink: 0;
@@ -72,11 +75,11 @@
   width: 100%;
   height: 38px;
   border: 1px solid var(--input);
-  border-radius: 7px;
-  background: #fffefa;
-  color: var(--tea-ink);
+  border-radius: var(--radius-md);
+  background: var(--background);
+  color: var(--foreground);
   padding: 0 10px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .tea-theme button {
   transition:
@@ -95,93 +98,16 @@
   color: inherit;
 }
 .tea-theme :where(input, textarea)::placeholder {
-  color: #a1a69c;
-}
-.tea-theme [data-slot="button"] {
-  font-size: 13px;
-  border-radius: 7px;
-  box-shadow: none;
-}
-.tea-theme [data-slot="button"][data-variant="default"] {
-  background: #2b523d;
-  color: #fffdf7;
-}
-.tea-theme [data-slot="button"][data-variant="default"]:hover {
-  background: #1c402d;
-}
-.tea-theme [data-slot="button"][data-variant="outline"] {
-  background: #fffefa;
-  border-color: #dce1d5;
-}
-.tea-theme [data-slot="input"],
-.tea-theme [data-slot="textarea"] {
-  font-size: 13px;
-  background: #fffefa;
-  box-shadow: none;
-}
-.tea-theme [data-slot="textarea"] {
-  field-sizing: fixed;
-  min-height: 82px;
-  resize: vertical;
-}
-.tea-theme [data-slot="dialog-title"] {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
-  font-size: 24px;
-  font-weight: 500;
-  line-height: 1.5;
-}
-.tea-theme [data-slot="dialog-description"] {
-  font-size: 13px;
-  line-height: 1.8;
-}
-.tea-theme [data-slot="dialog-content"] {
-  border-color: var(--tea-line);
-}
-.tea-brand {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 27px;
-  letter-spacing: 4px;
-  font-weight: 600;
-  line-height: 1.1;
-}
-.tea-brand-mark {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  background: #2e533c;
-  color: #fff9e6;
-}
-.tea-brand small {
-  display: block;
-  font-family: inherit;
-  font-size: 8px;
-  font-weight: 400;
-  letter-spacing: 2px;
-  margin-top: 8px;
-  color: #7a8274;
-}
-.tea-eyebrow {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 1.7px;
-  color: #7f9278;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  color: var(--muted-foreground);
 }
 .tea-busy {
   display: flex;
   gap: 10px;
   align-items: center;
   justify-content: center;
-  color: #83907f;
+  color: var(--foreground);
   min-height: 150px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .tea-spin {
   animation: tea-spin 1s linear infinite;
@@ -195,12 +121,12 @@
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  border: 1px solid #ebcfbe;
-  border-radius: 8px;
-  background: #fff5ec;
-  color: #925439;
+  border: 1px solid color-mix(in oklch, var(--destructive) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--destructive) 8%, var(--background));
+  color: var(--destructive);
   padding: 12px 14px;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.7;
   margin: 10px 0;
   overflow-wrap: anywhere;
@@ -220,10 +146,10 @@
   align-items: center;
   gap: 8px;
   padding: 12px 15px;
-  border-radius: 8px;
-  background: #edf4e9;
-  border: 1px solid #d7e6cc;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--tea-success) 8%, var(--background));
+  border: 1px solid color-mix(in oklch, var(--tea-success) 25%, var(--border));
+  font-size: 14px;
   line-height: 1.6;
   margin: 10px 0;
 }
@@ -235,43 +161,44 @@
   gap: 12px;
   padding: 60px 20px;
   text-align: center;
-  color: #8a9585;
+  color: var(--foreground);
 }
 .tea-empty h3 {
   font-size: 16px;
   font-weight: 500;
-  color: #3f5947;
+  color: var(--foreground);
 }
 .tea-empty > div,
 .tea-empty p {
   max-width: 300px;
-  font-size: 12px;
-  line-height: 1.9;
+  font-size: 14px;
+  line-height: 1.75;
 }
 .tea-note {
   padding: 13px 16px;
-  border-left: 2px solid #c9b584;
-  background: #f6f3e9;
-  color: #8a7b5f;
-  font-size: 12px;
+  border-left: 2px solid
+    color-mix(in oklch, var(--tea-warning) 25%, var(--border));
+  background: color-mix(in oklch, var(--tea-warning) 8%, var(--background));
+  color: var(--tea-warning);
+  font-size: 14px;
   line-height: 1.8;
   margin: 16px 0;
 }
 .tea-small-note {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.8;
-  color: #8c9388;
+  color: var(--muted-foreground);
   margin: 10px 0 !important;
 }
 .tea-muted {
-  color: #7c877a;
-  font-size: 12px;
-  line-height: 1.9;
+  color: var(--muted-foreground);
+  font-size: 14px;
+  line-height: 1.75;
 }
 .tea-prose {
   white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.9;
+  font-size: 14px;
+  line-height: 1.75;
   overflow-wrap: anywhere;
 }
 .tea-full {
@@ -286,14 +213,13 @@
   min-width: 0;
 }
 .tea-field > span {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  color: #7a8577;
-  letter-spacing: 0.3px;
+  color: var(--foreground);
 }
 .tea-field > span > b {
   font-weight: 400;
-  color: #a08d5d;
+  color: var(--tea-warning);
 }
 .tea-form-row {
   display: grid;
@@ -304,7 +230,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.5;
 }
 .tea-list-label {
@@ -312,41 +238,39 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 11px;
-  letter-spacing: 0.5px;
-  color: #8c9687;
+  font-size: 12px;
+  color: var(--muted-foreground);
   margin-bottom: 12px;
 }
 .tea-list-label > span:last-child {
-  font-size: 10px;
-  letter-spacing: 0;
+  font-size: 12px;
 }
 .tea-status {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e5e5d9;
-  background: #f4f3ec;
-  color: #92947e;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
   white-space: nowrap;
-  border-radius: 5px;
+  border-radius: var(--radius-md);
   padding: 3px 7px;
-  font-size: 10px;
+  font-size: 12px;
 }
 .tea-status.completed {
-  background: #eaf2e6;
-  color: #507644;
-  border-color: #d8e6ce;
+  background: color-mix(in oklch, var(--tea-success) 8%, var(--background));
+  color: var(--tea-success);
+  border-color: color-mix(in oklch, var(--tea-success) 25%, var(--border));
 }
 .tea-status.in_progress {
-  background: #edf2e8;
-  color: #638053;
-  border-color: #dfe8d6;
+  background: var(--background);
+  color: var(--foreground);
+  border-color: var(--border);
 }
 .tea-status.needs_input {
-  background: #f8f0dd;
-  border-color: #eee0ba;
-  color: #a18744;
+  background: color-mix(in oklch, var(--tea-warning) 8%, var(--background));
+  border-color: color-mix(in oklch, var(--tea-warning) 25%, var(--border));
+  color: var(--tea-warning);
 }
 .tea-loading-screen {
   min-height: 100dvh;
@@ -355,228 +279,17 @@
   justify-content: center;
   flex-direction: column;
 }
-/* Welcome */
-.tea-welcome {
-  min-height: 100dvh;
-  max-width: 1700px;
-  margin: auto;
-  padding: 36px 6% 24px;
-  overflow: hidden;
-  background:
-    radial-gradient(ellipse at 76% 44%, #edf0e2 0, transparent 43%), #fbfaf7;
-}
-.tea-welcome > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.tea-welcome-tag {
-  font-size: 12px;
-  color: #87917f;
-  letter-spacing: 1px;
-}
-.tea-welcome-tag > span {
-  font-size: 8px;
-  padding: 4px 6px;
-  border: 1px solid #d6decd;
-  border-radius: 4px;
-  margin-left: 10px;
-}
-.tea-welcome > main {
-  display: grid;
-  grid-template-columns: 1.08fr 1fr;
-  align-items: center;
-  min-height: calc(100dvh - 240px);
-  max-height: 880px;
-  padding: 42px 0 60px;
-}
-.tea-welcome-copy {
-  position: relative;
-  z-index: 2;
-}
-.tea-welcome-copy h1 {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
-  font-weight: 400;
-  font-size: clamp(38px, 4vw, 67px);
-  line-height: 1.55;
-  letter-spacing: 2px;
-  margin-top: 24px;
-}
-.tea-welcome-copy h1 em {
-  font-style: normal;
-  color: #6b8556;
-}
-.tea-welcome-copy > p {
-  color: #8c927f;
-  line-height: 2.1;
-  font-size: 14px;
-  margin-top: 24px;
-  letter-spacing: 0.5px;
-}
-.tea-welcome-actions {
-  display: flex;
-  gap: 18px;
-  align-items: center;
-  margin-top: 36px;
-}
-.tea-welcome-actions [data-slot="button"] {
-  height: 44px;
-  font-size: 13px;
-  padding-inline: 21px;
-}
-.tea-welcome-actions [data-slot="button"][data-variant="ghost"] {
-  padding-inline: 10px;
-  color: #7e8c70;
-}
-.tea-welcome-note {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  margin-top: 19px;
-  font-size: 10px;
-  color: #9a9e8e;
-  letter-spacing: 0.4px;
-}
-.tea-live-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #779764;
-}
-.tea-welcome-art {
-  height: 470px;
-  position: relative;
-  display: grid;
-  place-items: center;
-}
-.tea-art-leaf {
-  position: relative;
-  width: 268px;
-  height: 344px;
-  border-radius: 49% 48% 44% 46%;
-  background: linear-gradient(135deg, #d7dfbf, #afb991);
-  box-shadow:
-    inset 1px 1px 1px #eaf0de,
-    30px 24px 70px #50663218;
-  transform: rotate(-12deg);
-  display: grid;
-  place-items: center;
-}
-.tea-art-leaf > svg {
-  position: absolute;
-  width: 185px;
-  height: 220px;
-  color: #7c91608c;
-  transform: rotate(5deg);
-}
-.tea-art-leaf > span {
-  font-size: 74px;
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  color: #f9f9f0;
-  transform: rotate(12deg);
-  text-shadow: 0 2px 9px #859570;
-}
-.tea-orbit {
-  position: absolute;
-  border: 1px solid #c3ceb070;
-  border-radius: 50%;
-  transform: rotate(-35deg);
-}
-.orbit-one {
-  width: 460px;
-  height: 330px;
-}
-.orbit-two {
-  width: 590px;
-  height: 435px;
-  border-style: dashed;
-  border-color: #d2dac35c;
-}
-.tea-art-label {
-  position: absolute;
-  font-size: 10px;
-  letter-spacing: 2.5px;
-  color: #657852;
-  z-index: 2;
-}
-.tea-art-label::before {
-  content: "";
-  position: absolute;
-  left: -14px;
-  top: 3px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #8c9c6d;
-  box-shadow: 0 0 0 5px #e9eddf;
-}
-.tea-art-label small {
-  display: block;
-  font-size: 10px;
-  letter-spacing: 1px;
-  color: #95a083;
-  margin-top: 8px;
-}
-.label-origin {
-  top: 72px;
-  left: 15px;
-}
-.label-destination {
-  bottom: 76px;
-  right: 0;
-}
-.tea-art-coordinate {
-  position: absolute;
-  bottom: 13px;
-  color: #a6af97;
-  font-size: 9px;
-  letter-spacing: 2px;
-}
-.tea-welcome > footer {
-  border-top: 1px solid #e1e5d7;
-  padding-top: 24px;
-  display: flex;
-  gap: 58px;
-  align-items: center;
-}
-.tea-welcome > footer > div {
-  display: grid;
-  grid-template-columns: 25px 1fr;
-  gap: 6px 8px;
-}
-.tea-welcome > footer > div > span {
-  color: #a5af93;
-  font-size: 10px;
-  grid-row: span 2;
-  margin-top: 2px;
-}
-.tea-welcome > footer strong {
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 1px;
-}
-.tea-welcome > footer p {
-  font-size: 10px;
-  color: #969e8b;
-}
-.tea-welcome > footer > small {
-  margin-left: auto;
-  font-size: 8px;
-  color: #9ca491;
-  letter-spacing: 2px;
-}
 .tea-auth-switch {
   display: block;
   margin: 18px auto 0;
-  font-size: 12px;
-  color: #7a8c70;
+  font-size: 14px;
+  color: var(--foreground);
 }
 .tea-dialog {
   max-height: 90dvh;
   overflow: auto;
   padding: 28px;
-  border-radius: 13px !important;
+  border-radius: var(--radius-md) !important;
 }
 .tea-dialog form {
   margin-top: 6px;
@@ -588,142 +301,26 @@
   gap: 30px;
   margin: 3px 0 20px;
   padding: 18px 15px;
-  background: #eef1e7;
-  border-radius: 8px;
+  background: var(--muted);
+  border-radius: var(--radius-md);
   font-size: 14px;
 }
 .tea-route-preview svg {
-  color: #a4b095;
+  color: var(--foreground);
 }
 /* Shell */
 .tea-app {
   display: flex;
   width: 100%;
   height: 100dvh;
-  min-height: 480px;
   overflow: hidden;
-}
-.tea-rail {
-  width: 76px;
-  background: #f1f2e9;
-  border-right: 1px solid #dfe3d5;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 22px 0 17px;
-  flex-shrink: 0;
-}
-.tea-logo-button {
-  margin-bottom: 37px;
-}
-.tea-rail .tea-brand-mark {
-  width: 37px;
-  height: 39px;
-  border-radius: 10px;
-}
-.tea-rail nav {
-  display: flex;
-  flex-direction: column;
-  gap: 13px;
-  width: 100%;
-  align-items: center;
-}
-.tea-rail nav > button {
-  color: #8d9983;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 59px;
-  min-height: 54px;
-  border-radius: 9px;
-  position: relative;
-}
-.tea-rail nav > button > span {
-  font-size: 9px;
-  letter-spacing: 0.4px;
-}
-.tea-rail nav > button.active {
-  background: #e1e8d7;
-  color: #34563b;
-}
-.tea-rail nav > button:hover {
-  background: #e8eddf;
-  color: #496343;
-}
-.tea-rail nav > button.active:before {
-  content: "";
-  width: 3px;
-  height: 21px;
-  left: -8px;
-  position: absolute;
-  border-radius: 0 3px 3px 0;
-  background: #6b8655;
-}
-.tea-account-button {
-  margin-top: auto;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid #cbd5bf;
-  background: #e7eddd;
-  color: #677e56;
-  font-size: 12px;
-}
-.tea-sidebar {
-  width: 224px;
-  flex-shrink: 0;
-  background: #f6f6ef;
-  border-right: 1px solid #e4e6dc;
-  display: flex;
-  flex-direction: column;
-  padding: 23px 15px 16px;
-  overflow: hidden;
-}
-.tea-sidebar-brand {
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 22px;
-  letter-spacing: 4px;
-  padding: 0 7px 31px;
-}
-.tea-sidebar-brand > span {
-  display: inline-block;
-  font-family: "PingFang SC", sans-serif;
-  font-size: 10px;
-  color: #919b86;
-  letter-spacing: 1px;
-  margin-left: 12px;
-  vertical-align: middle;
-}
-.tea-sidebar-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: #8b9581;
-  font-size: 10px;
-  letter-spacing: 1px;
-  padding: 0 7px;
-  margin-bottom: 14px;
-}
-.tea-sidebar-heading > button {
-  color: #9aa78c;
-}
-.tea-new-case {
-  width: 100%;
-  font-size: 11px !important;
-  color: #607854;
-  background: #fbfcf7 !important;
-  border-color: #dce3d3 !important;
-  height: 34px !important;
-  margin-bottom: 23px;
+  min-height: 100dvh;
 }
 .tea-businesses {
-  overflow: auto;
-  flex: 1;
+  overflow: visible;
 }
 .tea-business {
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 .tea-business-title {
   display: flex;
@@ -731,10 +328,10 @@
   align-items: center;
   gap: 8px;
   text-align: left;
-  font-size: 11px;
-  padding: 9px 8px;
-  color: #7c8871;
-  border-radius: 6px;
+  color: var(--foreground);
+  font-size: 14px;
+  padding: 8px 32px 8px 8px;
+  border-radius: var(--radius-md);
 }
 .tea-business-title > span {
   flex: 1;
@@ -742,15 +339,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tea-business-title.active {
-  color: #3f5f39;
-  background: #e9eede;
-  font-weight: 500;
-}
 .tea-subconversations {
   padding: 7px 0 3px 17px;
   margin-left: 15px;
-  border-left: 1px solid #dce3d1;
+  border-left: 1px solid var(--border);
 }
 .tea-subconversations > button {
   width: 100%;
@@ -758,78 +350,34 @@
   align-items: center;
   gap: 8px;
   text-align: left;
-  color: #a0a792;
+  color: var(--foreground);
   padding: 10px 8px;
-  font-size: 10px;
-  border-radius: 5px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  min-height: 36px;
 }
 .tea-subconversations > button > span:nth-child(2) {
   flex: 1;
 }
 .tea-subconversations > button.active {
-  background: #f0f2e7;
-  color: #587443;
+  background: var(--accent);
+  color: var(--foreground);
 }
 .tea-subconversations > button:hover {
-  background: #edeedf;
+  background: var(--accent);
 }
 .tea-tree-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #cbd3bf;
+  background: var(--background);
   flex-shrink: 0;
 }
 .tea-tree-dot.active {
-  background: #91a66c;
-  box-shadow: 0 0 0 3px #e4ecd9;
+  background: var(--primary);
 }
 .tea-tree-dot.completed {
-  background: #6c9559;
-}
-.tea-sidebar-bottom {
-  margin-top: 30px;
-}
-.tea-route-small {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border: 1px solid #e3e7d9;
-  border-radius: 7px;
-  padding: 12px 9px;
-  background: #f9faf3;
-}
-.tea-route-small > span {
-  border: 1px solid #d7dfca;
-  color: #91a27c;
-  border-radius: 4px;
-  padding: 4px;
-  font-size: 9px;
-  font-family: serif;
-  letter-spacing: 1px;
-}
-.tea-route-small > div > small {
-  font-size: 9px;
-  color: #a4ad95;
-  display: block;
-  margin-bottom: 6px;
-}
-.tea-route-small strong {
-  font-size: 10px;
-  color: #849574;
-  font-weight: 400;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.tea-sidebar-bottom > p {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 5px;
-  font-size: 9px;
-  color: #a7ae9a;
-  margin-top: 17px;
+  background: color-mix(in oklch, var(--tea-success) 8%, var(--background));
 }
 .tea-main {
   flex: 1;
@@ -837,68 +385,39 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 .tea-topbar {
   height: 66px;
-  border-bottom: 1px solid #e7e9e0;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 26px;
   flex-shrink: 0;
-  background: #fcfbf8;
+  background: var(--background);
 }
 .tea-breadcrumb {
   display: flex;
   gap: 10px;
   align-items: center;
-  font-size: 11px;
+  font-size: 12px;
   min-width: 0;
 }
 .tea-breadcrumb > span {
-  color: #a0a696;
+  color: var(--foreground);
   white-space: nowrap;
 }
 .tea-breadcrumb > svg {
-  color: #b0b7a4;
+  color: var(--foreground);
 }
 .tea-breadcrumb > strong {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
-  color: #5d7253;
+  color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.tea-topbar-meta {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  font-size: 10px;
-  color: #929c85;
-  white-space: nowrap;
-  padding-left: 10px;
-}
-.tea-mode-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #81916e;
-  font-size: 10px;
-}
-.tea-mode-indicator > span {
-  width: 5px;
-  height: 5px;
-  background: #93a66e;
-  border-radius: 50%;
-}
-.tea-topbar-divider {
-  width: 1px;
-  height: 12px;
-  background: #e0e5d6;
-}
-.tea-mobile-menu {
-  display: none;
 }
 .tea-no-cases {
   flex: 1;
@@ -907,17 +426,16 @@
   align-items: center;
   flex-direction: column;
   gap: 22px;
-  color: #70855f;
+  color: var(--foreground);
 }
 .tea-no-cases h1 {
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 400;
-  color: #385636;
+  color: var(--foreground);
 }
 .tea-no-cases p {
-  font-size: 13px;
-  color: #95a086;
+  font-size: 14px;
+  color: var(--foreground);
 }
 /* Workspace, chat, and original DeerFlow conversation container */
 .tea-workspace {
@@ -926,184 +444,34 @@
   display: flex;
   flex-direction: column;
 }
-.tea-workspace-toolbar {
-  height: 42px;
-  padding: 0 26px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #efefe7;
-  background: #fbfaf7;
-  flex-shrink: 0;
-}
-.tea-workspace-toolbar > span {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #9da690;
-  font-size: 10px;
-}
-.tea-workspace-toolbar > button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #97a087;
-  font-size: 10px;
-}
-.tea-stage-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #a7ba8b;
-}
-.tea-stage-dot.locked {
-  background: #c7cdbf;
-}
 .tea-workspace-panels {
   flex: 1;
   min-height: 0;
 }
 .tea-resize-handle {
-  background: #e5e8de;
+  background: var(--background);
   width: 1px;
   transition: background 0.15s;
 }
 .tea-resize-handle:hover {
-  background: #9eb38a;
+  background: var(--accent);
 }
 .tea-chat {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #fdfcf9;
+  background: var(--background);
 }
 .tea-conversation {
   min-height: 0;
 }
 .tea-conversation-content {
-  max-width: 820px;
   width: 100%;
   margin: 0 auto;
-  gap: 23px;
-  padding: 35px 34px 28px;
-}
-.tea-stage-intro > .tea-eyebrow {
-  font-size: 9px;
-  letter-spacing: 1px;
-  gap: 8px;
-  color: #a2ad94;
-}
-.tea-stage-intro h1 {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
-  font-size: 29px;
-  line-height: 1.6;
-  font-weight: 400;
-  letter-spacing: 1px;
-  color: #365433;
-  margin-top: 12px;
-}
-.tea-stage-intro h1 > span {
-  color: #a7b698;
-}
-.tea-stage-intro > p {
-  font-size: 11px;
-  line-height: 1.9;
-  color: #a0a58f;
-  margin-top: 7px;
-  max-width: 450px;
-}
-.tea-stage-context {
-  display: flex;
-  gap: 16px;
-  font-size: 9px;
-  color: #9caa8b;
-  margin-top: 14px;
-}
-.tea-stage-context > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.tea-parallel-tasks {
-  margin-top: 0;
-  border: 1px solid #e7ebdf;
-  border-radius: 9px;
-  padding: 14px 15px;
-  background: #fcfcf6;
-}
-.tea-parallel-tasks > .tea-list-label {
-  margin-bottom: 7px;
-  font-size: 10px;
-  color: #95a186;
-}
-.tea-parallel-tasks > .tea-list-label > span:last-child {
-  font-size: 9px;
-  color: #a6b096;
-}
-.tea-inline-task {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px;
-  text-align: left;
-  border-bottom: 1px solid #eceee4;
-}
-.tea-inline-task:last-child {
-  border-bottom: 0;
-}
-.tea-inline-task:hover,
-.tea-inline-task.selected {
-  background: #f0f4e7;
-  border-radius: 5px;
-}
-.tea-inline-task-icon {
-  width: 28px;
-  height: 29px;
-  display: grid;
-  place-items: center;
-  border: 1px solid #e1e7d6;
-  border-radius: 7px;
-  font-size: 9px;
-  font-family: serif;
-  color: #a8b392;
-  background: #f3f6eb;
-}
-.tea-inline-task-icon.completed {
-  background: #e8f0df;
-  color: #769659;
-}
-.tea-inline-task > span:nth-child(2) {
-  flex: 1;
-}
-.tea-inline-task strong {
-  font-weight: 400;
-  font-size: 11px;
-  color: #637955;
-  display: block;
-}
-.tea-inline-task small {
-  font-size: 9px;
-  color: #abb59b;
-  display: block;
-  margin-top: 5px;
-}
-.tea-inline-task > svg {
-  color: #bdc4b0;
-}
-.tea-chat-divider {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  font-size: 9px;
-  color: #b5bbaa;
-  margin: 0 8px;
-}
-.tea-chat-divider > span {
-  height: 1px;
-  background: #eff0e7;
-  flex: 1;
+  max-width: var(--container-width-md);
+  padding: 32px 32px 24px;
+  gap: 24px;
 }
 .tea-message {
   display: flex;
@@ -1111,21 +479,21 @@
   min-width: 0;
 }
 .tea-message-avatar {
-  width: 27px;
-  height: 29px;
   flex-shrink: 0;
-  background: #edf1e5;
-  border: 1px solid #e1e8d6;
-  border-radius: 8px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   display: grid;
   place-items: center;
-  color: #82986e;
-  font-size: 10px;
+  color: var(--foreground);
+  font-size: 12px;
+  width: 28px;
+  height: 28px;
 }
 .tea-message.user .tea-message-avatar {
-  background: #eeeade;
-  color: #a59873;
-  border-color: #e7e2d3;
+  background: var(--muted);
+  color: var(--foreground);
+  border-color: var(--border);
 }
 .tea-message-body {
   min-width: 0;
@@ -1135,27 +503,22 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 10px;
-  color: #839576;
+  font-size: 12px;
+  color: var(--muted-foreground);
   margin: 6px 0 12px;
 }
-.tea-message-label > span {
-  font-size: 8px;
-  color: #b4bda6;
-}
 .tea-message-content {
-  font-size: 12px;
-  line-height: 2.1;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #78836d;
+  color: var(--foreground);
+  font-size: 14px;
+  line-height: 1.75;
 }
 .tea-message.user .tea-message-content {
   padding: 12px 15px;
-  border: 1px solid #ecece1;
-  background: #f5f5ed;
-  border-radius: 0 9px 9px 9px;
-  color: #7a846c;
+  color: var(--foreground);
+  background: var(--muted);
+  border-radius: var(--radius);
 }
 .tea-message.user {
   margin-left: 22px;
@@ -1167,13 +530,13 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
-  color: #8da276;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-trace {
   margin-top: 13px;
-  font-size: 10px;
-  color: #94a084;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-trace > summary {
   display: flex;
@@ -1200,22 +563,22 @@
   width: 5px;
   margin-top: 5px;
   border-radius: 50%;
-  background: #9aad85;
+  background: var(--background);
 }
 .tea-trace-dot.skipped {
-  background: #d1d7c7;
+  background: var(--background);
 }
 .tea-trace-dot.failed {
-  background: #d7a478;
+  background: color-mix(in oklch, var(--destructive) 8%, var(--background));
 }
 .tea-trace strong {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
-  color: #7d8e70;
+  color: var(--foreground);
 }
 .tea-trace p {
-  font-size: 9px;
-  color: #a6b099;
+  font-size: 12px;
+  color: var(--muted-foreground);
   line-height: 1.7;
   margin-top: 4px;
 }
@@ -1223,13 +586,13 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 10px;
-  color: #95a483;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-assistant-working > i {
   width: 3px;
   height: 3px;
-  background: #a9b992;
+  background: var(--background);
   border-radius: 50%;
   animation: tea-pulse 1.3s infinite;
 }
@@ -1245,21 +608,20 @@
   }
 }
 .tea-composer-area {
-  padding: 15px 27px 16px;
   flex-shrink: 0;
-  background: linear-gradient(#fdfcf900, #fdfcf9 15%);
+  background: var(--background);
+  padding: 16px 24px;
 }
 .tea-composer {
-  border: 1px solid #dfe5d5;
-  border-radius: 11px;
-  background: #fffefa;
-  box-shadow: 0 4px 20px #75845605;
-  max-width: 752px;
+  border: 1px solid var(--border);
+  background: var(--background);
   margin: auto;
+  max-width: var(--container-width-md);
+  border-radius: var(--radius-xl);
 }
 .tea-composer:focus-within {
-  border-color: #a6b98c;
-  box-shadow: 0 0 0 3px #e6eedc60;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 20%, transparent);
 }
 .tea-composer textarea {
   background: transparent;
@@ -1271,12 +633,12 @@
   outline: none !important;
   padding: 14px 16px 3px;
   border: 0;
-  font-size: 12px;
   line-height: 1.8;
-  color: #5f7651;
+  color: var(--foreground);
+  font-size: 14px;
 }
 .tea-composer textarea::placeholder {
-  color: #afb79e;
+  color: var(--muted-foreground);
 }
 .tea-composer-toolbar {
   display: flex;
@@ -1288,54 +650,41 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #a2ad92;
-  font-size: 9px;
+  color: var(--muted-foreground);
+  font-size: 12px;
   padding: 5px;
-}
-.tea-composer-context {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #b0b99e;
-  font-size: 8px;
 }
 .tea-composer .tea-send {
   display: grid;
   place-items: center;
-  width: 29px;
-  height: 29px;
-  border-radius: 7px;
-  background: #557343;
-  color: #ffffef;
+  border-radius: var(--radius-md);
   margin-left: auto;
+  width: 32px;
+  height: 32px;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 .tea-send:disabled {
-  background: #dbe2cf;
+  background: var(--muted);
   opacity: 1;
-  color: #a9b699;
+  color: var(--foreground);
 }
 .tea-composer-note {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  max-width: 752px;
+  text-align: center;
   margin: 10px auto 0 !important;
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.6;
-  color: #b1b7a4;
-}
-.tea-composer-note > span {
-  white-space: nowrap;
-  font-size: 7px;
+  color: var(--muted-foreground);
+  max-width: var(--container-width-md);
 }
 .tea-current-task {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #8e9f77;
-  font-size: 9px;
-  max-width: 752px;
+  color: var(--foreground);
+  font-size: 12px;
   margin: 0 auto 8px;
+  max-width: var(--container-width-md);
 }
 .tea-current-task > button {
   margin-left: 4px;
@@ -1344,48 +693,45 @@
   padding: 0 27px;
 }
 .tea-scroll-bottom {
-  background: #f8faf1 !important;
-  color: #718759 !important;
-  border: 1px solid #dce5ce !important;
+  background: var(--background) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
   width: 30px !important;
   height: 30px !important;
   bottom: 9px !important;
-}
-.tea-mobile-break {
-  display: none;
 }
 /* Flow side panel */
 .tea-sidepanel {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #f8f9f1;
+  background: var(--background);
   min-width: 0;
 }
 .tea-sidepanel-header {
-  height: 50px;
-  border-bottom: 1px solid #e5e9db;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 7px;
-  padding: 0 20px;
   flex-shrink: 0;
+  height: 48px;
+  padding: 0 16px;
 }
 .tea-panel-tabs {
   display: flex;
   height: 100%;
-  gap: 16px;
   align-items: stretch;
+  gap: 16px;
 }
 .tea-panel-tabs > button {
-  font-size: 10px;
-  color: #a6b093;
+  color: var(--foreground);
   position: relative;
   white-space: nowrap;
+  font-size: 13px;
 }
 .tea-panel-tabs > button.active {
-  color: #64804c;
+  color: var(--foreground);
 }
 .tea-panel-tabs > button.active:after {
   content: "";
@@ -1394,11 +740,11 @@
   left: 3px;
   right: 3px;
   height: 2px;
-  border-radius: 2px;
-  background: #819d61;
+  border-radius: var(--radius-md);
+  background: var(--primary);
 }
 .tea-sidepanel-header > button {
-  color: #b1bba3;
+  color: var(--foreground);
   padding: 5px;
   margin-right: -6px;
 }
@@ -1416,55 +762,50 @@
   gap: 10px;
   align-items: center;
 }
-.tea-flow-intro .tea-eyebrow {
-  font-size: 7px;
-  letter-spacing: 1.3px;
-  color: #a6b393;
-}
 .tea-flow-intro h3 {
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 20px;
-  font-weight: 400;
-  color: #6c8556;
-  margin-top: 10px;
-  letter-spacing: 1px;
+  color: var(--foreground);
+  font-size: 16px;
+  margin-top: 0;
+  font-weight: 600;
 }
 .tea-progress-value {
-  font-family: Georgia, serif;
-  font-size: 31px;
-  color: #7f9765;
+  color: var(--foreground);
   line-height: 1;
-  margin-top: 8px;
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0;
 }
 .tea-progress-value > small {
-  font-family: sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   margin-left: 3px;
-  color: #acba98;
+  color: var(--muted-foreground);
 }
 .tea-progress-track {
-  height: 3px;
-  background: #e4ead7;
-  border-radius: 2px;
-  margin-top: 21px;
+  background: var(--muted);
+  border-radius: var(--radius-md);
   overflow: hidden;
+  margin-top: 16px;
+  height: 4px;
 }
 .tea-progress-track > span {
   display: block;
-  background: #90a76c;
+  background: var(--primary);
+  width: 100%;
   height: 100%;
-  border-radius: 2px;
-  transition: width 0.35s;
+  border-radius: var(--radius-md);
+  transform-origin: left;
+  transition: transform 0.35s;
 }
 .tea-flow-count {
-  font-size: 8px;
-  color: #a8b294;
+  font-size: 12px;
+  color: var(--muted-foreground);
   display: flex;
   justify-content: space-between;
   margin-top: 9px;
 }
 .tea-flow-count > span {
-  color: #b6bea5;
+  color: var(--muted-foreground);
 }
 .tea-flow-stages {
   margin-top: 29px;
@@ -1478,7 +819,7 @@
 .tea-flow-stage:not(:last-child):before {
   content: "";
   width: 1px;
-  background: #dfe6d0;
+  background: var(--background);
   position: absolute;
   left: 12px;
   top: 29px;
@@ -1494,40 +835,27 @@
   width: 25px;
   height: 25px;
   border-radius: 50%;
-  border: 1px solid #dbe4cc;
-  background: #f4f7ed;
-  color: #b4c19e;
-  font-size: 9px;
-  font-family: Georgia, serif;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 12px;
   position: relative;
   z-index: 1;
 }
 .tea-flow-stage.active .tea-flow-rail > span {
-  color: #829e5c;
-  border-color: #b6c996;
-  background: #eaf1de;
-  box-shadow: 0 0 0 4px #f1f5e8;
+  color: var(--foreground);
+  border-color: var(--border);
+  background: var(--accent);
 }
 .tea-flow-stage.completed .tea-flow-rail > span {
-  background: #8fae69;
-  border-color: #8fae69;
-  color: #fff;
+  background: color-mix(in oklch, var(--tea-success) 8%, var(--background));
+  border-color: color-mix(in oklch, var(--tea-success) 25%, var(--border));
+  color: var(--tea-success);
 }
 .tea-stage-body {
   flex: 1;
   min-width: 0;
-  border: 1px solid #e4e9d8;
-  border-radius: 9px;
-  background: #f9fbf2;
   overflow: hidden;
-}
-.tea-flow-stage.selected .tea-stage-body {
-  border-color: #ccdcb9;
-  background: #fdfef8;
-  box-shadow: 0 3px 8px #95a77304;
-}
-.tea-flow-stage.locked .tea-stage-body {
-  background: #f6f8ef;
 }
 .tea-stage-title {
   display: flex;
@@ -1539,32 +867,30 @@
   gap: 8px;
 }
 .tea-stage-title small {
-  font-size: 8px;
-  color: #aebd97;
-  letter-spacing: 0.5px;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-stage-title h4 {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
-  letter-spacing: 0.3px;
-  color: #738b5a;
+  color: var(--foreground);
   margin-top: 5px;
 }
 .tea-stage-title > span {
-  font-size: 8px;
-  color: #a7b690;
-  border: 1px solid #e0e8d2;
-  border-radius: 4px;
+  font-size: 12px;
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 3px 5px;
   white-space: nowrap;
 }
 .tea-flow-stage.active .tea-stage-title > span {
-  background: #edf3e3;
-  border-color: #dfe9cd;
-  color: #8ba76c;
+  background: var(--accent);
+  border-color: var(--border);
+  color: var(--foreground);
 }
 .tea-flow-tasks {
-  border-top: 1px solid #edf0e4;
+  border-top: 1px solid var(--border);
   padding: 7px 10px;
 }
 .tea-flow-tasks > button {
@@ -1574,65 +900,64 @@
   width: 100%;
   text-align: left;
   padding: 9px 4px;
-  font-size: 10px;
-  color: #a2b18c;
+  color: var(--foreground);
+  font-size: 13px;
+  min-height: 36px;
 }
 .tea-flow-tasks > button:hover {
-  color: #6f8e52;
-  background: #f0f5e7;
-  border-radius: 4px;
+  color: var(--foreground);
+  background: var(--accent);
+  border-radius: var(--radius-md);
 }
 .tea-flow-tasks > button > span:nth-child(2) {
   flex: 1;
 }
 .tea-flow-tasks > button > svg:last-child {
-  color: #c0cbb0;
+  color: var(--foreground);
 }
 .tea-flow-tasks > button > small {
-  font-size: 8px;
-  color: #b3985f;
+  font-size: 12px;
+  color: var(--tea-warning);
 }
 .tea-task-dot {
   width: 10px;
   height: 10px;
-  border: 1px solid #ccd9b9;
+  border: 1px solid var(--border);
   border-radius: 50%;
   flex-shrink: 0;
 }
 .tea-task-dot.in_progress,
 .tea-task-dot.needs_input {
-  background: #eaf0df;
-  border-color: #a8bf89;
-  box-shadow: inset 0 0 0 2px #fbfcf6;
+  background: var(--background);
+  border-color: var(--border);
 }
 .tea-stage-body > p {
   padding: 7px 14px 11px;
-  font-size: 8px;
-  color: #bcc5ab;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-flow-stage.locked .tea-stage-title h4 {
-  color: #acb89a;
+  color: var(--foreground);
 }
 .tea-flow-stage.locked .tea-flow-tasks > button {
-  color: #b6c0a5;
+  color: var(--muted-foreground);
 }
 .tea-flow-footnote {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 13px;
-  background: #f0f4e7;
-  border-radius: 7px;
   margin-top: 6px;
-  color: #aab995;
+  color: var(--muted-foreground);
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
 }
 .tea-flow-footnote > span {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.8;
 }
 .tea-flow-footnote small {
-  font-size: 8px;
-  color: #b5c2a1;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 /* Task, evidence and document editor */
 .tea-task-detail {
@@ -1645,59 +970,59 @@
   margin-bottom: 15px;
 }
 .tea-task-heading > span:last-child {
-  font-size: 9px;
-  color: #b0bba0;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-task-detail h3 {
-  font-size: 17px;
-  color: #5d7849;
+  font-size: 16px;
+  color: var(--foreground);
   font-weight: 500;
   margin-bottom: 9px;
 }
 .tea-task-detail > .tea-muted {
-  font-size: 11px;
-  color: #9da98d;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-form-fields {
   margin-top: 24px;
 }
 .tea-task-detail .tea-field > span {
-  color: #97a485;
-  font-size: 10px;
+  color: var(--foreground);
+  font-size: 12px;
 }
 .tea-task-detail [data-slot="input"],
 .tea-task-detail [data-slot="textarea"] {
-  background: #fdfef8;
-  border-color: #dfe7d3;
-  color: #708759;
-  font-size: 12px;
+  background: var(--background);
+  border-color: var(--border);
+  color: var(--foreground);
+  font-size: 14px;
 }
 .tea-evidence-heading {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 10px;
-  color: #99a68a;
+  font-size: 12px;
+  color: var(--foreground);
   margin-top: 21px;
   margin-bottom: 10px;
 }
 .tea-evidence-heading button {
-  font-size: 10px;
-  color: #8ca674;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-evidence-list {
-  border: 1px solid #e2e9d6;
-  border-radius: 7px;
-  background: #fcfdf7;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
 }
 .tea-evidence-list > label {
   padding: 11px;
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid #eaf0df;
-  color: #9cac88;
-  font-size: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 12px;
 }
 .tea-evidence-list > label:last-child {
   border-bottom: 0;
@@ -1708,16 +1033,16 @@
 }
 .tea-evidence-list small {
   display: block;
-  font-size: 8px;
-  color: #b2c09e;
+  font-size: 12px;
+  color: var(--muted-foreground);
   margin-top: 5px;
 }
 .tea-confirm {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 10px;
-  color: #96a582;
+  font-size: 12px;
+  color: var(--foreground);
   line-height: 1.8;
   margin: 20px 0;
 }
@@ -1731,55 +1056,55 @@
 }
 .tea-task-actions > [data-slot="button"] {
   flex: 1;
-  font-size: 11px;
+  font-size: 12px;
 }
 .tea-verification {
   margin-top: 25px;
   padding-top: 18px;
-  border-top: 1px solid #e2e9d6;
+  border-top: 1px solid var(--border);
 }
 .tea-verification h4 {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
-  color: #8fa477;
+  color: var(--foreground);
   margin-bottom: 12px;
 }
 .tea-check {
   display: flex;
   gap: 9px;
   padding: 10px 0;
-  border-bottom: 1px solid #eaf0df;
+  border-bottom: 1px solid var(--border);
 }
 .tea-check > span {
-  color: #96ac7c;
+  color: var(--tea-success);
   margin-top: 2px;
 }
 .tea-check.missing > span,
 .tea-check.conflict > span {
-  color: #b6a06d;
+  color: var(--tea-warning);
 }
 .tea-check strong {
-  font-size: 10px;
-  color: #8fa17e;
+  font-size: 12px;
+  color: var(--foreground);
   font-weight: 400;
 }
 .tea-check p {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.8;
-  color: #acb69e;
+  color: var(--foreground);
   margin-top: 5px;
 }
 .tea-check small {
-  font-size: 8px;
-  color: #b6c0a7;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-draft-button {
   width: 100%;
-  font-size: 10px !important;
-  color: #90a37c !important;
+  font-size: 12px !important;
+  color: var(--foreground) !important;
   margin-top: 22px;
   border-style: dashed !important;
   background: transparent !important;
@@ -1793,22 +1118,17 @@
   justify-content: space-between;
   margin-bottom: 20px;
 }
-.tea-artifact .tea-eyebrow {
-  font-size: 8px;
-}
 .tea-document-editor {
-  font-family: "Noto Serif CJK SC", "Songti SC", serif;
-  background: #fffefa;
-  border: 1px solid #e0e5d6;
-  box-shadow: 0 3px 7px #70865304;
-  border-radius: 5px;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   min-height: 380px;
   resize: vertical;
-  font-size: 13px;
-  line-height: 2;
   padding: 19px 15px;
-  color: #6d7f5d;
+  color: var(--foreground);
   outline: none;
+  font-size: 14px;
+  line-height: 1.75;
 }
 .tea-artifact-actions {
   display: flex;
@@ -1817,15 +1137,15 @@
   flex-wrap: wrap;
 }
 .tea-artifact-actions [data-slot="button"] {
-  font-size: 10px;
   flex: 1;
+  font-size: 13px;
 }
 .tea-artifact-actions [data-size="icon"] {
   flex: 0 0 34px;
 }
 .tea-artifact > button {
-  font-size: 10px;
-  color: #95a485;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-artifact-picker {
   display: block;
@@ -1835,64 +1155,64 @@
   margin-top: 10px;
 }
 .tea-version-list details {
-  border-top: 1px solid #e2e9d6;
+  border-top: 1px solid var(--border);
   padding: 10px 0;
 }
 .tea-version-list summary {
-  font-size: 10px;
-  color: #829971;
+  font-size: 12px;
+  color: var(--foreground);
   display: flex;
   justify-content: space-between;
 }
 .tea-version-list summary > span {
-  color: #a9b99b;
-  font-size: 8px;
+  color: var(--foreground);
+  font-size: 12px;
 }
 .tea-version-list pre {
   white-space: pre-wrap;
-  font-size: 10px;
-  line-height: 1.9;
+  font-size: 12px;
+  line-height: 1.75;
   margin-top: 13px;
-  color: #9aab8b;
+  color: var(--foreground);
   overflow-wrap: anywhere;
 }
 .tea-panel-label {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  color: #829770;
+  font-size: 14px;
+  color: var(--muted-foreground);
   margin-bottom: 15px;
 }
 .tea-facts-panel {
   padding: 25px 23px;
 }
 .tea-fact {
-  border-bottom: 1px solid #e5ecdb;
+  border-bottom: 1px solid var(--border);
   padding: 14px 0;
 }
 .tea-fact > span {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 10px;
-  color: #a0ad91;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-fact small {
-  font-size: 8px;
-  color: #adc09a;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-fact strong {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 400;
   display: block;
   margin-top: 8px;
-  color: #819a6c;
+  color: var(--foreground);
 }
 .tea-fact p {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.7;
-  color: #b0bca1;
+  color: var(--muted-foreground);
   margin-top: 7px;
 }
 .tea-record-label {
@@ -1902,34 +1222,34 @@
   display: flex;
   gap: 10px;
   padding: 10px 0;
-  font-size: 10px;
+  font-size: 12px;
 }
 .tea-event > span {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #c1d0ad;
+  background: var(--background);
   margin-top: 4px;
 }
 .tea-event strong {
-  color: #97aa83;
+  color: var(--foreground);
   font-weight: 400;
 }
 .tea-event p {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.8;
-  color: #aebd9d;
+  color: var(--muted-foreground);
   margin: 6px 0;
 }
 .tea-event small {
-  font-size: 8px;
-  color: #c0cbae;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 /* Full views */
 .tea-page {
   overflow: auto;
   flex: 1;
-  padding: 37px 42px 60px;
+  padding: 32px 40px 48px;
 }
 .tea-section-heading {
   display: flex;
@@ -1938,24 +1258,18 @@
   gap: 22px;
 }
 .tea-section-heading h2 {
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 27px;
-  font-weight: 400;
-  letter-spacing: 1px;
-  color: #45633d;
-  margin-top: 12px;
-}
-.tea-section-heading .tea-eyebrow {
-  font-size: 8px;
-  color: #9aa98a;
+  color: var(--foreground);
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: 0;
 }
 .tea-section-heading > [data-slot="button"] {
-  font-size: 11px;
+  font-size: 12px;
 }
 .tea-page-intro {
-  font-size: 12px;
-  line-height: 1.9;
-  color: #9eaa91;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--foreground);
   margin-top: 13px !important;
   margin-bottom: 28px !important;
 }
@@ -1963,28 +1277,27 @@
   display: flex;
   align-items: center;
   gap: 11px;
-  background: #fffefa;
-  border: 1px solid #e1e8d6;
-  border-radius: 9px;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 9px 11px 9px 15px;
   margin: 27px 0;
-  color: #a5b294;
+  color: var(--foreground);
 }
 .tea-search-bar [data-slot="input"] {
   border: 0;
   background: transparent;
-  box-shadow: none;
   flex: 1;
   padding: 4px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .tea-search-bar [data-slot="button"] {
   height: 31px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .tea-document-list {
-  border: 1px solid #e6eadc;
-  border-radius: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .tea-file-row {
@@ -1993,80 +1306,80 @@
   width: 100%;
   gap: 14px;
   padding: 17px 18px;
-  border-bottom: 1px solid #e9ece2;
+  border-bottom: 1px solid var(--border);
   text-align: left;
-  background: #fdfef7;
+  background: var(--background);
 }
 .tea-file-row:last-child {
   border-bottom: 0;
 }
 .tea-file-row:hover {
-  background: #f5f8ed;
+  background: var(--accent);
 }
 .tea-file-icon {
   width: 36px;
   height: 42px;
   display: grid;
   place-items: center;
-  background: #eef3e4;
-  border-radius: 7px;
-  color: #9bb184;
+  background: var(--muted);
+  border-radius: var(--radius-md);
+  color: var(--foreground);
 }
 .tea-file-row > div {
   flex: 1;
   min-width: 0;
 }
 .tea-file-row strong {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
-  color: #7c946b;
+  color: var(--foreground);
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .tea-file-row p {
-  font-size: 9px;
-  color: #adbaa0;
+  font-size: 12px;
+  color: var(--muted-foreground);
   margin-top: 7px;
 }
 .tea-file-row > .tea-status {
-  font-size: 9px;
+  font-size: 12px;
 }
 .tea-citation {
   margin-top: 12px;
   padding: 14px 15px;
-  border: 1px solid #e2e8d6;
-  background: #fcfdf8;
-  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  border-radius: var(--radius-md);
   min-width: 0;
 }
 .tea-citation > div {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #93a77e;
+  color: var(--foreground);
 }
 .tea-citation strong {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
 .tea-citation > div > span {
   margin-left: auto;
-  font-size: 8px;
+  font-size: 12px;
 }
 .tea-citation > p {
   white-space: pre-wrap;
-  color: #a2ae92;
-  font-size: 11px;
-  line-height: 1.9;
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.75;
   margin-top: 10px;
   overflow-wrap: anywhere;
 }
 .tea-citation > small {
-  font-size: 8px;
-  color: #b2bfa1;
+  font-size: 12px;
+  color: var(--muted-foreground);
   display: block;
   margin-top: 7px;
 }
@@ -2075,14 +1388,14 @@
   gap: 17px;
   margin-top: 10px;
   padding-top: 9px;
-  border-top: 1px solid #eef1e6;
+  border-top: 1px solid var(--border);
 }
 .tea-citation a {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
-  color: #90a775;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-citation a:hover {
   text-decoration: underline;
@@ -2093,27 +1406,27 @@
   justify-content: center;
   flex-direction: column;
   gap: 10px;
-  border: 1px dashed #c9d5bd;
-  border-radius: 9px;
-  background: #f4f7ec;
-  color: #93a77e;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  color: var(--foreground);
   padding: 25px 13px;
   cursor: pointer;
   text-align: center;
 }
 .tea-file-drop strong {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
   overflow-wrap: anywhere;
 }
 .tea-file-drop > span {
-  font-size: 9px;
-  color: #afba9e;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-file-drop > input {
   max-width: 100%;
-  font-size: 10px;
-  color: #a2b28f;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-document-dialog {
   width: min(800px, calc(100vw - 32px));
@@ -2123,12 +1436,12 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  font-size: 10px;
-  color: #a1b18e;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-document-meta [data-slot="button"] {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
 }
 .tea-document-excerpts {
   max-height: 55dvh;
@@ -2137,17 +1450,17 @@
 }
 .tea-document-excerpts > article {
   padding: 15px;
-  border-bottom: 1px solid #e6eddd;
+  border-bottom: 1px solid var(--border);
 }
 .tea-document-excerpts small {
-  font-size: 9px;
-  color: #abbf99;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-document-excerpts p {
   white-space: pre-wrap;
-  font-size: 12px;
-  line-height: 2;
-  color: #899f78;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--foreground);
   margin-top: 8px;
 }
 /* Legal studio */
@@ -2158,14 +1471,14 @@
   flex-wrap: wrap;
 }
 .tea-heading-actions [data-slot="button"] {
-  font-size: 10px;
+  font-size: 12px;
 }
 .tea-studio-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin: 25px 0 24px;
-  border-bottom: 1px solid #e6eadf;
+  border-bottom: 1px solid var(--border);
   padding-bottom: 16px;
   gap: 10px;
 }
@@ -2173,40 +1486,37 @@
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: #edf2e4;
-  border-radius: 7px;
+  background: var(--muted);
+  border-radius: var(--radius-md);
 }
 .tea-segments > button {
-  font-size: 11px;
+  font-size: 12px;
   padding: 8px 15px;
-  color: #9aae88;
-  border-radius: 5px;
+  color: var(--foreground);
+  border-radius: var(--radius-md);
 }
 .tea-segments > button.active {
-  background: #fffefa;
-  color: #6c8b53;
-  box-shadow: 0 1px 4px #9aa88815;
+  background: var(--accent);
+  color: var(--foreground);
 }
 .tea-config-intro {
-  background: #fcfdf7;
-  border: 1px solid #e2e8d7;
-  border-radius: 8px;
-  padding: 22px;
   margin-bottom: 25px;
+  padding: 0 0 24px;
+  border-bottom: 1px solid var(--border);
 }
 .tea-config-details {
   padding-top: 2px;
 }
 .tea-config-details > summary {
-  font-size: 11px;
-  color: #9baf85;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-mode-config {
   display: grid;
   grid-template-columns: 1fr 1.5fr auto;
   gap: 12px;
   align-items: center;
-  border-top: 1px solid #e6eddc;
+  border-top: 1px solid var(--border);
   padding: 15px 0;
   margin-top: 13px;
 }
@@ -2219,7 +1529,7 @@
   gap: 23px;
 }
 .tea-config-stages > .tea-list-label {
-  font-size: 10px;
+  font-size: 12px;
   margin-bottom: 15px;
 }
 .tea-config-stages > button:not([data-slot="button"]) {
@@ -2229,42 +1539,39 @@
   gap: 10px;
   padding: 13px 10px;
   text-align: left;
-  border: 1px solid #e5eadd;
-  border-radius: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   margin-bottom: 10px;
-  background: #fafbf4;
-  color: #a5b492;
+  background: var(--background);
+  color: var(--foreground);
 }
 .tea-config-stages > button.active {
-  background: #f3f8e9;
-  border-color: #c9dcb6;
-  color: #7b9c5e;
+  background: var(--accent);
+  border-color: var(--border);
+  color: var(--foreground);
 }
 .tea-config-stages > button > span {
-  font-family: serif;
-  font-size: 12px;
+  font-size: 14px;
 }
 .tea-config-stages strong {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
 }
 .tea-config-stages small {
   display: block;
-  font-size: 9px;
+  font-size: 12px;
   margin-top: 6px;
-  color: #b1bf9f;
+  color: var(--muted-foreground);
 }
 .tea-config-stages > [data-slot="button"] {
-  font-size: 10px;
+  font-size: 12px;
   width: 100%;
-  color: #9aad86;
+  color: var(--foreground);
 }
 .tea-config-stage-editor {
-  background: #fffef9;
-  border: 1px solid #e2e8d8;
-  border-radius: 9px;
-  padding: 22px;
   min-width: 0;
+  padding: 0 0 0 24px;
+  border-left: 1px solid var(--border);
 }
 .tea-editor-title {
   display: flex;
@@ -2273,32 +1580,30 @@
   margin-bottom: 20px;
 }
 .tea-editor-title h3 {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #91a67b;
+  color: var(--foreground);
 }
 .tea-editor-title > div {
   display: flex;
   gap: 5px;
-  color: #a5b791;
+  color: var(--foreground);
 }
 .tea-config-task {
-  border: 1px solid #e3ead8;
-  border-radius: 7px;
   margin-bottom: 13px;
-  background: #fcfdf7;
+  border-bottom: 1px solid var(--border);
 }
 .tea-config-task > summary {
   display: flex;
   justify-content: space-between;
   gap: 10px;
   padding: 13px 14px;
-  font-size: 11px;
-  color: #8da574;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-config-task > summary > span:last-child {
-  font-size: 9px;
-  color: #acbe95;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-config-task > div {
   padding: 6px 14px 16px;
@@ -2308,10 +1613,10 @@
   gap: 12px;
   flex-wrap: wrap;
   padding: 6px 0 18px;
-  color: #a2b58c;
+  color: var(--foreground);
 }
 .tea-rule-toggles .tea-checkbox {
-  font-size: 10px;
+  font-size: 12px;
 }
 .tea-field-config {
   display: grid;
@@ -2324,24 +1629,21 @@
   margin: 0;
 }
 .tea-field-config .tea-checkbox {
-  font-size: 10px;
-  color: #a4b88d;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-config-task > div > [data-slot="button"] {
-  font-size: 10px;
-  color: #99b07f;
+  font-size: 12px;
+  color: var(--foreground);
   margin: 5px 0 15px;
 }
 .tea-config-stage-editor > [data-slot="button"] {
-  font-size: 11px;
-  color: #8fa575;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-agent-config {
   max-width: 820px;
-  background: #fffef9;
-  border: 1px solid #e3e9d9;
-  border-radius: 9px;
-  padding: 25px;
+  padding: 0;
 }
 .tea-agent-steps {
   margin-top: 22px;
@@ -2352,23 +1654,20 @@
   gap: 15px;
   position: relative;
   margin-bottom: 15px;
-  border: 1px solid #e1e9d6;
-  border-radius: 8px;
-  padding: 15px;
-  color: #a7bb91;
-  background: #fbfdf4;
+  color: var(--foreground);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 0;
 }
 .tea-agent-steps > div > .tea-field {
   flex: 1;
   margin: 0;
 }
 .tea-agent-steps > div > .tea-checkbox {
-  font-size: 10px;
+  font-size: 12px;
 }
 .tea-step-number {
-  font-size: 12px;
-  font-family: serif;
-  color: #a2b889;
+  font-size: 14px;
+  color: var(--foreground);
 }
 .tea-debug-layout {
   display: grid;
@@ -2380,49 +1679,49 @@
 }
 .tea-debug-layout [data-slot="textarea"] {
   min-height: 220px;
-  font-size: 12px;
-  line-height: 1.9;
-  background: #fffef9;
+  font-size: 14px;
+  line-height: 1.75;
+  background: var(--background);
 }
 .tea-debug-layout > div > [data-slot="button"] {
   margin-top: 15px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .tea-debug-output {
-  border: 1px solid #e2ead7;
-  background: #fafdf4;
-  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  border-radius: var(--radius-md);
   padding: 23px;
   min-height: 350px;
 }
 .tea-debug-output h3 {
-  font-size: 12px;
-  color: #93aa7e;
+  font-size: 14px;
+  color: var(--foreground);
   font-weight: 500;
   margin-bottom: 17px;
 }
 .tea-debug-output > .tea-prose {
-  font-size: 12px;
-  color: #a0b18d;
+  font-size: 14px;
+  color: var(--foreground);
 }
 .tea-source-form {
-  border: 1px solid #e0e7d5;
-  border-radius: 9px;
-  background: #fffef9;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
   padding: 24px;
   margin-bottom: 25px;
 }
 .tea-source-form > [data-slot="button"] {
-  font-size: 11px;
+  font-size: 12px;
 }
 .tea-source-list {
   display: grid;
   gap: 16px;
 }
 .tea-source-list > article {
-  border: 1px solid #e1e8d6;
-  background: #fffef9;
-  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  border-radius: var(--radius-md);
   padding: 22px;
 }
 .tea-source-top {
@@ -2435,40 +1734,40 @@
   height: 43px;
   display: grid;
   place-items: center;
-  background: #eff5e5;
-  color: #a5bc8c;
-  border-radius: 9px;
+  background: var(--muted);
+  color: var(--foreground);
+  border-radius: var(--radius-md);
 }
 .tea-source-top > div {
   flex: 1;
   min-width: 0;
 }
 .tea-source-top h3 {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #8ca473;
+  color: var(--foreground);
 }
 .tea-source-top p {
-  font-size: 10px;
-  color: #b1c09f;
+  font-size: 12px;
+  color: var(--muted-foreground);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   margin-top: 7px;
 }
 .tea-source-top > .tea-checkbox {
-  font-size: 10px;
-  color: #afc098;
+  font-size: 12px;
+  color: var(--foreground);
 }
 .tea-source-meta {
   display: flex;
   align-items: center;
   gap: 18px;
-  border-top: 1px solid #edf2e4;
+  border-top: 1px solid var(--border);
   margin-top: 18px;
   padding-top: 14px;
-  font-size: 9px;
-  color: #b1c19c;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-source-meta > span {
   display: flex;
@@ -2476,31 +1775,29 @@
   gap: 5px;
 }
 .tea-source-meta [data-slot="button"] {
-  font-size: 10px;
+  font-size: 12px;
   margin-left: auto;
 }
 .tea-account-page h1 {
-  font-family: "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 32px;
-  font-weight: 400;
-  letter-spacing: 1px;
-  margin: 18px 0;
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 16px;
 }
 .tea-account-page > p {
-  font-size: 12px;
-  color: #9eaf8c;
+  font-size: 14px;
+  color: var(--muted-foreground);
 }
 .tea-account-summary {
   display: flex;
   align-items: center;
   gap: 18px;
   padding: 25px;
-  border: 1px solid #e1e8d7;
-  background: #f9fcf1;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  border-radius: var(--radius-md);
   margin: 30px 0;
   max-width: 700px;
-  color: #9eb487;
+  color: var(--muted-foreground);
 }
 .tea-account-summary > div {
   flex: 1;
@@ -2509,71 +1806,45 @@
   font-size: 14px;
   font-weight: 500;
   display: block;
-  color: #799761;
+  color: var(--foreground);
 }
 .tea-account-summary div > span {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 7px;
-  color: #abbc98;
+  color: var(--muted-foreground);
 }
 .tea-account-summary > span {
-  font-size: 11px;
+  font-size: 12px;
 }
 @media (min-width: 1650px) {
-  .tea-sidebar {
-    width: 250px;
-  }
   .tea-conversation-content {
-    padding: 43px 46px 30px;
-  }
-  .tea-stage-intro h1 {
-    font-size: 34px;
+    max-width: var(--container-width-md);
+    padding: 32px 32px 24px;
+    gap: 24px;
   }
   .tea-message-content {
-    font-size: 13px;
-  }
-  .tea-inline-task strong {
-    font-size: 12px;
+    font-size: 14px;
+    line-height: 1.75;
   }
   .tea-flow {
     padding: 30px;
   }
   .tea-stage-title h4 {
-    font-size: 13px;
+    font-size: 14px;
   }
   .tea-flow-tasks > button {
-    font-size: 11px;
+    font-size: 13px;
+    min-height: 36px;
   }
 }
 @media (max-width: 1200px) {
-  .tea-sidebar {
-    width: 192px;
-    padding-inline: 10px;
-  }
-  .tea-rail {
-    width: 66px;
-  }
-  .tea-rail nav > button {
-    width: 51px;
-  }
-  .tea-sidebar-brand {
-    font-size: 20px;
-  }
-  .tea-sidebar-brand > span {
-    font-size: 9px;
-    margin-left: 8px;
-  }
   .tea-conversation-content {
-    padding: 27px 24px;
-  }
-  .tea-stage-intro h1 {
-    font-size: 25px;
+    max-width: var(--container-width-md);
+    padding: 32px 32px 24px;
+    gap: 24px;
   }
   .tea-topbar {
-    padding-inline: 20px;
-  }
-  .tea-workspace-toolbar {
     padding-inline: 20px;
   }
   .tea-flow {
@@ -2581,12 +1852,14 @@
   }
   .tea-sidepanel-header {
     padding-inline: 15px;
+    height: 48px;
+    padding: 0 16px;
   }
   .tea-panel-tabs {
-    gap: 12px;
+    gap: 16px;
   }
   .tea-panel-tabs > button {
-    font-size: 9px;
+    font-size: 13px;
   }
   .tea-stage-title {
     padding: 12px 10px;
@@ -2598,22 +1871,25 @@
     padding-inline: 7px;
   }
   .tea-flow-tasks > button {
-    font-size: 9px;
+    font-size: 13px;
+    min-height: 36px;
   }
   .tea-flow-intro h3 {
-    font-size: 17px;
+    font-size: 16px;
+    margin-top: 0;
+    font-weight: 600;
   }
   .tea-composer-area {
-    padding: 13px 20px;
-  }
-  .tea-composer-note > span {
-    display: none;
+    background: var(--background);
+    padding: 16px 24px;
   }
   .tea-page {
-    padding: 30px 28px 45px;
+    padding: 32px 40px 48px;
   }
   .tea-section-heading h2 {
-    font-size: 23px;
+    font-size: 24px;
+    font-weight: 600;
+    margin-top: 0;
   }
   .tea-config-layout {
     grid-template-columns: 150px minmax(0, 1fr);
@@ -2623,7 +1899,8 @@
     gap: 5px;
   }
   .tea-config-stage-editor {
-    padding: 17px;
+    padding: 0 0 0 24px;
+    border-left: 1px solid var(--border);
   }
   .tea-task-detail,
   .tea-artifact,
@@ -2632,107 +1909,13 @@
   }
 }
 @media (max-width: 1023px) {
-  .tea-sidebar {
-    display: none;
-  }
-  .tea-mobile-menu {
-    display: block;
-    color: #8b9e78;
-    margin-right: 15px;
-  }
   .tea-topbar {
     justify-content: flex-start;
-  }
-  .tea-topbar-meta {
-    margin-left: auto;
-  }
-  .tea-mobile-sidebar {
-    background: #f5f7ed !important;
-    width: 300px !important;
-    max-width: 85vw !important;
-    gap: 0 !important;
-    padding-bottom: 20px;
-  }
-  .tea-mobile-sidebar > .tea-sidebar-heading,
-  .tea-mobile-sidebar > .tea-new-case,
-  .tea-mobile-sidebar > .tea-businesses,
-  .tea-mobile-sidebar > .tea-sidebar-bottom {
-    margin-inline: 18px;
-  }
-  .tea-mobile-sidebar > .tea-sidebar-heading {
-    margin-top: 20px;
-  }
-  .tea-mobile-sidebar > .tea-new-case {
-    width: calc(100% - 36px);
-  }
-  .tea-mobile-sidebar .tea-sidebar-bottom {
-    margin-top: auto;
-    padding-top: 20px;
-  }
-  .tea-welcome {
-    padding-inline: 6%;
-  }
-  .tea-welcome > main {
-    grid-template-columns: 1.3fr 1fr;
-    gap: 0;
-  }
-  .tea-welcome-art {
-    transform: scale(0.8);
-    transform-origin: center;
-  }
-  .tea-welcome-copy h1 {
-    font-size: 42px;
-  }
-  .tea-welcome-copy > p {
-    font-size: 12px;
-  }
-  .tea-welcome > footer {
-    gap: 25px;
-  }
-  .tea-welcome > footer > small {
-    display: none;
   }
 }
 @media (max-width: 767px) {
   .tea-app {
-    min-height: 400px;
-  }
-  .tea-rail {
-    width: 57px;
-    padding-top: 18px;
-  }
-  .tea-rail .tea-brand-mark {
-    width: 31px;
-    height: 33px;
-    border-radius: 8px;
-  }
-  .tea-rail .tea-brand-mark svg {
-    width: 18px;
-  }
-  .tea-logo-button {
-    margin-bottom: 29px;
-  }
-  .tea-rail nav {
-    gap: 10px;
-  }
-  .tea-rail nav > button {
-    width: 46px;
-    min-height: 49px;
-  }
-  .tea-rail nav > button > span {
-    font-size: 8px;
-  }
-  .tea-rail nav > button > svg {
-    width: 18px;
-  }
-  .tea-rail nav > button.active:before {
-    left: -5px;
-    height: 19px;
-  }
-  .tea-account-button {
-    width: 28px;
-    height: 28px;
-    font-size: 10px;
+    min-height: 100dvh;
   }
   .tea-topbar {
     height: 58px;
@@ -2743,144 +1926,76 @@
     display: none;
   }
   .tea-breadcrumb > strong {
-    font-size: 11px;
-  }
-  .tea-topbar-meta > span:last-child,
-  .tea-topbar-divider {
-    display: none;
-  }
-  .tea-mode-indicator {
-    font-size: 8px;
-    gap: 4px;
-  }
-  .tea-mobile-menu {
-    margin-right: 11px;
-  }
-  .tea-workspace-toolbar {
-    height: 37px;
-    padding-inline: 17px;
-  }
-  .tea-workspace-toolbar > span {
-    font-size: 8px;
-    gap: 5px;
-  }
-  .tea-workspace-toolbar > button {
-    font-size: 8px;
-    gap: 4px;
-  }
-  .tea-workspace-toolbar > button > svg {
-    width: 13px;
+    font-size: 12px;
   }
   .tea-chat {
     flex: 1;
     min-height: 0;
   }
   .tea-conversation-content {
-    padding: 24px 20px;
-    gap: 22px;
-  }
-  .tea-stage-intro h1 {
-    font-size: 25px;
-    line-height: 1.65;
-  }
-  .tea-stage-intro > .tea-eyebrow {
-    font-size: 7px;
-    gap: 5px;
-    flex-wrap: wrap;
-    letter-spacing: 0.7px;
-  }
-  .tea-stage-intro > p {
-    font-size: 10px;
-    margin-top: 7px;
-    line-height: 1.9;
-  }
-  .tea-stage-context {
-    gap: 10px;
-    flex-wrap: wrap;
-    font-size: 8px;
-  }
-  .tea-stage-context svg {
-    width: 11px;
-  }
-  .tea-parallel-tasks {
-    padding: 12px;
-  }
-  .tea-inline-task {
-    gap: 10px;
-    padding: 10px 3px;
-  }
-  .tea-inline-task strong {
-    font-size: 10px;
-  }
-  .tea-inline-task small {
-    font-size: 8px;
-  }
-  .tea-inline-task-icon {
-    width: 25px;
-    height: 27px;
-    font-size: 8px;
+    max-width: var(--container-width-md);
+    padding: 32px 32px 24px;
+    gap: 24px;
   }
   .tea-message {
     gap: 9px;
   }
   .tea-message-avatar {
-    width: 24px;
-    height: 26px;
+    width: 28px;
+    height: 28px;
   }
   .tea-message-avatar > svg {
     width: 14px;
   }
   .tea-message-label {
-    font-size: 9px;
+    font-size: 12px;
     gap: 6px;
   }
-  .tea-message-label > span {
-    font-size: 7px;
-  }
   .tea-message-content {
-    font-size: 11px;
+    font-size: 14px;
+    line-height: 1.75;
   }
   .tea-message.user {
     margin-left: 9px;
   }
   .tea-composer-area {
-    padding: 10px 13px 13px;
+    background: var(--background);
+    padding: 16px 24px;
   }
   .tea-composer textarea {
-    font-size: 11px;
     min-height: 65px;
     padding: 12px 12px 2px;
+    font-size: 14px;
   }
   .tea-composer-toolbar {
     padding: 4px 7px 8px;
     gap: 9px;
   }
-  .tea-composer-context {
-    font-size: 7px;
-  }
   .tea-composer-toolbar > button:first-child {
-    font-size: 8px;
+    font-size: 12px;
     gap: 3px;
   }
   .tea-composer-toolbar > button:first-child > svg {
     width: 14px;
   }
   .tea-composer-note {
-    font-size: 7px;
+    font-size: 12px;
     line-height: 1.7;
     margin-top: 8px !important;
+    max-width: var(--container-width-md);
   }
   .tea-current-task {
-    font-size: 8px;
+    font-size: 12px;
     line-height: 1.6;
+    max-width: var(--container-width-md);
   }
   .tea-mobile-panel {
     width: calc(100% - 30px) !important;
     max-width: 420px !important;
     padding: 0 !important;
     gap: 0 !important;
-    background: #f8f9f1 !important;
-    border-color: #dce6cc !important;
+    background: var(--background) !important;
+    border-color: var(--border) !important;
   }
   .tea-mobile-panel > [data-slot="sheet-header"] {
     position: absolute;
@@ -2895,19 +2010,19 @@
     gap: 22px;
   }
   .tea-mobile-panel .tea-panel-tabs > button {
-    font-size: 11px;
+    font-size: 12px;
   }
   .tea-mobile-panel .tea-flow {
     padding: 26px 22px;
   }
   .tea-mobile-panel .tea-flow-intro h3 {
-    font-size: 21px;
+    font-size: 18px;
   }
   .tea-mobile-panel .tea-stage-title h4 {
-    font-size: 13px;
+    font-size: 14px;
   }
   .tea-mobile-panel .tea-flow-tasks > button {
-    font-size: 11px;
+    font-size: 12px;
   }
   .tea-mobile-panel .tea-task-detail,
   .tea-mobile-panel .tea-artifact,
@@ -2915,21 +2030,23 @@
     padding: 25px 22px;
   }
   .tea-page {
-    padding: 25px 20px 40px;
+    padding: 32px 40px 48px;
   }
   .tea-section-heading {
     display: block;
   }
   .tea-section-heading h2 {
-    font-size: 25px;
     line-height: 1.5;
+    font-size: 24px;
+    font-weight: 600;
+    margin-top: 0;
   }
   .tea-section-heading > .tea-heading-actions,
   .tea-section-heading > [data-slot="button"] {
     margin-top: 18px;
   }
   .tea-page-intro {
-    font-size: 11px;
+    font-size: 12px;
   }
   .tea-search-bar {
     gap: 7px;
@@ -2939,10 +2056,10 @@
     width: 15px;
   }
   .tea-search-bar [data-slot="input"] {
-    font-size: 10px;
+    font-size: 12px;
   }
   .tea-search-bar [data-slot="button"] {
-    font-size: 10px;
+    font-size: 12px;
     padding-inline: 10px;
   }
   .tea-file-row {
@@ -2951,15 +2068,15 @@
     flex-wrap: wrap;
   }
   .tea-file-row strong {
-    font-size: 10px;
+    font-size: 12px;
   }
   .tea-file-row .tea-status {
-    font-size: 8px;
+    font-size: 12px;
     margin-left: 46px;
     margin-top: -3px;
   }
   .tea-file-row p {
-    font-size: 8px;
+    font-size: 12px;
     line-height: 1.6;
   }
   .tea-file-icon {
@@ -2979,11 +2096,12 @@
   }
   .tea-segments > button {
     flex: 1;
-    font-size: 10px;
+    font-size: 12px;
     padding: 8px 7px;
   }
   .tea-config-intro {
-    padding: 17px;
+    padding: 0 0 24px;
+    border-bottom: 1px solid var(--border);
   }
   .tea-form-row {
     grid-template-columns: 1fr;
@@ -3007,13 +2125,14 @@
     gap: 7px;
   }
   .tea-config-stages strong {
-    font-size: 10px;
+    font-size: 12px;
   }
   .tea-config-stages small {
-    font-size: 8px;
+    font-size: 12px;
   }
   .tea-config-stage-editor {
-    padding: 17px 13px;
+    padding: 0 0 0 24px;
+    border-left: 1px solid var(--border);
   }
   .tea-mode-config {
     display: flex;
@@ -3037,23 +2156,24 @@
     grid-template-columns: 1fr;
   }
   .tea-agent-config {
-    padding: 17px;
+    padding: 0;
   }
   .tea-agent-steps > div {
     gap: 10px;
-    padding: 10px;
+    border-bottom: 1px solid var(--border);
+    padding: 16px 0;
   }
   .tea-agent-steps > div > svg {
     display: none;
   }
   .tea-agent-steps .tea-field > span {
-    font-size: 9px;
+    font-size: 12px;
   }
   .tea-agent-steps [data-slot="input"] {
-    font-size: 10px;
+    font-size: 12px;
   }
   .tea-agent-steps > div > .tea-checkbox {
-    font-size: 8px;
+    font-size: 12px;
   }
   .tea-source-form,
   .tea-source-list > article {
@@ -3067,47 +2187,41 @@
     height: 36px;
   }
   .tea-source-top h3 {
-    font-size: 11px;
+    font-size: 12px;
   }
   .tea-source-top p {
-    font-size: 8px;
+    font-size: 12px;
   }
   .tea-source-top .tea-checkbox {
-    font-size: 9px;
+    font-size: 12px;
   }
   .tea-source-meta {
     flex-wrap: wrap;
     gap: 12px;
-    font-size: 8px;
+    font-size: 12px;
   }
   .tea-source-meta [data-slot="button"] {
     width: 100%;
-    font-size: 10px;
+    font-size: 12px;
     margin: 0;
   }
   .tea-dialog {
     padding: 23px 20px;
     max-height: 88dvh;
   }
-  .tea-theme [data-slot="dialog-title"] {
-    font-size: 22px;
-  }
-  .tea-theme [data-slot="dialog-description"] {
-    font-size: 11px;
-  }
   .tea-file-drop > span {
-    font-size: 8px;
+    font-size: 12px;
   }
   .tea-no-cases {
     padding: 30px;
     text-align: center;
   }
   .tea-no-cases h1 {
-    font-size: 25px;
+    font-size: 24px;
     line-height: 1.7;
   }
   .tea-no-cases p {
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1.8;
   }
   .tea-account-summary {
@@ -3116,128 +2230,7 @@
     flex-wrap: wrap;
   }
   .tea-account-summary > span {
-    font-size: 10px;
-  }
-  .tea-welcome {
-    padding: 25px 7% 28px;
-    min-height: 100dvh;
-  }
-  .tea-welcome .tea-brand {
-    font-size: 25px;
-  }
-  .tea-welcome .tea-brand-mark {
-    width: 36px;
-    height: 38px;
-  }
-  .tea-welcome-tag {
-    font-size: 8px;
-    letter-spacing: 0;
-  }
-  .tea-welcome-tag > span {
-    display: none;
-  }
-  .tea-welcome > main {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 52px 0 23px;
-    min-height: 0;
-    max-height: none;
-  }
-  .tea-welcome-copy > .tea-eyebrow {
-    font-size: 7px;
-    letter-spacing: 1.3px;
-  }
-  .tea-welcome-copy h1 {
-    font-size: 36px;
-    line-height: 1.6;
-    margin-top: 19px;
-    letter-spacing: 1px;
-  }
-  .tea-welcome-copy > p {
-    font-size: 11px;
-    line-height: 2.1;
-    margin-top: 20px;
-  }
-  .tea-welcome-actions {
-    margin-top: 28px;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .tea-welcome-actions [data-slot="button"] {
-    height: 39px;
-    font-size: 11px;
-    padding-inline: 15px;
-  }
-  .tea-welcome-actions [data-slot="button"][data-variant="ghost"] {
-    font-size: 10px;
-    padding-inline: 0;
-  }
-  .tea-welcome-note {
-    font-size: 8px;
-    margin-top: 15px;
-  }
-  .tea-welcome-art {
-    height: 320px;
-    width: 100%;
-    transform: scale(0.68);
-    transform-origin: center;
-    margin: 0 0 -48px;
-  }
-  .tea-art-leaf {
-    width: 229px;
-    height: 282px;
-  }
-  .tea-art-leaf > svg {
-    width: 150px;
-    height: 180px;
-  }
-  .tea-art-leaf > span {
-    font-size: 64px;
-  }
-  .orbit-one {
-    width: 365px;
-    height: 257px;
-  }
-  .orbit-two {
-    width: 460px;
-    height: 315px;
-  }
-  .label-origin {
-    top: 20px;
-    left: -7px;
-  }
-  .label-destination {
-    bottom: 35px;
-    right: -10px;
-  }
-  .tea-art-coordinate {
-    bottom: -16px;
-  }
-  .tea-welcome > footer {
-    gap: 17px;
-    justify-content: space-between;
-    margin-top: 9px;
-    padding-top: 20px;
-  }
-  .tea-welcome > footer > div {
-    display: block;
-  }
-  .tea-welcome > footer > div > span {
-    display: block;
-    font-size: 8px;
-    margin: 0 0 7px;
-  }
-  .tea-welcome > footer strong {
-    font-size: 10px;
-  }
-  .tea-welcome > footer p {
-    font-size: 8px;
-    line-height: 1.7;
-    margin-top: 7px;
-  }
-  .tea-welcome > footer > small {
-    display: none;
+    font-size: 12px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -3250,105 +2243,261 @@
   }
 }
 
-/* Reading and operation sizes: a calm workspace must also be easy to read. */
-.tea-theme { --tea-muted: #657164; --muted-foreground: #657164; }
-.tea-message-content { font-size: 14px; line-height: 1.85; color: #3d5143; }
-.tea-message.user .tea-message-content { color: #354b3d; }
-.tea-message-label { font-size: 12px; color: #526d50; }
-.tea-message-label > span { font-size: 10px; color: #76836c; }
-.tea-message-avatar { width: 30px; height: 32px; color: #537347; }
-.tea-stage-intro > p { color: #66765f; font-size: 14px; }
-.tea-inline-task strong, .tea-stage-title h4 { font-size: 14px; color: #3b593e; }
-.tea-inline-task small, .tea-stage-title small { font-size: 11px; color: #738369; }
-.tea-flow-tasks > button { font-size: 12px; color: #5c7150; min-height: 34px; }
-.tea-flow-stage.locked .tea-flow-tasks > button { color: #77836c; }
-.tea-stage-body > p, .tea-flow-count, .tea-flow-count > span { font-size: 10px; color: #73816a; }
-.tea-stage-title > span { font-size: 10px; color: #687e54; }
-.tea-flow-stage.active .tea-stage-title > span { color: #547138; }
-.tea-panel-tabs > button { font-size: 12px; color: #738267; }
-.tea-panel-tabs > button.active { color: #355b38; }
-.tea-business-title { font-size: 12px; color: #52674a; }
-.tea-subconversations > button { font-size: 11px; color: #6c7b5f; }
-.tea-breadcrumb, .tea-topbar-meta { color: #6a7760; font-size: 11px; }
-.tea-rail nav > button { color: #718364; }
-.tea-rail nav > button > span { font-size: 10px; }
-.tea-trace, .tea-trace strong { font-size: 11px; color: #647b56; }
-.tea-trace p { font-size: 11px; color: #718069; line-height: 1.8; }
-.tea-composer textarea { font-size: 14px; color: #3b533d; }
-.tea-composer textarea::placeholder { color: #87937a; }
-.tea-composer-toolbar > button:first-child { font-size: 11px; color: #748566; }
-.tea-composer-context { font-size: 10px; color: #7c8c6e; }
-.tea-composer-note { font-size: 10px; color: #7b876f; }
-.tea-composer-note > span { font-size: 9px; }
-.tea-field > span { font-size: 12px; color: #51634b; }
-.tea-theme [data-slot="input"], .tea-theme [data-slot="textarea"], .tea-theme select { font-size: 14px; }
-.tea-small-note { color: #697961; font-size: 12px; }
-@media (max-width: 767px) {
-  .tea-composer textarea, .tea-theme [data-slot="input"], .tea-theme [data-slot="textarea"], .tea-theme select { font-size: 16px; }
-  .tea-composer-context { display: none; }
-  .tea-composer-note { font-size: 9px; }
+/* Original DeerFlow window: one sidebar, a 48px header and resizable content. */
+.tea-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.tea-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--foreground);
+}
+.tea-brand-mark svg {
+  width: 20px;
+  height: 20px;
+}
+.tea-navigation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  height: 48px;
+}
+.tea-navigation-brand {
+  padding-inline: 8px;
+}
+.tea-app [data-collapsible="icon"] .tea-navigation-brand {
+  display: none;
+}
+.tea-app [data-collapsible="icon"] .tea-navigation-header {
+  justify-content: center;
+}
+.tea-navigation [data-slot="sidebar-menu-button"] {
+  color: var(--muted-foreground);
+}
+.tea-navigation [data-slot="sidebar-menu-button"][data-active="true"],
+.tea-navigation [data-slot="sidebar-menu-button"]:hover {
+  color: var(--sidebar-accent-foreground);
+}
+.tea-topbar,
+.tea-workspace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  height: 48px;
+  padding: 0 16px;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+.tea-workspace-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.tea-workspace-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.tea-workspace-stage {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.tea-workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+.tea-workspace-actions > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  border-radius: var(--radius-md);
+}
+.tea-workspace-actions > button:hover {
+  color: var(--foreground);
+  background: var(--accent);
+}
+.tea-details-content {
+  height: 100%;
+  min-width: 0;
+}
+.tea-artifact-version {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-welcome {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: 0 32px;
+}
+.tea-welcome > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 64px;
+}
+.tea-welcome-tag {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.tea-welcome-tag > span {
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.tea-welcome > main {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  padding: 64px 0 96px;
+}
+.tea-welcome-copy {
+  width: 100%;
+  max-width: 560px;
+  text-align: center;
+}
+.tea-welcome-copy h1 {
+  font-size: clamp(28px, 3vw, 36px);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.tea-welcome-copy > p {
+  margin-top: 16px;
+  line-height: 1.75;
+  color: var(--muted-foreground);
+}
+.tea-welcome-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 32px;
+}
+.tea-welcome-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-welcome > footer {
+  padding: 20px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 @media (max-width: 767px) {
-  .tea-mobile-break { display: block; }
-  .tea-stage-intro h1 { font-size: 27px; line-height: 1.5; }
+  .tea-topbar,
+  .tea-workspace-toolbar {
+    gap: 8px;
+    padding-inline: 8px;
+  }
+  .tea-workspace-heading {
+    gap: 8px;
+  }
+  .tea-workspace-stage {
+    display: none;
+  }
+  .tea-conversation-content {
+    padding: 24px 20px;
+  }
+  .tea-composer-area {
+    padding: 12px 16px 16px;
+  }
+  .tea-welcome {
+    padding-inline: 20px;
+  }
+  .tea-welcome-tag {
+    gap: 6px;
+  }
+  .tea-welcome-tag > span {
+    display: none;
+  }
+  .tea-config-stage-editor {
+    padding: 0;
+    border-left: 0;
+  }
+  .tea-composer textarea,
+  .tea-theme [data-slot="input"],
+  .tea-theme [data-slot="textarea"],
+  .tea-theme select {
+    font-size: 16px;
+  }
 }
-.tea-theme :is(h1, h2, h3) { text-wrap: balance; }
-.tea-prose, .tea-debug-output > .tea-prose { font-size: 14px; color: #435841; line-height: 1.85; }
-.tea-debug-output h3 { font-size: 14px; color: #42613f; }
-.tea-page-intro { font-size: 13px; color: #6d7c64; }
-.tea-document-editor { font-size: 14px; color: #3e573f; }
-.tea-check strong { font-size: 12px; color: #526b45; }
-.tea-check p { font-size: 12px; color: #6d7a62; }
-
 /* Persisted stage-entry analysis, driven by the frozen workflow configuration. */
 .tea-proactive {
-  margin: 22px 0;
-  padding: 18px;
-  border: 1px solid #dfe7d5;
-  border-radius: 12px;
-  background: #f5f8ef;
+  margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
 }
 .tea-proactive > header {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #5d7851;
+  color: var(--foreground);
   margin-bottom: 14px;
 }
 .tea-proactive > header > strong {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
 }
 .tea-proactive > header > span {
   margin-left: auto;
-  font-size: 10px;
-  color: #87977d;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-proactive-result {
-  font-size: 12px;
-  line-height: 1.9;
-  color: #607453;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--foreground);
 }
 .tea-proactive > footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  border-top: 1px solid #e5ebdd;
+  border-top: 1px solid var(--border);
   margin-top: 14px;
   padding-top: 9px;
-  font-size: 10px;
-  color: #8c9b81;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-proactive > footer [data-slot="button"] {
-  font-size: 10px;
+  font-size: 12px;
 }
 .tea-proactive-locked {
   display: flex;
   gap: 8px;
   align-items: center;
-  color: #8a9780;
-  font-size: 11px;
+  color: var(--muted-foreground);
+  font-size: 12px;
   padding: 17px 0;
 }
 .tea-check-task {

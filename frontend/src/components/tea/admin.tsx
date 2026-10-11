@@ -5,7 +5,6 @@ import {
   BookOpen,
   ChevronRight,
   GitBranch,
-  Leaf,
   LogOut,
   PanelLeft,
   Sparkles,
@@ -19,6 +18,7 @@ import { type Bootstrap, type Template } from "@/core/tea/types";
 
 import { AdminLibrary } from "./admin-library";
 import { UploadDialog } from "./library";
+import { Brand } from "./shared";
 import { Sources } from "./sources";
 import { Studio } from "./studio";
 
@@ -84,10 +84,7 @@ export function Admin({
         aria-label="管理后台导航"
       >
         <Link className="ta-admin-brand" href="/tea/admin/workflow">
-          <span>
-            <Leaf size={23} strokeWidth={1.6} />
-          </span>
-          <div>茶渡</div>
+          <Brand />
           <span className="ta-brand-tag">后台</span>
         </Link>
         <nav>
@@ -116,11 +113,13 @@ export function Admin({
             </div>
           ))}
         </nav>
-        <div className="ta-sidebar-status ta-mode-label">
-          <span className="ta-dot" />
-          {bootstrap.capabilities.assistant_mode === "live"
-            ? "模型已配置"
-            : "规则演示"}
+        <div className="ta-sidebar-status">
+          <span className="ta-mode-label">
+            <span className="ta-dot" />
+            {bootstrap.capabilities.assistant_mode === "live"
+              ? "模型已配置"
+              : "规则演示"}
+          </span>
         </div>
         <Link className="ta-return-link" href="/tea">
           <ArrowLeft size={16} />

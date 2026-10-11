@@ -155,11 +155,11 @@ export function ConfigurationCanvas({
         type: "smoothstep",
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: "#9aa99f",
+          color: "var(--muted-foreground)",
           width: 15,
           height: 15,
         },
-        style: { stroke: "#9aa99f", strokeWidth: 1.5 },
+        style: { stroke: "var(--muted-foreground)", strokeWidth: 1.5 },
       })),
     [items],
   );
@@ -187,7 +187,7 @@ export function ConfigurationCanvas({
           zoomOnScroll={false}
           preventScrolling={false}
         >
-          <Background color="#cfd8d0" gap={18} size={1} />
+          <Background color="var(--border)" gap={18} size={1} />
           <CanvasControls />
         </ReactFlow>
       </div>

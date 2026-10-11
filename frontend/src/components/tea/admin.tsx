@@ -1,0 +1,196 @@
+"use client";
+
+import {
+  ArrowLeft,
+  BookOpen,
+  ChevronRight,
+  GitBranch,
+  Globe2,
+  LogOut,
+  PanelLeft,
+  Sparkles,
+} from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import { type Bootstrap, type Template } from "@/core/tea/types";
+
+import { AdminLibrary } from "./admin-library";
+import { UploadDialog } from "./library";
+import { Brand } from "./shared";
+import { Sources } from "./sources";
+import { Studio } from "./studio";
+
+export type AdminPage = "workflow" | "analysis" | "library" | "sources";
+const pages = {
+  workflow: {
+    title: "办理流程",
+    icon: GitBranch,
+    group: "流程配置",
+  },
+  analysis: {
+    title: "节点分析",
+    icon: Sparkles,
+    group: "流程配置",
+  },
+  library: {
+    title: "资料库",
+    icon: BookOpen,
+    group: "内容管理",
+  },
+  sources: {
+    title: "来源管理",
+    icon: Globe2,
+    group: "内容管理",
+  },
+};
+
+// Layout reference: tmp/ui dashboard-01/sidebar-07. Uses the existing Tea and
+// DeerFlow primitives; no reference-project code or runtime dependency is copied.
+export function Admin({
+  bootstrap,
+  page,
+  requestedStage,
+  onPublished,
+  onLogout,
+  logoutBusy,
+}: {
+  bootstrap: Bootstrap;
+  page: AdminPage;
+  requestedStage?: string;
+  onPublished: (template: Template) => void;
+  onLogout: () => void;
+  logoutBusy: boolean;
+}) {
+  const router = useRouter();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [upload, setUpload] = useState<{ scope?: string; parent?: string }>();
+  const [libraryRevision, setLibraryRevision] = useState(0);
+  const current = pages[page];
+  return (
+    <div
+      className={`tea-theme ta-admin ${page === "workflow" || page === "analysis" ? "is-editor" : ""}`}
+    >
+      {menuOpen && (
+        <button
+          className="ta-menu-overlay"
+          aria-label="关闭后台菜单"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
+      <aside
+        className={`ta-admin-sidebar ${menuOpen ? "is-open" : ""}`}
+        aria-label="管理后台导航"
+      >
+        <Link className="ta-admin-brand" href="/tea/admin/workflow">
+          <Brand />
+          <span className="ta-brand-tag">后台</span>
+        </Link>
+        <nav>
+          {["流程配置", "内容管理"].map((group) => (
+            <div className="ta-nav-group" key={group}>
+              <span>{group}</span>
+              {(
+                Object.entries(pages) as [
+                  AdminPage,
+                  (typeof pages)[AdminPage],
+                ][]
+              )
+                .filter(([, item]) => item.group === group)
+                .map(([id, item]) => (
+                  <Link
+                    key={id}
+                    href={`/tea/admin/${id}`}
+                    aria-current={page === id ? "page" : undefined}
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    <item.icon size={18} strokeWidth={1.7} />
+                    <span>{item.title}</span>
+                    {page === id && <ChevronRight size={13} />}
+                  </Link>
+                ))}
+            </div>
+          ))}
+        </nav>
+        <div className="ta-sidebar-status">
+          <span className="ta-mode-label">
+            <span className="ta-dot" />
+            {bootstrap.capabilities.assistant_mode === "live"
+              ? "模型已配置"
+              : "规则演示"}
+          </span>
+        </div>
+        <Link className="ta-return-link" href="/tea">
+          <ArrowLeft size={16} />
+          返回办理工作台
+        </Link>
+        <div className="ta-admin-user">
+          <span>{bootstrap.user.name.slice(0, 1)}</span>
+          <div>
+            <strong>{bootstrap.user.name}</strong>
+            <small>
+              {bootstrap.user.is_demo ? "独立演示账号" : "我的管理工作区"}
+            </small>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="退出登录"
+            disabled={logoutBusy}
+            onClick={onLogout}
+          >
+            <LogOut size={15} />
+          </Button>
+        </div>
+      </aside>
+      <div className="ta-admin-main">
+        <button
+          className="ta-menu-trigger"
+          aria-label="展开后台菜单"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(!menuOpen)}
+        >
+          <PanelLeft size={19} />
+        </button>
+        <main className="ta-admin-content">
+          <h1 className="sr-only">{current.title}</h1>
+          {page === "workflow" || page === "analysis" ? (
+            <Studio
+              ownerId={bootstrap.user.id}
+              templates={bootstrap.templates}
+              onPublished={onPublished}
+              page={page}
+              requestedStage={requestedStage}
+              onPage={(next, stage) =>
+                router.push(
+                  `/tea/admin/${next}${stage ? `?stage=${encodeURIComponent(stage)}` : ""}`,
+                )
+              }
+            />
+          ) : page === "library" ? (
+            <AdminLibrary
+              key={bootstrap.user.id}
+              cases={bootstrap.cases}
+              revision={libraryRevision}
+              onUpload={(scope, parent) => setUpload({ scope, parent })}
+            />
+          ) : (
+            <Sources compact />
+          )}
+        </main>
+      </div>
+      <UploadDialog
+        open={!!upload}
+        onOpenChange={(open) => {
+          if (!open) setUpload(undefined);
+        }}
+        caseId={upload?.scope}
+        initialParentId={upload?.parent}
+        cases={bootstrap.cases}
+        onDone={() => setLibraryRevision((value) => value + 1)}
+      />
+    </div>
+  );
+}

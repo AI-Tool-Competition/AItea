@@ -52,6 +52,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { ArtifactPanel } from "./artifact-panel";
 import { CitationCard } from "./library";
 import { Busy, dateLabel, ErrorNotice, Trace } from "./shared";
+import { StageAnalysisPanel } from "./stage-analysis";
 import { TaskPanel } from "./task-panel";
 type PanelTab = "flow" | "task" | "document" | "facts";
 
@@ -323,6 +324,12 @@ function StageChat({
         className="tea-conversation"
       >
         <ConversationContent className="tea-conversation-content">
+          <StageAnalysisPanel
+            key={`${record.id}:${stage.id}`}
+            record={record}
+            stage={stage}
+            onUpdate={onUpdate}
+          />
           {!loading && messages.length < messageTotal && (
             <Button
               variant="ghost"

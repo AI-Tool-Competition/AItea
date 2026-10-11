@@ -53,7 +53,7 @@ export type TeaView =
 export const teaNavigationItems = [
   { id: "workspace", icon: MessageSquare, label: "出口业务" },
   { id: "library", icon: BookOpen, label: "资料库" },
-  { id: "studio", icon: Settings2, label: "法务工作台" },
+  { id: "studio", icon: Settings2, label: "管理后台" },
   { id: "sources", icon: Globe2, label: "来源管理" },
 ] as const;
 
@@ -196,7 +196,8 @@ export function TeaNavigation({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <DropdownMenu>
+            {/* The mobile sidebar already owns the modal pointer lock. */}
+            <DropdownMenu modal={!isMobile}>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   isActive={

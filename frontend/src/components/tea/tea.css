@@ -2449,3 +2449,58 @@
     font-size: 16px;
   }
 }
+/* Persisted stage-entry analysis, driven by the frozen workflow configuration. */
+.tea-proactive {
+  margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+}
+.tea-proactive > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground);
+  margin-bottom: 14px;
+}
+.tea-proactive > header > strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+.tea-proactive > header > span {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-proactive-result {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--foreground);
+}
+.tea-proactive > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
+  padding-top: 9px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-proactive > footer [data-slot="button"] {
+  font-size: 12px;
+}
+.tea-proactive-locked {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  padding: 17px 0;
+}
+.tea-check-task {
+  display: block;
+  margin-bottom: 4px;
+}

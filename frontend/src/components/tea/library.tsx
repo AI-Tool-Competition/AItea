@@ -29,6 +29,7 @@ import {
   type CaseSummary,
   type Citation,
   type Document,
+  type DocumentDetail,
   type ListResult,
 } from "@/core/tea/types";
 
@@ -109,12 +110,14 @@ export function UploadDialog({
   open,
   onOpenChange,
   caseId,
+  initialParentId,
   cases,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
   caseId?: string;
+  initialParentId?: string;
   cases: CaseSummary[];
   onDone: () => void;
 }) {
@@ -130,13 +133,14 @@ export function UploadDialog({
   useEffect(() => {
     if (!open) return;
     setScope(caseId ?? "");
+    setRole(initialParentId ? "secondary" : "primary");
     setFile(null);
     setError("");
-  }, [open, caseId]);
+  }, [open, caseId, initialParentId]);
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
-    setParent("");
+    setParent(scope === (caseId ?? "") ? (initialParentId ?? "") : "");
     setDocs([]);
     teaRequest<ListResult<Document>>(
       `/documents${scope ? `?case_id=${encodeURIComponent(scope)}` : ""}`,
@@ -153,7 +157,7 @@ export function UploadDialog({
         if (!controller.signal.aborted) setError(errorMessage(e));
       });
     return () => controller.abort();
-  }, [scope, open]);
+  }, [scope, open, initialParentId, caseId]);
   async function upload() {
     if (!file || submitting.current) return;
     if (file.size > 20 * 1024 * 1024) {
@@ -292,10 +296,6 @@ export function Library({
   const [hits, setHits] = useState<Citation[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Document>();
-  const [details, setDetails] = useState<{
-    elements: Record<string, unknown>[];
-    chunks: Record<string, unknown>[];
-  }>();
   const [reload, setReload] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -319,20 +319,6 @@ export function Library({
       });
     return () => controller.abort();
   }, [revision, reload, scope]);
-  useEffect(() => {
-    if (!selected) return;
-    setDetails(undefined);
-    const controller = new AbortController();
-    teaRequest<{
-      elements: Record<string, unknown>[];
-      chunks: Record<string, unknown>[];
-    }>(`/documents/${selected.id}`, { signal: controller.signal })
-      .then(setDetails)
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(errorMessage(e));
-      });
-    return () => controller.abort();
-  }, [selected]);
   async function loadMore() {
     if (moreBusy) return;
     setMoreBusy(true);
@@ -538,37 +524,131 @@ export function Library({
                 <div className="tea-note">
                   该文件为关联附件，仅保存原文，不参与解析或检索。
                 </div>
-              ) : !details ? (
-                <Busy label="读取解析内容…" />
               ) : (
-                <div className="tea-document-excerpts">
-                  {details.elements.map((element, i) => (
-                    <article key={i}>
-                      <small>
-                        {Array.isArray(element.section_path)
-                          ? element.section_path.join(" / ")
-                          : typeof element.kind === "string"
-                            ? element.kind
-                            : "正文"}
-                      </small>
-                      <p>
-                        {typeof element.content_text === "string"
-                          ? element.content_text
-                          : typeof element.text === "string"
-                            ? element.text
-                            : ""}
-                      </p>
-                    </article>
-                  ))}
-                  {!details.elements.length && (
-                    <Empty title="暂无解析内容">可下载原始文件查看。</Empty>
-                  )}
-                </div>
+                <DocumentExcerpts
+                  key={`${selected.id}:${selected.version}`}
+                  documentId={selected.id}
+                />
               )}
             </>
           )}
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+const DOCUMENT_PAGE_SIZE = 100;
+
+function DocumentExcerpts({ documentId }: { documentId: string }) {
+  const [page, setPage] = useState<{ offset: number; data: DocumentDetail }>();
+  const [request, setRequest] = useState({ offset: 0, attempt: 0 });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    teaRequest<DocumentDetail>(
+      `/documents/${encodeURIComponent(documentId)}?element_offset=${request.offset}&chunk_offset=0&limit=${DOCUMENT_PAGE_SIZE}`,
+      { signal: controller.signal },
+    )
+      .then((data) => {
+        if (!controller.signal.aborted)
+          setPage({ offset: request.offset, data });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [documentId, request]);
+  return (
+    <>
+      {error && (
+        <ErrorNotice
+          message={error}
+          onRetry={() =>
+            setRequest((current) => ({
+              ...current,
+              attempt: current.attempt + 1,
+            }))
+          }
+        />
+      )}
+      {loading && <Busy label="读取解析内容…" />}
+      {page && (
+        <>
+          <div className="tea-list-label" role="status">
+            {page.data.elements.length
+              ? `第 ${page.offset + 1}–${page.offset + page.data.elements.length} 段 / 共 ${page.data.element_total} 段`
+              : `共 ${page.data.element_total} 段`}
+          </div>
+          <div
+            className="tea-document-excerpts"
+            key={page.offset}
+            aria-busy={loading}
+          >
+            {page.data.elements.map((element, i) => (
+              <article key={element.element_key ?? element.id ?? i}>
+                <small>
+                  {Array.isArray(element.section_path)
+                    ? element.section_path.join(" / ")
+                    : typeof element.kind === "string"
+                      ? element.kind
+                      : "正文"}
+                </small>
+                <p>
+                  {typeof element.content_text === "string"
+                    ? element.content_text
+                    : typeof element.text === "string"
+                      ? element.text
+                      : ""}
+                </p>
+              </article>
+            ))}
+            {!page.data.elements.length && (
+              <Empty title="暂无解析内容">可下载原始文件查看。</Empty>
+            )}
+          </div>
+          {page.data.element_total > DOCUMENT_PAGE_SIZE && (
+            <div className="tea-form-row">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={loading || page.offset === 0}
+                onClick={() =>
+                  setRequest({
+                    offset: Math.max(0, page.offset - DOCUMENT_PAGE_SIZE),
+                    attempt: 0,
+                  })
+                }
+              >
+                上一页正文
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  loading ||
+                  page.offset + page.data.elements.length >=
+                    page.data.element_total
+                }
+                onClick={() =>
+                  setRequest({
+                    offset: page.offset + DOCUMENT_PAGE_SIZE,
+                    attempt: 0,
+                  })
+                }
+              >
+                下一页正文
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+    </>
   );
 }

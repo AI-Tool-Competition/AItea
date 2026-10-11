@@ -34,17 +34,20 @@ export interface StageDefinition {
   actor: string;
   description: string;
   tasks: TaskDefinition[];
+  analysis?: AgentConfig | null;
+}
+export interface AgentStep {
+  id: string;
+  type: "retrieve" | "check" | "guide" | "draft" | "verify";
+  label: string;
+  enabled: boolean;
+  instructions?: string;
 }
 export interface AgentConfig {
   language: string;
   instructions: string;
   retrieval_limit: number;
-  steps: {
-    id: string;
-    type: "retrieve" | "check" | "guide" | "draft" | "verify";
-    label: string;
-    enabled: boolean;
-  }[];
+  steps: AgentStep[];
 }
 export interface Template {
   id: string;
@@ -73,6 +76,8 @@ export interface CaseSummary {
 }
 export interface Check {
   id: string;
+  task_id?: string;
+  task_title?: string;
   label: string;
   status: "passed" | "missing" | "conflict";
   reason: string;
@@ -181,6 +186,8 @@ export interface TraceStep {
   label: string;
   status: "completed" | "skipped" | "failed";
   detail: string;
+  input?: string;
+  output?: string;
 }
 export interface Message {
   id: string;
@@ -227,4 +234,42 @@ export interface DebugResult {
   output: string;
   trace: TraceStep[];
   checks: Check[];
+  citations: Citation[];
+  stage_id: string;
+  assistant_mode: "demo" | "live";
+}
+export interface TemplateDraft {
+  template: Template | null;
+  revision: number;
+  updated_at: string | null;
+}
+export interface TemplateDraftSummary {
+  id: string;
+  title: string;
+  revision: number;
+  updated_at: string;
+}
+export interface StageAnalysis extends DebugResult {
+  id: string;
+  case_revision: number;
+  status: "completed" | "failed";
+  created_at: string;
+}
+export interface DocumentPart {
+  element_key?: string;
+  id?: string;
+  kind?: string;
+  content_text?: string;
+  text?: string;
+  section_path?: string[];
+  locator?: Record<string, unknown>;
+}
+export interface DocumentDetail {
+  document: Document;
+  elements: DocumentPart[];
+  chunks: DocumentPart[];
+  element_total: number;
+  chunk_total: number;
+  warnings: string[];
+  parser?: string | null;
 }

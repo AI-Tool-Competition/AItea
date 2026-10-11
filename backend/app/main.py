@@ -5,9 +5,10 @@ import sqlite3
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from urllib.parse import quote, urlparse
+from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -208,46 +209,30 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         return {"items": items, "total": len(items)}
 
     @app.post("/api/tea/templates/validate")
-    def validate(payload: dict = Body(...), current=Depends(user)):
-        return service.validate_template(payload.get("template"))
+    def validate(payload: models.TemplateInput, current=Depends(user)):
+        return service.validate_template(payload.template)
 
     @app.post("/api/tea/templates/publish")
-    def publish(payload: dict = Body(...), current=Depends(user)):
-        return service.publish(current["id"], payload.get("template"))
+    def publish(payload: models.TemplatePublishInput, current=Depends(user)):
+        return service.publish(current["id"], payload.template, payload.expected_draft_revision)
 
     @app.post("/api/tea/templates/debug")
-    def debug(payload: dict = Body(...), current=Depends(user)):
-        validation = service.validate_template(payload.get("template"))
-        if not validation["valid"]:
-            fail(422, "invalid_template", "请先修正配置中的错误")
-        template = models.Template.model_validate(payload["template"]).model_dump()
-        content = payload.get("input", "")
-        if not isinstance(content, str) or len(content) > 20000:
-            fail(422, "invalid_input", "测试输入格式无效或过长")
-        enabled = any(s["type"] == "retrieve" and s["enabled"] for s in template["agent"]["steps"])
-        retrieval = (
-            service.search(
-                current["id"], content or template["title"], limit=template["agent"]["retrieval_limit"]
-            )
-            if enabled
-            else {"items": [], "mode": "lexical"}
-        )
-        task = {**template["stages"][0]["tasks"][0], "values": {}, "evidence_ids": []}
-        with closing(service.db.connect()) as conn:
-            checks = service.checks(conn, task)
-        output, trace = service.run_assistant(
-            template,
-            content,
-            {
-                "test_input": content,
-                "retrieval_mode": retrieval["mode"],
-                "retrieval_warning": retrieval.get("warning"),
-            },
-            retrieval["items"],
-            checks,
-            debug=True,
-        )
-        return {"output": output, "trace": trace, "checks": checks}
+    def debug(payload: models.TemplateDebugInput, current=Depends(user)):
+        return service.studio.debug(current["id"], payload)
+
+    @app.get("/api/tea/templates/drafts")
+    def template_drafts(
+        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+    ):
+        return service.studio.drafts(current["id"], limit, offset)
+
+    @app.get("/api/tea/templates/{template_id}/draft")
+    def template_draft(template_id: str, current=Depends(user)):
+        return service.studio.draft(current["id"], template_id)
+
+    @app.put("/api/tea/templates/{template_id}/draft")
+    def save_template_draft(template_id: str, payload: models.TemplateDraftInput, current=Depends(user)):
+        return service.studio.save_draft(current["id"], template_id, payload)
 
     @app.get("/api/tea/templates/{template_id}")
     def template(template_id: str, current=Depends(user)):
@@ -264,6 +249,12 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     @app.get("/api/tea/cases/{case_id}")
     def case(case_id: str, current=Depends(user)):
         return service.case_detail(current["id"], case_id)
+
+    @app.post("/api/tea/cases/{case_id}/stages/{stage_id}/analysis")
+    def stage_analysis(
+        case_id: str, stage_id: str, payload: models.StageAnalysisInput, current=Depends(user)
+    ):
+        return service.studio.analyze(current["id"], case_id, stage_id, payload)
 
     @app.patch("/api/tea/cases/{case_id}/tasks/{task_id}")
     def patch_task(case_id: str, task_id: str, payload: models.TaskPatch, current=Depends(user)):
@@ -297,9 +288,12 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         case_id: str | None = None,
         limit: int = Query(100, ge=1, le=200),
         offset: int = Query(0, ge=0),
+        role: Literal["primary", "secondary"] | None = None,
+        parent_id: str | None = None,
+        q: str | None = Query(None, max_length=200),
         current=Depends(user),
     ):
-        return service.documents(current["id"], case_id, limit, offset)
+        return service.documents(current["id"], case_id, limit, offset, role=role, parent_id=parent_id, q=q)
 
     @app.post("/api/tea/documents", status_code=201)
     async def upload(
@@ -335,17 +329,16 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             await file.close()
 
     @app.get("/api/tea/documents/{id}")
-    def document(id: str, current=Depends(user)):
-        with closing(service.db.connect()) as conn:
-            row = service.own_document(conn, current["id"], id)
-            manifest = json.loads(row["manifest"])
-            return {
-                "document": service.document_dict(row),
-                "elements": manifest.get("elements", []),
-                "chunks": [
-                    {k: v for k, v in c.items() if k != "embedding"} for c in manifest.get("chunks", [])
-                ],
-            }
+    def document(
+        id: str,
+        element_offset: int = Query(0, ge=0),
+        chunk_offset: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=200),
+        current=Depends(user),
+    ):
+        return service.document_detail(
+            current["id"], id, element_offset=element_offset, chunk_offset=chunk_offset, limit=limit
+        )
 
     @app.get("/api/tea/documents/{id}/download")
     def document_download(id: str, current=Depends(user)):

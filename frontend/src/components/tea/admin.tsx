@@ -28,25 +28,21 @@ export type AdminPage = "workflow" | "analysis" | "library" | "sources";
 const pages = {
   workflow: {
     title: "办理流程",
-    description: "把办理经验整理成清晰的路径，发布后自动生成业务流程。",
     icon: GitBranch,
     group: "流程配置",
   },
   analysis: {
     title: "节点分析",
-    description: "配置进入节点时的主动分析，逐步检查输入、结果与依据。",
     icon: Sparkles,
     group: "流程配置",
   },
   library: {
     title: "资料库",
-    description: "从原始文件到结构化内容，让每一条依据都可以追溯。",
     icon: BookOpen,
     group: "内容管理",
   },
   sources: {
     title: "来源管理",
-    description: "维护资料来源与采集状态。",
     icon: Globe2,
     group: "内容管理",
   },
@@ -135,6 +131,12 @@ export function Admin({
             <strong>先调试，再发布</strong>
           </div>
           <p>草稿随时保存。发布后的配置用于新业务，每次办理都有独立版本。</p>
+          <span className="ta-mode-label">
+            <span className="ta-dot" />
+            {bootstrap.capabilities.assistant_mode === "live"
+              ? "模型已配置"
+              : "规则演示"}
+          </span>
         </div>
         <Link className="ta-return-link" href="/tea">
           <ArrowLeft size={16} />
@@ -160,38 +162,16 @@ export function Admin({
         </div>
       </aside>
       <div className="ta-admin-main">
-        <header className="ta-admin-topbar">
-          <button
-            className="ta-menu-trigger"
-            aria-label="展开后台菜单"
-            aria-expanded={menuOpen}
-            onClick={() => setMenuOpen(!menuOpen)}
-          >
-            <PanelLeft size={19} />
-          </button>
-          <div>
-            管理工作台
-            <ChevronRight size={13} />
-            <strong>{current.title}</strong>
-          </div>
-          <span className="ta-mode-label">
-            <span className="ta-dot" />
-            {bootstrap.capabilities.assistant_mode === "live"
-              ? "模型已配置"
-              : "规则演示"}
-          </span>
-        </header>
+        <button
+          className="ta-menu-trigger"
+          aria-label="展开后台菜单"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(!menuOpen)}
+        >
+          <PanelLeft size={19} />
+        </button>
         <main className="ta-admin-content">
-          {page === "workflow" || page === "analysis" ? (
-            <h1 className="sr-only">{current.title}</h1>
-          ) : (
-            <div className="ta-page-heading">
-              <div>
-                <h1>{current.title}</h1>
-                <p>{current.description}</p>
-              </div>
-            </div>
-          )}
+          <h1 className="sr-only">{current.title}</h1>
           {page === "workflow" || page === "analysis" ? (
             <Studio
               ownerId={bootstrap.user.id}
@@ -213,7 +193,7 @@ export function Admin({
               onUpload={(scope, parent) => setUpload({ scope, parent })}
             />
           ) : (
-            <Sources />
+            <Sources compact />
           )}
         </main>
         {page !== "workflow" && page !== "analysis" && (

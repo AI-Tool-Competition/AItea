@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Copy, Plus, Settings2 } from "lucide-react";
+import { Copy, Plus, Settings2 } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import {
   type TraceStep,
 } from "@/core/tea/types";
 
-import { ConfirmAction, OrderActions } from "./admin-shared";
+import { ConfirmAction, EditorInspector, OrderActions } from "./admin-shared";
 import { ConfigurationCanvas } from "./configuration-canvas";
 
 export function AnalysisEditor({
@@ -69,9 +69,7 @@ export function AnalysisEditor({
     setEditing(true);
   }
   return (
-    <div
-      className={`ta-editor-grid ta-analysis-grid ${editing ? "is-editing" : ""}`}
-    >
+    <div className="ta-editor-grid ta-analysis-grid">
       <div className="ta-editor-main">
         <div className="ta-analysis-toolbar">
           <label>
@@ -101,6 +99,7 @@ export function AnalysisEditor({
           <Button
             variant="ghost"
             size="sm"
+            data-inspector-trigger
             onClick={() => {
               setTab("settings");
               setEditing(true);
@@ -126,6 +125,7 @@ export function AnalysisEditor({
         <div className="ta-canvas-footer">
           <select
             className="ta-step-picker"
+            data-inspector-trigger
             aria-label="选择分析步骤"
             value={selected?.id ?? ""}
             onChange={(e) => selectStep(e.target.value)}
@@ -151,6 +151,7 @@ export function AnalysisEditor({
             <Button
               variant="outline"
               size="sm"
+              data-inspector-trigger
               disabled={inherited || agent.steps.length >= 20}
               onClick={() => {
                 const step = {
@@ -170,16 +171,11 @@ export function AnalysisEditor({
           </div>
         </div>
       </div>
-      <aside className="ta-inspector" aria-label="分析编辑栏">
-        <Button
-          className="ta-inspector-back"
-          size="sm"
-          variant="ghost"
-          onClick={() => setEditing(false)}
-        >
-          <ArrowLeft size={14} />
-          返回工作流画布
-        </Button>
+      <EditorInspector
+        open={editing}
+        onClose={() => setEditing(false)}
+        label="分析编辑栏"
+      >
         <div
           className="ta-inspector-tabs"
           role="tablist"
@@ -418,7 +414,7 @@ export function AnalysisEditor({
             <p className="ta-hint">添加第一个分析步骤。</p>
           )}
         </div>
-      </aside>
+      </EditorInspector>
     </div>
   );
 }

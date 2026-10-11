@@ -57,7 +57,8 @@ function ConfigurationCard({ data }: NodeProps<CanvasNode>) {
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />
       <button
-        className="nodrag ta-node-button"
+        className="nodrag nopan ta-node-button"
+        data-inspector-trigger
         onClick={() => data.onSelect(data.id)}
         aria-pressed={data.selected}
         aria-label={`编辑${data.label}`}

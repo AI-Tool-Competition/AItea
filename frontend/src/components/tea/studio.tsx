@@ -179,11 +179,6 @@ export function Studio({
             ))}
           </select>
         </label>
-        <span className="ta-template-version">
-          {templates.some((item) => item.id === templateId)
-            ? `已发布 v${templates.find((item) => item.id === templateId)!.version}`
-            : "未发布草稿"}
-        </span>
         {offset + 50 < total && (
           <Button
             size="sm"
@@ -411,16 +406,14 @@ function EditorSession({
   return (
     <>
       <div className="ta-draft-bar">
-        <div className="ta-draft-status">
-          <span className={`ta-dot ${configuration.dirty ? "unsaved" : ""}`} />
-          {configuration.loading
-            ? "正在读取草稿"
-            : configuration.dirty
-              ? "有未保存的修改"
-              : configuration.revision
-                ? "草稿已保存"
-                : "与已发布配置一致"}
-        </div>
+        {(configuration.loading || configuration.dirty) && (
+          <div className="ta-draft-status" role="status">
+            <span
+              className={`ta-dot ${configuration.dirty ? "unsaved" : ""}`}
+            />
+            {configuration.loading ? "读取中" : "未保存"}
+          </div>
+        )}
         <div className="ta-toolbar">
           <Button
             ref={debugButton}

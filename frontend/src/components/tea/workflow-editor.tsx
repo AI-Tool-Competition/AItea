@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ArrowLeft,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -23,7 +22,7 @@ import {
 } from "@/core/tea/types";
 import { cn } from "@/lib/utils";
 
-import { ConfirmAction, OrderActions } from "./admin-shared";
+import { ConfirmAction, EditorInspector, OrderActions } from "./admin-shared";
 
 type Selection =
   | { kind: "config" | "stage"; stageId: string }
@@ -165,12 +164,7 @@ export function WorkflowEditor({
     field: "填写项设置",
   }[selected.kind];
   return (
-    <div
-      className={cn(
-        "ta-editor-grid ta-workflow-workspace",
-        editing && "is-editing",
-      )}
-    >
+    <div className="ta-editor-grid ta-workflow-workspace">
       <section className="ta-workflow-tree" aria-label="流程结构">
         <div className="ta-tree-toolbar">
           <h3>流程结构</h3>
@@ -212,6 +206,7 @@ export function WorkflowEditor({
               <button
                 type="button"
                 className="ta-tree-label"
+                data-inspector-trigger
                 aria-label="流程基本信息"
                 aria-pressed={selected.kind === "config"}
                 onClick={() =>
@@ -259,6 +254,7 @@ export function WorkflowEditor({
                   <button
                     type="button"
                     className="ta-tree-label"
+                    data-inspector-trigger
                     aria-label={name}
                     aria-pressed={
                       selected.kind === "stage" && stage?.id === item.id
@@ -312,6 +308,7 @@ export function WorkflowEditor({
                             <button
                               type="button"
                               className="ta-tree-label"
+                              data-inspector-trigger
                               aria-label={title}
                               aria-pressed={
                                 selected.kind === "task" &&
@@ -359,6 +356,7 @@ export function WorkflowEditor({
                                       <button
                                         type="button"
                                         className="ta-tree-label"
+                                        data-inspector-trigger
                                         aria-label={label}
                                         aria-pressed={active}
                                         onClick={() =>
@@ -384,6 +382,7 @@ export function WorkflowEditor({
                                 <Button
                                   type="button"
                                   className="ta-tree-add"
+                                  data-inspector-trigger
                                   variant="ghost"
                                   size="sm"
                                   disabled={child.fields.length >= 30}
@@ -403,6 +402,7 @@ export function WorkflowEditor({
                       <Button
                         type="button"
                         className="ta-tree-add"
+                        data-inspector-trigger
                         variant="ghost"
                         size="sm"
                         disabled={item.tasks.length >= 30}
@@ -422,6 +422,7 @@ export function WorkflowEditor({
             <Button
               type="button"
               className="ta-tree-add"
+              data-inspector-trigger
               variant="ghost"
               size="sm"
               disabled={draft.stages.length >= 20}
@@ -444,17 +445,11 @@ export function WorkflowEditor({
           </li>
         </ul>
       </section>
-      <aside className="ta-inspector" aria-label="流程编辑栏">
-        <Button
-          type="button"
-          className="ta-inspector-back"
-          variant="ghost"
-          size="sm"
-          onClick={() => setEditing(false)}
-        >
-          <ArrowLeft size={15} />
-          返回流程列表
-        </Button>
+      <EditorInspector
+        open={editing}
+        onClose={() => setEditing(false)}
+        label="流程编辑栏"
+      >
         <div className="ta-inspector-header">
           <div>
             <small>
@@ -612,7 +607,7 @@ export function WorkflowEditor({
             <FieldFields field={field} onChange={updateField} />
           )}
         </div>
-      </aside>
+      </EditorInspector>
     </div>
   );
 }

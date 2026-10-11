@@ -97,16 +97,49 @@ function Editor({
 }
 
 describe("workflow editor", () => {
+  it("opens only for editing, dismisses outside, and preserves unsaved inputs", () => {
+    render(<Editor />);
+    expect(
+      screen.queryByRole("complementary", { name: "流程编辑栏" }),
+    ).toBeNull();
+    const tree = within(screen.getByRole("region", { name: "流程结构" }));
+    const trigger = tree.getByRole("button", { name: "产品信息" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const inspector = screen.getByRole("complementary", {
+      name: "流程编辑栏",
+    });
+    const input = within(inspector).getByLabelText("任务名称");
+    fireEvent.pointerDown(input);
+    fireEvent.change(input, { target: { value: "待整理的产品资料" } });
+    expect(inspector.getAttribute("aria-hidden")).toBe("false");
+
+    fireEvent.pointerDown(document.body);
+    expect(
+      screen.queryByRole("complementary", { name: "流程编辑栏" }),
+    ).toBeNull();
+    const renamed = tree.getByRole("button", { name: "待整理的产品资料" });
+    renamed.focus();
+    fireEvent.click(renamed);
+    expect(
+      within(inspector).getByLabelText<HTMLInputElement>("任务名称").value,
+    ).toBe("待整理的产品资料");
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(
+      screen.queryByRole("complementary", { name: "流程编辑栏" }),
+    ).toBeNull();
+    expect(document.activeElement).toBe(renamed);
+  });
+
   it("edits a deeply selected field in one inspector and retains it across stage navigation", () => {
     const changed = rs.fn();
     render(<Editor onDraft={changed} />);
     const tree = within(screen.getByRole("region", { name: "流程结构" }));
+    fireEvent.click(tree.getByRole("button", { name: "展开任务：产品信息" }));
+    fireEvent.click(tree.getByRole("button", { name: "产品名称" }));
     const inspector = within(
       screen.getByRole("complementary", { name: "流程编辑栏" }),
     );
-    expect(inspector.queryByLabelText("显示名称")).toBeNull();
-    fireEvent.click(tree.getByRole("button", { name: "展开任务：产品信息" }));
-    fireEvent.click(tree.getByRole("button", { name: "产品名称" }));
     expect(inspector.queryByLabelText("节点名称")).toBeNull();
     fireEvent.change(inspector.getByLabelText("显示名称"), {
       target: { value: "商品名称" },
@@ -124,7 +157,7 @@ describe("workflow editor", () => {
     expect(inspector.getByLabelText<HTMLInputElement>("显示名称").value).toBe(
       "商品名称",
     );
-    fireEvent.click(screen.getByRole("button", { name: "返回流程列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "收起流程编辑栏" }));
     expect(tree.getByRole("button", { name: "商品名称" })).toBeTruthy();
   });
 
@@ -132,10 +165,10 @@ describe("workflow editor", () => {
     const changed = rs.fn();
     render(<Editor onDraft={changed} />);
     const tree = within(screen.getByRole("region", { name: "流程结构" }));
+    fireEvent.click(tree.getByRole("button", { name: "产品信息" }));
     const inspector = within(
       screen.getByRole("complementary", { name: "流程编辑栏" }),
     );
-    fireEvent.click(tree.getByRole("button", { name: "产品信息" }));
     fireEvent.click(inspector.getByRole("button", { name: "任务后移" }));
     expect(inspector.getByLabelText<HTMLInputElement>("任务名称").value).toBe(
       "产品信息",
@@ -147,6 +180,16 @@ describe("workflow editor", () => {
     ).toEqual(["contact", "product"]);
     fireEvent.click(inspector.getByRole("button", { name: "删除任务" }));
     expect(changed.mock.calls.at(-1)?.[0].stages[0].tasks).toHaveLength(2);
+    fireEvent.pointerDown(screen.getByRole("dialog"));
+    expect(
+      screen.getByLabelText("流程编辑栏").getAttribute("aria-hidden"),
+    ).toBe("false");
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByRole("complementary", { name: "流程编辑栏" }),
+    ).toBeTruthy();
+    fireEvent.click(inspector.getByRole("button", { name: "删除任务" }));
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: "确认",

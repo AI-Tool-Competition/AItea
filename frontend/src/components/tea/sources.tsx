@@ -16,7 +16,7 @@ import {
   SectionHeading,
 } from "./shared";
 
-export function Sources() {
+export function Sources({ compact = false }: { compact?: boolean } = {}) {
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -108,18 +108,29 @@ export function Sources() {
   }
   return (
     <div className="tea-page tea-sources">
-      <SectionHeading
-        eyebrow="STAY CONNECTED TO THE SOURCE"
-        title="让依据，跟上变化。"
-      >
-        <Button onClick={() => setAdding(!adding)}>
-          <Plus size={15} />
-          添加来源
-        </Button>
-      </SectionHeading>
-      <p className="tea-page-intro">
-        配置固定的公开 HTTPS 来源，保存主文件及关联附件，保留抓取记录。
-      </p>
+      {compact ? (
+        <div className="ta-source-toolbar">
+          <Button onClick={() => setAdding(!adding)}>
+            <Plus size={15} />
+            添加来源
+          </Button>
+        </div>
+      ) : (
+        <>
+          <SectionHeading
+            eyebrow="STAY CONNECTED TO THE SOURCE"
+            title="让依据，跟上变化。"
+          >
+            <Button onClick={() => setAdding(!adding)}>
+              <Plus size={15} />
+              添加来源
+            </Button>
+          </SectionHeading>
+          <p className="tea-page-intro">
+            配置固定的公开 HTTPS 来源，保存主文件及关联附件，保留抓取记录。
+          </p>
+        </>
+      )}
       {error && (
         <ErrorNotice
           message={error}

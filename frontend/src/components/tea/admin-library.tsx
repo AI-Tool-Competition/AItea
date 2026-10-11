@@ -146,24 +146,6 @@ export function AdminLibrary({
           上传资料
         </Button>
       </div>
-      <div className="ta-library-guide">
-        <div>
-          <Layers size={18} />
-          <span>
-            <strong>一级资料</strong>
-            <small>解析正文、拆解章节、建立检索</small>
-          </span>
-        </div>
-        <ChevronRight size={17} />
-        <div>
-          <Paperclip size={18} />
-          <span>
-            <strong>二级资料</strong>
-            <small>归属于一级资料，保存完整原件</small>
-          </span>
-        </div>
-        <p>点击文件查看结构化拆解</p>
-      </div>
       {error && (
         <ErrorNotice
           message={error}

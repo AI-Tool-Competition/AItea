@@ -6,22 +6,30 @@
 
 ## 本地运行
 
-需要 Node.js 22+、Python 3.12+ 和 uv。在本项目目录运行：
+开发启动器支持 Linux，需要 Node.js 22+、npm、Python 3 和 uv。后端 Python 3.12+ 环境由 **uv** 在 `backend/.venv` 中管理；不需要手动激活环境或使用全局 pip。在本项目目录运行：
 
 ```bash
-make setup
 make dev
 ```
 
 打开 <http://127.0.0.1:3000/tea>，选择“进入演示工作台”，或注册独立账户。演示入口也有服务端会话与持久化业务记录，不会把不同访客放进同一个共享账号。
 
-首次安装需要下载 DeerFlow 的完整依赖。日志保存在 `.dev/api.log` 和 `.dev/web.log`；Ctrl+C 只停止本次启动的两个服务。端口已占用时不会终止其他项目：
+`make dev` 自动同步锁定依赖、后台启动前后端并等待健康检查，成功后返回终端。前后端代码修改均支持热更新。首次安装需要下载 DeerFlow 的完整依赖，后续根据依赖指纹跳过重复安装。
 
 ```bash
-python3 scripts/dev.py --web-port 3001 --api-port 8001
+make dev-status       # 当前工作树状态
+make dev-list         # 本仓库所有工作树状态
+make dev-stop         # 取消安装/启动或停止服务，保留业务数据
+make dev-foreground   # 需要前台运行时使用，Ctrl+C 停止
 ```
 
-业务数据库和原始文件位于 `data/`，不要提交到 Git。刷新或重启服务会保留业务；清理该目录会删除本地数据。
+日志保存在 `.dev/api.log`、`.dev/web.log` 和 `.dev/supervisor.log`。端口已占用时不会终止其他项目，可显式指定：
+
+```bash
+make dev WEB_PORT=3001 API_PORT=8001
+```
+
+业务数据库和原始文件位于 `data/`，不要提交到 Git。刷新、重启及 `make dev-clean` 都会保留业务数据。完整命令、工作树隔离和排错方式见 [开发环境说明](docs/DEVELOPMENT.md)；工程约定见 [AGENTS.md](AGENTS.md)。
 
 ## 连接模型与真实资料
 
@@ -50,6 +58,7 @@ python3 scripts/dev.py --web-port 3001 --api-port 8001
 
 ```bash
 make check
+make dev-stop
 make build
 make start
 ```

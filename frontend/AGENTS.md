@@ -1,5 +1,14 @@
 # AGENTS.md
 
+## AItea scope
+
+This checkout is part of AItea. Follow the repository-root `AGENTS.md` for
+engineering workflow, uv environments, isolation and verification. Start the
+whole application with `make dev` from the repository root. The upstream
+Gateway/nginx startup and blanket frontend checks described below apply only
+when changing those retained DeerFlow features; tea-workspace changes use the
+root's scoped checks and the integration notes at the end of this file.
+
 This file provides guidance to AI coding agents (Claude Code, Codex, and others) when working with the DeerFlow frontend. It is the source of truth; the sibling `CLAUDE.md` imports it via `@AGENTS.md`.
 
 ## Project Overview

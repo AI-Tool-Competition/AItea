@@ -4,7 +4,7 @@
 
 ## 启动与检查
 
-从 AItea 根目录使用 `python3 scripts/dev.py` 同时启动前后端。独立前端开发使用 `pnpm dev`，默认 Next.js 端口 3000；茶业务 API 默认代理到 `http://127.0.0.1:8000`，可通过服务端 `TEA_API_URL` 覆盖。浏览器使用同源 HTTP-only 会话 Cookie，无需在客户端设置 API 密钥。
+从 AItea 根目录使用 `make dev` 同时启动前后端，后端虚拟环境和依赖统一由 uv 管理。服务通过健康检查后在后台运行，使用 `make dev-stop` 停止；需要前台模式时使用 `make dev-foreground`。独立前端开发使用 `pnpm dev`，默认 Next.js 端口 3000；茶业务 API 默认代理到 `http://127.0.0.1:8000`，可通过服务端 `TEA_API_URL` 覆盖。浏览器使用同源 HTTP-only 会话 Cookie，无需在客户端设置 API 密钥。完整说明见根目录 `docs/DEVELOPMENT.md`。
 
 ```
 pnpm typecheck

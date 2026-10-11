@@ -1,3 +1,11 @@
+# AItea applicability
+
+The repository-root `AGENTS.md` governs the tea workspace's development workflow,
+environment and scoped verification. The rules below describe retained upstream
+DeerFlow features and apply when editing those features. They do not require the
+tea workspace to start or depend on the upstream Gateway. See the integration
+notes in `frontend/AGENTS.md` before changing shared components.
+
 ### Data Flow
 
 Scope local-turn ordering to `displayThreadId ?? threadId`, the displayed

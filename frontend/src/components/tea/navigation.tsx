@@ -1,11 +1,11 @@
 "use client";
 
 import {
-  ArrowRight,
   BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
   FolderClosed,
   FolderOpen,
   Globe2,
@@ -13,10 +13,17 @@ import {
   MessageSquare,
   Plus,
   Settings2,
-  Upload,
   UserRound,
 } from "lucide-react";
+import { useState } from "react";
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -25,6 +32,7 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
@@ -60,7 +68,6 @@ export function TeaNavigation({
   onCase,
   onStage,
   onCreate,
-  onUpload,
 }: {
   view: TeaView;
   user: User;
@@ -72,9 +79,9 @@ export function TeaNavigation({
   onCase: (id: string) => void;
   onStage: (id: string) => void;
   onCreate: () => void;
-  onUpload: () => void;
 }) {
   const { open, isMobile, setOpenMobile } = useSidebar();
+  const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
   function navigate(action: () => void) {
     action();
     setOpenMobile(false);
@@ -109,7 +116,7 @@ export function TeaNavigation({
       <SidebarContent>
         <SidebarGroup className="pt-1">
           <SidebarMenu>
-            {teaNavigationItems.map((item) => (
+            {teaNavigationItems.slice(0, 2).map((item) => (
               <SidebarMenuItem key={item.id}>
                 <SidebarMenuButton
                   isActive={view === item.id}
@@ -122,24 +129,14 @@ export function TeaNavigation({
                 </SidebarMenuButton>
               </SidebarMenuItem>
             ))}
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                tooltip="上传资料"
-                aria-label="上传资料"
-                onClick={() => navigate(onUpload)}
-              >
-                <Upload />
-                <span>上传资料</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
         {(open || isMobile) && (
           <SidebarGroup className="tea-business-group">
             <SidebarGroupLabel>我的出口业务</SidebarGroupLabel>
-            <div className="tea-businesses">
+            <SidebarMenu className="tea-businesses">
               {cases.map((business) => (
-                <div className="tea-business" key={business.id}>
+                <SidebarMenuItem className="tea-business" key={business.id}>
                   <SidebarMenuButton
                     isActive={caseId === business.id && view === "workspace"}
                     className="tea-business-title"
@@ -147,58 +144,99 @@ export function TeaNavigation({
                   >
                     {caseId === business.id ? <FolderOpen /> : <FolderClosed />}
                     <span>{business.title}</span>
-                    {caseId === business.id ? (
+                  </SidebarMenuButton>
+                  <SidebarMenuAction
+                    aria-label={`${expandedCaseId === business.id ? "收起" : "展开"}业务阶段：${business.title}`}
+                    aria-expanded={expandedCaseId === business.id}
+                    onClick={() => {
+                      const expanding = expandedCaseId !== business.id;
+                      setExpandedCaseId(expanding ? business.id : null);
+                      if (expanding && caseId !== business.id)
+                        onCase(business.id);
+                    }}
+                  >
+                    {expandedCaseId === business.id ? (
                       <ChevronDown />
                     ) : (
                       <ChevronRight />
                     )}
-                  </SidebarMenuButton>
-                  {caseId === business.id && record?.id === business.id && (
-                    <div className="tea-subconversations">
-                      {record.stages.map((stage) => (
-                        <button
-                          key={stage.id}
-                          className={
-                            stageId === stage.id && view === "workspace"
-                              ? "active"
-                              : ""
-                          }
-                          onClick={() => navigate(() => onStage(stage.id))}
-                        >
-                          <span className={`tea-tree-dot ${stage.status}`} />
-                          <span>{stage.name}</span>
-                          {stage.status === "locked" && (
-                            <LockKeyhole size={12} />
-                          )}
-                          {stage.status === "completed" && <Check size={12} />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                  </SidebarMenuAction>
+                  {expandedCaseId === business.id &&
+                    caseId === business.id &&
+                    record?.id === business.id && (
+                      <div className="tea-subconversations">
+                        {record.stages.map((stage) => (
+                          <button
+                            key={stage.id}
+                            className={
+                              stageId === stage.id && view === "workspace"
+                                ? "active"
+                                : ""
+                            }
+                            onClick={() => navigate(() => onStage(stage.id))}
+                          >
+                            <span className={`tea-tree-dot ${stage.status}`} />
+                            <span>{stage.name}</span>
+                            {stage.status === "locked" && (
+                              <LockKeyhole size={12} />
+                            )}
+                            {stage.status === "completed" && (
+                              <Check size={12} />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                </SidebarMenuItem>
               ))}
-            </div>
+            </SidebarMenu>
           </SidebarGroup>
         )}
       </SidebarContent>
       <SidebarFooter>
-        {(open || isMobile) && (
-          <div className="tea-navigation-route">
-            <span>演示路线</span>
-            中国 <ArrowRight size={12} /> 印度尼西亚
-          </div>
-        )}
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={view === "account"}
-              tooltip="账号管理"
-              aria-label="账号管理"
-              onClick={() => navigate(() => onNavigate("account"))}
-            >
-              <UserRound />
-              <span>{user.name}</span>
-            </SidebarMenuButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton
+                  isActive={
+                    view === "account" ||
+                    view === "studio" ||
+                    view === "sources"
+                  }
+                  tooltip="账号与管理"
+                  aria-label="账号与管理"
+                  className="data-[state=open]:bg-sidebar-accent"
+                >
+                  <UserRound />
+                  <span>{user.name}</span>
+                  <ChevronsUpDown className="ml-auto" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
+                side={isMobile || open ? "top" : "right"}
+                align="end"
+                sideOffset={4}
+              >
+                <DropdownMenuItem
+                  onSelect={() => navigate(() => onNavigate("account"))}
+                >
+                  <UserRound />
+                  账号管理
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {teaNavigationItems.slice(2).map((item) => (
+                  <DropdownMenuItem
+                    key={item.id}
+                    onSelect={() => navigate(() => onNavigate(item.id))}
+                  >
+                    <item.icon />
+                    {item.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

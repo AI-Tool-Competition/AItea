@@ -17,7 +17,7 @@ SKIP_ENV_VALIDATION=1 NEXT_TELEMETRY_DISABLED=1 pnpm build
 
 `/` 跳转到 `/tea`。茶工作台包括欢迎与登录、业务文件夹及主体子对话、办理流程、任务填报核验、文稿编辑版本、按业务划分的资料库与审核、法务模板配置/导入/导出/模拟调试、来源采集以及演示账号升级。
 
-窗口布局直接复用原 DeerFlow `SidebarProvider`、`Sidebar`、`SidebarInset`：桌面采用单条 16rem 侧栏，可折叠为 3rem 图标栏；手机通过同一侧栏组件打开抽屉，选择入口后自动收起。业务页使用单条 48px 顶栏，中间为对话，右侧为可调宽度、可收起的办理面板，重新打开时保留调整后的宽度。
+窗口布局直接复用原 DeerFlow `SidebarProvider`、`Sidebar`、`SidebarInset`：桌面采用单条 16rem 侧栏，可折叠为 3rem 图标栏；手机通过同一侧栏组件打开抽屉，选择入口后自动收起。主导航保留出口业务、资料库和默认收起阶段的业务目录，账号、法务工作台及来源管理从底部账号菜单进入。业务页使用单条 48px 顶栏，默认只显示对话和输入框；任务、流程、文稿和档案通过「办理流程」按需打开右侧面板。面板支持调宽和收起，重新打开时保留宽度和未保存编辑，不在对话上方重复展示任务清单。
 
 复用原 DeerFlow `Conversation`、`MessageResponse`、`ResizablePanelGroup`、`Button`、`Input`、`Dialog`、`Sheet` 等组件。配色、字体和控件来自未修改的 `src/styles/globals.css` 与 UI 原语；`.tea-theme` 仅补充业务布局、状态色和阅读尺寸，跟随原版浅色/深色主题，支持键盘焦点及减少动态效果设置。欢迎页和各业务页采用简洁商务排版。
 

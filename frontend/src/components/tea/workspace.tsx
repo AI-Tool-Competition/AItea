@@ -1,6 +1,5 @@
 "use client";
 import {
-  ArrowRight,
   ArrowUp,
   BookOpen,
   Check,
@@ -52,7 +51,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 import { ArtifactPanel } from "./artifact-panel";
 import { CitationCard } from "./library";
-import { Busy, dateLabel, ErrorNotice, taskStatus, Trace } from "./shared";
+import { Busy, dateLabel, ErrorNotice, Trace } from "./shared";
 import { TaskPanel } from "./task-panel";
 type PanelTab = "flow" | "task" | "document" | "facts";
 
@@ -149,7 +148,7 @@ function Flow({
               <p>
                 {stage.status === "locked"
                   ? "前一阶段完成后解锁"
-                  : "本阶段任务可并行办理"}
+                  : stage.description}
               </p>
             </div>
           </section>
@@ -324,61 +323,6 @@ function StageChat({
         className="tea-conversation"
       >
         <ConversationContent className="tea-conversation-content">
-          <div className="tea-stage-intro">
-            <h1>{stage.name}</h1>
-            <p>{stage.description}</p>
-            <div className="tea-stage-route">
-              {record.template.origin} <ArrowRight size={12} />{" "}
-              {record.template.destination} <span> / </span> 面向{stage.actor}
-            </div>
-            <div className="tea-stage-context">
-              <span>
-                <FolderOpen size={13} />
-                {record.company}
-              </span>
-              <span>
-                <Leaf size={13} />
-                {record.product}
-              </span>
-            </div>
-          </div>
-          <div className="tea-parallel-tasks">
-            <div className="tea-list-label">
-              <span>本阶段任务</span>
-              <span>
-                {stage.tasks.filter((t) => t.status === "completed").length}/
-                {stage.tasks.length} 完成 · 可并行
-              </span>
-            </div>
-            {stage.tasks.map((task, i) => (
-              <button
-                key={task.id}
-                onClick={() => onTask(task.id)}
-                className={`tea-inline-task ${taskId === task.id ? "selected" : ""}`}
-              >
-                <span className={`tea-inline-task-icon ${task.status}`}>
-                  {task.status === "completed" ? (
-                    <Check size={16} />
-                  ) : (
-                    String(i + 1).padStart(2, "0")
-                  )}
-                </span>
-                <span>
-                  <strong>{task.title}</strong>
-                  <small>
-                    {task.needs_review ? "需要复核" : taskStatus[task.status]}
-                    {task.require_document ? " · 需要材料" : ""}
-                  </small>
-                </span>
-                <ChevronRight size={15} />
-              </button>
-            ))}
-          </div>
-          <div className="tea-chat-divider">
-            <span />
-            本节点对话
-            <span />
-          </div>
           {!loading && messages.length < messageTotal && (
             <Button
               variant="ghost"
@@ -405,9 +349,11 @@ function StageChat({
                   )}
                 </div>
                 <div className="tea-message-body">
-                  <div className="tea-message-label">
+                  <div
+                    className="tea-message-label"
+                    title={dateLabel(message.created_at)}
+                  >
                     {message.role === "assistant" ? "茶渡助手" : "你"}
-                    <span>{dateLabel(message.created_at)}</span>
                   </div>
                   <div className="tea-message-content">
                     <MessageResponse>{message.content}</MessageResponse>
@@ -440,7 +386,7 @@ function StageChat({
                 <div className="tea-message-content">
                   {stage.status === "locked"
                     ? "这个阶段尚未解锁。你可以先了解任务要求，完成前一阶段后继续办理。"
-                    : "我们一起把这一阶段准备好。上方任务可以并行办理；你可以先提问、上传资料，或打开任务填报信息并申请核验。"}
+                    : "可以先提问或上传资料，通过「办理流程」填写任务并申请核验。"}
                 </div>
               </div>
             </article>
@@ -493,7 +439,7 @@ function StageChat({
             placeholder={
               stage.status === "locked"
                 ? "可以先咨询这一阶段的准备要求…"
-                : "说说你的问题，或汇报最新的办理进度…"
+                : "向茶渡助手提问…"
             }
             onChange={(e) => setText(e.target.value)}
             disabled={sending}
@@ -511,18 +457,21 @@ function StageChat({
             }}
           />
           <div className="tea-composer-toolbar">
-            <button type="button" onClick={onUpload} title="上传资料">
+            <Button
+              variant="ghost"
+              size="icon"
+              type="button"
+              onClick={onUpload}
+              aria-label="上传资料"
+              title="上传资料"
+            >
               <Paperclip size={17} />
-              <span>添加资料</span>
-            </button>
-            <span className="tea-composer-context">
-              <ShieldCheck size={12} />
-              共享本次业务档案
-            </span>
+            </Button>
             <button
               className="tea-send"
               type="submit"
               aria-label="发送消息"
+              title="Enter 发送 · Shift + Enter 换行"
               disabled={!text.trim() || sending || loading}
             >
               <ArrowUp size={17} />
@@ -531,9 +480,8 @@ function StageChat({
         </form>
         <p className="tea-composer-note">
           {capabilities.assistant_mode === "demo"
-            ? "当前为演示助手，依据已上传资料和配置规则提供指导。"
-            : "结论请结合引用原文及实际办理要求核对。"}
-          <span>Enter 发送 · Shift + Enter 换行</span>
+            ? "演示助手 · 基于资料与配置规则"
+            : "AI 助手 · 请结合引用原文核对办理要求"}
         </p>
       </div>
     </div>
@@ -555,19 +503,21 @@ export function Workspace({
   onUpdate: (record: CaseDetail) => void;
   onUpload: () => void;
 }) {
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [tab, setTab] = useState<PanelTab>("flow");
   const [taskId, setTaskId] = useState("");
   const [artifactId, setArtifactId] = useState("");
   const isMobile = useIsMobile();
   const panelRef = usePanelRef();
+  const panelOpenRef = useRef(false);
   const openPanelSize = useRef("40%");
   const stage = record.stages.find((s) => s.id === stageId) ?? record.stages[0];
   const task = stage?.tasks.find((t) => t.id === taskId);
   const selectedArtifact =
     record.artifacts.find((a) => a.id === artifactId) ?? record.artifacts[0];
   useEffect(() => {
+    panelOpenRef.current = !isMobile && panelOpen;
     if (isMobile) return;
     if (panelOpen) panelRef.current?.resize(openPanelSize.current);
     else panelRef.current?.collapse();
@@ -738,9 +688,6 @@ export function Workspace({
           <span className="tea-workspace-stage">{stage.name}</span>
         </div>
         <div className="tea-workspace-actions">
-          <span className="tea-mode-indicator">
-            {capabilities.assistant_mode === "demo" ? "演示助手" : "AI 助手"}
-          </span>
           <button
             aria-expanded={isMobile ? mobileOpen : panelOpen}
             onClick={() => {
@@ -785,8 +732,14 @@ export function Workspace({
         <ResizablePanelGroup
           orientation="horizontal"
           className="tea-workspace-panels"
+          onLayoutChanged={(layout) => {
+            // A completed drag can collapse the panel; resize callbacks only
+            // remember its width and must not reverse a requested close.
+            if (panelOpenRef.current && layout["tea-details"] === 0)
+              setPanelOpen(false);
+          }}
         >
-          <ResizablePanel id="conversation" minSize="30%" defaultSize="60%">
+          <ResizablePanel id="conversation" minSize="30%" defaultSize="100%">
             <StageChat
               key={stage.id}
               record={record}
@@ -801,7 +754,7 @@ export function Workspace({
           <ResizableHandle
             withHandle
             disabled={!panelOpen}
-            className="tea-resize-handle"
+            className={`tea-resize-handle ${panelOpen ? "" : "pointer-events-none opacity-0"}`}
           />
           <ResizablePanel
             id="tea-details"
@@ -810,12 +763,11 @@ export function Workspace({
             collapsedSize={0}
             minSize="20%"
             maxSize="70%"
-            defaultSize="40%"
+            defaultSize="0%"
             onResize={(size) => {
-              if (size.asPercentage > 0) {
+              if (panelOpenRef.current && size.asPercentage > 0) {
                 openPanelSize.current = `${size.asPercentage}%`;
               }
-              setPanelOpen(size.asPercentage > 0);
             }}
           >
             <div className="tea-details-content" hidden={!panelOpen}>

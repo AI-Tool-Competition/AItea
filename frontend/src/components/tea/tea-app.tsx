@@ -500,7 +500,6 @@ export function TeaApp() {
           setView("workspace");
         }}
         onCreate={() => setCreateOpen(true)}
-        onUpload={() => setUploadOpen(true)}
       />
       <SidebarInset className="tea-main min-w-0">
         {(view !== "workspace" || !record || recordLoading || recordError) && (
@@ -520,16 +519,6 @@ export function TeaApp() {
                     : teaNavigationItems.find((n) => n.id === view)?.label}
                 </strong>
               )}
-            </div>
-            <div className="tea-topbar-meta">
-              <span className="tea-mode-indicator">
-                <span />
-                {bootstrap.capabilities.assistant_mode === "demo"
-                  ? "演示助手"
-                  : "AI 助手"}
-              </span>
-              <span className="tea-topbar-divider" />
-              <span>{bootstrap.user.name}</span>
             </div>
           </header>
         )}

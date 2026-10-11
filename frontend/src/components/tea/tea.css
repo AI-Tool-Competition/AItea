@@ -320,7 +320,7 @@
   overflow: visible;
 }
 .tea-business {
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 .tea-business-title {
   display: flex;
@@ -330,7 +330,7 @@
   text-align: left;
   color: var(--foreground);
   font-size: 14px;
-  padding: 8px;
+  padding: 8px 32px 8px 8px;
   border-radius: var(--radius-md);
 }
 .tea-business-title > span {
@@ -419,33 +419,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tea-topbar-meta {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  font-size: 12px;
-  color: var(--foreground);
-  white-space: nowrap;
-  padding-left: 10px;
-}
-.tea-mode-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--foreground);
-  font-size: 12px;
-}
-.tea-mode-indicator > span {
-  width: 5px;
-  height: 5px;
-  background: var(--primary);
-  border-radius: 50%;
-}
-.tea-topbar-divider {
-  width: 1px;
-  height: 12px;
-  background: var(--background);
-}
 .tea-no-cases {
   flex: 1;
   display: flex;
@@ -500,108 +473,6 @@
   padding: 32px 32px 24px;
   gap: 24px;
 }
-.tea-stage-intro h1 {
-  color: var(--foreground);
-  font-size: 24px;
-  font-weight: 600;
-  margin-top: 0;
-  line-height: 1.4;
-}
-.tea-stage-intro > p {
-  line-height: 1.75;
-  color: var(--muted-foreground);
-  font-size: 14px;
-  max-width: 65ch;
-  margin-top: 8px;
-}
-.tea-stage-context {
-  display: flex;
-  gap: 16px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  margin-top: 12px;
-}
-.tea-stage-context > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.tea-parallel-tasks {
-  margin-top: 0;
-  padding: 0;
-}
-.tea-parallel-tasks > .tea-list-label {
-  margin-bottom: 7px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-.tea-parallel-tasks > .tea-list-label > span:last-child {
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-.tea-inline-task {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 6px;
-  text-align: left;
-  border-bottom: 1px solid var(--border);
-}
-.tea-inline-task:last-child {
-  border-bottom: 0;
-}
-.tea-inline-task:hover,
-.tea-inline-task.selected {
-  background: var(--accent);
-  border-radius: var(--radius-md);
-}
-.tea-inline-task-icon {
-  width: 28px;
-  height: 29px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  font-size: 12px;
-  color: var(--foreground);
-  background: var(--muted);
-}
-.tea-inline-task-icon.completed {
-  background: color-mix(in oklch, var(--tea-success) 8%, var(--background));
-  color: var(--tea-success);
-}
-.tea-inline-task > span:nth-child(2) {
-  flex: 1;
-}
-.tea-inline-task strong {
-  font-weight: 400;
-  font-size: 12px;
-  color: var(--foreground);
-  display: block;
-}
-.tea-inline-task small {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  display: block;
-  margin-top: 5px;
-}
-.tea-inline-task > svg {
-  color: var(--foreground);
-}
-.tea-chat-divider {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  font-size: 12px;
-  color: var(--foreground);
-  margin: 0 8px;
-}
-.tea-chat-divider > span {
-  height: 1px;
-  background: var(--background);
-  flex: 1;
-}
 .tea-message {
   display: flex;
   gap: 12px;
@@ -635,10 +506,6 @@
   font-size: 12px;
   color: var(--muted-foreground);
   margin: 6px 0 12px;
-}
-.tea-message-label > span {
-  font-size: 12px;
-  color: var(--muted-foreground);
 }
 .tea-message-content {
   white-space: pre-wrap;
@@ -787,13 +654,6 @@
   font-size: 12px;
   padding: 5px;
 }
-.tea-composer-context {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-}
 .tea-composer .tea-send {
   display: grid;
   place-items: center;
@@ -810,18 +670,12 @@
   color: var(--foreground);
 }
 .tea-composer-note {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
+  text-align: center;
   margin: 10px auto 0 !important;
   font-size: 12px;
   line-height: 1.6;
   color: var(--muted-foreground);
   max-width: var(--container-width-md);
-}
-.tea-composer-note > span {
-  white-space: nowrap;
-  font-size: 12px;
 }
 .tea-current-task {
   display: flex;
@@ -1969,18 +1823,9 @@
     padding: 32px 32px 24px;
     gap: 24px;
   }
-  .tea-stage-intro h1 {
-    font-size: 24px;
-    font-weight: 600;
-    margin-top: 0;
-    line-height: 1.4;
-  }
   .tea-message-content {
     font-size: 14px;
     line-height: 1.75;
-  }
-  .tea-inline-task strong {
-    font-size: 14px;
   }
   .tea-flow {
     padding: 30px;
@@ -1998,12 +1843,6 @@
     max-width: var(--container-width-md);
     padding: 32px 32px 24px;
     gap: 24px;
-  }
-  .tea-stage-intro h1 {
-    font-size: 24px;
-    font-weight: 600;
-    margin-top: 0;
-    line-height: 1.4;
   }
   .tea-topbar {
     padding-inline: 20px;
@@ -2044,9 +1883,6 @@
     background: var(--background);
     padding: 16px 24px;
   }
-  .tea-composer-note > span {
-    display: none;
-  }
   .tea-page {
     padding: 32px 40px 48px;
   }
@@ -2076,9 +1912,6 @@
   .tea-topbar {
     justify-content: flex-start;
   }
-  .tea-topbar-meta {
-    margin-left: auto;
-  }
 }
 @media (max-width: 767px) {
   .tea-app {
@@ -2095,14 +1928,6 @@
   .tea-breadcrumb > strong {
     font-size: 12px;
   }
-  .tea-topbar-meta > span:last-child,
-  .tea-topbar-divider {
-    display: none;
-  }
-  .tea-mode-indicator {
-    font-size: 12px;
-    gap: 4px;
-  }
   .tea-chat {
     flex: 1;
     min-height: 0;
@@ -2111,45 +1936,6 @@
     max-width: var(--container-width-md);
     padding: 32px 32px 24px;
     gap: 24px;
-  }
-  .tea-stage-intro h1 {
-    font-size: 24px;
-    font-weight: 600;
-    margin-top: 0;
-    line-height: 1.4;
-  }
-  .tea-stage-intro > p {
-    line-height: 1.75;
-    font-size: 14px;
-    max-width: 65ch;
-    margin-top: 8px;
-  }
-  .tea-stage-context {
-    gap: 10px;
-    flex-wrap: wrap;
-    font-size: 12px;
-    margin-top: 12px;
-  }
-  .tea-stage-context svg {
-    width: 11px;
-  }
-  .tea-parallel-tasks {
-    padding: 0;
-  }
-  .tea-inline-task {
-    gap: 10px;
-    padding: 10px 3px;
-  }
-  .tea-inline-task strong {
-    font-size: 12px;
-  }
-  .tea-inline-task small {
-    font-size: 12px;
-  }
-  .tea-inline-task-icon {
-    width: 25px;
-    height: 27px;
-    font-size: 12px;
   }
   .tea-message {
     gap: 9px;
@@ -2164,9 +1950,6 @@
   .tea-message-label {
     font-size: 12px;
     gap: 6px;
-  }
-  .tea-message-label > span {
-    font-size: 12px;
   }
   .tea-message-content {
     font-size: 14px;
@@ -2187,9 +1970,6 @@
   .tea-composer-toolbar {
     padding: 4px 7px 8px;
     gap: 9px;
-  }
-  .tea-composer-context {
-    font-size: 12px;
   }
   .tea-composer-toolbar > button:first-child {
     font-size: 12px;
@@ -2506,17 +2286,6 @@
 .tea-navigation [data-slot="sidebar-menu-button"]:hover {
   color: var(--sidebar-accent-foreground);
 }
-.tea-navigation-route {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-.tea-navigation-route > span {
-  margin-right: auto;
-}
 .tea-topbar,
 .tea-workspace-toolbar {
   display: flex;
@@ -2564,15 +2333,6 @@
 .tea-workspace-actions > button:hover {
   color: var(--foreground);
   background: var(--accent);
-}
-.tea-stage-route {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-  color: var(--muted-foreground);
-  font-size: 12px;
 }
 .tea-details-content {
   height: 100%;
@@ -2660,8 +2420,7 @@
   .tea-workspace-heading {
     gap: 8px;
   }
-  .tea-workspace-stage,
-  .tea-workspace-actions > .tea-mode-indicator {
+  .tea-workspace-stage {
     display: none;
   }
   .tea-conversation-content {
@@ -2688,8 +2447,5 @@
   .tea-theme [data-slot="textarea"],
   .tea-theme select {
     font-size: 16px;
-  }
-  .tea-composer-context {
-    display: none;
   }
 }

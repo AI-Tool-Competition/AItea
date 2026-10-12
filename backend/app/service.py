@@ -920,7 +920,7 @@ class Service:
                 "warnings": manifest.get("warnings", []),
             }
 
-    def search(self, owner, query, case_id=None, limit=5, as_of=None, collection=None):
+    def search(self, owner, query, case_id=None, limit=5, as_of=None, collection=None, document_ids=None):
         from .ingestion import embed_texts, lexical_search
 
         historical = as_of is not None
@@ -929,7 +929,7 @@ class Service:
             if case_id:
                 self.own_case(conn, owner, case_id)
             rows, metadata, limited = self.archive.retrieval_rows(
-                conn, owner, case_id, collection, as_of, historical
+                conn, owner, case_id, collection, as_of, historical, document_ids
             )
         chunks = []
         for row in rows:
@@ -1100,8 +1100,14 @@ class Service:
                 {"role": message["role"], "content": message["content"][:3000]}
                 for message in reversed(recent)
             ]
-        return {"case": case, "stage": stage, "selected": selected, "history": history,
-                "task_id": task_id, "payload_hash": payload_hash}
+        return {
+            "case": case,
+            "stage": stage,
+            "selected": selected,
+            "history": history,
+            "task_id": task_id,
+            "payload_hash": payload_hash,
+        }
 
     def post_message(self, owner, case_id, payload, *, emit=None, check_cancelled=None):
         # Authenticate before inspecting the in-flight registry. Both JSON and

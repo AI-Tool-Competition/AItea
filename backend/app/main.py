@@ -233,6 +233,56 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     def debug(payload: models.TemplateDebugInput, current=Depends(user)):
         return service.studio.debug(current["id"], payload)
 
+    @app.post("/api/tea/templates/debug/stream")
+    def debug_stream(payload: models.TemplateDebugInput, current=Depends(user)):
+        from .streaming import debug_events
+
+        return StreamingResponse(
+            debug_events(service, current["id"], payload),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store, no-transform"},
+        )
+
+    @app.get("/api/tea/templates/debug/runs/{run_id}")
+    def debug_run(run_id: str, current=Depends(user)):
+        return service.studio.debugger.run(current["id"], run_id)
+
+    @app.get("/api/tea/templates/{template_id}/debug-runs")
+    def debug_runs(
+        template_id: str,
+        stage_id: str | None = Query(None, max_length=64),
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        current=Depends(user),
+    ):
+        return service.studio.debugger.runs(current["id"], template_id, stage_id, limit, offset)
+
+    @app.get("/api/tea/templates/{template_id}/debug-samples")
+    def debug_samples(
+        template_id: str,
+        stage_id: str | None = Query(None, max_length=64),
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        current=Depends(user),
+    ):
+        return service.studio.debugger.samples(current["id"], template_id, stage_id, limit, offset)
+
+    @app.get("/api/tea/templates/{template_id}/debug-samples/{sample_id}")
+    def debug_sample(template_id: str, sample_id: str, current=Depends(user)):
+        return service.studio.debugger.sample(current["id"], template_id, sample_id)
+
+    @app.put("/api/tea/templates/{template_id}/debug-samples/{sample_id}")
+    def save_debug_sample(
+        template_id: str, sample_id: str, payload: models.DebugSampleInput, current=Depends(user)
+    ):
+        return service.studio.debugger.save_sample(current["id"], template_id, sample_id, payload)
+
+    @app.delete("/api/tea/templates/{template_id}/debug-samples/{sample_id}", status_code=204)
+    def delete_debug_sample(
+        template_id: str, sample_id: str, expected_revision: int = Query(ge=1), current=Depends(user)
+    ):
+        service.studio.debugger.delete_sample(current["id"], template_id, sample_id, expected_revision)
+
     @app.get("/api/tea/templates/drafts")
     def template_drafts(
         limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)

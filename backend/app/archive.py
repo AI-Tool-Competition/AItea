@@ -339,7 +339,7 @@ class LegalArchive:
                 )
         return doc
 
-    def retrieval_rows(self, conn, owner, case_id, collection, as_of, historical):
+    def retrieval_rows(self, conn, owner, case_id, collection, as_of, historical, document_ids=None):
         """Choose applicable versions before loading bounded manifests; lists stay body-free."""
         from .catalog import DocumentMetadata
 
@@ -360,6 +360,12 @@ class LegalArchive:
             history = """(json_extract(v.metadata_payload,'$.kind')!='law' OR
                 (json_extract(v.metadata_payload,'$.effective_from') IS NOT NULL
                 AND (v.family_rank=1 OR json_extract(v.metadata_payload,'$.effective_to') IS NOT NULL)))"""
+        selected_scope = ""
+        if document_ids is not None:
+            if not document_ids:
+                return [], {}, False
+            selected_scope = " AND id IN (" + ",".join("?" for _ in document_ids) + ")"
+            parameters.extend(document_ids)
         candidates = conn.execute(
             f"""WITH versions AS (
             SELECT d.id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,length(d.manifest) manifest_size,
@@ -371,7 +377,7 @@ class LegalArchive:
         ), applicable AS (
             SELECT v.*,ROW_NUMBER() OVER(PARTITION BY v.family_id ORDER BY v.version DESC,v.id DESC) selected
             FROM versions v WHERE {membership} AND {period} AND {history} AND v.status='ready'
-        ) SELECT * FROM applicable WHERE selected=1 ORDER BY created_at DESC,id DESC LIMIT 501""",
+        ) SELECT * FROM applicable WHERE selected=1 {selected_scope} ORDER BY created_at DESC,id DESC LIMIT 501""",
             parameters,
         ).fetchall()
         selected, size = [], 0

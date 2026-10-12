@@ -4,6 +4,7 @@ Traces expose executed operations and short public inputs/outputs, never model t
 """
 
 import json
+import copy
 import asyncio
 import codecs
 import logging
@@ -11,7 +12,7 @@ import os
 import re
 import threading
 from contextlib import closing
-from time import monotonic
+from time import monotonic, perf_counter
 
 import httpx
 
@@ -68,6 +69,21 @@ def rule_guidance(checks, citations):
     return output
 
 
+def guidance_inputs(content, context, citations, checks, previous_output):
+    """The exact public user payload sent to the model; excludes credentials and private reasoning."""
+    public_context = {key: value for key, value in context.items() if key != "recent_messages"}
+    context_json = dump(public_context)
+    if len(context_json) > 48000:
+        public_context = {"summary": context_json[:48000], "truncated": True}
+    return {
+        "question": content,
+        "case_context": public_context,
+        "citations": citations,
+        "checks": sorted(checks, key=lambda item: item["status"] == "passed")[:60],
+        "previous_step_output": previous_output[:10000],
+    }
+
+
 def generate_guidance(
     agent, step, content, context, citations, checks, previous_output, *, on_delta=None, check_cancelled=None
 ):
@@ -77,10 +93,7 @@ def generate_guidance(
         f"输出语言：{agent['language']}。法务配置：{agent['instructions']}。本步骤指导要求：{step.get('instructions', '')}"
     )
     history = context.get("recent_messages", [])
-    public_context = {key: value for key, value in context.items() if key != "recent_messages"}
-    context_json = dump(public_context)
-    if len(context_json) > 48000:
-        public_context = {"summary": context_json[:48000], "truncated": True}
+    inputs = guidance_inputs(content, context, citations, checks, previous_output)
     body = {
         "model": os.environ["LLM_MODEL"],
         "messages": [
@@ -88,15 +101,7 @@ def generate_guidance(
             *history,
             {
                 "role": "user",
-                "content": dump(
-                    {
-                        "question": content,
-                        "case_context": public_context,
-                        "citations": citations,
-                        "checks": sorted(checks, key=lambda item: item["status"] == "passed")[:60],
-                        "previous_step_output": previous_output[:10000],
-                    }
-                ),
+                "content": dump(inputs),
             },
         ],
         "max_tokens": 1500,
@@ -200,6 +205,16 @@ async def stream_guidance(base, body, on_delta, check_cancelled):
         await asyncio.gather(reading, watching, return_exceptions=True)
 
 
+def reuse_trace(trace):
+    cached = copy.deepcopy(trace)
+    if cached["status"] in ("completed", "cached"):
+        cached["status"] = "cached"
+        prefix = "沿用已验证的上游结果。"
+        cached["detail"] = prefix + cached.get("detail", "").removeprefix(prefix)
+    cached["duration_ms"] = 0
+    return cached
+
+
 def run_workflow(
     service,
     owner,
@@ -213,6 +228,10 @@ def run_workflow(
     stop_after_step_id=None,
     emit=None,
     check_cancelled=None,
+    document_ids=None,
+    capture_data=False,
+    resume=None,
+    on_checkpoint=None,
 ):
     from .service import fail
 
@@ -239,7 +258,18 @@ def run_workflow(
     stopped = False
     previous_output = ""
     guidance_citations = None
-    for step in steps:
+    prefix = resume.get("trace", []) if resume else []
+    if resume:
+        result.update(copy.deepcopy(resume["state"]["result"]))
+        previous_output = resume["state"]["previous_output"]
+        guidance_citations = copy.deepcopy(resume["state"]["guidance_citations"])
+    for index, step in enumerate(steps):
+        if index < len(prefix):
+            cached = reuse_trace(prefix[index])
+            result["trace"].append(cached)
+            if emit and capture_data:
+                emit("step", cached)
+            continue
         if check_cancelled:
             check_cancelled()
         trace = {
@@ -250,6 +280,9 @@ def run_workflow(
             "input": "",
             "output": "",
         }
+        started = perf_counter()
+        if capture_data:
+            trace.update(type=step["type"], duration_ms=0, input_data={}, output_data={})
         if stopped:
             trace["detail"] = "本次已在前序步骤停止，未执行。"
         elif not step["enabled"]:
@@ -261,12 +294,68 @@ def run_workflow(
             trace["input"] = (
                 f"节点：{stage['name']}；{len(tasks)} 项任务；{len(result['checks'])} 项已有检查；{len(result['citations'])} 条已有引用。"
             )
+            if capture_data:
+                if kind == "retrieve":
+                    trace["input_data"] = {
+                        "query": "\n".join(
+                            filter(None, [step.get("instructions", ""), content or stage["name"]])
+                        )[:2000],
+                        "document_ids": document_ids,
+                        "limit": agent["retrieval_limit"],
+                    }
+                elif kind == "check":
+                    trace["input_data"] = {
+                        "tasks": [
+                            {
+                                key: task[key]
+                                for key in (
+                                    "id",
+                                    "title",
+                                    "fields",
+                                    "values",
+                                    "require_document",
+                                    "require_confirmation",
+                                )
+                            }
+                            | {
+                                "evidence_ids": task.get("evidence_ids", []),
+                                "confirmed": task.get("confirmed", False),
+                            }
+                            for task in tasks
+                        ],
+                        "question": content,
+                        "citations": copy.deepcopy(result["citations"]),
+                    }
+                elif kind == "guide":
+                    guide_input = (
+                        guidance_inputs(
+                            content, context, result["citations"], result["checks"], previous_output
+                        )
+                        if mode == "live"
+                        else {
+                            "checks": copy.deepcopy(result["checks"]),
+                            "citations": copy.deepcopy(result["citations"]),
+                        }
+                    )
+                    trace["input_data"] = guide_input | {
+                        "instructions": agent["instructions"],
+                        "step_instructions": step.get("instructions", ""),
+                        "language": agent["language"],
+                        "instructions_applied": mode == "live",
+                    }
+                else:
+                    trace["input_data"] = {"instructions": step.get("instructions", "")}
+                if emit:
+                    emit("step", copy.deepcopy(trace) | {"status": "running"})
             try:
                 if kind == "retrieve":
                     query = "\n".join(filter(None, [step.get("instructions", ""), content or stage["name"]]))[
                         :2000
                     ]
-                    retrieval = service.search(owner, query, case_id, agent["retrieval_limit"])
+                    search_options = {"document_ids": document_ids} if document_ids is not None else {}
+                    retrieval = service.search(
+                        owner, query, case_id, agent["retrieval_limit"], **search_options
+                    )
                     result["citations"] = retrieval["items"]
                     result["retrieval_mode"] = retrieval["mode"]
                     trace["input"] = query
@@ -304,7 +393,7 @@ def run_workflow(
                     if mode == "live":
                         stream_options = (
                             {
-                                "on_delta": lambda text: emit("delta", {"text": text}),
+                                "on_delta": lambda text: emit("delta", {"text": text, "step_id": step["id"]}),
                                 "check_cancelled": check_cancelled,
                             }
                             if emit
@@ -327,7 +416,7 @@ def run_workflow(
                         result["output"] = rule_guidance(result["checks"], result["citations"])
                         if emit:
                             # Rule output is already available: no simulated typing delay.
-                            emit("delta", {"text": result["output"]})
+                            emit("delta", {"text": result["output"], "step_id": step["id"]})
                         trace["detail"] = (
                             "未调用大模型；已按固定规则汇总此前检查和实际检索。自由文本指导要求需配置模型后才会参与生成。"
                         )
@@ -343,13 +432,46 @@ def run_workflow(
                 if kind not in ("draft", "verify"):
                     trace["status"] = "completed"
             except StreamCancelled:
+                trace.update(status="cancelled", detail="已停止运行；此前完成的步骤结果已保留。")
+                trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
+                result["trace"].append(trace)
+                if on_checkpoint:
+                    on_checkpoint(step["id"], result, None)
                 raise
             except Exception:
                 logger.warning("workflow_step_failed", exc_info=True)
                 trace.update(status="failed", detail="此步骤服务暂时不可用，后续步骤未执行；可以稍后重试。")
                 result["output"] = "模型或检索服务暂时不可用，请稍后重试。已完成的规则检查仍可查看。"
                 stopped = True
+        if capture_data:
+            trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
+            if trace["status"] == "completed":
+                if step["type"] == "retrieve":
+                    trace["output_data"] = {
+                        "citations": copy.deepcopy(result["citations"]),
+                        "mode": result["retrieval_mode"],
+                    }
+                elif step["type"] == "check":
+                    trace["output_data"] = {"checks": copy.deepcopy(result["checks"])}
+                elif step["type"] == "guide":
+                    trace["output_data"] = {
+                        "content": result["output"],
+                        "citations": copy.deepcopy(guidance_citations),
+                    }
+            else:
+                trace["output_data"] = {"notice": trace["detail"]}
         result["trace"].append(trace)
+        if on_checkpoint:
+            state = None
+            if not stopped and trace["status"] in ("completed", "skipped"):
+                state = {
+                    "result": copy.deepcopy({key: value for key, value in result.items() if key != "trace"}),
+                    "previous_output": previous_output,
+                    "guidance_citations": copy.deepcopy(guidance_citations),
+                }
+            on_checkpoint(step["id"], result, state)
+        if capture_data and emit:
+            emit("step", copy.deepcopy(trace))
         if step["id"] == stop_after_step_id:
             stopped = True
     if guidance_citations is not None:

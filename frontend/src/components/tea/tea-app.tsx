@@ -377,6 +377,7 @@ export function TeaApp({
   const [logoutBusy, setLogoutBusy] = useState(false);
   useEffect(() => {
     const expired = () => {
+      clearChatDrafts();
       clearCollectionDrafts();
       setBootstrap(undefined);
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
@@ -575,7 +576,8 @@ export function TeaApp({
             </div>
           ) : record ? (
             <Workspace
-              key={record.id}
+              key={`${bootstrap.user.id}:${record.id}`}
+              accountId={bootstrap.user.id}
               record={record}
               stageId={stageId}
               setStageId={setStageId}

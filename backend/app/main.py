@@ -10,7 +10,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from . import models
@@ -105,7 +105,12 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             )
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Cache-Control"] = "no-store"
+        # Compression proxies can buffer small SSE chunks until completion.
+        response.headers["Cache-Control"] = (
+            "no-store, no-transform"
+            if response.headers.get("content-type", "").startswith("text/event-stream")
+            else "no-store"
+        )
         return response
 
     @app.exception_handler(AppError)
@@ -290,6 +295,18 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     @app.post("/api/tea/cases/{case_id}/messages")
     def post_message(case_id: str, payload: models.MessageInput, current=Depends(user)):
         return service.post_message(current["id"], case_id, payload.model_dump())
+
+    @app.post("/api/tea/cases/{case_id}/messages/stream")
+    def stream_message(case_id: str, payload: models.MessageInput, current=Depends(user)):
+        from .streaming import message_events
+
+        data = payload.model_dump()
+        service.prepare_message(current["id"], case_id, data)
+        return StreamingResponse(
+            message_events(service, current["id"], case_id, data),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/tea/documents")
     def documents(

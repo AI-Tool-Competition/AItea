@@ -1,29 +1,17 @@
 "use client";
 import {
-  ArrowUp,
-  BookOpen,
   Check,
   CheckCheck,
   ChevronRight,
-  Circle,
   FolderOpen,
-  Leaf,
   LockKeyhole,
   PanelRightClose,
   PanelRightOpen,
-  Paperclip,
   ShieldCheck,
-  X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
 
-import {
-  Conversation,
-  ConversationContent,
-  ConversationScrollButton,
-} from "@/components/ai-elements/conversation";
-import { MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
 import {
   ResizableHandle,
@@ -38,21 +26,18 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { errorMessage, post, teaRequest } from "@/core/tea/api";
+import { teaRequest } from "@/core/tea/api";
 import {
   type Artifact,
   type Capabilities,
   type CaseDetail,
-  type ListResult,
-  type Message,
-  type StageState,
 } from "@/core/tea/types";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 import { ArtifactPanel } from "./artifact-panel";
-import { CitationCard } from "./library";
-import { Busy, dateLabel, ErrorNotice, Trace } from "./shared";
-import { StageAnalysisPanel } from "./stage-analysis";
+import { dateLabel, ErrorNotice } from "./shared";
+import { StageChat } from "./stage-chat";
+export { clearChatDrafts } from "@/core/tea/use-stage-chat";
 import { TaskPanel } from "./task-panel";
 type PanelTab = "flow" | "task" | "document" | "facts";
 
@@ -167,335 +152,8 @@ function Flow({
   );
 }
 
-type ChatDraft = {
-  text: string;
-  key?: { content: string; task: string; id: string };
-};
-const chatDrafts = new Map<string, ChatDraft>();
-export function clearChatDrafts() {
-  chatDrafts.clear();
-}
-
-function StageChat({
-  record,
-  stage,
-  taskId,
-  onTask,
-  onUpdate,
-  onUpload,
-  capabilities,
-}: {
-  record: CaseDetail;
-  stage: StageState;
-  taskId: string;
-  onTask: (id: string) => void;
-  onUpdate: (record: CaseDetail) => void;
-  onUpload: () => void;
-  capabilities: Capabilities;
-}) {
-  const cacheKey = `${record.id}:${stage.id}`;
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [messageTotal, setMessageTotal] = useState(0);
-  const [moreBusy, setMoreBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [text, setText] = useState(chatDrafts.get(cacheKey)?.text ?? "");
-  const [sending, setSending] = useState(false);
-  const [retryKey, setRetryKey] = useState(0);
-  const submitting = useRef(false);
-  const alive = useRef(true);
-  const input = useRef<HTMLTextAreaElement>(null);
-  const messageKey = useRef<
-    { content: string; task: string; id: string } | undefined
-  >(chatDrafts.get(cacheKey)?.key);
-  useEffect(() => {
-    if (text) chatDrafts.set(cacheKey, { text, key: messageKey.current });
-    else chatDrafts.delete(cacheKey);
-  }, [cacheKey, text]);
-  useEffect(() => {
-    alive.current = true;
-    const abort = new AbortController();
-    setLoading(true);
-    teaRequest<ListResult<Message>>(
-      `/cases/${record.id}/messages?stage_id=${encodeURIComponent(stage.id)}`,
-      { signal: abort.signal },
-    )
-      .then((result) => {
-        setMessages(result.items);
-        setMessageTotal(result.total);
-        setError("");
-      })
-      .catch((e) => {
-        if (!abort.signal.aborted) setError(errorMessage(e));
-      })
-      .finally(() => {
-        if (!abort.signal.aborted) setLoading(false);
-      });
-    return () => {
-      abort.abort();
-      alive.current = false;
-    };
-  }, [record.id, stage.id, retryKey]);
-  async function send() {
-    const content = text.trim();
-    if (!content || submitting.current) return;
-    submitting.current = true;
-    setSending(true);
-    setError("");
-    if (
-      messageKey.current?.content !== content ||
-      messageKey.current.task !== taskId
-    )
-      messageKey.current = { content, task: taskId, id: crypto.randomUUID() };
-    chatDrafts.set(cacheKey, { text, key: messageKey.current });
-    try {
-      const response = await post<{ messages: Message[]; case: CaseDetail }>(
-        `/cases/${record.id}/messages`,
-        {
-          stage_id: stage.id,
-          ...(taskId ? { task_id: taskId } : {}),
-          content,
-          client_message_id: messageKey.current.id,
-        },
-      );
-      onUpdate(response.case);
-      if (chatDrafts.get(cacheKey)?.key?.id === messageKey.current?.id)
-        chatDrafts.delete(cacheKey);
-      if (alive.current) {
-        setMessages((current) => [
-          ...new Map(
-            [...current, ...response.messages].map((message) => [
-              message.id,
-              message,
-            ]),
-          ).values(),
-        ]);
-        setText("");
-        chatDrafts.delete(cacheKey);
-        setMessageTotal(
-          (total) =>
-            total +
-            response.messages.filter(
-              (message) =>
-                !messages.some((existing) => existing.id === message.id),
-            ).length,
-        );
-        messageKey.current = undefined;
-        input.current?.focus();
-      }
-    } catch (e) {
-      if (alive.current) setError(errorMessage(e));
-    } finally {
-      submitting.current = false;
-      if (alive.current) setSending(false);
-    }
-  }
-  async function loadEarlier() {
-    if (moreBusy) return;
-    setMoreBusy(true);
-    try {
-      const result = await teaRequest<ListResult<Message>>(
-        `/cases/${record.id}/messages?stage_id=${encodeURIComponent(stage.id)}&limit=100&offset=${messages.length}`,
-      );
-      if (alive.current) {
-        setMessages((current) => [
-          ...new Map(
-            [...result.items, ...current].map((message) => [
-              message.id,
-              message,
-            ]),
-          ).values(),
-        ]);
-        setMessageTotal(result.total);
-      }
-    } catch (e) {
-      if (alive.current) setError(errorMessage(e));
-    } finally {
-      if (alive.current) setMoreBusy(false);
-    }
-  }
-  const focusedTask = stage.tasks.find((t) => t.id === taskId);
-  return (
-    <div className="tea-chat">
-      <Conversation
-        key={stage.id}
-        initial="instant"
-        resize="instant"
-        className="tea-conversation"
-      >
-        <ConversationContent className="tea-conversation-content">
-          <StageAnalysisPanel
-            key={`${record.id}:${stage.id}`}
-            record={record}
-            stage={stage}
-            onUpdate={onUpdate}
-          />
-          {!loading && messages.length < messageTotal && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={moreBusy || sending}
-              onClick={loadEarlier}
-            >
-              {moreBusy ? "正在读取…" : "加载更早对话"}
-            </Button>
-          )}
-          {loading ? (
-            <Busy label="读取对话记录…" />
-          ) : messages.length ? (
-            messages.map((message) => (
-              <article
-                key={message.id}
-                className={`tea-message ${message.role}`}
-              >
-                <div className="tea-message-avatar">
-                  {message.role === "assistant" ? (
-                    <Leaf size={16} strokeWidth={1.6} />
-                  ) : (
-                    "我"
-                  )}
-                </div>
-                <div className="tea-message-body">
-                  <div
-                    className="tea-message-label"
-                    title={dateLabel(message.created_at)}
-                  >
-                    {message.role === "assistant" ? "茶渡助手" : "你"}
-                  </div>
-                  <div className="tea-message-content">
-                    <MessageResponse>{message.content}</MessageResponse>
-                  </div>
-                  {message.trace?.length > 0 && <Trace steps={message.trace} />}
-                  {message.citations?.length > 0 && (
-                    <details className="tea-message-citations">
-                      <summary>
-                        <BookOpen size={13} />
-                        查看 {message.citations.length} 项引用依据
-                      </summary>
-                      {message.citations.map((citation, i) => (
-                        <CitationCard
-                          key={`${citation.document_id}-${i}`}
-                          citation={citation}
-                        />
-                      ))}
-                    </details>
-                  )}
-                </div>
-              </article>
-            ))
-          ) : (
-            <article className="tea-message assistant">
-              <div className="tea-message-avatar">
-                <Leaf size={16} />
-              </div>
-              <div className="tea-message-body">
-                <div className="tea-message-label">茶渡助手</div>
-                <div className="tea-message-content">
-                  {stage.status === "locked"
-                    ? "这个阶段尚未解锁。你可以先了解任务要求，完成前一阶段后继续办理。"
-                    : "可以先提问或上传资料，通过「办理流程」填写任务并申请核验。"}
-                </div>
-              </div>
-            </article>
-          )}
-          {sending && (
-            <div className="tea-assistant-working" role="status">
-              <Leaf size={15} />
-              <span>正在读取业务资料与相关依据</span>
-              <i />
-              <i />
-              <i />
-            </div>
-          )}
-        </ConversationContent>
-        <ConversationScrollButton
-          aria-label="滚动到最新消息"
-          className="tea-scroll-bottom"
-        />
-      </Conversation>
-      {error && (
-        <div className="tea-composer-error">
-          <ErrorNotice
-            message={error}
-            onRetry={loading ? undefined : () => setRetryKey((k) => k + 1)}
-          />
-        </div>
-      )}
-      <div className="tea-composer-area">
-        {focusedTask && (
-          <div className="tea-current-task">
-            <Circle size={10} />
-            正在讨论：{focusedTask.title}
-            <button onClick={() => onTask("")} aria-label="取消任务聚焦">
-              <X size={12} />
-            </button>
-          </div>
-        )}
-        <form
-          className="tea-composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send();
-          }}
-        >
-          <textarea
-            ref={input}
-            aria-label="向茶渡助手提问"
-            value={text}
-            maxLength={12000}
-            placeholder={
-              stage.status === "locked"
-                ? "可以先咨询这一阶段的准备要求…"
-                : "向茶渡助手提问…"
-            }
-            onChange={(e) => setText(e.target.value)}
-            disabled={sending}
-            rows={2}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                !e.shiftKey &&
-                !e.nativeEvent.isComposing &&
-                e.keyCode !== 229
-              ) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <div className="tea-composer-toolbar">
-            <Button
-              variant="ghost"
-              size="icon"
-              type="button"
-              onClick={onUpload}
-              aria-label="上传资料"
-              title="上传资料"
-            >
-              <Paperclip size={17} />
-            </Button>
-            <button
-              className="tea-send"
-              type="submit"
-              aria-label="发送消息"
-              title="Enter 发送 · Shift + Enter 换行"
-              disabled={!text.trim() || sending || loading}
-            >
-              <ArrowUp size={17} />
-            </button>
-          </div>
-        </form>
-        <p className="tea-composer-note">
-          {capabilities.assistant_mode === "demo"
-            ? "演示助手 · 基于资料与配置规则"
-            : "AI 助手 · 请结合引用原文核对办理要求"}
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export function Workspace({
+  accountId,
   record,
   stageId,
   setStageId,
@@ -504,6 +162,7 @@ export function Workspace({
   onUpload,
 }: {
   record: CaseDetail;
+  accountId: string;
   stageId: string;
   setStageId: (id: string) => void;
   capabilities: Capabilities;
@@ -525,8 +184,7 @@ export function Workspace({
     record.artifacts.find((a) => a.id === artifactId) ?? record.artifacts[0];
   useEffect(() => {
     panelOpenRef.current = !isMobile && panelOpen;
-    if (isMobile) return;
-    if (panelOpen) panelRef.current?.resize(openPanelSize.current);
+    if (!isMobile && panelOpen) panelRef.current?.resize(openPanelSize.current);
     else panelRef.current?.collapse();
   }, [panelOpen, isMobile, panelRef]);
   function openPanel(next: PanelTab) {
@@ -711,9 +369,19 @@ export function Workspace({
           </button>
         </div>
       </header>
-      {isMobile ? (
-        <>
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="tea-workspace-panels"
+        onLayoutChanged={(layout) => {
+          // A completed drag can collapse the panel; resize callbacks only
+          // remember its width and must not reverse a requested close.
+          if (panelOpenRef.current && layout["tea-details"] === 0)
+            setPanelOpen(false);
+        }}
+      >
+        <ResizablePanel id="conversation" minSize="30%" defaultSize="100%">
           <StageChat
+            accountId={accountId}
             key={stage.id}
             record={record}
             stage={stage}
@@ -723,65 +391,43 @@ export function Workspace({
             onUpload={onUpload}
             capabilities={capabilities}
           />
-          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-            <SheetContent className="tea-theme tea-mobile-panel">
-              <SheetHeader className="sr-only">
-                <SheetTitle>办理流程与资料</SheetTitle>
-                <SheetDescription>
-                  查看任务、核验进度和编辑文稿。
-                </SheetDescription>
-              </SheetHeader>
-              {panel}
-            </SheetContent>
-          </Sheet>
-        </>
-      ) : (
-        <ResizablePanelGroup
-          orientation="horizontal"
-          className="tea-workspace-panels"
-          onLayoutChanged={(layout) => {
-            // A completed drag can collapse the panel; resize callbacks only
-            // remember its width and must not reverse a requested close.
-            if (panelOpenRef.current && layout["tea-details"] === 0)
-              setPanelOpen(false);
+        </ResizablePanel>
+        <ResizableHandle
+          withHandle
+          disabled={!panelOpen || isMobile}
+          className={`tea-resize-handle ${panelOpen && !isMobile ? "" : "pointer-events-none opacity-0"}`}
+        />
+        <ResizablePanel
+          id="tea-details"
+          panelRef={panelRef}
+          collapsible
+          collapsedSize={0}
+          minSize="20%"
+          maxSize="70%"
+          defaultSize="0%"
+          onResize={(size) => {
+            if (panelOpenRef.current && size.asPercentage > 0) {
+              openPanelSize.current = `${size.asPercentage}%`;
+            }
           }}
         >
-          <ResizablePanel id="conversation" minSize="30%" defaultSize="100%">
-            <StageChat
-              key={stage.id}
-              record={record}
-              stage={stage}
-              taskId={taskId}
-              onTask={selectTask}
-              onUpdate={onUpdate}
-              onUpload={onUpload}
-              capabilities={capabilities}
-            />
-          </ResizablePanel>
-          <ResizableHandle
-            withHandle
-            disabled={!panelOpen}
-            className={`tea-resize-handle ${panelOpen ? "" : "pointer-events-none opacity-0"}`}
-          />
-          <ResizablePanel
-            id="tea-details"
-            panelRef={panelRef}
-            collapsible
-            collapsedSize={0}
-            minSize="20%"
-            maxSize="70%"
-            defaultSize="0%"
-            onResize={(size) => {
-              if (panelOpenRef.current && size.asPercentage > 0) {
-                openPanelSize.current = `${size.asPercentage}%`;
-              }
-            }}
-          >
-            <div className="tea-details-content" hidden={!panelOpen}>
-              {panel}
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+          <div className="tea-details-content" hidden={!panelOpen || isMobile}>
+            {!isMobile && panel}
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+      {isMobile && (
+        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+          <SheetContent className="tea-theme tea-mobile-panel">
+            <SheetHeader className="sr-only">
+              <SheetTitle>办理流程与资料</SheetTitle>
+              <SheetDescription>
+                查看任务、核验进度和编辑文稿。
+              </SheetDescription>
+            </SheetHeader>
+            {panel}
+          </SheetContent>
+        </Sheet>
       )}
     </div>
   );

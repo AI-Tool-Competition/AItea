@@ -30,7 +30,6 @@ import {
   type TemplateDraft,
   type TemplateDraftSummary,
   type ListResult,
-  type TraceStep,
   type ValidationResult,
 } from "@/core/tea/types";
 import {
@@ -39,6 +38,10 @@ import {
   localConfigurationDrafts,
   useConfigurationDraft,
 } from "@/core/tea/use-configuration-draft";
+import {
+  clearDebuggerSessions,
+  useWorkflowDebugger,
+} from "@/core/tea/use-workflow-debugger";
 
 import { ConfirmAction } from "./admin-shared";
 import { AnalysisEditor } from "./analysis-editor";
@@ -51,6 +54,7 @@ const selectedTemplates = new Map<string, string>();
 export function clearStudioDrafts() {
   selectedTemplates.clear();
   clearConfigurationDrafts();
+  clearDebuggerSessions();
 }
 
 export function Studio({
@@ -243,21 +247,12 @@ function EditorSession({
   );
   const [stepId, setStepId] = useState("");
   const [editingDefault, setEditingDefault] = useState(false);
-  const [trace, setTrace] = useState<TraceStep[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [validation, setValidation] = useState<ValidationResult>();
   const [debugOpen, setDebugOpen] = useState(false);
-  const debugPanel = useRef<HTMLDivElement>(null);
-  const debugButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (debugOpen) debugPanel.current?.focus();
-  }, [debugOpen]);
-  function closeDebug() {
-    setDebugOpen(false);
-    debugButton.current?.focus();
-  }
+  const [editRequest, setEditRequest] = useState(0);
   const importRef = useRef<HTMLInputElement>(null);
   const pending = useRef<AbortController | null>(null);
   const alive = useRef(true);
@@ -282,12 +277,10 @@ function EditorSession({
     configuration.update(next);
     setValidation(undefined);
     setNotice("");
-    setTrace([]);
   }
   function selectStage(id: string) {
     setStageId(id);
     setStepId("");
-    setTrace([]);
   }
   async function act(action: "save" | "validate" | "publish") {
     if (pending.current) return;
@@ -326,7 +319,6 @@ function EditorSession({
       configuration.published(published, saved.revision + 1);
       onPublished(published);
       setValidation(undefined);
-      setTrace([]);
       setNotice(
         `已发布第 ${published.version} 版。新建业务会读取这份配置，已有业务保留原版本。`,
       );
@@ -403,6 +395,28 @@ function EditorSession({
           ),
         }
       : draft;
+  const debug = useWorkflowDebugger({
+    ownerId,
+    draft: debugDraft,
+    stageId: selected.id,
+  });
+  const trace = debug.stale && !debug.running ? [] : debug.trace;
+  const debugContent = (
+    <ConfigurationDebugger
+      key={`${selected.id}:${editingDefault && page === "analysis" ? "default" : "stage"}`}
+      debug={debug}
+      draft={debugDraft}
+      stageId={selected.id}
+      stepId={stepId || undefined}
+      onStep={setStepId}
+      onEdit={(id) => {
+        if (!analysis.steps.some((step) => step.id === id)) return;
+        setStepId(id);
+        setDebugOpen(false);
+        setEditRequest((value) => value + 1);
+      }}
+    />
+  );
   return (
     <>
       <div className="ta-draft-bar">
@@ -416,12 +430,11 @@ function EditorSession({
         )}
         <div className="ta-toolbar">
           <Button
-            ref={debugButton}
             variant="outline"
             size="sm"
             disabled={!!busy || configuration.loading}
             aria-expanded={debugOpen}
-            aria-controls="configuration-debug-drawer"
+            data-inspector-trigger
             onClick={() => setDebugOpen(!debugOpen)}
           >
             <FlaskConical size={14} />
@@ -508,7 +521,6 @@ function EditorSession({
                 configuration.readSaved();
                 setError("");
                 setValidation(undefined);
-                setTrace([]);
               }}
             >
               读取已保存草稿
@@ -578,6 +590,10 @@ function EditorSession({
               stageId={selected.id}
               onStage={selectStage}
               onAnalyze={() => onPage?.("analysis", selected.id)}
+              debugContent={debugContent}
+              debugOpen={debugOpen}
+              onDebugClose={() => setDebugOpen(false)}
+              editRequest={editRequest}
             />
           ) : (
             <AnalysisEditor
@@ -589,49 +605,15 @@ function EditorSession({
               onStep={setStepId}
               trace={trace}
               editingDefault={editingDefault}
+              debugContent={debugContent}
+              debugOpen={debugOpen}
+              onDebugClose={() => setDebugOpen(false)}
+              editRequest={editRequest}
               onEditingDefault={(value) => {
                 setEditingDefault(value);
-                setTrace([]);
               }}
             />
           )}
-          <div
-            id="configuration-debug-drawer"
-            className="ta-debug-drawer"
-            role="region"
-            aria-label="配置调试抽屉"
-            hidden={!debugOpen}
-            tabIndex={-1}
-            ref={debugPanel}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                closeDebug();
-              }
-            }}
-          >
-            <Button
-              className="ta-debug-close"
-              size="icon-sm"
-              variant="ghost"
-              aria-label="关闭调试"
-              onClick={closeDebug}
-            >
-              <X size={18} />
-            </Button>
-            {editingDefault && page === "analysis" && (
-              <p className="ta-hint ta-debug-scope-note">
-                正在测试默认分析流程，使用「{selected.name}」的样例任务。
-              </p>
-            )}
-            <ConfigurationDebugger
-              key={`${selected.id}:${editingDefault && page === "analysis" ? "default" : "stage"}`}
-              draft={debugDraft}
-              stageId={selected.id}
-              stepId={page === "analysis" ? selectedStep?.id : undefined}
-              onTrace={setTrace}
-            />
-          </div>
         </fieldset>
       )}
     </>

@@ -357,7 +357,23 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path):
+@pytest.mark.parametrize("version", [7, 8])
+def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
+    document(archive, "law")
+    if version == 7:
+        with archive.db.transaction() as conn:
+            conn.execute("DROP TABLE debug_runs")
+            conn.execute("DROP TABLE debug_samples")
+            conn.execute("DELETE FROM schema_migrations WHERE version=8")
+    before = archive.db.path.read_bytes()
+    report = export(archive)
+    assert report["summary"]["schema_version"] == version
+    assert records(report)[0]["document_id"] == "law"
+    assert archive.db.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("version", [6, 9])
+def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, version):
     from app.archive_inventory import InventoryError, export_inventory
 
     with pytest.raises(InventoryError, match="tea.sqlite3"):
@@ -365,7 +381,7 @@ def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path):
     assert not list(tmp_path.iterdir())
     with sqlite3.connect(tmp_path / "tea.sqlite3") as conn:
         conn.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT)")
-        conn.execute("INSERT INTO schema_migrations VALUES(6,'old')")
+        conn.execute("INSERT INTO schema_migrations VALUES(?,'unsupported')", (version,))
     before = (tmp_path / "tea.sqlite3").read_bytes()
     with pytest.raises(InventoryError, match="schema 7"):
         export_inventory(tmp_path)

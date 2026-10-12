@@ -20,6 +20,9 @@ import {
   Minus,
   Plus,
   Sparkles,
+  LoaderCircle,
+  X,
+  Pause,
 } from "lucide-react";
 import { useMemo } from "react";
 
@@ -75,12 +78,28 @@ function ConfigurationCard({ data }: NodeProps<CanvasNode>) {
         <footer>
           {data.trace ? (
             <>
-              <Check size={12} />
+              {data.trace.status === "running" ? (
+                <LoaderCircle size={12} className="ta-running-icon" />
+              ) : data.trace.status === "failed" ? (
+                <X size={12} />
+              ) : data.trace.status === "cancelled" ? (
+                <Pause size={12} />
+              ) : data.trace.status === "skipped" ? (
+                <Minus size={12} />
+              ) : (
+                <Check size={12} />
+              )}
               {data.trace.status === "completed"
                 ? "已执行"
                 : data.trace.status === "failed"
                   ? "执行失败"
-                  : "已跳过"}
+                  : data.trace.status === "running"
+                    ? "运行中"
+                    : data.trace.status === "cached"
+                      ? "沿用上次结果"
+                      : data.trace.status === "cancelled"
+                        ? "已停止"
+                        : "未执行"}
             </>
           ) : (
             <>

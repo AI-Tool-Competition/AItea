@@ -956,7 +956,17 @@ class Service:
                 "warnings": manifest.get("warnings", []),
             }
 
-    def search(self, owner, query, case_id=None, limit=5, as_of=None, collection=None, country=None):
+    def search(
+        self,
+        owner,
+        query,
+        case_id=None,
+        limit=5,
+        as_of=None,
+        collection=None,
+        country=None,
+        document_ids=None,
+    ):
         from .ingestion import embed_texts, lexical_search
 
         historical = as_of is not None
@@ -983,6 +993,7 @@ class Service:
                 as_of,
                 historical,
                 country=None if country == "unassigned" else country,
+                document_ids=document_ids,
             )
         chunks = []
         for row in rows:

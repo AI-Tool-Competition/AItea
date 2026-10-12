@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7 without opening originals.
+"""Export a private, read-only inventory of schema 7 or 8 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -24,7 +24,7 @@ from uuid import uuid4
 from .blob_store import _sync_directory
 
 BATCH_SIZE = 200
-SCHEMA_VERSION = 7
+SUPPORTED_SCHEMA_VERSIONS = (7, 8)
 FILES = ("documents.jsonl", "discovery-pages.jsonl", "relations.jsonl")
 _COUNTRY = "COALESCE(dc.country,CASE WHEN d.role='secondary' THEN pc.country END)"
 _DOCUMENTS = """documents d
@@ -90,9 +90,9 @@ def _json_value(value, expected, fallback, anomalies, label):
 def _validate_schema(conn):
     try:
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-        if version != SCHEMA_VERSION:
+        if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7; use the normal application upgrade first"
+                "archive inventory requires schema 7 or 8; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -110,8 +110,9 @@ def _validate_schema(conn):
             "SELECT id,owner_id,source_id,plan FROM collection_runs LIMIT 0",
         ):
             conn.execute(query)
+        return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7 or 8 database") from exc
 
 
 class _Originals:
@@ -483,11 +484,11 @@ def export_inventory(data_dir, *, country=None, owner=None):
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only=ON")
             conn.execute("BEGIN")
-            _validate_schema(conn)
+            schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
                 "format_version": 1,
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
                 "completed": False,
@@ -549,7 +550,9 @@ def export_inventory(data_dir, *, country=None, owner=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Export a read-only catalog of stored originals (schema 7)")
+    parser = argparse.ArgumentParser(
+        description="Export a read-only catalog of stored originals (schema 7 or 8)"
+    )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")
     )

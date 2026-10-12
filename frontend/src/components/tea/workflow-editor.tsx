@@ -8,7 +8,7 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,12 +53,20 @@ export function WorkflowEditor({
   stageId,
   onStage,
   onAnalyze,
+  debugContent,
+  debugOpen = false,
+  onDebugClose,
+  editRequest = 0,
 }: {
   draft: Template;
   onChange: (draft: Template) => void;
   stageId: string;
   onStage: (id: string) => void;
   onAnalyze: () => void;
+  debugContent?: ReactNode;
+  debugOpen?: boolean;
+  onDebugClose?: () => void;
+  editRequest?: number;
 }) {
   const stageIndex = Math.max(
     0,
@@ -70,6 +78,9 @@ export function WorkflowEditor({
     stageId: stage?.id ?? "",
   });
   const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (editRequest) setEditing(true);
+  }, [editRequest]);
   const [expandedStages, setExpandedStages] = useState(
     () => new Set([stage?.id ?? ""]),
   );
@@ -101,6 +112,7 @@ export function WorkflowEditor({
   function select(next: Selection) {
     setSelection(next);
     setEditing(true);
+    onDebugClose?.();
     if (next.stageId !== stageId) onStage(next.stageId);
   }
   function updateStage(next: StageDefinition) {
@@ -446,167 +458,183 @@ export function WorkflowEditor({
         </ul>
       </section>
       <EditorInspector
-        open={editing}
-        onClose={() => setEditing(false)}
+        open={editing || debugOpen}
+        onClose={() => {
+          setEditing(false);
+          onDebugClose?.();
+        }}
         label="流程编辑栏"
       >
-        <div className="ta-inspector-header">
-          <div>
-            <small>
-              {selected.kind === "config"
-                ? "基本信息与办理模式"
-                : selected.kind === "stage"
-                  ? `节点 ${stageIndex + 1}`
-                  : `${stage?.name} / ${selected.kind === "task" ? "任务" : task?.title}`}
-            </small>
-            <h3>{heading}</h3>
-          </div>
-          {selected.kind === "stage" && stage && (
-            <OrderActions
-              label="节点"
-              index={stageIndex}
-              count={draft.stages.length}
-              onMove={(direction) =>
-                onChange({
-                  ...draft,
-                  stages: moveItem(
-                    draft.stages,
-                    stageIndex,
-                    stageIndex + direction,
-                  ),
-                })
-              }
-              onRemove={
-                draft.stages.length > 1
-                  ? () => {
-                      const next = draft.stages.filter(
-                        (item) => item.id !== stage.id,
-                      );
-                      onChange({ ...draft, stages: next });
-                      select({
-                        kind: "stage",
-                        stageId: next[Math.max(0, stageIndex - 1)]!.id,
-                      });
-                    }
-                  : undefined
-              }
-            />
-          )}
-          {selected.kind === "task" && task && stage && (
-            <OrderActions
-              label="任务"
-              index={taskIndex}
-              count={stage.tasks.length}
-              onMove={(direction) =>
-                updateStage({
-                  ...stage,
-                  tasks: moveItem(
-                    stage.tasks,
-                    taskIndex,
-                    taskIndex + direction,
-                  ),
-                })
-              }
-              onRemove={
-                stage.tasks.length > 1
-                  ? () => {
-                      updateStage({
-                        ...stage,
-                        tasks: stage.tasks.filter(
-                          (item) => item.id !== task.id,
-                        ),
-                      });
-                      select({ kind: "stage", stageId: stage.id });
-                    }
-                  : undefined
-              }
-            />
-          )}
-          {selected.kind === "field" && field && task && stage && (
-            <OrderActions
-              label="填写项"
-              index={fieldIndex}
-              count={task.fields.length}
-              onMove={(direction) => {
-                updateTask({
-                  ...task,
-                  fields: moveItem(
-                    task.fields,
-                    fieldIndex,
-                    fieldIndex + direction,
-                  ),
-                });
-                select({
-                  kind: "field",
-                  stageId: stage.id,
-                  taskId: task.id,
-                  fieldIndex: fieldIndex + direction,
-                });
-              }}
-              onRemove={() => {
-                updateTask({
-                  ...task,
-                  fields: task.fields.filter(
-                    (_, index) => index !== fieldIndex,
-                  ),
-                });
-                select({ kind: "task", stageId: stage.id, taskId: task.id });
-              }}
-            />
-          )}
-        </div>
-        <div className="ta-inspector-body">
-          {selected.kind === "config" && (
-            <ConfigurationFields draft={draft} onChange={onChange} />
-          )}
-          {selected.kind === "stage" && stage && (
-            <>
-              <label className="tea-field">
-                <span>节点名称</span>
-                <Input
-                  value={stage.name}
-                  maxLength={100}
-                  onChange={(event) =>
-                    updateStage({ ...stage, name: event.target.value })
+        {debugOpen ? (
+          debugContent
+        ) : (
+          <>
+            <div className="ta-inspector-header">
+              <div>
+                <small>
+                  {selected.kind === "config"
+                    ? "基本信息与办理模式"
+                    : selected.kind === "stage"
+                      ? `节点 ${stageIndex + 1}`
+                      : `${stage?.name} / ${selected.kind === "task" ? "任务" : task?.title}`}
+                </small>
+                <h3>{heading}</h3>
+              </div>
+              {selected.kind === "stage" && stage && (
+                <OrderActions
+                  label="节点"
+                  index={stageIndex}
+                  count={draft.stages.length}
+                  onMove={(direction) =>
+                    onChange({
+                      ...draft,
+                      stages: moveItem(
+                        draft.stages,
+                        stageIndex,
+                        stageIndex + direction,
+                      ),
+                    })
                   }
-                  placeholder="例如：产品资料准备"
-                />
-              </label>
-              <label className="tea-field">
-                <span>办理主体</span>
-                <Input
-                  value={stage.actor}
-                  maxLength={100}
-                  onChange={(event) =>
-                    updateStage({ ...stage, actor: event.target.value })
+                  onRemove={
+                    draft.stages.length > 1
+                      ? () => {
+                          const next = draft.stages.filter(
+                            (item) => item.id !== stage.id,
+                          );
+                          onChange({ ...draft, stages: next });
+                          select({
+                            kind: "stage",
+                            stageId: next[Math.max(0, stageIndex - 1)]!.id,
+                          });
+                        }
+                      : undefined
                   }
-                  placeholder="谁来完成这个节点"
                 />
-              </label>
-              <label className="tea-field">
-                <span>办理目标</span>
-                <Textarea
-                  value={stage.description}
-                  maxLength={2000}
-                  onChange={(event) =>
-                    updateStage({ ...stage, description: event.target.value })
+              )}
+              {selected.kind === "task" && task && stage && (
+                <OrderActions
+                  label="任务"
+                  index={taskIndex}
+                  count={stage.tasks.length}
+                  onMove={(direction) =>
+                    updateStage({
+                      ...stage,
+                      tasks: moveItem(
+                        stage.tasks,
+                        taskIndex,
+                        taskIndex + direction,
+                      ),
+                    })
                   }
-                  placeholder="这个阶段要完成什么？"
+                  onRemove={
+                    stage.tasks.length > 1
+                      ? () => {
+                          updateStage({
+                            ...stage,
+                            tasks: stage.tasks.filter(
+                              (item) => item.id !== task.id,
+                            ),
+                          });
+                          select({ kind: "stage", stageId: stage.id });
+                        }
+                      : undefined
+                  }
                 />
-              </label>
-              <Button type="button" variant="outline" onClick={onAnalyze}>
-                <Sparkles size={15} />
-                配置节点分析
-              </Button>
-            </>
-          )}
-          {selected.kind === "task" && task && (
-            <TaskFields task={task} onChange={updateTask} />
-          )}
-          {selected.kind === "field" && field && (
-            <FieldFields field={field} onChange={updateField} />
-          )}
-        </div>
+              )}
+              {selected.kind === "field" && field && task && stage && (
+                <OrderActions
+                  label="填写项"
+                  index={fieldIndex}
+                  count={task.fields.length}
+                  onMove={(direction) => {
+                    updateTask({
+                      ...task,
+                      fields: moveItem(
+                        task.fields,
+                        fieldIndex,
+                        fieldIndex + direction,
+                      ),
+                    });
+                    select({
+                      kind: "field",
+                      stageId: stage.id,
+                      taskId: task.id,
+                      fieldIndex: fieldIndex + direction,
+                    });
+                  }}
+                  onRemove={() => {
+                    updateTask({
+                      ...task,
+                      fields: task.fields.filter(
+                        (_, index) => index !== fieldIndex,
+                      ),
+                    });
+                    select({
+                      kind: "task",
+                      stageId: stage.id,
+                      taskId: task.id,
+                    });
+                  }}
+                />
+              )}
+            </div>
+            <div className="ta-inspector-body">
+              {selected.kind === "config" && (
+                <ConfigurationFields draft={draft} onChange={onChange} />
+              )}
+              {selected.kind === "stage" && stage && (
+                <>
+                  <label className="tea-field">
+                    <span>节点名称</span>
+                    <Input
+                      value={stage.name}
+                      maxLength={100}
+                      onChange={(event) =>
+                        updateStage({ ...stage, name: event.target.value })
+                      }
+                      placeholder="例如：产品资料准备"
+                    />
+                  </label>
+                  <label className="tea-field">
+                    <span>办理主体</span>
+                    <Input
+                      value={stage.actor}
+                      maxLength={100}
+                      onChange={(event) =>
+                        updateStage({ ...stage, actor: event.target.value })
+                      }
+                      placeholder="谁来完成这个节点"
+                    />
+                  </label>
+                  <label className="tea-field">
+                    <span>办理目标</span>
+                    <Textarea
+                      value={stage.description}
+                      maxLength={2000}
+                      onChange={(event) =>
+                        updateStage({
+                          ...stage,
+                          description: event.target.value,
+                        })
+                      }
+                      placeholder="这个阶段要完成什么？"
+                    />
+                  </label>
+                  <Button type="button" variant="outline" onClick={onAnalyze}>
+                    <Sparkles size={15} />
+                    配置节点分析
+                  </Button>
+                </>
+              )}
+              {selected.kind === "task" && task && (
+                <TaskFields task={task} onChange={updateTask} />
+              )}
+              {selected.kind === "field" && field && (
+                <FieldFields field={field} onChange={updateField} />
+              )}
+            </div>
+          </>
+        )}
       </EditorInspector>
     </div>
   );

@@ -17,6 +17,9 @@ class AdminStudio:
     def __init__(self, service):
         self.service = service
         self.db = service.db
+        from .debugger import WorkflowDebugger
+
+        self.debugger = WorkflowDebugger(service)
         # Upgrade both pre-existing databases and empty databases under one write lock.
         with self.db.transaction() as conn:
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=3").fetchone():
@@ -95,31 +98,8 @@ class AdminStudio:
         )
         return {"template": template, "revision": revision, "updated_at": at}
 
-    def debug(self, owner, payload):
-        from .service import fail
-
-        template = payload.template.model_dump()
-        stage_id = payload.stage_id or template["stages"][0]["id"]
-        stage = next((stage for stage in template["stages"] if stage["id"] == stage_id), None)
-        if stage is None:
-            fail(422, "invalid_stage", "调试节点不存在，请重新选择")
-        unknown = payload.task_values.keys() - {task["id"] for task in stage["tasks"]}
-        if unknown:
-            fail(422, "invalid_task", "样例包含不属于当前节点的任务")
-        tasks = []
-        for task in stage["tasks"]:
-            sample = {**task, "values": {}, "evidence_ids": [], "confirmed": False}
-            sample["values"] = self.service.normalize_values(sample, payload.task_values.get(task["id"], {}))
-            tasks.append(sample)
-        return self.service.run_workflow(
-            owner,
-            template,
-            stage,
-            payload.input,
-            tasks,
-            context={"test_input": payload.input},
-            stop_after_step_id=payload.stop_after_step_id,
-        )
+    def debug(self, owner, payload, **options):
+        return self.debugger.debug(owner, payload, **options)
 
     def fingerprint(self, conn, owner, case):
         """Bind inputs without message timestamps, so remounts/chat do not repeat work."""
@@ -137,15 +117,24 @@ class AdminStudio:
                 "model": os.getenv("LLM_MODEL"),
                 "base": os.getenv("LLM_BASE_URL"),
                 "embedding": self.service.embedding_fingerprint(),
-                "runner_version": 1,
+                "runner_version": 2,
             }
         )
         # Iterate bounded-size metadata rows instead of collecting document bodies.
         for row in conn.execute(
-            """SELECT d.id,d.version,d.content_hash,d.status,d.case_id,d.filename,d.source_url,
+            """SELECT d.id,d.version,d.content_hash,d.status,d.case_id,d.filename,d.source_url,dc.country,
             COALESCE(m.revision,0) metadata_revision FROM documents d
             LEFT JOIN document_metadata m ON m.document_id=d.id
+            LEFT JOIN document_countries dc ON dc.document_id=d.id
             WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary' ORDER BY d.id""",
+            (owner, case["id"]),
+        ):
+            include(dict(row))
+        for row in conn.execute(
+            """SELECT c.document_id,c.collection,c.level,c.revision FROM legal_classifications c
+            JOIN documents d ON d.id=c.document_id WHERE d.owner_id=?
+            AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary'
+            ORDER BY c.document_id,c.collection""",
             (owner, case["id"]),
         ):
             include(dict(row))

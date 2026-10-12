@@ -1,347 +1,411 @@
 "use client";
 
-import {
-  CheckCircle2,
-  ChevronRight,
-  FlaskConical,
-  Play,
-  RotateCcw,
-  Square,
-  XCircle,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { FlaskConical, Play, Square } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { errorMessage, teaRequest } from "@/core/tea/api";
-import {
-  type DebugResult,
-  type Template,
-  type TraceStep,
-} from "@/core/tea/types";
+import type { Template } from "@/core/tea/types";
+import type {
+  DebugRunMode,
+  WorkflowDebugger,
+} from "@/core/tea/use-workflow-debugger";
 
-import { CitationCard } from "./library";
-import { ActionButton, Checks, ErrorNotice } from "./shared";
+import { ConfirmAction } from "./admin-shared";
+import {
+  DebugRunComparison,
+  DebugRunDetails,
+  evaluationLabel,
+  runLabel,
+} from "./debug-run-details";
+import { DebugSampleEditor } from "./debug-sample-editor";
+import { ErrorNotice } from "./shared";
 
 export function ConfigurationDebugger({
+  debug,
   draft,
   stageId,
   stepId,
-  onTrace,
+  onStep,
+  onEdit,
 }: {
+  debug: WorkflowDebugger;
   draft: Template;
   stageId: string;
   stepId?: string;
-  onTrace: (steps: TraceStep[]) => void;
+  onStep: (id: string) => void;
+  onEdit: (id: string) => void;
 }) {
-  const stage =
-    draft.stages.find((item) => item.id === stageId) ?? draft.stages[0]!;
-  const [input, setInput] = useState(
-    "请分析当前资料，告诉我还缺什么，以及下一步应该做什么。",
+  const [tab, setTab] = useState<"sample" | "result" | "compare" | "history">(
+    "sample",
   );
-  const [values, setValues] = useState<
-    Record<string, Record<string, string | number>>
-  >({});
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [result, setResult] = useState<{
-    data: DebugResult;
-    signature: string;
-  }>();
-  const [tab, setTab] = useState<"output" | "trace" | "checks" | "citations">(
-    "output",
-  );
-  const active = useRef<AbortController | null>(null);
-  const signature = JSON.stringify([draft, stage.id, input, values]);
-  const latest = useRef(signature);
-  latest.current = signature;
-  useEffect(() => () => active.current?.abort(), []);
-  const currentResult =
-    result?.signature === signature ? result.data : undefined;
-  function changeValues(taskId: string, field: string, value: string | number) {
-    setValues((current) => ({
-      ...current,
-      [taskId]: { ...current[taskId], [field]: value },
-    }));
-    onTrace([]);
-  }
-  async function run(stopAtStep = false) {
-    if (active.current) return;
-    const abort = new AbortController();
-    active.current = abort;
-    setBusy(true);
-    setError("");
-    onTrace([]);
-    const submitted = signature;
-    try {
-      const data = await teaRequest<DebugResult>("/templates/debug", {
-        method: "POST",
-        signal: abort.signal,
-        body: JSON.stringify({
-          template: draft,
-          stage_id: stage.id,
-          input,
-          task_values: Object.fromEntries(
-            stage.tasks.map((task) => [
-              task.id,
-              Object.fromEntries(
-                Object.entries(values[task.id] ?? {}).filter(([key]) =>
-                  task.fields.some((field) => field.key === key),
-                ),
-              ),
-            ]),
-          ),
-          ...(stopAtStep && stepId ? { stop_after_step_id: stepId } : {}),
-        }),
-      });
-      if (abort.signal.aborted) return;
-      if (latest.current !== submitted) {
-        setError("配置或样例已变化，本次结果已过期。请重新试运行。");
-        return;
-      }
-      setResult({ data, signature: submitted });
-      onTrace(data.trace);
-      setTab("output");
-    } catch (e) {
-      if (!abort.signal.aborted) setError(errorMessage(e));
-    } finally {
-      if (!abort.signal.aborted) setBusy(false);
-      active.current = null;
-    }
+  const [choice, setChoice] = useState("");
+  const stage = draft.stages.find((item) => item.id === stageId)!;
+  const steps = (stage.analysis ?? draft.agent).steps;
+  const selectedTrace = stepId
+    ? debug.trace.find((item) => item.id === stepId)
+    : (debug.trace.find((item) => item.status === "failed") ??
+      debug.trace.at(-1));
+  const detailStepId = stepId ?? selectedTrace?.id ?? steps[0]?.id;
+  const currentStep = steps.find((item) => item.id === detailStepId);
+  const runnableStepId = currentStep?.id;
+  const editableStepId =
+    tab === "result"
+      ? runnableStepId
+      : steps.find((item) => item.id === (stepId ?? steps[0]?.id))?.id;
+  const locked = debug.running || debug.working;
+  useEffect(() => {
+    if (stepId && debug.trace.length) setTab("result");
+  }, [stepId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setChoice(debug.sampleId ?? "");
+  }, [debug.sampleId]);
+  function run(mode: DebugRunMode) {
+    if (mode !== "full" && !runnableStepId) return;
+    setTab("result");
+    void debug.run(mode, mode === "full" ? undefined : runnableStepId);
   }
   return (
-    <section className="ta-debugger" aria-label="配置试运行">
-      <div className="ta-debug-heading">
-        <div>
-          <FlaskConical size={18} />
-          <h3>试运行</h3>
-          <span className="ta-badge">独立测试</span>
-        </div>
+    <div className="ta-debug-workspace">
+      <div className="ta-debug-title">
+        <strong>试运行</strong>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!editableStepId}
+          onClick={() => editableStepId && onEdit(editableStepId)}
+        >
+          编辑步骤
+        </Button>
       </div>
-      <div className="ta-debug-grid">
-        <fieldset disabled={busy} className="ta-debug-input">
-          <label className="tea-field">
-            <span>测试节点</span>
-            <Input readOnly value={stage.name} />
-          </label>
-          <label className="tea-field">
-            <span>给助手的测试问题</span>
-            <Textarea
-              maxLength={20000}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                onTrace([]);
-              }}
+      <div className="ta-debug-controls">
+        <select
+          aria-label="选择测试样例"
+          value={choice}
+          disabled={locked || debug.loading}
+          onChange={(event) => setChoice(event.target.value)}
+        >
+          <option value="">临时样例</option>
+          {debug.samples.map((item) => (
+            <option value={item.id} key={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+        {choice !== (debug.sampleId ?? "") &&
+          (debug.sampleDirty ? (
+            <ConfirmAction
+              title="载入另一份样例？"
+              description="当前未保存的测试输入会被替换。"
+              disabled={locked}
+              onConfirm={() =>
+                choice ? void debug.loadSample(choice) : debug.newSample()
+              }
+            >
+              载入
+            </ConfirmAction>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={locked}
+              onClick={() =>
+                choice ? void debug.loadSample(choice) : debug.newSample()
+              }
+            >
+              载入
+            </Button>
+          ))}
+        {debug.running ? (
+          <Button size="sm" variant="outline" onClick={debug.stop}>
+            <Square size={13} />
+            停止
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={() => run("full")}
+            disabled={locked || debug.loading}
+          >
+            <Play size={13} />
+            试运行
+          </Button>
+        )}
+      </div>
+      <div className="ta-debug-tabs" role="tablist" aria-label="调试内容">
+        {(
+          [
+            ["sample", "样例"],
+            ["result", "结果"],
+            ["compare", "对比"],
+            ["history", "记录"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            aria-controls={`debug-panel-${id}`}
+            id={`debug-tab-${id}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        className="ta-inspector-body ta-debug-body"
+        role="tabpanel"
+        id={`debug-panel-${tab}`}
+        aria-labelledby={`debug-tab-${tab}`}
+      >
+        {debug.error && (
+          <ErrorNotice
+            message={debug.error}
+            onRetry={() => void debug.refresh()}
+          />
+        )}
+        {debug.notice && (
+          <p className="ta-debug-notice" role="status">
+            {debug.notice}
+          </p>
+        )}
+        {debug.running && (
+          <p className="ta-debug-progress" role="status">
+            <span className="ta-dot" />
+            {debug.progress || "正在运行…"}
+          </p>
+        )}
+        {tab === "sample" && (
+          <DebugSampleEditor
+            key={draft.destination}
+            debug={debug}
+            stage={stage}
+            destination={draft.destination}
+          />
+        )}
+        {tab === "result" && (
+          <>
+            {runnableStepId && (
+              <div className="ta-debug-step-actions">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={locked}
+                  onClick={() => run("to")}
+                >
+                  运行到这里
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={locked || !debug.result}
+                  onClick={() => run("step")}
+                >
+                  只试这一步
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={locked || !debug.result}
+                  onClick={() => run("continue")}
+                >
+                  从这里继续
+                </Button>
+              </div>
+            )}
+            {selectedTrace && !runnableStepId && (
+              <p className="ta-hint">
+                此步骤已不在当前配置中，历史输入与结果仍可查看。
+              </p>
+            )}
+            {debug.stale && !debug.running && (
+              <p className="ta-debug-notice">
+                配置或输入已有变化，下面保留的是上次结果。重试时会检查哪些步骤可以复用。
+              </p>
+            )}
+            {debug.result || debug.trace.length || debug.running ? (
+              <DebugRunDetails
+                result={debug.result}
+                trace={debug.trace}
+                selectedId={detailStepId}
+                selectedLabel={currentStep?.label}
+                onStep={onStep}
+                liveOutput={debug.liveOutput}
+                running={debug.running}
+              />
+            ) : (
+              <div className="ta-debug-placeholder">
+                <FlaskConical size={26} strokeWidth={1.4} />
+                <p>选一份样例，开始试运行。</p>
+              </div>
+            )}
+          </>
+        )}
+        {tab === "compare" && (
+          <>
+            <label className="tea-field">
+              <span>对比记录</span>
+              <select
+                aria-label="对比记录"
+                disabled={locked}
+                value={debug.comparison?.id ?? ""}
+                onChange={(event) => {
+                  if (event.target.value)
+                    void debug.loadRun(event.target.value, true);
+                }}
+              >
+                <option value="">选择一条历史记录</option>
+                {debug.comparison &&
+                  !debug.history.some(
+                    (item) => item.id === debug.comparison?.id,
+                  ) && <option value={debug.comparison.id}>上次结果</option>}
+                {debug.history
+                  .filter((item) => item.id !== debug.result?.id)
+                  .map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {formatTime(item.created_at)} · {runLabel(item.status)}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <DebugRunComparison
+              current={debug.result}
+              previous={debug.comparison}
             />
-          </label>
-          <details className="ta-sample-fields">
-            <summary>
-              填写样例资料{" "}
-              <small>
-                {stage.tasks.reduce((sum, task) => sum + task.fields.length, 0)}{" "}
-                项
-              </small>
-            </summary>
-            <p className="ta-hint">留空可测试缺项提示。</p>
-            {stage.tasks.map((task) => (
-              <div key={task.id}>
-                <h4>{task.title}</h4>
-                {task.fields.map((field) => (
-                  <label className="tea-field" key={field.key}>
+          </>
+        )}
+        {tab === "history" && (
+          <>
+            <div className="ta-debug-section-heading">
+              <strong>当前节点的样例</strong>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={locked || !debug.sampleTotal}
+                onClick={() => void debug.runBatch()}
+              >
+                批量测试
+              </Button>
+            </div>
+            {debug.batchTotal > 0 && (
+              <div className="ta-debug-batch">
+                <p role="status">
+                  已完成 {debug.batch.length} / {debug.batchTotal}
+                </p>
+                {debug.batch.map((item) => (
+                  <div key={item.id}>
+                    <strong>{item.name}</strong>
                     <span>
-                      {field.label}
-                      {field.required ? " · 必填" : ""}
+                      {item.error ??
+                        (item.result
+                          ? `${runLabel(item.result.status)} · ${evaluationLabel(item.result.evaluations)}`
+                          : "等待运行")}
                     </span>
-                    {field.type === "textarea" ? (
-                      <Textarea
-                        value={values[task.id]?.[field.key] ?? ""}
-                        placeholder={field.placeholder ?? "测试用示例"}
-                        onChange={(e) =>
-                          changeValues(task.id, field.key, e.target.value)
-                        }
-                      />
-                    ) : (
-                      <Input
-                        type={field.type === "number" ? "number" : "text"}
-                        value={values[task.id]?.[field.key] ?? ""}
-                        placeholder={field.placeholder ?? "测试用示例"}
-                        onChange={(e) =>
-                          changeValues(
-                            task.id,
-                            field.key,
-                            field.type === "number" && e.target.value !== ""
-                              ? Number(e.target.value)
-                              : e.target.value,
-                          )
-                        }
-                      />
+                    {item.result && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={locked}
+                        onClick={() => {
+                          void debug.loadRun(item.result!.id);
+                          setTab("result");
+                        }}
+                      >
+                        查看
+                      </Button>
                     )}
-                  </label>
+                  </div>
                 ))}
               </div>
-            ))}
-          </details>
-          <div className="ta-debug-actions">
-            <ActionButton busy={busy} onClick={() => run()}>
-              <Play size={14} />
-              {busy ? "正在分析…" : "运行整个节点"}
-            </ActionButton>
-            {stepId && (
+            )}
+            <p className="ta-hint">
+              {debug.sampleTotal} 个已保存样例 · {debug.historyTotal} 次运行
+            </p>
+            {debug.sampleTotal > debug.samples.length && (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                disabled={busy}
-                onClick={() => run(true)}
+                disabled={locked}
+                onClick={() => void debug.refresh("samples")}
               >
-                <Square size={12} />
-                运行到选中步骤
+                载入更多样例
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="清空测试资料"
-              onClick={() => {
-                setValues({});
-                setResult(undefined);
-                onTrace([]);
-              }}
-            >
-              <RotateCcw size={14} />
-            </Button>
-          </div>
-        </fieldset>
-        <div className="ta-debug-output" aria-live="polite">
-          {error && <ErrorNotice message={error} onRetry={() => run()} />}
-          {result && !currentResult && (
-            <div className="tea-note">
-              配置或样例已修改，请重新试运行以查看最新结果。
-            </div>
-          )}
-          {currentResult ? (
-            <>
-              <div className="ta-result-mode">
-                <span className="ta-dot" />
-                {currentResult.assistant_mode === "live"
-                  ? "真实模型"
-                  : "规则演示 · 未调用大模型"}
-                <span>
-                  {
-                    currentResult.trace.filter(
-                      (step) => step.status === "completed",
-                    ).length
-                  }{" "}
-                  步已执行
-                </span>
-              </div>
-              <div
-                className="ta-result-tabs"
-                role="tablist"
-                aria-label="试运行结果"
-              >
-                {(
-                  [
-                    ["output", "分析结果"],
-                    ["trace", "执行过程"],
-                    ["checks", `检查项 ${currentResult.checks.length}`],
-                    [
-                      "citations",
-                      `引用 ${currentResult.citations?.length ?? 0}`,
-                    ],
-                  ] as const
-                ).map(([id, label]) => (
-                  <button
-                    role="tab"
-                    aria-selected={tab === id}
-                    key={id}
-                    onClick={() => setTab(id)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div
-                className="ta-result-body"
-                role="tabpanel"
-                aria-label="试运行详情"
-              >
-                {tab === "output" ? (
-                  <p className="ta-output-text">{currentResult.output}</p>
-                ) : tab === "checks" ? (
-                  currentResult.checks.length ? (
-                    <Checks checks={currentResult.checks} />
-                  ) : (
-                    <p className="ta-hint">本次未执行检查步骤。</p>
-                  )
-                ) : tab === "citations" ? (
-                  currentResult.citations?.length ? (
-                    currentResult.citations.map((citation, i) => (
-                      <CitationCard
-                        key={`${citation.document_id}-${i}`}
-                        citation={citation}
-                      />
-                    ))
-                  ) : (
-                    <p className="ta-hint">
-                      未找到原文。请检查审核状态、适用日期或检索条件。
-                    </p>
-                  )
-                ) : (
-                  <div className="ta-execution-list">
-                    {currentResult.trace.map((step, i) => (
-                      <details key={step.id} open={step.status === "failed"}>
-                        <summary>
-                          <span className={`ta-execution-icon ${step.status}`}>
-                            {step.status === "failed" ? (
-                              <XCircle size={16} />
-                            ) : step.status === "completed" ? (
-                              <CheckCircle2 size={16} />
-                            ) : (
-                              <ChevronRight size={16} />
-                            )}
-                          </span>
-                          <span>
-                            <strong>{step.label}</strong>
-                            <small>{step.detail}</small>
-                          </span>
-                          <em>{String(i + 1).padStart(2, "0")}</em>
-                        </summary>
-                        <div>
-                          {step.input && (
-                            <p>
-                              <b>输入</b>
-                              {step.input}
-                            </p>
-                          )}
-                          {step.output && (
-                            <p>
-                              <b>输出</b>
-                              {step.output}
-                            </p>
-                          )}
-                          <p>{step.detail}</p>
-                        </div>
-                      </details>
-                    ))}
+            <div className="ta-debug-history">
+              {debug.history.map((item) => (
+                <div key={item.id}>
+                  <div>
+                    <strong>{formatTime(item.created_at)}</strong>
+                    <span>
+                      {runLabel(item.status)} ·{" "}
+                      {evaluationLabel(item.evaluation_status)}
+                    </span>
                   </div>
-                )}
-              </div>
-            </>
-          ) : !busy && !error ? (
-            <div className="ta-debug-empty">
-              <FlaskConical size={30} strokeWidth={1.2} />
-              <h4>暂无运行结果</h4>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={locked}
+                    onClick={() => {
+                      void debug.loadRun(item.id);
+                      setTab("result");
+                    }}
+                  >
+                    查看
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={
+                      locked || !debug.result || item.id === debug.result.id
+                    }
+                    onClick={() => {
+                      void debug.loadRun(item.id, true);
+                      setTab("compare");
+                    }}
+                  >
+                    对比
+                  </Button>
+                </div>
+              ))}
             </div>
-          ) : busy ? (
-            <div className="ta-debug-empty">
-              <FlaskConical size={30} />
-              <h4>运行中…</h4>
-            </div>
-          ) : null}
-        </div>
+            {!debug.history.length && !debug.loading && (
+              <p className="ta-hint">暂无运行记录。</p>
+            )}
+            {debug.historyTotal > debug.history.length && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={locked}
+                onClick={() => void debug.refresh("history")}
+              >
+                更多记录
+              </Button>
+            )}
+            {debug.result && (
+              <ConfirmAction
+                title="载入这次运行的测试输入？"
+                description="当前测试输入会被替换，使用正在编辑的配置重新测试。"
+                disabled={locked}
+                onConfirm={() => {
+                  debug.restoreInputs();
+                  setTab("sample");
+                }}
+              >
+                使用这次运行的输入
+              </ConfirmAction>
+            )}
+          </>
+        )}
       </div>
-    </section>
+    </div>
   );
+}
+function formatTime(value: string) {
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }

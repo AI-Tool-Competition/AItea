@@ -12,12 +12,31 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .db import Database, dump, now, uid
-from .catalog import LegalCatalog, eligible
+from .catalog import DocumentMetadata, LegalCatalog, eligible
 from .defaults import DEFAULT_TEMPLATE
 from .models import Template
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD = 20 * 1024 * 1024
+DOCUMENT_FIELDS = (
+    "id",
+    "title",
+    "filename",
+    "role",
+    "status",
+    "mime_type",
+    "size",
+    "version",
+    "case_id",
+    "parent_id",
+    "created_at",
+    "source_url",
+    "error",
+    "family_id",
+    "content_hash",
+)
+# Lists never materialize plaintext or embedding arrays from the manifest.
+DOCUMENT_SUMMARY = ",".join(DOCUMENT_FIELDS) + ",tags,json_array_length(manifest,'$.chunks') chunk_count"
 
 
 class AppError(Exception):
@@ -37,10 +56,14 @@ def check(id, label, status, reason, refs=None):
 class Service:
     def __init__(self, data_dir):
         from .studio import AdminStudio
+        from .archive import LegalArchive
+        from .collection import CollectionService
 
         self.db = Database(Path(data_dir))
         self.catalog = LegalCatalog(self.db)
         self.studio = AdminStudio(self)
+        self.archive = LegalArchive(self)
+        self.collection = CollectionService(self)
 
     @property
     def capabilities(self):
@@ -583,28 +606,56 @@ class Service:
             fail(404, "not_found", "未找到资料")
         return doc
 
-    def document_dict(self, row):
-        doc = {
-            key: row[key]
-            for key in (
-                "id",
-                "title",
-                "filename",
-                "role",
-                "status",
-                "mime_type",
-                "size",
-                "version",
-                "case_id",
-                "parent_id",
-                "created_at",
-                "source_url",
-                "error",
+    def document_dict(self, row, conn=None):
+        doc = self.document_base(row)
+        return self.archive.enrich(self.catalog.enrich_document(doc, conn=conn), conn=conn)
+
+    def document_base(self, row):
+        doc = {key: row[key] for key in DOCUMENT_FIELDS}
+        doc["tags"] = json.loads(row["tags"])
+        doc["chunk_count"] = (
+            row["chunk_count"]
+            if "chunk_count" in row.keys()
+            else len(json.loads(row["manifest"]).get("chunks", []))
+        )
+        return doc
+
+    def document_summaries(self, rows, conn):
+        if not rows:
+            return []
+        ids = [row["id"] for row in rows]
+        placeholders = ",".join("?" for _ in ids)
+        metadata = {
+            row["document_id"]: row
+            for row in conn.execute(
+                f"SELECT * FROM document_metadata WHERE document_id IN ({placeholders})", ids
             )
         }
-        doc["tags"] = json.loads(row["tags"])
-        doc["chunk_count"] = len(json.loads(row["manifest"]).get("chunks", []))
-        return self.catalog.enrich_document(doc)
+        classifications = {}
+        for row in conn.execute(
+            f"SELECT * FROM legal_classifications WHERE document_id IN ({placeholders}) ORDER BY collection",
+            ids,
+        ):
+            classifications.setdefault(row["document_id"], []).append(row)
+        result = []
+        for row in rows:
+            doc = self.document_base(row)
+            saved = metadata.get(row["id"])
+            if saved:
+                doc.update(
+                    metadata=json.loads(saved["payload"]),
+                    metadata_revision=saved["revision"],
+                    reviewed_at=saved["reviewed_at"],
+                )
+            else:
+                default = (
+                    DocumentMetadata(kind="law", review_status="draft")
+                    if row["source_url"]
+                    else DocumentMetadata()
+                )
+                doc.update(metadata=default.model_dump(mode="json"), metadata_revision=0, reviewed_at=None)
+            result.append(self.archive.with_classifications(doc, classifications.get(row["id"], [])))
+        return result
 
     def metadata_changed(self, conn, document):
         if not document["case_id"]:
@@ -668,6 +719,28 @@ class Service:
         mime_type = (mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream").split(";")[
             0
         ]
+        from .archive import family_key
+
+        content_hash = hashlib.sha256(content).hexdigest()
+        family = family_key(owner, filename, source_url, case_id, role, parent_id)
+        with closing(self.db.connect()) as conn:
+            previous = conn.execute(
+                "SELECT * FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC LIMIT 1",
+                (owner, family),
+            ).fetchone()
+            if (
+                previous
+                and previous["content_hash"] == content_hash
+                and previous["status"] in ("ready", "stored")
+                and not previous["error"]
+            ):
+                manifest = json.loads(previous["manifest"])
+                if (
+                    role == "secondary"
+                    or manifest.get("embedding_fingerprint") == self.embedding_fingerprint()
+                ):
+                    return self.document_dict(previous, conn=conn)
+        blob = self.archive.blobs.put_bytes(owner, content)
         manifest, error = {"elements": [], "chunks": []}, None
         status = "stored" if role == "secondary" else "ready"
         if role == "primary":
@@ -695,9 +768,7 @@ class Service:
                     embedding_error = "原文和关键词索引已保存，但向量服务暂不可用；请检查模型配置后重新上传。"
                     error = "；".join(item for item in (error, embedding_error) if item)[:500]
                     manifest["embedding_error"] = embedding_error
-        id, content_hash = uid(), hashlib.sha256(content).hexdigest()
-        storage_path = self.db.files_dir / id
-        storage_path.write_bytes(content)
+        id, storage_path = uid(), blob.path
         try:
             with self.db.transaction() as conn:
                 if case_id:
@@ -720,11 +791,10 @@ class Service:
                     and json.loads(previous["manifest"]).get("embedding_fingerprint")
                     == manifest.get("embedding_fingerprint")
                 ):
-                    storage_path.unlink(missing_ok=True)
-                    return self.document_dict(previous)
+                    return self.document_dict(previous, conn=conn)
                 version = previous["version"] + 1 if previous else 1
                 conn.execute(
-                    "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO documents(id,owner_id,case_id,parent_id,title,filename,role,status,mime_type,size,version,content_hash,storage_path,tags,source_url,error,manifest,created_at,family_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         id,
                         owner,
@@ -744,6 +814,7 @@ class Service:
                         error,
                         dump(manifest),
                         now(),
+                        family,
                     ),
                 )
                 if case_id:
@@ -766,12 +837,24 @@ class Service:
                         "上传办理材料",
                         f"{filename} · 第 {version} 版 · {status}",
                     )
-                return self.document_dict(self.own_document(conn, owner, id))
+                return self.document_dict(self.own_document(conn, owner, id), conn=conn)
         except BaseException:
-            storage_path.unlink(missing_ok=True)
+            # Immutable blobs may already be shared by another committed document.
             raise
 
-    def documents(self, owner, case_id=None, limit=100, offset=0, *, role=None, parent_id=None, q=None):
+    def documents(
+        self,
+        owner,
+        case_id=None,
+        limit=100,
+        offset=0,
+        *,
+        role=None,
+        parent_id=None,
+        q=None,
+        legal_level=None,
+        collection=None,
+    ):
         with closing(self.db.connect()) as conn:
             if case_id:
                 self.own_case(conn, owner, case_id)
@@ -788,19 +871,30 @@ class Service:
             elif role:
                 conditions.append("role=?")
                 parameters.append(role)
+            if collection:
+                conditions.append(
+                    "EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id AND lc.collection=?)"
+                )
+                parameters.append(collection)
+            if legal_level == "attachment":
+                conditions.append("role='secondary'")
+            elif legal_level:
+                conditions.append("role='primary'")
+                primary = "EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id AND lc.level='primary') OR NOT EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id)"
+                conditions.append(f"({primary})" if legal_level == "primary" else f"NOT ({primary})")
             if q and q.strip():
                 pattern = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                 conditions.append("(title LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\')")
                 parameters.extend([pattern, pattern])
             where = " AND ".join(conditions)
             rows = conn.execute(
-                f"SELECT * FROM documents WHERE {where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
+                f"SELECT {DOCUMENT_SUMMARY} FROM documents WHERE {where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
                 (*parameters, limit, offset),
             ).fetchall()
             total = conn.execute(f"SELECT COUNT(*) n FROM documents WHERE {where}", parameters).fetchone()[
                 "n"
             ]
-            return {"items": [self.document_dict(row) for row in rows], "total": total}
+            return {"items": self.document_summaries(rows, conn), "total": total}
 
     def document_detail(self, owner, document_id, *, element_offset=0, chunk_offset=0, limit=100):
         with closing(self.db.connect()) as conn:
@@ -823,30 +917,19 @@ class Service:
                 "warnings": manifest.get("warnings", []),
             }
 
-    def search(self, owner, query, case_id=None, limit=5, as_of=None):
+    def search(self, owner, query, case_id=None, limit=5, as_of=None, collection=None):
         from .ingestion import embed_texts, lexical_search
 
+        historical = as_of is not None
         as_of = as_of or datetime.now(timezone.utc).date()
         with closing(self.db.connect()) as conn:
             if case_id:
                 self.own_case(conn, owner, case_id)
-            rows = conn.execute(
-                "SELECT * FROM documents WHERE owner_id=? AND (case_id IS NULL OR case_id=?) AND role='primary' ORDER BY created_at DESC LIMIT 500",
-                (owner, case_id),
-            ).fetchall()
-            metadata = {
-                row["id"]: self.catalog.metadata_for(row["id"], source_url=row["source_url"], conn=conn)
-                for row in rows
-            }
+            rows, metadata, limited = self.archive.retrieval_rows(
+                conn, owner, case_id, collection, as_of, historical
+            )
         chunks = []
-        seen = set()
         for row in rows:
-            identity = (row["case_id"], row["source_url"] or row["filename"])
-            if identity in seen:
-                continue
-            seen.add(identity)
-            if row["status"] != "ready" or not eligible(metadata[row["id"]]["metadata"], as_of):
-                continue
             for chunk in json.loads(row["manifest"]).get("chunks", []):
                 chunks.append(
                     {
@@ -898,6 +981,12 @@ class Service:
                     warning = "向量检索暂不可用，本次已回退到关键词检索。"
             elif chunks:
                 warning = "当前材料尚未使用此向量模型建立索引，本次使用关键词检索。"
+        if limited:
+            warning = "；".join(
+                filter(
+                    None, [warning, "当前检索范围超过单机检索预算，请按采集组缩小范围；结果不代表全部资料"]
+                )
+            )
         result = {
             "items": [
                 {
@@ -1139,8 +1228,13 @@ class Service:
             self.touch(conn, row["case_id"])
             return artifact
 
-    def source_dict(self, row):
-        return {
+    def source_dict(self, row, conn=None, latest_run=...):
+        from .models import CollectionPlan
+
+        if conn is None:
+            with closing(self.db.connect()) as conn:
+                return self.source_dict(row, conn)
+        result = {
             key: bool(row[key]) if key == "enabled" else json.loads(row[key]) if key == "tags" else row[key]
             for key in (
                 "id",
@@ -1152,25 +1246,67 @@ class Service:
                 "last_fetched_at",
                 "status",
                 "last_error",
+                "revision",
             )
         }
+        result["plan"] = CollectionPlan.model_validate(json.loads(row["plan"])).model_dump()
+        if latest_run is ...:
+            latest = conn.execute(
+                "SELECT * FROM collection_runs WHERE source_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            latest_run = self.collection.run_dict(conn, latest) if latest else None
+        result["latest_run"] = latest_run
+        return result
 
-    def sources(self, owner):
+    def sources(self, owner, limit=100, offset=0):
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
-                "SELECT * FROM sources WHERE owner_id=? ORDER BY created_at LIMIT 200", (owner,)
+                "SELECT * FROM sources WHERE owner_id=? ORDER BY created_at,id LIMIT ? OFFSET ?",
+                (owner, limit, offset),
             ).fetchall()
-            return {"items": [self.source_dict(row) for row in rows], "total": len(rows)}
+            total = conn.execute("SELECT COUNT(*) FROM sources WHERE owner_id=?", (owner,)).fetchone()[0]
+            latest = {}
+            if rows:
+                placeholders = ",".join("?" for _ in rows)
+                runs = conn.execute(
+                    f"""SELECT * FROM (
+                    SELECT r.*,ROW_NUMBER() OVER(PARTITION BY source_id ORDER BY created_at DESC,id DESC) selected
+                    FROM collection_runs r WHERE source_id IN ({placeholders})
+                ) WHERE selected=1""",
+                    [row["id"] for row in rows],
+                ).fetchall()
+                counts = self.collection.run_counts(conn, [row["id"] for row in runs])
+                latest = {
+                    row["source_id"]: self.collection.run_dict(conn, row, counts[row["id"]]) for row in runs
+                }
+            return {
+                "items": [self.source_dict(row, conn, latest.get(row["id"])) for row in rows],
+                "total": total,
+            }
 
     def save_source(self, owner, payload, id=None):
+        from .models import CollectionPlan
+        from .ingestion import _validated_url
+
         with self.db.transaction() as conn:
             if id:
                 row = conn.execute("SELECT * FROM sources WHERE owner_id=? AND id=?", (owner, id)).fetchone()
                 if not row:
                     fail(404, "not_found", "未找到采集来源")
-                values = self.source_dict(row) | {k: v for k, v in payload.items() if v is not None}
+                if (
+                    payload.get("expected_revision") is not None
+                    and payload["expected_revision"] != row["revision"]
+                ):
+                    fail(409, "stale_source", "来源配置已有更新，请刷新后保存")
+                values = self.source_dict(row, conn) | {k: v for k, v in payload.items() if v is not None}
+                self.collection.validate_plan(conn, owner, values["plan"])
+                try:
+                    _validated_url(values["url"])
+                except ValueError as exc:
+                    fail(422, "invalid_source", str(exc))
                 conn.execute(
-                    "UPDATE sources SET name=?,url=?,enabled=?,interval_hours=?,tags=?,updated_at=? WHERE id=?",
+                    "UPDATE sources SET name=?,url=?,enabled=?,interval_hours=?,tags=?,updated_at=?,plan=?,revision=revision+1 WHERE id=?",
                     (
                         values["name"],
                         values["url"],
@@ -1178,13 +1314,20 @@ class Service:
                         values["interval_hours"],
                         dump(values["tags"]),
                         now(),
+                        dump(values["plan"]),
                         id,
                     ),
                 )
             else:
+                plan = CollectionPlan.model_validate(payload.get("plan", {})).model_dump()
+                self.collection.validate_plan(conn, owner, plan)
+                try:
+                    _validated_url(payload["url"])
+                except ValueError as exc:
+                    fail(422, "invalid_source", str(exc))
                 id, at = uid(), now()
                 conn.execute(
-                    "INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO sources(id,owner_id,name,url,enabled,interval_hours,tags,last_fetched_at,last_attempt_at,status,last_error,created_at,updated_at,plan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         id,
                         owner,
@@ -1199,14 +1342,18 @@ class Service:
                         None,
                         at,
                         at,
+                        dump(plan),
                     ),
                 )
-            return self.source_dict(conn.execute("SELECT * FROM sources WHERE id=?", (id,)).fetchone())
+            return self.source_dict(conn.execute("SELECT * FROM sources WHERE id=?", (id,)).fetchone(), conn)
 
     def due_sources(self):
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
-                "SELECT id,owner_id,last_attempt_at,interval_hours,status FROM sources WHERE enabled=1"
+                """SELECT id,owner_id,last_attempt_at,interval_hours,status FROM sources s WHERE enabled=1
+                AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))
+                AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now'))
+                ORDER BY COALESCE(last_attempt_at,''),id LIMIT 100"""
             ).fetchall()
         current = datetime.now(timezone.utc)
         return [
@@ -1216,71 +1363,6 @@ class Service:
             or datetime.fromisoformat(r["last_attempt_at"]) + timedelta(hours=r["interval_hours"]) <= current
         ]
 
-    def fetch_source(self, owner_id, source_id):
-        from .ingestion import fetch_source
-
-        with self.db.transaction() as conn:
-            row = conn.execute(
-                "SELECT * FROM sources WHERE owner_id=? AND id=?", (owner_id, source_id)
-            ).fetchone()
-            if not row:
-                fail(404, "not_found", "未找到采集来源")
-            if (
-                row["status"] == "processing"
-                and row["last_attempt_at"]
-                and datetime.fromisoformat(row["last_attempt_at"]) + timedelta(minutes=10)
-                > datetime.now(timezone.utc)
-            ):
-                fail(409, "already_fetching", "该来源正在采集，请稍后查看")
-            conn.execute(
-                "UPDATE sources SET status='processing',last_attempt_at=?,last_error=NULL WHERE id=?",
-                (now(), source_id),
-            )
-        documents = []
-        error = None
-        warnings = []
-        try:
-            fetched = fetch_source(row["url"])
-            warnings = [str(item)[:500] for item in fetched.get("warnings", [])][:20]
-            main = self.store_document(
-                owner_id,
-                fetched["filename"],
-                fetched["content"],
-                fetched["mime_type"],
-                tags=json.loads(row["tags"]),
-                source_url=fetched["url"],
-            )
-            documents.append(main)
-            for attachment in fetched.get("attachments", [])[:5]:
-                documents.append(
-                    self.store_document(
-                        owner_id,
-                        attachment["filename"],
-                        attachment["content"],
-                        attachment["mime_type"],
-                        role="secondary",
-                        parent_id=main["id"],
-                        tags=json.loads(row["tags"]),
-                        source_url=attachment["url"],
-                    )
-                )
-            if main["error"]:
-                label = "主文件解析失败：" if main["status"] == "failed" else "主文件处理提示："
-                warnings.append(label + main["error"])
-            if warnings:
-                error = "主文件已保存；" + "；".join(warnings)[:450]
-        except Exception as exc:
-            logger.warning(
-                "source_collection_failed", extra={"source_id": source_id, "error_type": type(exc).__name__}
-            )
-            error = ("主文件已保存；采集中断：" if documents else "采集失败：") + str(exc)[:450]
-            warnings.append(error)
-        with self.db.transaction() as conn:
-            conn.execute(
-                "UPDATE sources SET status=?,last_error=?,last_fetched_at=COALESCE(?,last_fetched_at),updated_at=? WHERE id=?",
-                ("failed" if error else "ready", error, None if error else now(), now(), source_id),
-            )
-            source = self.source_dict(
-                conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
-            )
-        return {"source": source, "documents": documents, "warnings": warnings}
+    def fetch_source(self, owner_id, source_id, payload=None):
+        """Compatibility entry point; all collection uses the durable queue."""
+        return self.collection.enqueue(owner_id, source_id, payload or {"client_request_id": uid()})

@@ -1,5 +1,5 @@
 import json
-from typing import Literal
+from typing import Annotated, Literal
 from datetime import date
 
 from pydantic import (
@@ -203,6 +203,59 @@ class Search(StrictModel):
     case_id: str | None = None
     limit: int = Field(default=5, ge=1, le=20)
     as_of: date | None = None
+    collection: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+Tag = Annotated[str, Field(min_length=1, max_length=80)]
+PublicURL = Annotated[str, Field(min_length=1, max_length=2000, pattern=r"^https://")]
+
+
+class CollectionPlan(StrictModel):
+    collection: str = Field(default="default", min_length=1, max_length=100)
+    level: Literal["primary", "secondary"] = "primary"
+    seed_urls: list[PublicURL] = Field(default_factory=list, max_length=200)
+    primary_document_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        default_factory=list, max_length=20
+    )
+    discover_attachments: bool = True
+    max_items: int = Field(default=200, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def valid_secondary(self):
+        if self.level == "secondary" and not self.primary_document_ids:
+            raise ValueError("二级法规需关联至少一份一级法规")
+        if self.level == "primary" and self.primary_document_ids:
+            raise ValueError("一级法规不能指定引用它的一级资料")
+        return self
+
+
+class CollectionEntry(StrictModel):
+    url: PublicURL
+    identity_key: str | None = Field(default=None, min_length=1, max_length=200)
+    # Stable official identifier when new revisions move to a different URL.
+
+
+class CollectionStart(StrictModel):
+    client_request_id: str = Field(min_length=1, max_length=100)
+    entries: list[CollectionEntry] | None = Field(default=None, min_length=1, max_length=200)
+
+
+class RevisionInput(StrictModel):
+    expected_revision: int = Field(ge=1)
+
+
+class ClassificationPatch(StrictModel):
+    collection: str = Field(min_length=1, max_length=100)
+    level: Literal["primary", "secondary"]
+    tags: list[Tag] = Field(default_factory=list, max_length=20)
+    expected_revision: int = Field(ge=0)
+
+
+class LegalRelationInput(StrictModel):
+    collection: str = Field(min_length=1, max_length=100)
+    target_document_id: str = Field(min_length=1, max_length=64)
+    relation: Literal["cites", "related"] = "related"
+    locator: str = Field(default="", max_length=1000)
 
 
 class SourceInput(StrictModel):
@@ -210,7 +263,8 @@ class SourceInput(StrictModel):
     url: str = Field(min_length=1, max_length=2000, pattern=r"^https://")
     enabled: bool = True
     interval_hours: int = Field(default=24, ge=1, le=8760)
-    tags: list[str] = Field(default_factory=list, max_length=20)
+    tags: list[Tag] = Field(default_factory=list, max_length=20)
+    plan: CollectionPlan = Field(default_factory=CollectionPlan)
 
 
 class SourcePatch(StrictModel):
@@ -218,4 +272,6 @@ class SourcePatch(StrictModel):
     url: str | None = Field(default=None, min_length=1, max_length=2000, pattern=r"^https://")
     enabled: bool | None = None
     interval_hours: int | None = Field(default=None, ge=1, le=8760)
-    tags: list[str] | None = Field(default=None, max_length=20)
+    tags: list[Tag] | None = Field(default=None, max_length=20)
+    plan: CollectionPlan | None = None
+    expected_revision: int = Field(ge=1)

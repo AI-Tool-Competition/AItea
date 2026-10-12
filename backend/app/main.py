@@ -33,15 +33,18 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     @asynccontextmanager
     async def lifespan(app):
+        from .collection import CollectionWorkers
         from .scheduler import start_scheduler, stop_scheduler
 
-        handle = start_scheduler(
-            service, enabled=enable_scheduler if enable_scheduler is not None else not is_test
-        )
+        enabled = enable_scheduler if enable_scheduler is not None else not is_test
+        handle = start_scheduler(service, enabled=enabled)
+        workers = CollectionWorkers(service.collection).start() if enabled else None
         try:
             yield
         finally:
             await run_in_threadpool(stop_scheduler, handle)
+            if workers:
+                await run_in_threadpool(workers.stop)
 
     app = FastAPI(title="AItea API", version="0.1.0", lifespan=lifespan)
     app.state.service = service
@@ -162,7 +165,12 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     @app.get("/api/tea/health")
     def health():
-        return {"status": "ok", "version": "0.1.0", **service.capabilities}
+        return {
+            "status": "ok",
+            "version": "0.1.0",
+            **service.capabilities,
+            "collector": dict(service.collection.worker_health),
+        }
 
     @app.post("/api/tea/auth/demo")
     def demo(request: Request, response: Response):
@@ -291,9 +299,21 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         role: Literal["primary", "secondary"] | None = None,
         parent_id: str | None = None,
         q: str | None = Query(None, max_length=200),
+        legal_level: Literal["primary", "secondary", "attachment"] | None = None,
+        collection: str | None = Query(None, min_length=1, max_length=100),
         current=Depends(user),
     ):
-        return service.documents(current["id"], case_id, limit, offset, role=role, parent_id=parent_id, q=q)
+        return service.documents(
+            current["id"],
+            case_id,
+            limit,
+            offset,
+            role=role,
+            parent_id=parent_id,
+            q=q,
+            legal_level=legal_level,
+            collection=collection,
+        )
 
     @app.post("/api/tea/documents", status_code=201)
     async def upload(
@@ -358,9 +378,31 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         with closing(service.db.connect()) as conn:
             return service.document_dict(service.own_document(conn, current["id"], id))
 
+    @app.get("/api/tea/documents/{id}/versions")
+    def document_versions(
+        id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+    ):
+        return service.archive.versions(current["id"], id, limit, offset)
+
+    @app.get("/api/tea/documents/{id}/relations")
+    def document_relations(
+        id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+    ):
+        return service.archive.relations(current["id"], id, limit, offset)
+
+    @app.patch("/api/tea/documents/{id}/classification")
+    def document_classification(id: str, payload: models.ClassificationPatch, current=Depends(user)):
+        return service.archive.patch_classification(current["id"], id, payload.model_dump())
+
+    @app.post("/api/tea/documents/{id}/relations", status_code=201)
+    def add_document_relation(id: str, payload: models.LegalRelationInput, current=Depends(user)):
+        return service.archive.add_relation(current["id"], id, payload.model_dump())
+
     @app.post("/api/tea/search")
     def search(payload: models.Search, current=Depends(user)):
-        return service.search(current["id"], payload.query, payload.case_id, payload.limit, payload.as_of)
+        return service.search(
+            current["id"], payload.query, payload.case_id, payload.limit, payload.as_of, payload.collection
+        )
 
     @app.post("/api/tea/cases/{case_id}/artifacts", status_code=201)
     def create_artifact(case_id: str, payload: models.NewArtifact, current=Depends(user)):
@@ -398,20 +440,54 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         )
 
     @app.get("/api/tea/sources")
-    def sources(current=Depends(user)):
-        return service.sources(current["id"])
+    def sources(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)):
+        return service.sources(current["id"], limit, offset)
 
     @app.post("/api/tea/sources", status_code=201)
     def source_create(payload: models.SourceInput, current=Depends(user)):
         return service.save_source(current["id"], payload.model_dump())
 
+    @app.get("/api/tea/sources/{id}")
+    def source_detail(id: str, current=Depends(user)):
+        with closing(service.db.connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM sources WHERE id=? AND owner_id=?", (id, current["id"])
+            ).fetchone()
+            if not row:
+                fail(404, "not_found", "未找到采集来源")
+            return service.source_dict(row, conn)
+
     @app.patch("/api/tea/sources/{id}")
     def source_update(id: str, payload: models.SourcePatch, current=Depends(user)):
         return service.save_source(current["id"], payload.model_dump(exclude_unset=True), id)
 
-    @app.post("/api/tea/sources/{id}/fetch")
-    def source_fetch(id: str, current=Depends(user)):
-        return service.fetch_source(current["id"], id)
+    @app.post("/api/tea/sources/{id}/fetch", status_code=202)
+    def source_fetch(id: str, payload: models.CollectionStart | None = None, current=Depends(user)):
+        return service.fetch_source(current["id"], id, payload.model_dump() if payload else None)
+
+    @app.post("/api/tea/sources/{id}/runs", status_code=202)
+    def source_run(id: str, payload: models.CollectionStart, current=Depends(user)):
+        return service.collection.enqueue(current["id"], id, payload.model_dump())
+
+    @app.get("/api/tea/sources/{id}/runs")
+    def source_runs(
+        id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+    ):
+        return service.collection.runs(current["id"], id, limit, offset)
+
+    @app.get("/api/tea/collection-runs/{id}")
+    def collection_run(
+        id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+    ):
+        return service.collection.run_detail(current["id"], id, limit, offset)
+
+    @app.post("/api/tea/collection-runs/{id}/retry")
+    def retry_collection(id: str, payload: models.RevisionInput, current=Depends(user)):
+        return service.collection.control(current["id"], id, "retry", payload.expected_revision)
+
+    @app.post("/api/tea/collection-runs/{id}/cancel")
+    def cancel_collection(id: str, payload: models.RevisionInput, current=Depends(user)):
+        return service.collection.control(current["id"], id, "cancel", payload.expected_revision)
 
     app.add_middleware(RequestLimitMiddleware)
     return app

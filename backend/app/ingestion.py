@@ -22,8 +22,11 @@ import threading
 import time
 import zipfile
 from collections import Counter
+from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
@@ -447,25 +450,47 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
     return vectors
 
 
+class DownloadError(ValueError):
+    """A bounded collection failure; the durable job runner owns retry policy."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        retry_after: float | None = None,
+        response_host: str | None = None,
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after if retryable else None
+        self.response_host = response_host
+
+
 def _validated_url(url: str) -> tuple[str, str]:
     if not isinstance(url, str) or len(url) > 4096 or re.search(r"[\x00-\x20\x7f]", url):
-        raise ValueError("抓取 URL 无效。")
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.port not in (None, 443)
-    ):
-        raise ValueError("抓取仅支持不含凭据的标准端口 HTTPS URL。")
-    host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+        raise DownloadError("抓取 URL 无效。")
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 443)
+        ):
+            raise DownloadError("抓取仅支持不含凭据的标准端口 HTTPS URL。")
+        host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except (ValueError, UnicodeError) as exc:
+        if isinstance(exc, DownloadError):
+            raise
+        raise DownloadError("抓取 URL 无效。") from exc
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         address = None
     if address is not None and not address.is_global:
-        raise ValueError("抓取地址必须是 public 公网地址。")
+        raise DownloadError("抓取地址必须是 public 公网地址。")
     netloc = f"[{host}]" if ":" in host else host
     path = quote(parsed.path or "/", safe="/%:@!$&'()*+,;=-._~")
     query = quote(parsed.query, safe="=&%/:?@!$'()*+,;~-._")
@@ -477,7 +502,7 @@ def _public_addresses(host: str, *, deadline: float | None = None) -> list[tuple
     # threads so a resolver outage cannot exhaust application worker threads.
     remaining = min(10.0, (deadline or time.monotonic() + 10) - time.monotonic())
     if remaining <= 0 or not _DNS_SLOTS.acquire(timeout=max(0, remaining)):
-        raise ValueError("DNS 解析超过时间限制或队列已满。")
+        raise DownloadError("DNS 解析超过时间限制或队列已满。", retryable=True)
     result: queue.Queue = queue.Queue(maxsize=1)
 
     def resolve() -> None:
@@ -494,14 +519,14 @@ def _public_addresses(host: str, *, deadline: float | None = None) -> list[tuple
             timeout=max(0, min(10.0, (deadline or time.monotonic() + 10) - time.monotonic()))
         )
     except queue.Empty as exc:
-        raise ValueError("DNS 解析超过时间限制。") from exc
+        raise DownloadError("DNS 解析超过时间限制。", retryable=True) from exc
     if isinstance(addresses, Exception):
-        raise ValueError("抓取来源域名无法解析。") from addresses
+        raise DownloadError("抓取来源域名无法解析。", retryable=True) from addresses
     if not addresses:
-        raise ValueError("抓取来源没有可用地址。")
+        raise DownloadError("抓取来源没有可用地址。", retryable=True)
     for address in addresses:
         if not ipaddress.ip_address(address[4][0]).is_global:
-            raise ValueError("抓取来源的所有 DNS 地址必须是 public 公网地址。")
+            raise DownloadError("抓取来源的所有 DNS 地址必须是 public 公网地址。")
     return addresses
 
 
@@ -511,104 +536,276 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, host: str, address: tuple, timeout: float):
         super().__init__(host, port=443, timeout=timeout, context=ssl.create_default_context())
         self.address = address
+        self.active_socket = None
+        self.deadline: float | None = None
+        self.deadline_expired = threading.Event()
+
+    def _remaining_timeout(self) -> float:
+        remaining = self.timeout if self.deadline is None else self.deadline - time.monotonic()
+        if self.deadline_expired.is_set() or remaining <= 0:
+            raise TimeoutError("Collection deadline expired")
+        return min(self.timeout, remaining)
 
     def connect(self) -> None:
+        self._remaining_timeout()
         family, socket_type, protocol, _, destination = self.address
         raw = socket.socket(family, socket_type, protocol)
-        raw.settimeout(self.timeout)
+        tls = None
         try:
+            # Publish each socket before a blocking call. If the watchdog fired
+            # during socket creation or wrapping, the expired event prevents a
+            # newly attached socket from starting another network operation.
+            self.active_socket = raw
+            raw.settimeout(self._remaining_timeout())
             raw.connect(destination)
-            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
-            self.active_socket = self.sock
+            raw.settimeout(self._remaining_timeout())
+            tls = self._context.wrap_socket(raw, server_hostname=self.host, do_handshake_on_connect=False)
+            self.sock = self.active_socket = tls
+            tls.settimeout(self._remaining_timeout())
+            tls.do_handshake()
+            tls.settimeout(self._remaining_timeout())
         except BaseException:
+            if tls is not None:
+                tls.close()
             raw.close()
+            self.sock = self.active_socket = None
             raise
 
 
-def _download(url: str, *, deadline: float, required_host: str | None = None) -> dict:
+def _bounded_header(value: str | None, limit: int = 1024) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > limit:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 or ord(char) > 255 for char in value):
+        return None
+    return value
+
+
+def _retry_after(value: str | None) -> float | None:
+    """RFC 9110 section 10.2.3: delay-seconds or HTTP-date, capped locally."""
+    value = _bounded_header(value, 128)
+    if value is None:
+        return None
+    value = value.strip()
+    if re.fullmatch(r"[0-9]+", value):
+        return min(300.0, float(value))
+    try:
+        retry_at = parsedate_to_datetime(value)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return min(300.0, max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _download(
+    url: str,
+    *,
+    deadline: float,
+    required_host: str | None = None,
+    consume: Callable[[Iterable[bytes]], object] | None = None,
+    validators: dict[str, str] | None = None,
+    connection_slot: Callable[[str], AbstractContextManager] | None = None,
+) -> dict:
+    """Read a bounded HTTPS resource, optionally into an atomic blob consumer.
+
+    A consumer must exhaust the iterable and only publish after normal completion.
+    A 304 does not invoke it: callers must validate their cached original and URL.
+    Conditional headers belong exclusively to the initial requested resource.
+    A connection slot accounts for the actual host at every redirect hop.
+    """
     current = url
+    validators = validators or {}
+    conditionals = {
+        "If-None-Match": _bounded_header(validators.get("etag") or validators.get("ETag")),
+        "If-Modified-Since": _bounded_header(
+            validators.get("last_modified") or validators.get("Last-Modified"), 128
+        ),
+    }
     for redirect in range(4):
         current, host = _validated_url(current)
         if required_host is not None and host != required_host:
-            raise ValueError("关联附件重定向到了不同来源，已拒绝抓取。")
+            raise DownloadError("关联附件重定向到了不同来源，已拒绝抓取。")
         addresses = _public_addresses(host, deadline=deadline)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ValueError("抓取超过总时间限制。")
-        connection = _PinnedHTTPSConnection(host, addresses[0], min(15.0, remaining))
+        with connection_slot(host) if connection_slot else nullcontext():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DownloadError("抓取超过总时间限制。", retryable=True)
+            connection = _PinnedHTTPSConnection(host, addresses[0], min(15.0, remaining))
+            connection.deadline = deadline
+            expired = threading.Event()
+            connection.deadline_expired = expired
 
-        def expire_connection() -> None:
-            # An overall deadline also interrupts slow response headers and
-            # HTTPResponse-owned sockets after Connection: close.
-            active = getattr(connection, "active_socket", None)
-            if active is not None:
-                try:
-                    active.shutdown(socket.SHUT_RDWR)
-                    active.close()
-                except OSError:
-                    pass
+            def expire_connection(connection=connection, expired=expired) -> None:
+                # Bind this hop's socket and flag: a late timer from an earlier
+                # redirect must never close the next hop's connection.
+                expired.set()
+                active = getattr(connection, "active_socket", None)
+                if active is not None:
+                    try:
+                        active.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    try:
+                        active.close()
+                    except OSError:
+                        pass
 
-        expiry = threading.Timer(remaining, expire_connection)
-        expiry.daemon = True
-        expiry.start()
-        try:
-            parsed = urlsplit(current)
-            connection.request(
-                "GET",
-                parsed.path + ("?" + parsed.query if parsed.query else ""),
-                headers={
+            expiry = threading.Timer(max(0, deadline - time.monotonic()), expire_connection)
+            expiry.daemon = True
+            expiry.start()
+            try:
+                if expired.is_set() or deadline <= time.monotonic():
+                    raise DownloadError("抓取超过总时间限制。", retryable=True)
+                parsed = urlsplit(current)
+                headers = {
                     "User-Agent": "AItea/0.1 SourceCollector",
                     "Accept-Encoding": "identity",
                     "Accept": "application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,*/*;q=0.5",
-                },
-            )
-            response = connection.getresponse()
-            if response.status in {301, 302, 303, 307, 308}:
-                location = response.getheader("Location")
-                if not location or redirect == 3:
-                    raise ValueError("抓取来源重定向过多或地址缺失。")
-                current = urljoin(current, location)
-                continue
-            if not 200 <= response.status < 300:
-                raise ValueError(f"抓取来源返回 HTTP {response.status}。")
-            if response.getheader("Content-Encoding", "identity").lower() not in {"identity", ""}:
-                raise ValueError("抓取来源返回压缩传输，无法安全校验大小。")
-            length = response.getheader("Content-Length")
-            if length and (not length.isdigit() or int(length) > MAX_BYTES):
-                raise ValueError("抓取文件大小无效或超过 20 MB。")
-            payload = bytearray()
-            while True:
+                }
+                headers.update({key: value for key, value in conditionals.items() if value is not None})
+                connection.request(
+                    "GET",
+                    parsed.path + ("?" + parsed.query if parsed.query else ""),
+                    headers=headers,
+                )
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise ValueError("抓取超过总时间限制。")
-                if connection.sock:
+                if expired.is_set() or remaining <= 0:
+                    raise DownloadError("抓取超过总时间限制。", retryable=True)
+                if getattr(connection, "sock", None):
                     connection.sock.settimeout(min(15.0, remaining))
-                block = response.read1(min(65536, MAX_BYTES + 1 - len(payload)))
-                if not block:
-                    break
-                payload.extend(block)
-                if len(payload) > MAX_BYTES:
-                    raise ValueError("抓取文件超过 20 MB。")
-            if not payload:
-                raise ValueError("抓取文件为空。")
-            mime = (
-                response.getheader("Content-Type", "application/octet-stream").split(";")[0].strip().lower()
-            )
-            name = Path(unquote(parsed.path)).name or "source"
-            name = re.sub(r"[\x00-\x1f\x7f/\\]", "_", name)[:180]
-            if not Path(name).suffix or (
-                mime in _MIME_EXTENSIONS
-                and Path(name).suffix.lower() != _MIME_EXTENSIONS[mime]
-                and not (mime == "text/html" and Path(name).suffix.lower() == ".htm")
-            ):
-                name += _MIME_EXTENSIONS.get(mime, mimetypes.guess_extension(mime) or ".bin")
-            return {"url": current, "filename": name, "mime_type": mime, "content": bytes(payload)}
-        except (OSError, http.client.HTTPException) as exc:
-            raise ValueError("抓取连接失败或超时，请检查来源后重试。") from exc
-        finally:
-            expiry.cancel()
-            connection.close()
-    raise ValueError("抓取重定向无法完成。")
+                response = connection.getresponse()
+                if expired.is_set() or deadline <= time.monotonic():
+                    raise DownloadError("抓取超过总时间限制。", retryable=True)
+                if response.status in {301, 302, 303, 307, 308}:
+                    location = response.getheader("Location")
+                    if not location or redirect == 3:
+                        raise DownloadError("抓取来源重定向过多或地址缺失。")
+                    # Even on the same host, another path represents a different
+                    # cached resource. Do not leak or reuse the original validators.
+                    conditionals = {}
+                    current = urljoin(current, location)
+                    continue
+                response_validators = {
+                    "etag": _bounded_header(response.getheader("ETag")),
+                    "last_modified": _bounded_header(response.getheader("Last-Modified"), 128),
+                }
+                if response.status == 304:
+                    if not (headers.get("If-None-Match") or headers.get("If-Modified-Since")):
+                        raise DownloadError("来源对无条件请求返回 304，无法校验本地原件。")
+                    return {"url": current, "not_modified": True, **response_validators}
+                if not 200 <= response.status < 300:
+                    retryable = response.status in {408, 429} or 500 <= response.status <= 599
+                    raise DownloadError(
+                        f"抓取来源返回 HTTP {response.status}。",
+                        retryable=retryable,
+                        retry_after=_retry_after(response.getheader("Retry-After")) if retryable else None,
+                        response_host=host,
+                    )
+                if response.status == 206:
+                    raise DownloadError("抓取来源返回了不完整的分段响应。")
+                if response.getheader("Content-Encoding", "identity").lower() not in {"identity", ""}:
+                    raise DownloadError("抓取来源返回压缩传输，无法安全校验大小。")
+                length = response.getheader("Content-Length")
+                if length is not None and (
+                    not re.fullmatch(r"[0-9]{1,12}", length.strip()) or int(length) > MAX_BYTES
+                ):
+                    raise DownloadError("抓取文件大小无效或超过 20 MB。")
+                expected_length = int(length) if length is not None else None
+                mime = (
+                    response.getheader("Content-Type", "application/octet-stream")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if len(mime) > 255 or not re.fullmatch(r"[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+", mime):
+                    raise DownloadError("抓取来源返回无效的文件类型。")
+                name = Path(unquote(parsed.path)).name or "source"
+                name = re.sub(r"[\x00-\x1f\x7f/\\]", "_", name)[:180]
+                if not Path(name).suffix or (
+                    mime in _MIME_EXTENSIONS
+                    and Path(name).suffix.lower() != _MIME_EXTENSIONS[mime]
+                    and not (mime == "text/html" and Path(name).suffix.lower() == ".htm")
+                ):
+                    name += _MIME_EXTENSIONS.get(mime, mimetypes.guess_extension(mime) or ".bin")
+                exhausted = False
+
+                def chunks() -> Iterable[bytes]:
+                    nonlocal exhausted
+                    size = 0
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if expired.is_set() or remaining <= 0:
+                            raise DownloadError("抓取超过总时间限制。", retryable=True)
+                        if connection.sock:
+                            connection.sock.settimeout(min(15.0, remaining))
+                        block = response.read1(min(65536, MAX_BYTES + 1 - size))
+                        if expired.is_set() or deadline <= time.monotonic():
+                            raise DownloadError("抓取超过总时间限制。", retryable=True)
+                        if not block:
+                            break
+                        size += len(block)
+                        if size > MAX_BYTES:
+                            raise DownloadError("抓取文件超过 20 MB。")
+                        if expected_length is not None and size > expected_length:
+                            raise DownloadError("抓取文件长度与响应头不一致。", retryable=True)
+                        yield block
+                    # These checks run before the consumer can atomically publish.
+                    if expected_length is not None and size != expected_length:
+                        raise DownloadError("抓取文件传输不完整。", retryable=True)
+                    if not size:
+                        raise DownloadError("抓取文件为空。")
+                    exhausted = True
+
+                payload = consume(chunks()) if consume is not None else b"".join(chunks())
+                if not exhausted:
+                    raise DownloadError("文件存储未完整消费抓取数据。")
+                return {
+                    "url": current,
+                    "filename": name,
+                    "mime_type": mime,
+                    "blob" if consume is not None else "content": payload,
+                    **response_validators,
+                }
+            except (OSError, http.client.HTTPException) as exc:
+                raise DownloadError("抓取连接失败或超时，请检查来源后重试。", retryable=True) from exc
+            finally:
+                expiry.cancel()
+                connection.close()
+    raise DownloadError("抓取重定向无法完成。")
+
+
+def discover_attachments(url: str, content: bytes, mime_type: str, max_attachments: int = 5) -> list[str]:
+    """Find direct file attachments without fetching them or inferring citations."""
+    if (
+        isinstance(max_attachments, bool)
+        or not isinstance(max_attachments, int)
+        or not 0 <= max_attachments <= 5
+    ):
+        raise ValueError("直接附件数量必须为 0 至 5。")
+    if mime_type != "text/html" or not max_attachments or len(content) > MAX_TEXT:
+        return []
+    current, host = _validated_url(url)
+    extractor = _HTMLDocument()
+    extractor.feed(_decode(content))
+    extractor.finish()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for link in extractor.links:
+        try:
+            candidate, candidate_host = _validated_url(urljoin(current, link))
+        except ValueError:
+            continue
+        if (
+            candidate_host != host
+            or Path(unquote(urlsplit(candidate).path)).suffix.lower() not in _DIRECT_EXTENSIONS
+            or candidate in seen
+        ):
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+        if len(candidates) >= max_attachments:
+            break
+    return candidates
 
 
 def fetch_source(url: str, *, max_attachments: int = 5) -> dict:
@@ -626,25 +823,10 @@ def fetch_source(url: str, *, max_attachments: int = 5) -> dict:
                 "warnings": ["HTML 超过附件发现大小限制，已仅保存主文件。"],
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
-        extractor = _HTMLDocument()
-        extractor.feed(_decode(primary["content"]))
-        extractor.finish()
         host = urlsplit(primary["url"]).hostname
-        seen: set[str] = set()
-        for link in extractor.links:
-            try:
-                candidate, candidate_host = _validated_url(urljoin(primary["url"], link))
-            except ValueError:
-                continue
-            if (
-                candidate_host != host
-                or Path(unquote(urlsplit(candidate).path)).suffix.lower() not in _DIRECT_EXTENSIONS
-                or candidate in seen
-            ):
-                continue
-            seen.add(candidate)
-            if len(seen) > max_attachments:
-                break
+        for candidate in discover_attachments(
+            primary["url"], primary["content"], primary["mime_type"], max_attachments
+        ):
             try:
                 attachments.append(_download(candidate, deadline=deadline, required_host=host))
             except ValueError as exc:

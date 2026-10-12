@@ -18,6 +18,14 @@ export function collectionActive(run?: CollectionRun | null) {
   return run?.status === "queued" || run?.status === "running";
 }
 export function collectionStatus(run: CollectionRun) {
+  if (run.kind === "discovery")
+    return {
+      queued: "发现已排队",
+      running: "发现中",
+      completed: "本批发现结束",
+      partial: "发现部分失败",
+      cancelled: "已取消",
+    }[run.status];
   if (run.status === "running" && !run.pending && run.processing > 0)
     return "解析中";
   return {
@@ -150,9 +158,11 @@ export function CollectionProgress({
       <div className="ta-collection-counts" role="status">
         <strong>{collectionStatus(run)}</strong>
         <span>
-          已存 {run.stored} / {run.total}
+          {run.kind === "discovery"
+            ? `已读 ${run.pages ?? 0} / ${run.total} 页`
+            : `已存 ${run.stored} / ${run.total}`}
         </span>
-        <span>已处理 {run.processed}</span>
+        {run.kind !== "discovery" && <span>已处理 {run.processed}</span>}
         {run.pending > 0 && <span>待抓 {run.pending}</span>}
         {run.failed > 0 && (
           <span className="ta-collection-failed">抓取失败 {run.failed}</span>
@@ -165,9 +175,9 @@ export function CollectionProgress({
       </div>
       <progress
         className="ta-collection-bar"
-        aria-label="已存文件进度"
+        aria-label={run.kind === "discovery" ? "页面发现进度" : "已存文件进度"}
         max={Math.max(1, run.total)}
-        value={run.stored}
+        value={run.kind === "discovery" ? (run.pages ?? 0) : run.stored}
       />
       <div className="ta-collection-actions">
         <Button
@@ -224,18 +234,23 @@ export function CollectionProgress({
                         {
                           queued: "待抓取",
                           fetching: "抓取中",
-                          stored: "已存原件",
+                          stored:
+                            run.kind === "discovery" ? "已读取" : "已存原件",
                           failed: "失败",
                           cancelled: "已取消",
                         } as const
                       )[item.status]
                     }{" "}
                     ·{" "}
-                    {item.level === "attachment"
-                      ? "附件"
-                      : item.level === "secondary"
-                        ? "二级法规"
-                        : "一级资料"}
+                    {run.kind === "discovery"
+                      ? item.purpose === "detail"
+                        ? "详情页"
+                        : "目录页"
+                      : item.level === "attachment"
+                        ? "附件"
+                        : item.level === "secondary"
+                          ? "二级法规"
+                          : "一级资料"}
                     {item.attempts > 1 ? ` · 尝试 ${item.attempts} 次` : ""}
                     {item.status === "stored" &&
                       item.processing_status &&

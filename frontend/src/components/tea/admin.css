@@ -754,6 +754,10 @@
   height: 39px;
   font-size: 14px;
 }
+.ta-library-toolbar > .ta-country-filter {
+  width: 132px;
+  min-width: 0;
+}
 .ta-library-table {
   background: var(--background);
   border: 1px solid var(--border);

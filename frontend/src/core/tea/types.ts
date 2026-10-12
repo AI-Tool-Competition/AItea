@@ -132,6 +132,7 @@ export interface DocumentMetadata {
   review_status: "draft" | "published";
 }
 export interface Document {
+  country?: string | null;
   family_id?: string;
   content_hash?: string;
   legal_level?: "primary" | "secondary" | "attachment";
@@ -229,6 +230,12 @@ export interface Bootstrap {
   capabilities: Capabilities;
 }
 export interface Source {
+  checklist?: {
+    plan_id: string;
+    item_id: string;
+    country: string;
+    version: number;
+  };
   revision?: number;
   plan?: CollectionPlan;
   latest_run?: CollectionRun | null;
@@ -250,6 +257,87 @@ export interface CollectionPlan {
   discover_attachments: boolean;
   max_items: number;
 }
+export interface CollectionBlueprintSummary {
+  id: string;
+  version: number;
+  country: string;
+  title: string;
+  description: string;
+  source_document: { filename: string; date: string; sha256: string };
+  item_count: number;
+  chapter_count: number;
+}
+export interface ChecklistEntry {
+  url: string;
+  purpose: "catalog" | "detail" | "document" | "reference";
+  note: string;
+}
+export interface ChecklistItem {
+  id: string;
+  chapter_id: string;
+  title: string;
+  kind: string;
+  conditional: boolean;
+  trigger: string;
+  priority: number;
+  entries: ChecklistEntry[];
+  tags: string[];
+  scope_include: string[];
+  scope_exclude: string[];
+  steps: string[];
+  fields: string[];
+  version_rules: string[];
+  relation_rules: string[];
+  acceptance: string[];
+  verbatim_requirements: string;
+  execution: "discovery" | "dataset_review";
+  adapter: string;
+  limits: Record<string, unknown>;
+}
+export interface CollectionBlueprint extends CollectionBlueprintSummary {
+  principles: string[];
+  chapters: { id: string; title: string; notes: string[] }[];
+  channels: {
+    id: string;
+    title: string;
+    questions: string[];
+    item_ids: string[];
+  }[];
+  limits: Record<string, unknown>;
+  items: ChecklistItem[];
+}
+export interface ChecklistItemState {
+  item_id: string;
+  source_id: string | null;
+  latest_run: CollectionRun | null;
+  counts: {
+    pages: number;
+    remaining_pages?: number;
+    candidates: number;
+    pending: number;
+    stored: number;
+    parsed: number;
+    reviewed: number;
+    excluded: number;
+  };
+  coverage: "not_started" | "in_progress" | "needs_review" | "blocked";
+  last_error: string | null;
+}
+export interface CollectionBlueprintDetail {
+  plan: CollectionBlueprint;
+  items: ChecklistItemState[];
+}
+export interface ChecklistCandidate {
+  id: string;
+  url: string;
+  title: string;
+  discovered_from: string;
+  status: "pending" | "queued" | "stored" | "excluded";
+  document_id: string | null;
+  revision: number;
+  note: string;
+  created_at: string;
+}
 export interface Classification {
   collection: string;
   level: "primary" | "secondary";
@@ -257,6 +345,8 @@ export interface Classification {
   revision: number;
 }
 export interface CollectionRun {
+  kind?: "discovery" | "collection";
+  pages?: number;
   id: string;
   source_id: string;
   status: "queued" | "running" | "completed" | "partial" | "cancelled";
@@ -273,6 +363,7 @@ export interface CollectionRun {
   processing_failed: number;
 }
 export interface CollectionItem {
+  purpose?: "catalog" | "detail" | "document";
   id: string;
   url: string;
   level: "primary" | "secondary" | "attachment";

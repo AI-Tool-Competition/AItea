@@ -11,6 +11,7 @@ import {
   type Source,
 } from "@/core/tea/types";
 
+import { CollectionChecklists } from "./collection-checklists";
 import {
   CollectionProgress,
   collectionActive,
@@ -27,7 +28,51 @@ import {
 import { SourceForm } from "./source-form";
 
 const PAGE_SIZE = 20;
-export function Sources({
+export function Sources(
+  props: { compact?: boolean; samples?: boolean; ownerId?: string } = {},
+) {
+  if (props.samples)
+    return (
+      <CustomSources key={`samples:${props.ownerId ?? "session"}`} {...props} />
+    );
+  return <SourceWorkspace key={props.ownerId ?? "session"} {...props} />;
+}
+function SourceWorkspace({
+  compact = false,
+  ownerId,
+}: {
+  compact?: boolean;
+  ownerId?: string;
+}) {
+  const [tab, setTab] = useState<"checklists" | "custom">("checklists");
+  return (
+    <div className="tea-page tea-sources">
+      {!compact && <SectionHeading title="来源管理" />}
+      <div className="ta-checklist-tabs" aria-label="来源类型">
+        <Button
+          variant={tab === "checklists" ? "secondary" : "ghost"}
+          aria-pressed={tab === "checklists"}
+          onClick={() => setTab("checklists")}
+        >
+          采集清单
+        </Button>
+        <Button
+          variant={tab === "custom" ? "secondary" : "ghost"}
+          aria-pressed={tab === "custom"}
+          onClick={() => setTab("custom")}
+        >
+          自定义来源
+        </Button>
+      </div>
+      {tab === "checklists" ? (
+        <CollectionChecklists ownerId={ownerId} />
+      ) : (
+        <CustomSources compact ownerId={ownerId} />
+      )}
+    </div>
+  );
+}
+export function CustomSources({
   compact = false,
   samples = false,
   ownerId,
@@ -78,7 +123,7 @@ export function Sources({
   }, [revision, samples, offset, ownerId]);
 
   async function mutate(source: Source, collect: boolean) {
-    if (pending.current.has(source.id) || samples) return;
+    if (pending.current.has(source.id) || samples || source.checklist) return;
     const abort = new AbortController();
     pending.current.set(source.id, abort);
     setBusy((current) => new Set(current).add(source.id));
@@ -175,7 +220,9 @@ export function Sources({
                   <input
                     type="checkbox"
                     checked={source.enabled}
-                    disabled={busy.has(source.id) || samples}
+                    disabled={
+                      busy.has(source.id) || samples || !!source.checklist
+                    }
                     onChange={() => void mutate(source, false)}
                   />
                   启用
@@ -192,7 +239,7 @@ export function Sources({
                       ? `上次 ${dateLabel(source.last_fetched_at)}`
                       : "尚未抓取"}
                 </span>
-                {!samples && (
+                {!samples && !source.checklist && (
                   <>
                     <Button
                       variant="ghost"
@@ -218,7 +265,12 @@ export function Sources({
                 )}
               </div>
               <div className="ta-collection-tags">
-                {source.plan && (
+                {source.checklist && (
+                  <span>
+                    清单 {source.checklist.item_id} · {source.checklist.country}
+                  </span>
+                )}
+                {source.plan && !source.checklist && (
                   <span>
                     {source.plan.collection === "default"
                       ? "默认采集组"
@@ -357,7 +409,9 @@ function SourceHistory({
                 }
               >
                 {dateLabel(run.created_at, true)} · {collectionStatus(run)} ·
-                已存 {run.stored}
+                {run.kind === "discovery"
+                  ? `已读 ${run.pages ?? 0} 页`
+                  : `已存 ${run.stored}`}
               </Button>
             ))}
             {!data.items.length && <p className="ta-hint">暂无记录。</p>}

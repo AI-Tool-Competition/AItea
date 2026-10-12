@@ -25,11 +25,25 @@ export interface RelationDraft {
   relation: LawRelation["relation"];
   locator: string;
 }
+export interface ChecklistDraft {
+  selected: string[];
+  storedSelected?: string[];
+  level: "" | "primary" | "secondary";
+  primaryIds: string[];
+  confirmed: boolean;
+  excludeId: string;
+  excludeNote: string;
+  request?: { signature: string; id: string };
+}
+export const checklistDrafts = new Map<string, ChecklistDraft>();
+export const checklistPlanRequests = new Map<string, string>();
 // Account-scoped memory only. Logout and session expiry clear private drafts.
 export const sourceDrafts = new Map<string, SourceDraft>();
 export const classificationDrafts = new Map<string, ClassificationDraft>();
 export const relationDrafts = new Map<string, RelationDraft>();
 export function clearCollectionDrafts() {
+  checklistDrafts.clear();
+  checklistPlanRequests.clear();
   sourceDrafts.clear();
   classificationDrafts.clear();
   relationDrafts.clear();

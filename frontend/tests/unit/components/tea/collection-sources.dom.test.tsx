@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 
 import { CollectionProgress } from "@/components/tea/collection-run";
-import { Sources } from "@/components/tea/sources";
+import { CustomSources as Sources } from "@/components/tea/sources";
 import { clearCollectionDrafts } from "@/core/tea/collection-drafts";
 import { type CollectionRun } from "@/core/tea/types";
 

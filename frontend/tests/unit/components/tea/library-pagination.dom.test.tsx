@@ -73,6 +73,8 @@ describe("library parsed-content pagination", () => {
     const detailRequests: URL[] = [];
     rs.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = requestUrl(input);
+      if (url.pathname === "/api/tea/collection-plans")
+        return response({ items: [], total: 0 });
       if (url.pathname === "/api/tea/documents")
         return response({ items: [first], total: 1 });
       detailRequests.push(url);
@@ -128,6 +130,8 @@ describe("library parsed-content pagination", () => {
     });
     rs.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
       const url = requestUrl(input);
+      if (url.pathname === "/api/tea/collection-plans")
+        return response({ items: [], total: 0 });
       if (url.pathname === "/api/tea/documents")
         return response({ items: [first, second], total: 2 });
       const offset = Number(url.searchParams.get("element_offset") ?? 0);

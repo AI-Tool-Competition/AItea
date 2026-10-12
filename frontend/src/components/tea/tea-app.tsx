@@ -598,6 +598,8 @@ export function TeaApp({
           )
         ) : view === "library" ? (
           <Library
+            key={bootstrap.user.id}
+            ownerId={bootstrap.user.id}
             revision={libraryRevision}
             cases={bootstrap.cases}
             initialCaseId={caseId}

@@ -68,11 +68,23 @@ export async function teaRequest<T>(
     );
   return payload as T;
 }
-export function post<T>(path: string, body: unknown = {}) {
-  return teaRequest<T>(path, { method: "POST", body: JSON.stringify(body) });
+export function post<T>(
+  path: string,
+  body: unknown = {},
+  signal?: AbortSignal,
+) {
+  return teaRequest<T>(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
 }
-export function patch<T>(path: string, body: unknown) {
-  return teaRequest<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+export function patch<T>(path: string, body: unknown, signal?: AbortSignal) {
+  return teaRequest<T>(path, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+    signal,
+  });
 }
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "操作未完成，请重试。";

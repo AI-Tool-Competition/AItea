@@ -144,8 +144,9 @@ export const taskStatus = {
   needs_input: "待补充",
   completed: "已完成",
 };
-export function dateLabel(value: string) {
+export function dateLabel(value: string, includeYear = false) {
   return new Intl.DateTimeFormat("zh-CN", {
+    year: includeYear ? "numeric" : undefined,
     month: "short",
     day: "numeric",
     hour: "2-digit",

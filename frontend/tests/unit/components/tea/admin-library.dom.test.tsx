@@ -47,18 +47,17 @@ describe("admin library", () => {
     expect(screen.getByText(/不是真实法规/, { selector: "p" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "下载原件" })).toBeNull();
     expect(screen.queryByText(/资料分类与适用性/)).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "二级资料" }));
-    fireEvent.click(await screen.findByText("名词定义 · 引用资料样例"));
+    fireEvent.click(screen.getByRole("tab", { name: "附件" }));
+    fireEvent.click(await screen.findByText("名词说明 · 附件样例"));
     expect(screen.getByRole("heading", { name: "关联原件" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "查看所属一级资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看所属资料" }));
     expect(
       screen.getByRole("heading", { name: "茶叶进口登记 · 主资料样例" }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "返回资料目录" }));
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "搜索一级资料名称" }),
-      { target: { value: "标签" } },
-    );
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索资料名称" }), {
+      target: { value: "标签" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "搜索" }));
     expect(screen.queryByText("茶叶进口登记 · 主资料样例")).toBeNull();
     expect(screen.getByText("产品标签规范 · 主资料样例")).toBeTruthy();
@@ -126,17 +125,13 @@ describe("admin library", () => {
       expect(screen.getByRole("button", { name: "查看拆解" })).toBeTruthy(),
     );
     fireEvent.click(screen.getByRole("button", { name: "查看拆解" }));
-    fireEvent.click(screen.getByRole("tab", { name: "二级资料" }));
-    await waitFor(() =>
-      expect(screen.getByText(/尚未添加二级资料/)).toBeTruthy(),
-    );
+    fireEvent.click(screen.getByRole("tab", { name: "附件" }));
+    await waitFor(() => expect(screen.getByText(/尚未添加附件/)).toBeTruthy());
     uploaded = true;
     view.rerender(<AdminLibrary {...props} revision={1} />);
     await waitFor(() => expect(screen.getByText("新关联附件")).toBeTruthy());
     expect(
-      screen
-        .getByRole("tab", { name: "二级资料" })
-        .getAttribute("aria-selected"),
+      screen.getByRole("tab", { name: "附件" }).getAttribute("aria-selected"),
     ).toBe("true");
   });
 });

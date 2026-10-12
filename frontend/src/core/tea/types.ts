@@ -132,6 +132,10 @@ export interface DocumentMetadata {
   review_status: "draft" | "published";
 }
 export interface Document {
+  family_id?: string;
+  content_hash?: string;
+  legal_level?: "primary" | "secondary" | "attachment";
+  classifications?: Classification[];
   metadata?: DocumentMetadata;
   metadata_revision?: number;
   reviewed_at?: string | null;
@@ -211,6 +215,9 @@ export interface Bootstrap {
   capabilities: Capabilities;
 }
 export interface Source {
+  revision?: number;
+  plan?: CollectionPlan;
+  latest_run?: CollectionRun | null;
   id: string;
   name: string;
   url: string;
@@ -220,6 +227,63 @@ export interface Source {
   last_fetched_at: string | null;
   status: string;
   last_error: string | null;
+}
+export interface CollectionPlan {
+  collection: string;
+  level: "primary" | "secondary";
+  seed_urls: string[];
+  primary_document_ids: string[];
+  discover_attachments: boolean;
+  max_items: number;
+}
+export interface Classification {
+  collection: string;
+  level: "primary" | "secondary";
+  tags: string[];
+  revision: number;
+}
+export interface CollectionRun {
+  id: string;
+  source_id: string;
+  status: "queued" | "running" | "completed" | "partial" | "cancelled";
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  error: string | null;
+  total: number;
+  stored: number;
+  failed: number;
+  pending: number;
+  processing: number;
+  processed: number;
+  processing_failed: number;
+}
+export interface CollectionItem {
+  id: string;
+  url: string;
+  level: "primary" | "secondary" | "attachment";
+  status: "queued" | "fetching" | "stored" | "failed" | "cancelled";
+  attempts: number;
+  document_id: string | null;
+  error: string | null;
+  processing_status: string | null;
+  processing_error?: string | null;
+}
+export interface CollectionRunDetail extends ListResult<CollectionItem> {
+  run: CollectionRun;
+}
+export interface LawRelation {
+  id: string;
+  collection: string;
+  relation: "cites" | "related";
+  source_document_id: string;
+  target_document_id: string;
+  locator: string;
+  created_at: string;
+  source_title: string;
+  target_title: string;
+  source_version: number;
+  target_version: number;
 }
 export interface ListResult<T> {
   items: T[];

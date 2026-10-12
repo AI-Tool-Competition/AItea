@@ -33,7 +33,10 @@ import {
   type ListResult,
 } from "@/core/tea/types";
 
+import { DocumentClassificationEditor } from "./document-classification";
+import { DocumentHistory } from "./document-history";
 import { DocumentMetadataEditor } from "./document-metadata";
+import { DocumentRelations } from "./document-relations";
 import { Busy, dateLabel, Empty, ErrorNotice } from "./shared";
 
 const PAGE_SIZE = 20;
@@ -43,11 +46,13 @@ export function AdminLibrary({
   revision,
   onUpload,
   samples = false,
+  ownerId,
 }: {
   cases: CaseSummary[];
   revision: number;
   onUpload: (scope?: string, parent?: string) => void;
   samples?: boolean;
+  ownerId?: string;
 }) {
   const [scope, setScope] = useState("");
   const [query, setQuery] = useState("");
@@ -107,8 +112,12 @@ export function AdminLibrary({
         key={selected.id}
         document={selected}
         samples={samples}
+        ownerId={ownerId}
         revision={revision}
-        onBack={() => setSelected(undefined)}
+        onBack={() => {
+          setSelected(undefined);
+          setRetry((value) => value + 1);
+        }}
         onSelect={setSelected}
         onUpload={() => onUpload(selected.case_id ?? undefined, selected.id)}
         onSaved={(next) => {
@@ -135,8 +144,8 @@ export function AdminLibrary({
         >
           <Search size={16} />
           <Input
-            aria-label="搜索一级资料名称"
-            placeholder="搜索一级资料名称…"
+            aria-label="搜索资料名称"
+            placeholder="搜索资料名称…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -179,7 +188,7 @@ export function AdminLibrary({
           <span>
             {loading
               ? "读取中…"
-              : `${data.total} 份${samples ? "开发样例" : "一级资料"}`}
+              : `${data.total} 份${samples ? "开发样例" : "资料"}`}
           </span>
           {search && (
             <button
@@ -217,7 +226,7 @@ export function AdminLibrary({
                         <div className="ta-file-name">
                           <button
                             className="ta-expand"
-                            aria-label={`${expanded.has(doc.id) ? "收起" : "展开"}${doc.title}的二级资料`}
+                            aria-label={`${expanded.has(doc.id) ? "收起" : "展开"}${doc.title}的附件`}
                             aria-expanded={expanded.has(doc.id)}
                             onClick={() =>
                               setExpanded((current) => {
@@ -243,7 +252,8 @@ export function AdminLibrary({
                           >
                             <strong>{doc.title}</strong>
                             <small>
-                              一级资料 · v{doc.version} · {sizeLabel(doc.size)}
+                              {documentLevel(doc)} · v{doc.version} ·{" "}
+                              {sizeLabel(doc.size)}
                             </small>
                           </button>
                         </div>
@@ -277,7 +287,7 @@ export function AdminLibrary({
                     {expanded.has(doc.id) && (
                       <tr className="ta-children-row">
                         <td colSpan={5}>
-                          <SecondaryDocuments
+                          <Attachments
                             parent={doc}
                             samples={samples}
                             revision={revision}
@@ -322,12 +332,21 @@ function sizeLabel(size: number) {
     ? `${(size / 1024 / 1024).toFixed(1)} MB`
     : `${(size / 1024).toFixed(1)} KB`;
 }
+function documentLevel(document: Document) {
+  return document.role === "secondary"
+    ? "附件"
+    : document.legal_level === "secondary"
+      ? "二级法规"
+      : "一级资料";
+}
 function DocumentStatus({ document }: { document: Document }) {
   return (
     <span className={`ta-badge ta-document-status ${document.status}`}>
       <span className="ta-dot" />
       {document.status === "ready"
-        ? `${document.chunk_count} 个检索片段`
+        ? document.legal_level === "secondary"
+          ? "已解析"
+          : `${document.chunk_count} 个检索片段`
         : document.status === "stored"
           ? "原件已保存"
           : document.status === "failed"
@@ -378,7 +397,7 @@ function Pagination({
     </div>
   );
 }
-function SecondaryDocuments({
+function Attachments({
   parent,
   revision,
   onSelect,
@@ -437,7 +456,7 @@ function SecondaryDocuments({
       <div className="ta-subheading">
         <h4>
           <Paperclip size={14} />
-          二级资料
+          附件
         </h4>
         {onUpload && (
           <Button variant="ghost" size="sm" onClick={onUpload}>
@@ -466,7 +485,7 @@ function SecondaryDocuments({
           </button>
         ))
       ) : (
-        <p className="ta-hint">尚未添加二级资料。</p>
+        <p className="ta-hint">尚未添加附件。</p>
       )}
       {data.total > 10 && (
         <Pagination
@@ -489,6 +508,7 @@ function DocumentInspector({
   onUpload,
   onSaved,
   samples,
+  ownerId,
 }: {
   document: Document;
   revision: number;
@@ -497,11 +517,12 @@ function DocumentInspector({
   onUpload: () => void;
   onSaved: (doc: Document) => void;
   samples: boolean;
+  ownerId?: string;
 }) {
   const [data, setData] = useState<DocumentDetail>();
-  const [tab, setTab] = useState<"elements" | "chunks" | "attachments">(
-    "elements",
-  );
+  const [tab, setTab] = useState<
+    "elements" | "chunks" | "attachments" | "versions" | "relations"
+  >("elements");
   const [offsets, setOffsets] = useState({ elements: 0, chunks: 0 });
   const [selectedPart, setSelectedPart] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -517,27 +538,42 @@ function DocumentInspector({
       return;
     }
     const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setLoading(true);
     setError("");
-    teaRequest<DocumentDetail>(
-      `/documents/${encodeURIComponent(document.id)}?element_offset=${offsets.elements}&chunk_offset=${offsets.chunks}&limit=${PART_SIZE}`,
-      { signal: abort.signal },
-    )
-      .then((next) => {
-        if (!abort.signal.aborted) setData(next);
-      })
-      .catch((e) => {
-        if (!abort.signal.aborted) setError(errorMessage(e));
-      })
-      .finally(() => {
-        if (!abort.signal.aborted) setLoading(false);
-      });
-    return () => abort.abort();
-  }, [document.id, offsets, retry, samples]);
+    function read() {
+      void teaRequest<DocumentDetail>(
+        `/documents/${encodeURIComponent(document.id)}?element_offset=${offsets.elements}&chunk_offset=${offsets.chunks}&limit=${PART_SIZE}`,
+        { signal: abort.signal },
+      )
+        .then((next) => {
+          if (abort.signal.aborted) return;
+          setData(next);
+          if (
+            next.document.status === "processing" ||
+            (next.document.status === "stored" &&
+              next.document.role === "primary")
+          )
+            timer = setTimeout(read, 2000);
+        })
+        .catch((e) => {
+          if (!abort.signal.aborted) setError(errorMessage(e));
+        })
+        .finally(() => {
+          if (!abort.signal.aborted) setLoading(false);
+        });
+    }
+    read();
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }, [document.id, offsets, retry, samples, revision]);
   const parts =
     tab === "chunks" ? (data?.chunks ?? []) : (data?.elements ?? []);
   const part = parts[selectedPart] ?? parts[0];
   const source = safeSourceUrl(document.source_url);
+  const parsedDocument = data?.document ?? document;
   return (
     <div className="ta-document-detail">
       <Button variant="ghost" size="sm" onClick={onBack}>
@@ -550,9 +586,7 @@ function DocumentInspector({
         </span>
         <div>
           <div>
-            <span className="ta-badge">
-              {document.role === "primary" ? "一级资料" : "二级资料"}
-            </span>
+            <span className="ta-badge">{documentLevel(document)}</span>
             <span className="ta-template-version">v{document.version}</span>
           </div>
           <h2>{document.title}</h2>
@@ -570,7 +604,7 @@ function DocumentInspector({
           </Button>
         )}
       </div>
-      {document.error && <ErrorNotice message={document.error} />}
+      {parsedDocument.error && <ErrorNotice message={parsedDocument.error} />}
       {error && (
         <ErrorNotice
           message={error}
@@ -587,6 +621,13 @@ function DocumentInspector({
           <Link2 size={13} />
           查看原始来源
         </a>
+      )}
+      {document.tags.length > 0 && (
+        <div className="ta-collection-tags">
+          {document.tags.map((tag) => (
+            <span key={tag}>{tag}</span>
+          ))}
+        </div>
       )}
       {document.role === "secondary" ? (
         <div className="ta-secondary-detail">
@@ -619,17 +660,23 @@ function DocumentInspector({
                 }
               }}
             >
-              查看所属一级资料
+              查看所属资料
             </Button>
           )}
           {parentError && <ErrorNotice message={parentError} />}
+          {!samples && (
+            <details className="tea-config-details">
+              <summary>历史版本</summary>
+              <DocumentHistory document={document} onSelect={onSelect} />
+            </details>
+          )}
         </div>
       ) : (
         <>
           <div className="ta-document-summary">
             <div>
               <small>解析状态</small>
-              <DocumentStatus document={document} />
+              <DocumentStatus document={parsedDocument} />
             </div>
             <div>
               <small>结构元素</small>
@@ -639,7 +686,9 @@ function DocumentInspector({
               </strong>
             </div>
             <div>
-              <small>检索片段</small>
+              <small>
+                {document.legal_level === "secondary" ? "文本片段" : "检索片段"}
+              </small>
               <strong>
                 {data?.chunk_total ?? "—"}
                 <span> 段</span>
@@ -650,6 +699,13 @@ function DocumentInspector({
               <strong>v{document.version}</strong>
             </div>
           </div>
+          {!samples && (
+            <DocumentClassificationEditor
+              document={document}
+              ownerId={ownerId}
+              onSaved={onSaved}
+            />
+          )}
           {!samples && (
             <DocumentMetadataEditor
               key={`${document.id}:${document.metadata_revision}`}
@@ -670,30 +726,49 @@ function DocumentInspector({
             {(
               [
                 ["elements", "结构化拆解"],
-                ["chunks", "检索片段"],
-                ["attachments", "二级资料"],
+                [
+                  "chunks",
+                  document.legal_level === "secondary"
+                    ? "文本片段"
+                    : "检索片段",
+                ],
+                ["attachments", "附件"],
+                ["relations", "法规关联"],
+                ["versions", "版本"],
               ] as const
-            ).map(([id, name]) => (
-              <button
-                key={id}
-                role="tab"
-                aria-selected={tab === id}
-                onClick={() => {
-                  setTab(id);
-                  setSelectedPart(0);
-                }}
-              >
-                {name}
-              </button>
-            ))}
+            )
+              .filter(
+                ([id]) => !samples || (id !== "relations" && id !== "versions"),
+              )
+              .map(([id, name]) => (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={tab === id}
+                  onClick={() => {
+                    setTab(id);
+                    setSelectedPart(0);
+                  }}
+                >
+                  {name}
+                </button>
+              ))}
           </div>
           {tab === "attachments" ? (
-            <SecondaryDocuments
+            <Attachments
               parent={document}
               samples={samples}
               revision={revision}
               onSelect={onSelect}
               onUpload={samples ? undefined : onUpload}
+            />
+          ) : tab === "versions" ? (
+            <DocumentHistory document={document} onSelect={onSelect} />
+          ) : tab === "relations" ? (
+            <DocumentRelations
+              document={document}
+              ownerId={ownerId}
+              onSelect={onSelect}
             />
           ) : loading ? (
             <Busy label="读取结构化拆解…" />
@@ -737,7 +812,9 @@ function DocumentInspector({
                         <div className="ta-part-heading">
                           <span className="ta-badge">
                             {tab === "chunks"
-                              ? "检索片段"
+                              ? document.legal_level === "secondary"
+                                ? "文本片段"
+                                : "检索片段"
                               : kindLabel(part.kind)}
                           </span>
                           <span>{locatorLabel(part)}</span>
@@ -760,10 +837,18 @@ function DocumentInspector({
                       <Empty
                         icon={<Layers size={28} />}
                         title={
-                          document.status === "failed" ? "解析失败" : "暂无正文"
+                          parsedDocument.status === "failed"
+                            ? "解析失败"
+                            : parsedDocument.status === "processing" ||
+                                parsedDocument.status === "stored"
+                              ? "解析中"
+                              : "暂无正文"
                         }
                       >
-                        下载原件核对后重新上传。
+                        {parsedDocument.status === "processing" ||
+                        parsedDocument.status === "stored"
+                          ? "原件已保存。"
+                          : "可下载原件核对。"}
                       </Empty>
                     )}
                   </div>

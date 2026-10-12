@@ -1,0 +1,558 @@
+"""Network boundary checks for incremental collection and conditional requests."""
+
+import http.client
+import socket
+import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+from types import SimpleNamespace
+
+import pytest
+
+from app import ingestion
+
+
+class Response:
+    def __init__(self, chunks=(), *, status=200, headers=None):
+        self.status = status
+        self.headers = {key.lower(): value for key, value in (headers or {}).items()}
+        self.chunks = iter(chunks)
+        self.reads = 0
+
+    def getheader(self, name, default=None):
+        return self.headers.get(name.lower(), default)
+
+    def read1(self, limit):
+        self.reads += 1
+        block = next(self.chunks, b"")
+        if isinstance(block, Exception):
+            raise block
+        assert len(block) <= limit
+        return block
+
+
+@pytest.fixture
+def transport(monkeypatch):
+    responses = []
+    requests = []
+    connections = []
+
+    class Connection:
+        sock = None
+
+        def __init__(self, host, address, timeout):
+            self.host = host
+            self.closed = False
+            connections.append(self)
+
+        def request(self, method, path, *, headers):
+            requests.append((self.host, path, headers.copy()))
+
+        def getresponse(self):
+            return responses.pop(0)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        ingestion,
+        "_public_addresses",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
+    return responses, requests, connections
+
+
+def download(**kwargs):
+    return ingestion._download("https://example.com/law", deadline=time.monotonic() + 10, **kwargs)
+
+
+def test_consumer_receives_chunks_before_later_network_reads(transport):
+    responses, _, connections = transport
+    response = Response(
+        [b"abc", b"def", b"ghi"],
+        headers={"Content-Length": "9", "Content-Type": "application/pdf", "ETag": '"version-1"'},
+    )
+    responses.append(response)
+    published = object()
+
+    def consume(chunks):
+        for count, block in enumerate(chunks, 1):
+            assert response.reads == count
+            assert block == (b"abc", b"def", b"ghi")[count - 1]
+        return published
+
+    result = download(consume=consume)
+    assert result["blob"] is published
+    assert "content" not in result
+    assert result["etag"] == '"version-1"'
+    assert result["filename"] == "law.pdf"
+    assert all(connection.closed for connection in connections)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "headers", "limit", "retryable"),
+    [
+        ([b"abc"], {"Content-Length": "6"}, 20, True),
+        ([b"abc", b"def"], {}, 5, False),
+        ([], {}, 20, False),
+        ([b"abc", http.client.IncompleteRead(b"d", 5)], {}, 20, True),
+        ([b"abc", TimeoutError()], {}, 20, True),
+    ],
+)
+def test_incomplete_or_invalid_body_never_reaches_publication(
+    transport, monkeypatch, chunks, headers, limit, retryable
+):
+    responses, _, connections = transport
+    responses.append(Response(chunks, headers=headers))
+    monkeypatch.setattr(ingestion, "MAX_BYTES", limit)
+    published = []
+
+    def consume(blocks):
+        temporary = bytearray()
+        for block in blocks:
+            temporary.extend(block)
+        published.append(bytes(temporary))
+        return temporary
+
+    with pytest.raises(ingestion.DownloadError) as error:
+        download(consume=consume)
+    assert error.value.retryable is retryable
+    assert published == []
+    assert all(connection.closed for connection in connections)
+
+
+def test_304_does_not_open_a_blob_and_only_sends_conditional_headers(transport):
+    responses, requests, _ = transport
+    modified = "Mon, 12 Oct 2026 10:00:00 GMT"
+    responses.append(Response(status=304, headers={"ETag": '"v2"', "Last-Modified": modified}))
+
+    def forbidden(_):
+        pytest.fail("304 must not create a blob")
+
+    result = download(
+        consume=forbidden,
+        validators={"etag": '"v1"', "last_modified": modified, "Authorization": "private"},
+    )
+    headers = requests[0][2]
+    assert headers["If-None-Match"] == '"v1"'
+    assert headers["If-Modified-Since"] == modified
+    assert "Authorization" not in headers
+    assert result["url"] == "https://example.com/law"
+    assert result["not_modified"] is True
+    assert result["etag"] == '"v2"'
+    assert "blob" not in result and "content" not in result
+
+
+@pytest.mark.parametrize("target", ["/another-law", "https://other.example/law"])
+def test_redirect_never_sends_validators_for_a_different_resource(transport, target):
+    responses, requests, _ = transport
+    responses.extend([Response(status=302, headers={"Location": target}), Response([b"body"])])
+    download(validators={"ETag": '"v1"', "Last-Modified": "Mon, 12 Oct 2026 10:00:00 GMT"})
+    assert "If-None-Match" in requests[0][2]
+    assert "If-None-Match" not in requests[1][2]
+    assert "If-Modified-Since" not in requests[1][2]
+
+
+def test_response_and_request_validators_are_bounded_and_cannot_inject_headers(transport):
+    responses, requests, _ = transport
+    responses.append(Response([b"body"], headers={"ETag": '"' + "x" * 2048 + '"'}))
+    result = download(validators={"etag": '"v1"\r\nAuthorization: private', "last_modified": "x" * 2048})
+    assert "If-None-Match" not in requests[0][2]
+    assert "If-Modified-Since" not in requests[0][2]
+    assert result["etag"] is None
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 599])
+def test_transient_http_errors_expose_bounded_retry_after(transport, status):
+    responses, _, _ = transport
+    responses.append(Response(status=status, headers={"Retry-After": "900"}))
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable is True
+    assert error.value.retry_after == 300
+    assert error.value.response_host == "example.com"
+
+
+def test_redirect_retry_after_identifies_actual_limited_host(transport):
+    responses, _, _ = transport
+    responses.extend(
+        [
+            Response(status=302, headers={"Location": "https://limited.example/law"}),
+            Response(status=429, headers={"Retry-After": "180"}),
+        ]
+    )
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.response_host == "limited.example"
+    assert error.value.retry_after == 180
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 410])
+def test_other_http_errors_are_permanent(transport, status):
+    responses, _, _ = transport
+    responses.append(Response(status=status, headers={"Retry-After": "60"}))
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable is False
+    assert error.value.retry_after is None
+
+
+def test_retry_after_accepts_http_date(transport):
+    responses, _, _ = transport
+    date = datetime.now(timezone.utc) + timedelta(seconds=60)
+    responses.append(Response(status=503, headers={"Retry-After": format_datetime(date, usegmt=True)}))
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert 58 <= error.value.retry_after <= 60
+
+
+def test_connection_slot_covers_each_actual_host_until_connection_is_closed(transport):
+    responses, requests, connections = transport
+    responses.extend(
+        [
+            Response(status=302, headers={"Location": "https://other.example/redirected.txt"}),
+            Response([b"body"]),
+        ]
+    )
+    events = []
+
+    @contextmanager
+    def slot(host):
+        events.append(("entered", host))
+        try:
+            yield
+        finally:
+            assert connections[-1].closed
+            events.append(("exited", host))
+
+    result = download(connection_slot=slot)
+    assert result["content"] == b"body"
+    assert events == [
+        ("entered", "example.com"),
+        ("exited", "example.com"),
+        ("entered", "other.example"),
+        ("exited", "other.example"),
+    ]
+    assert [request[0] for request in requests] == ["example.com", "other.example"]
+
+
+def test_connection_slot_releases_on_interrupted_body(transport):
+    responses, _, connections = transport
+    responses.append(Response([b"body", TimeoutError()]))
+    released = []
+
+    @contextmanager
+    def slot(host):
+        try:
+            yield
+        finally:
+            assert connections[-1].closed
+            released.append(host)
+
+    with pytest.raises(ingestion.DownloadError) as error:
+        download(connection_slot=slot)
+    assert error.value.retryable
+    assert released == ["example.com"]
+
+
+def test_slot_wait_uses_remaining_deadline_before_opening_connection(transport, monkeypatch):
+    _, _, connections = transport
+    current_time = [100.0]
+    monkeypatch.setattr(ingestion.time, "monotonic", lambda: current_time[0])
+    events = []
+
+    @contextmanager
+    def slot(host):
+        current_time[0] += 11
+        events.append("entered")
+        try:
+            yield
+        finally:
+            events.append("exited")
+
+    with pytest.raises(ingestion.DownloadError) as error:
+        download(connection_slot=slot)
+    assert error.value.retryable
+    assert events == ["entered", "exited"]
+    assert not connections
+
+
+@pytest.mark.parametrize("redirect", [False, True])
+def test_unconditional_304_cannot_validate_an_original(transport, redirect):
+    responses, _, _ = transport
+    if redirect:
+        responses.append(Response(status=302, headers={"Location": "/different.txt"}))
+    responses.append(Response(status=304))
+    with pytest.raises(ingestion.DownloadError) as error:
+        download(validators={"etag": '"v1"'} if redirect else None)
+    assert error.value.retryable is False
+
+
+def test_partial_response_is_rejected_without_publishing(transport):
+    responses, _, _ = transport
+    responses.append(Response([b"partial"], status=206))
+    with pytest.raises(ingestion.DownloadError):
+        download(consume=lambda _: pytest.fail("unsolicited partial response must not be saved"))
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Content-Length": "999999999999999999999999999999999"},
+        {"Content-Length": "3, 3"},
+        {"Content-Encoding": "gzip"},
+        {"Content-Type": "not a mime"},
+    ],
+)
+def test_invalid_representation_headers_fail_before_blob_creation(transport, headers):
+    responses, _, _ = transport
+    responses.append(Response([b"abc"], headers=headers))
+    with pytest.raises(ingestion.DownloadError) as error:
+        download(consume=lambda _: pytest.fail("invalid response must not open storage"))
+    assert error.value.retryable is False
+
+
+def test_transient_dns_failure_can_retry_without_opening_connection(monkeypatch):
+    def fail_dns(*args, **kwargs):
+        raise socket.gaierror("temporary resolver failure")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
+    monkeypatch.setattr(
+        ingestion, "_PinnedHTTPSConnection", lambda *args: pytest.fail("DNS was not validated")
+    )
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable is True
+
+
+def test_mixed_public_private_dns_is_permanent(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443)),
+        ],
+    )
+    monkeypatch.setattr(
+        ingestion, "_PinnedHTTPSConnection", lambda *args: pytest.fail("private IP was not rejected")
+    )
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable is False
+
+
+def test_discovery_is_network_free_same_origin_bounded_and_deduplicated(monkeypatch):
+    monkeypatch.setattr(ingestion, "_download", lambda *args, **kwargs: pytest.fail("discovery fetched data"))
+    html = b"""<a href="/one.pdf#article">one</a><a href="/one.pdf">again</a>
+      <a href="https://other.example/two.pdf">outside</a><a href="/page.html">page</a>
+      <a href="https://example.com:8443/unsafe.pdf">port</a>
+      <a href="/second.docx">two</a><a href="/third.txt">three</a>"""
+    assert ingestion.discover_attachments("https://example.com/law", html, "text/html", 2) == [
+        "https://example.com/one.pdf",
+        "https://example.com/second.docx",
+    ]
+    assert ingestion.discover_attachments("https://example.com/law", html, "application/pdf") == []
+
+
+def test_unsafe_urls_are_permanent_before_transport(transport):
+    _, requests, _ = transport
+    with pytest.raises(ingestion.DownloadError) as error:
+        ingestion._download("https://127.0.0.1/law", deadline=time.monotonic() + 10)
+    assert error.value.retryable is False
+    assert not requests
+
+
+@pytest.fixture
+def pinned_transport(monkeypatch):
+    """Exercise the real pinned connector with deterministic sockets and a watchdog."""
+    state = SimpleNamespace(
+        clock=100.0,
+        phase=None,
+        tcp_elapsed=0.0,
+        tls_elapsed=0.0,
+        shutdown_fails=False,
+        raw=None,
+        tls=None,
+        connection=None,
+        timer=None,
+        observations=[],
+        wraps=[],
+        response_calls=0,
+        handshake_timeout=None,
+    )
+    monkeypatch.setattr(ingestion.time, "monotonic", lambda: state.clock)
+
+    class Socket:
+        def __init__(self):
+            self.closed = False
+            self.timeout = None
+
+        def settimeout(self, timeout):
+            if self.closed:
+                raise OSError("socket is closed")
+            self.timeout = timeout
+
+        def connect(self, destination):
+            assert destination == ("93.184.216.34", 443)
+            state.observations.append(("tcp", getattr(state.connection, "active_socket", None) is self))
+            state.clock += state.tcp_elapsed
+            if state.phase == "tcp":
+                state.timer.callback()
+            if self.closed:
+                raise OSError("watchdog closed TCP socket")
+
+        def shutdown(self, how):
+            if state.shutdown_fails:
+                raise OSError("socket not connected yet")
+
+        def close(self):
+            self.closed = True
+
+        def do_handshake(self):
+            state.observations.append(("tls", getattr(state.connection, "active_socket", None) is self))
+            state.handshake_timeout = self.timeout
+            state.clock += state.tls_elapsed
+            if state.phase == "tls":
+                state.timer.callback()
+            if self.closed:
+                raise OSError("watchdog closed TLS socket")
+
+    def socket_factory(*args):
+        state.raw = Socket()
+        if state.phase == "socket_creation":
+            state.timer.callback()
+        return state.raw
+
+    class TLSContext:
+        def wrap_socket(self, raw, *, server_hostname, do_handshake_on_connect=True):
+            state.wraps.append((server_hostname, do_handshake_on_connect))
+            state.tls = Socket()
+            state.tls.timeout = raw.timeout
+            if state.phase == "wrap":
+                state.timer.callback()
+            if do_handshake_on_connect:
+                state.tls.do_handshake()
+            return state.tls
+
+    class Timer:
+        def __init__(self, interval, callback):
+            self.callback = callback
+            state.timer = self
+
+        def start(self):
+            if state.phase == "before_socket":
+                self.callback()
+
+        def cancel(self):
+            pass
+
+    class Connection(ingestion._PinnedHTTPSConnection):
+        def __init__(self, *args):
+            super().__init__(*args)
+            state.connection = self
+
+        def request(self, *args, **kwargs):
+            self.connect()
+
+        def getresponse(self):
+            state.response_calls += 1
+            return Response([b"body"])
+
+    monkeypatch.setattr(ingestion.socket, "socket", socket_factory)
+    monkeypatch.setattr(ingestion.ssl, "create_default_context", lambda: TLSContext())
+    monkeypatch.setattr(ingestion.threading, "Timer", Timer)
+    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr(
+        ingestion,
+        "_public_addresses",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+    )
+    return state
+
+
+def test_watchdog_can_observe_tcp_and_tls_sockets_before_blocking_calls(pinned_transport):
+    result = download()
+    assert result["content"] == b"body"
+    assert pinned_transport.observations == [("tcp", True), ("tls", True)]
+    assert pinned_transport.wraps == [("example.com", False)]
+
+
+def test_connect_and_handshake_share_the_same_absolute_deadline(pinned_transport):
+    pinned_transport.tcp_elapsed = 7
+    pinned_transport.tls_elapsed = 2
+    result = download()
+    assert result["content"] == b"body"
+    assert pinned_transport.handshake_timeout == 3
+    assert pinned_transport.tls.timeout == 1
+
+
+@pytest.mark.parametrize("phase", ["before_socket", "socket_creation", "tcp", "wrap", "tls"])
+def test_watchdog_expiry_cannot_start_or_leave_network_work_alive(pinned_transport, phase):
+    pinned_transport.phase = phase
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable is True
+    assert pinned_transport.response_calls == 0
+    if phase == "before_socket":
+        assert pinned_transport.raw is None
+    else:
+        assert pinned_transport.raw.closed
+    if pinned_transport.tls is not None:
+        assert pinned_transport.tls.closed
+
+
+def test_late_tcp_completion_cannot_begin_tls_after_deadline(pinned_transport):
+    pinned_transport.tcp_elapsed = 11
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable
+    assert pinned_transport.wraps == []
+    assert pinned_transport.raw.closed
+
+
+def test_late_tls_completion_cannot_begin_http_response_after_deadline(pinned_transport):
+    pinned_transport.tls_elapsed = 11
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable
+    assert pinned_transport.response_calls == 0
+    assert pinned_transport.tls.closed
+
+
+def test_watchdog_closes_unconnected_socket_even_when_shutdown_fails(pinned_transport):
+    pinned_transport.phase = "tcp"
+    pinned_transport.shutdown_fails = True
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable
+    assert pinned_transport.raw.closed
+
+
+def test_late_redirect_watchdog_does_not_expire_the_next_connection(transport, monkeypatch):
+    responses, _, connections = transport
+    responses.extend(
+        [Response(status=302, headers={"Location": "https://other.example/law"}), Response([b"body"])]
+    )
+    timers = []
+
+    class Timer:
+        def __init__(self, interval, callback):
+            self.callback = callback
+            timers.append(self)
+
+        def start(self):
+            if len(timers) == 2:
+                # Timer.cancel cannot stop a callback that already began running.
+                timers[0].callback()
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(ingestion.threading, "Timer", Timer)
+    result = download()
+    assert result["content"] == b"body"
+    assert connections[0].deadline_expired.is_set()
+    assert not connections[1].deadline_expired.is_set()

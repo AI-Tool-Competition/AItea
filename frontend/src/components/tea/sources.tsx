@@ -3,10 +3,19 @@ import { Clock3, Globe2, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { errorMessage, patch, post, teaRequest } from "@/core/tea/api";
-import { type ListResult, type Source } from "@/core/tea/types";
+import { sourceSamples } from "@/core/tea/library-samples";
+import {
+  type CollectionRun,
+  type ListResult,
+  type Source,
+} from "@/core/tea/types";
 
+import {
+  CollectionProgress,
+  collectionActive,
+  collectionStatus,
+} from "./collection-run";
 import {
   ActionButton,
   Busy,
@@ -15,26 +24,48 @@ import {
   ErrorNotice,
   SectionHeading,
 } from "./shared";
+import { SourceForm } from "./source-form";
 
-export function Sources({ compact = false }: { compact?: boolean } = {}) {
+const PAGE_SIZE = 20;
+export function Sources({
+  compact = false,
+  samples = false,
+  ownerId,
+}: { compact?: boolean; samples?: boolean; ownerId?: string } = {}) {
   const [sources, setSources] = useState<Source[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
-  const [interval, setInterval] = useState(24);
-  const [tags, setTags] = useState("");
-  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [editor, setEditor] = useState<"new" | Source>();
   const [revision, setRevision] = useState(0);
-  const pending = useRef(false);
+  const pending = useRef(new Map<string, AbortController>());
+  const requestIds = useRef(new Map<string, string>());
   useEffect(() => {
+    const requests = pending.current;
+    return () => {
+      requests.forEach((request) => request.abort());
+      requests.clear();
+    };
+  }, []);
+  useEffect(() => {
+    if (samples) {
+      setSources(sourceSamples);
+      setTotal(sourceSamples.length);
+      setLoading(false);
+      return;
+    }
     const abort = new AbortController();
     setLoading(true);
-    teaRequest<ListResult<Source>>("/sources", { signal: abort.signal })
+    teaRequest<ListResult<Source>>(
+      `/sources?limit=${PAGE_SIZE}&offset=${offset}`,
+      { signal: abort.signal },
+    )
       .then((result) => {
+        if (abort.signal.aborted) return;
         setSources(result.items);
+        setTotal(result.total);
         setError("");
       })
       .catch((e) => {
@@ -44,154 +75,87 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [revision]);
-  async function add() {
-    if (pending.current) return;
-    pending.current = true;
-    setBusy("add");
+  }, [revision, samples, offset, ownerId]);
+
+  async function mutate(source: Source, collect: boolean) {
+    if (pending.current.has(source.id) || samples) return;
+    const abort = new AbortController();
+    pending.current.set(source.id, abort);
+    setBusy((current) => new Set(current).add(source.id));
     setError("");
     try {
-      const source = await post<Source>("/sources", {
-        name,
-        url,
-        enabled: true,
-        interval_hours: interval,
-        tags: tags
-          .split(/[,，]/)
-          .map((t) => t.trim())
-          .filter(Boolean),
-      });
-      setSources((s) => [...s, source]);
-      setAdding(false);
-      setName("");
-      setUrl("");
-      setTags("");
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      pending.current = false;
-      setBusy("");
-    }
-  }
-  async function mutate(source: Source, fetch: boolean) {
-    if (pending.current) return;
-    pending.current = true;
-    setBusy(source.id);
-    setError("");
-    setNotice("");
-    try {
-      let next: Source;
-      if (fetch) {
-        const result = await post<{ source: Source; documents: unknown[] }>(
-          `/sources/${source.id}/fetch`,
+      if (collect) {
+        const requestId =
+          requestIds.current.get(source.id) ?? crypto.randomUUID();
+        requestIds.current.set(source.id, requestId);
+        const run = await post<CollectionRun>(
+          `/sources/${encodeURIComponent(source.id)}/runs`,
+          { client_request_id: requestId },
+          abort.signal,
         );
-        next = result.source;
-        if (result.source.status === "failed" || result.source.last_error)
-          setError(
-            `抓取未全部完成。已保存 ${result.documents.length} 份文件。${result.source.last_error ?? "请检查来源后重试。"}`,
+        if (abort.signal.aborted) return;
+        requestIds.current.delete(source.id);
+        setSources((all) =>
+          all.map((item) =>
+            item.id === source.id ? { ...item, latest_run: run } : item,
+          ),
+        );
+      } else {
+        const next = await patch<Source>(
+          `/sources/${encodeURIComponent(source.id)}`,
+          { enabled: !source.enabled, expected_revision: source.revision ?? 1 },
+          abort.signal,
+        );
+        if (!abort.signal.aborted)
+          setSources((all) =>
+            all.map((item) => (item.id === next.id ? next : item)),
           );
-        else
-          setNotice(
-            `抓取已完成，保存 ${result.documents.length} 份文件；相同内容会自动去重。`,
-          );
-      } else
-        next = await patch<Source>(`/sources/${source.id}`, {
-          enabled: !source.enabled,
-        });
-      setSources((all) => all.map((s) => (s.id === next.id ? next : s)));
+      }
     } catch (e) {
-      setError(errorMessage(e));
+      if (!abort.signal.aborted) setError(errorMessage(e));
     } finally {
-      pending.current = false;
-      setBusy("");
+      pending.current.delete(source.id);
+      if (!abort.signal.aborted)
+        setBusy((current) => {
+          const next = new Set(current);
+          next.delete(source.id);
+          return next;
+        });
     }
   }
+  const addButton = !samples && (
+    <Button onClick={() => setEditor(editor === "new" ? undefined : "new")}>
+      <Plus size={15} />
+      {editor === "new" ? "收起添加" : "添加来源"}
+    </Button>
+  );
   return (
     <div className="tea-page tea-sources">
       {compact ? (
         <div className="ta-source-toolbar">
-          <Button onClick={() => setAdding(!adding)}>
-            <Plus size={15} />
-            添加来源
-          </Button>
+          <span>{loading ? "读取中…" : `${total} 个来源`}</span>
+          {addButton}
         </div>
       ) : (
-        <>
-          <SectionHeading title="来源管理">
-            <Button onClick={() => setAdding(!adding)}>
-              <Plus size={15} />
-              添加来源
-            </Button>
-          </SectionHeading>
-          <p className="tea-page-intro">
-            配置固定的公开 HTTPS 来源，保存主文件及关联附件，保留抓取记录。
-          </p>
-        </>
+        <SectionHeading title="来源管理">{addButton}</SectionHeading>
       )}
       {error && (
         <ErrorNotice
           message={error}
-          onRetry={() => setRevision((r) => r + 1)}
+          onRetry={() => setRevision((value) => value + 1)}
         />
       )}
-      {notice && (
-        <div className="tea-success" role="status">
-          {notice}
-        </div>
-      )}
-      {adding && (
-        <form
-          className="tea-source-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void add();
+      {editor && !samples && (
+        <SourceForm
+          key={editor === "new" ? "new" : editor.id}
+          ownerId={ownerId}
+          source={editor === "new" ? undefined : editor}
+          onClose={() => setEditor(undefined)}
+          onSaved={() => {
+            setEditor(undefined);
+            setRevision((value) => value + 1);
           }}
-        >
-          <div className="tea-form-row">
-            <label className="tea-field">
-              <span>来源名称</span>
-              <Input
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例如：官方法规发布页面"
-              />
-            </label>
-            <label className="tea-field">
-              <span>检查间隔 · 小时</span>
-              <Input
-                required
-                type="number"
-                min={1}
-                max={8760}
-                value={interval}
-                onChange={(e) => setInterval(Number(e.target.value))}
-              />
-            </label>
-          </div>
-          <label className="tea-field">
-            <span>公开 HTTPS 地址</span>
-            <Input
-              type="url"
-              required
-              pattern="https://.*"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://…"
-            />
-          </label>
-          <label className="tea-field">
-            <span>标签</span>
-            <Input
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="法规, 办事指南"
-            />
-          </label>
-          <ActionButton busy={busy === "add"} disabled={!!busy} type="submit">
-            保存来源
-          </ActionButton>
-        </form>
+        />
       )}
       {loading ? (
         <Busy />
@@ -211,8 +175,8 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
                   <input
                     type="checkbox"
                     checked={source.enabled}
-                    disabled={!!busy}
-                    onChange={() => mutate(source, false)}
+                    disabled={busy.has(source.id) || samples}
+                    onChange={() => void mutate(source, false)}
                   />
                   启用
                 </label>
@@ -222,33 +186,212 @@ export function Sources({ compact = false }: { compact?: boolean } = {}) {
                   <Clock3 size={13} />每 {source.interval_hours} 小时检查
                 </span>
                 <span>
-                  {source.last_fetched_at
-                    ? `上次 ${dateLabel(source.last_fetched_at)}`
-                    : "尚未抓取"}
+                  {samples
+                    ? "未抓取"
+                    : source.last_fetched_at
+                      ? `上次 ${dateLabel(source.last_fetched_at)}`
+                      : "尚未抓取"}
                 </span>
-                <ActionButton
-                  variant="outline"
-                  size="sm"
-                  busy={busy === source.id}
-                  disabled={!!busy}
-                  onClick={() => mutate(source, true)}
-                >
-                  <RefreshCw size={13} />
-                  立即抓取
-                </ActionButton>
+                {!samples && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEditor(source)}
+                    >
+                      配置
+                    </Button>
+                    <ActionButton
+                      variant="outline"
+                      size="sm"
+                      busy={busy.has(source.id)}
+                      disabled={
+                        busy.has(source.id) ||
+                        collectionActive(source.latest_run)
+                      }
+                      onClick={() => void mutate(source, true)}
+                    >
+                      <RefreshCw size={13} />
+                      立即抓取
+                    </ActionButton>
+                  </>
+                )}
               </div>
-              {source.last_error && <ErrorNotice message={source.last_error} />}
+              <div className="ta-collection-tags">
+                {source.plan && (
+                  <span>
+                    {source.plan.collection === "default"
+                      ? "默认采集组"
+                      : source.plan.collection}{" "}
+                    ·{" "}
+                    {source.plan.level === "secondary"
+                      ? "二级法规"
+                      : "一级资料"}
+                  </span>
+                )}
+                {source.tags.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </div>
+              {!samples && source.latest_run && (
+                <CollectionProgress
+                  key={source.latest_run.id}
+                  initial={source.latest_run}
+                  onChange={(run) =>
+                    setSources((all) =>
+                      all.map((item) =>
+                        item.id === source.id && item.latest_run?.id === run.id
+                          ? { ...item, latest_run: run }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+              )}
+              {!samples && (
+                <SourceHistory
+                  sourceId={source.id}
+                  latestId={source.latest_run?.id}
+                />
+              )}
+              {source.last_error && !source.latest_run && (
+                <ErrorNotice message={source.last_error} />
+              )}
             </article>
           ))}
         </div>
       ) : (
-        <Empty icon={<Globe2 size={34} />} title="从可靠的来源开始">
-          添加法学同学确认过的官方页面或文件地址。
+        <Empty icon={<Globe2 size={30} />} title="暂无来源">
+          添加官方页面或文件地址。
         </Empty>
       )}
-      <div className="tea-note">
-        一级文件解析并建立检索索引，二级附件仅存原文。后台采集进程启动后，按配置的时间间隔检查更新。
-      </div>
+      {total > PAGE_SIZE && (
+        <div className="ta-pagination">
+          <span>
+            {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} / {total}
+          </span>
+          <div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={loading || !offset}
+              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+            >
+              上一页
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={loading || offset + PAGE_SIZE >= total}
+              onClick={() => setOffset(offset + PAGE_SIZE)}
+            >
+              下一页
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function SourceHistory({
+  sourceId,
+  latestId,
+}: {
+  sourceId: string;
+  latestId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [data, setData] = useState<ListResult<CollectionRun>>({
+    items: [],
+    total: 0,
+  });
+  const [selected, setSelected] = useState<CollectionRun>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const abort = new AbortController();
+    setLoading(true);
+    setError("");
+    teaRequest<ListResult<CollectionRun>>(
+      `/sources/${encodeURIComponent(sourceId)}/runs?limit=20&offset=${offset}`,
+      { signal: abort.signal },
+    )
+      .then((next) => {
+        if (!abort.signal.aborted) setData(next);
+      })
+      .catch((e) => {
+        if (!abort.signal.aborted) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!abort.signal.aborted) setLoading(false);
+      });
+    return () => abort.abort();
+  }, [open, sourceId, offset, latestId, retry]);
+  return (
+    <details
+      className="tea-config-details ta-run-history"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>抓取记录</summary>
+      {loading ? (
+        <Busy />
+      ) : error ? (
+        <ErrorNotice
+          message={error}
+          onRetry={() => setRetry((value) => value + 1)}
+        />
+      ) : (
+        <>
+          <div className="ta-run-history-list">
+            {data.items.map((run) => (
+              <Button
+                key={run.id}
+                variant="ghost"
+                onClick={() =>
+                  setSelected(selected?.id === run.id ? undefined : run)
+                }
+              >
+                {dateLabel(run.created_at, true)} · {collectionStatus(run)} ·
+                已存 {run.stored}
+              </Button>
+            ))}
+            {!data.items.length && <p className="ta-hint">暂无记录。</p>}
+          </div>
+          {data.total > 20 && (
+            <div className="ta-pagination">
+              <span>
+                {offset + 1}–{Math.min(offset + 20, data.total)} / {data.total}
+              </span>
+              <div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!offset}
+                  onClick={() => setOffset(Math.max(0, offset - 20))}
+                >
+                  上一页
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={offset + 20 >= data.total}
+                  onClick={() => setOffset(offset + 20)}
+                >
+                  下一页
+                </Button>
+              </div>
+            </div>
+          )}
+          {selected && open && (
+            <CollectionProgress key={selected.id} initial={selected} />
+          )}
+        </>
+      )}
+    </details>
   );
 }

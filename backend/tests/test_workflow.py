@@ -444,10 +444,11 @@ def test_failed_source_has_durable_backoff(client, monkeypatch):
     def unavailable(*args, **kwargs):
         raise ValueError("network unavailable")
 
-    monkeypatch.setattr(ingestion, "fetch_source", unavailable)
+    monkeypatch.setattr(ingestion, "_download", unavailable)
     response = client.post("/api/tea/sources/" + source["id"] + "/fetch")
-    assert response.status_code == 200
-    assert response.json()["source"]["status"] == "failed"
+    assert response.status_code == 202
+    service.collection.fetch_item(service.collection.claim_fetch())
+    assert client.get("/api/tea/sources/" + source["id"]).json()["status"] == "failed"
     assert not any(item["id"] == source["id"] for item in service.due_sources())
 
 
@@ -617,30 +618,31 @@ def test_partial_source_collection_preserves_original_and_exposes_warnings(clien
             "tags": [],
         },
     ).json()
-    monkeypatch.setattr(
-        ingestion,
-        "fetch_source",
-        lambda url: {
+
+    def download(url, *, consume, **kwargs):
+        if url.endswith("attachment.txt"):
+            raise ValueError("附件 A 下载失败：连接超时")
+        return {
             "url": url,
-            "filename": "source.txt",
-            "mime_type": "text/plain",
-            "content": "已取得主文件正文".encode(),
-            "attachments": [],
-            "warnings": ["附件 A 下载失败：连接超时"],
-        },
-    )
+            "filename": "source.html",
+            "mime_type": "text/html",
+            "blob": consume(iter(['<p>已取得主文件正文</p><a href="attachment.txt">附件 A</a>'.encode()])),
+        }
+
+    monkeypatch.setattr(ingestion, "_download", download)
     response = client.post("/api/tea/sources/" + source["id"] + "/fetch")
-    assert response.status_code == 200
-    result = response.json()
-    assert result["warnings"] == ["附件 A 下载失败：连接超时"]
-    assert result["source"]["status"] == "failed"
-    assert "主文件已保存" in result["source"]["last_error"]
-    assert "附件 A" in result["source"]["last_error"]
-    assert result["documents"][0]["status"] == "ready"
-    assert (
-        client.get("/api/tea/documents/" + result["documents"][0]["id"] + "/download").content
-        == "已取得主文件正文".encode()
-    )
+    assert response.status_code == 202
+    collection = client.app.state.service.collection
+    collection.fetch_item(collection.claim_fetch())
+    collection.fetch_item(collection.claim_fetch())
+    collection.process_item(collection.claim_processing())
+    result = client.get("/api/tea/collection-runs/" + response.json()["id"]).json()
+    assert result["run"]["status"] == "partial"
+    assert result["run"]["stored"] == 1 and result["run"]["failed"] == 1
+    assert any("附件 A" in (item["error"] or "") for item in result["items"])
+    doc = client.get("/api/tea/documents").json()["items"][0]
+    assert doc["status"] == "ready"
+    assert b"<p>" in client.get("/api/tea/documents/" + doc["id"] + "/download").content
     assert not any(item["id"] == source["id"] for item in client.app.state.service.due_sources())
 
 

@@ -160,22 +160,24 @@ def test_legal_review_and_effective_dates_gate_retrieval(client):
 def test_unreviewed_fetched_material_is_excluded_by_default(client, monkeypatch):
     from app import ingestion
 
-    monkeypatch.setattr(
-        ingestion,
-        "fetch_source",
-        lambda *_args, **_kwargs: {
-            "url": "https://legal.example/regulation",
+    def download(url, *, consume, **kwargs):
+        return {
+            "url": url,
             "filename": "regulation.txt",
-            "content": b"legalreviewneedle fixture, not an actual law.",
             "mime_type": "text/plain",
-            "attachments": [],
-        },
-    )
+            "blob": consume(iter([b"legalreviewneedle fixture, not an actual law."])),
+        }
+
+    monkeypatch.setattr(ingestion, "_download", download)
     source = client.post(
         "/api/tea/sources", json={"name": "测试来源", "url": "https://legal.example/regulation"}
     ).json()
     result = client.post(f"/api/tea/sources/{source['id']}/fetch").json()
-    doc = result["documents"][0]
+    assert result["status"] == "queued"
+    collection = client.app.state.service.collection
+    collection.fetch_item(collection.claim_fetch())
+    collection.process_item(collection.claim_processing())
+    doc = client.get("/api/tea/documents").json()["items"][0]
     assert doc["status"] == "ready"
     assert doc["metadata"]["review_status"] == "draft"
     assert client.post("/api/tea/search", json={"query": "legalreviewneedle"}).json()["items"] == []

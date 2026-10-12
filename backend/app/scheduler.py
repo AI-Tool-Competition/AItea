@@ -1,9 +1,12 @@
 """Bounded single-node polling; source due times/leases belong to the durable store."""
+
 from __future__ import annotations
 
 import logging
 from threading import Event, Lock, Thread
 from typing import Protocol
+
+from .db import uid
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,16 @@ class ScheduledCollector:
                 if self._stop.is_set():
                     break
                 try:
-                    self.service.fetch_source(source["owner_id"], source["id"])
+                    collection = getattr(self.service, "collection", None)
+                    if collection is not None:
+                        collection.enqueue(
+                            source["owner_id"],
+                            source["id"],
+                            {"client_request_id": "schedule-" + uid()},
+                            scheduled=True,
+                        )
+                    else:
+                        self.service.fetch_source(source["owner_id"], source["id"])
                 except Exception:
                     result["failed"] += 1
                     logger.exception("Scheduled source collection failed (source_id=%s)", source.get("id"))

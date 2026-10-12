@@ -188,10 +188,20 @@ export interface Citation {
 export interface TraceStep {
   id: string;
   label: string;
-  status: "completed" | "skipped" | "failed";
+  status:
+    | "completed"
+    | "skipped"
+    | "failed"
+    | "running"
+    | "cached"
+    | "cancelled";
   detail: string;
+  type?: AgentStep["type"];
+  duration_ms?: number;
   input?: string;
   output?: string;
+  input_data?: Record<string, unknown>;
+  output_data?: Record<string, unknown>;
 }
 export interface Message {
   id: string;
@@ -316,6 +326,92 @@ export interface DebugResult {
   stage_id: string;
   assistant_mode: "demo" | "live";
 }
+export interface DebugExpectation {
+  id: string;
+  kind: "contains" | "not_contains" | "check" | "citation" | "manual";
+  text?: string | null;
+  task_id?: string | null;
+  check_id?: string | null;
+  status?: Check["status"] | null;
+  document_id?: string | null;
+}
+export interface DebugRequest {
+  template: Template;
+  stage_id: string;
+  input: string;
+  task_values: Record<string, Record<string, string | number>>;
+  document_ids: string[] | null;
+  expectations: DebugExpectation[];
+  client_id?: string | null;
+  sample_id?: string | null;
+  sample_revision?: number | null;
+  source_run_id?: string | null;
+  start_step_id?: string | null;
+  stop_after_step_id?: string | null;
+}
+export interface DebugDocumentVersion {
+  document_id: string;
+  version: number;
+  metadata_revision: number;
+}
+export interface DebugSampleSummary {
+  id: string;
+  name: string;
+  stage_id: string;
+  revision: number;
+  updated_at: string;
+}
+export interface DebugSample extends DebugSampleSummary {
+  template_id: string;
+  template: Template;
+  input: string;
+  task_values: DebugRequest["task_values"];
+  document_ids: string[] | null;
+  expectations: DebugExpectation[];
+  document_versions: DebugDocumentVersion[];
+}
+export interface DebugSampleInput {
+  template: Template;
+  name: string;
+  stage_id: string;
+  input: string;
+  task_values: DebugRequest["task_values"];
+  document_ids: string[] | null;
+  expectations: DebugExpectation[];
+  expected_revision: number;
+}
+export interface DebugEvaluation {
+  id: string;
+  label: string;
+  status: "passed" | "failed" | "manual";
+  actual: string;
+}
+export interface DebugRun extends DebugResult {
+  id: string;
+  created_at: string;
+  status: "completed" | "paused" | "failed" | "cancelled";
+  request: DebugRequest;
+  sample_id: string | null;
+  source_run_id: string | null;
+  evaluations: DebugEvaluation[];
+  document_versions: DebugDocumentVersion[];
+  error?: { code: string; message: string } | null;
+}
+export interface DebugRunSummary {
+  id: string;
+  created_at: string;
+  status: DebugRun["status"];
+  stage_id: string;
+  sample_id: string | null;
+  evaluation_status: "passed" | "failed" | "manual" | "none";
+}
+export type DebugStreamEvent =
+  | { event: "run"; data: { id: string } }
+  | { event: "step"; data: TraceStep }
+  | { event: "delta"; data: { text: string; step_id?: string } }
+  | { event: "status"; data: { label: string; step_id?: string } }
+  | { event: "done"; data: DebugRun }
+  | { event: "error"; data: { code: string; message: string } };
 export interface TemplateDraft {
   template: Template | null;
   revision: number;

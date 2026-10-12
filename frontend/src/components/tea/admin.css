@@ -495,137 +495,26 @@
   padding: 11px;
   margin-bottom: 20px !important;
 }
-.ta-debugger {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--background);
-  margin-top: 24px;
-  overflow: hidden;
-}
-.ta-debug-heading {
-  padding: 17px 20px;
-  border-bottom: 1px solid var(--border);
-}
-.ta-debug-heading > div {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: var(--muted-foreground);
-}
-.ta-debug-heading h3 {
-  font-size: 14px;
-  font-weight: 600;
-}
-.ta-debug-heading > p {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  margin-top: 6px;
-}
-.ta-debug-grid {
-  display: grid;
-  grid-template-columns: 310px minmax(0, 1fr);
-  min-height: 320px;
-}
-.ta-admin .ta-debug-input {
-  padding: 21px;
-  border-right: 1px solid var(--border);
-  background: var(--muted);
-}
-.ta-debug-input [readonly] {
-  background: var(--muted);
-  color: var(--muted-foreground);
-}
-.ta-sample-fields {
-  margin: 16px 0;
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-.ta-sample-fields > summary {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-.ta-sample-fields > div {
-  padding: 10px 0;
-  border-top: 1px solid var(--border);
-}
-.ta-sample-fields h4 {
-  font-size: 12px;
-  margin-bottom: 15px;
-}
-.ta-debug-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 20px;
-}
-.ta-debug-actions [data-slot="button"] {
-  font-size: 12px;
-  padding: 0 9px;
-}
-.ta-debug-output {
-  min-width: 0;
-  padding: 20px;
-}
-.ta-debug-empty {
-  min-height: 240px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted-foreground);
-  text-align: center;
-}
-.ta-debug-empty h4 {
-  color: var(--foreground);
-  font-weight: 500;
-  font-size: 14px;
-  margin-top: 16px;
-}
-.ta-debug-empty p {
-  font-size: 12px;
-  line-height: 1.9;
-  color: var(--muted-foreground);
-  max-width: 290px;
-  margin-top: 8px;
-}
-.ta-result-mode {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  padding-bottom: 15px;
-}
-.ta-result-mode > span:last-child {
-  margin-left: auto;
-  color: var(--muted-foreground);
-}
-.ta-result-tabs,
+
 .ta-document-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 21px;
   border-bottom: 1px solid var(--border);
 }
-.ta-result-tabs > button,
+
 .ta-document-tabs > button {
   padding: 10px 0;
   font-size: 12px;
   color: var(--muted-foreground);
   border-bottom: 2px solid transparent;
 }
-.ta-result-tabs > button[aria-selected="true"],
+
 .ta-document-tabs > button[aria-selected="true"] {
   border-color: var(--primary);
   color: var(--foreground);
 }
-.ta-result-body {
-  padding-top: 18px;
-  max-height: 450px;
-  overflow: auto;
-  scrollbar-width: thin;
-}
+
 .ta-output-text {
   font-size: 14px;
   line-height: 1.95;
@@ -633,56 +522,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.ta-execution-list > details {
-  border-bottom: 1px solid var(--border);
-  padding: 10px 0;
-}
-.ta-execution-list summary {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-}
-.ta-execution-icon {
-  padding-top: 2px;
-  color: var(--muted-foreground);
-}
-.ta-execution-icon.failed {
-  color: var(--destructive);
-}
-.ta-execution-list summary > span:nth-child(2) {
-  flex: 1;
-}
-.ta-execution-list strong {
-  font-size: 12px;
-  font-weight: 500;
-}
-.ta-execution-list small {
-  display: block;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.8;
-  margin-top: 3px;
-}
-.ta-execution-list em {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  font-style: normal;
-}
-.ta-execution-list details > div {
-  padding: 15px 24px;
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.9;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.ta-execution-list b {
-  display: block;
-  color: var(--foreground);
-  font-size: 12px;
-  margin-bottom: 4px;
-}
+
 .ta-validation-ok {
   display: flex;
   gap: 7px;
@@ -720,9 +560,7 @@
   gap: 7px;
   padding-bottom: 15px;
 }
-.ta-debug-scope-note {
-  padding: 15px 3px 0;
-}
+
 .ta-library-toolbar {
   display: flex;
   align-items: center;
@@ -1131,12 +969,6 @@
   .ta-canvas-caption > small {
     display: none;
   }
-  .ta-debug-grid {
-    grid-template-columns: 275px minmax(0, 1fr);
-  }
-  .ta-result-tabs {
-    gap: 13px;
-  }
 }
 @media (max-width: 1000px) {
   .ta-canvas {
@@ -1249,20 +1081,7 @@
     gap: 9px;
     padding-bottom: 17px;
   }
-  .ta-debug-grid {
-    grid-template-columns: 1fr;
-  }
-  .ta-admin .ta-debug-input {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    padding: 18px;
-  }
-  .ta-debug-output {
-    padding: 18px;
-  }
-  .ta-debug-empty {
-    min-height: 230px;
-  }
+
   .ta-file-title {
     max-width: 200px;
   }
@@ -1697,39 +1516,7 @@
   flex-direction: column;
   gap: 0;
 }
-.ta-debug-drawer {
-  position: absolute;
-  inset: auto 0 0;
-  max-height: 78%;
-  overflow: auto;
-  z-index: 30;
-  border: 1px solid var(--border);
-  border-radius: 12px 12px 9px 9px;
-  box-shadow: 0 -12px 40px #00000026;
-  background: var(--background);
-  outline: none;
-}
-.ta-debug-drawer[hidden] {
-  display: none;
-}
-.ta-debug-drawer .ta-debugger {
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-}
-.ta-debug-close {
-  position: absolute;
-  top: 18px;
-  right: 20px;
-  z-index: 2;
-}
-.ta-debug-drawer .ta-debug-heading {
-  padding-right: 60px;
-}
-.ta-debug-drawer .ta-debug-scope-note {
-  padding: 15px 60px 0 20px;
-  margin: 0;
-}
+
 @media (max-width: 1250px) {
   .ta-studio {
     grid-template-columns: minmax(0, 1fr);
@@ -1814,12 +1601,6 @@
   .ta-analysis-grid .ta-canvas {
     min-height: 170px;
   }
-  .ta-debug-drawer {
-    max-height: 90%;
-  }
-  .ta-debug-grid {
-    grid-template-columns: 1fr;
-  }
 }
 .ta-step-picker {
   width: 175px;
@@ -1850,5 +1631,436 @@
   .ta-admin .tea-field [data-slot="textarea"],
   .ta-admin .tea-field select {
     font-size: 16px;
+  }
+}
+
+/* Workflow debugging shares the editor's overlay; the canvas keeps its width. */
+.ta-inspector:has(.ta-debug-workspace) {
+  width: clamp(360px, 34vw, 480px);
+}
+.ta-debug-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 13px;
+}
+.ta-debug-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 52px 8px 20px;
+}
+.ta-debug-title strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ta-debug-title > button {
+  margin-left: auto;
+}
+.ta-debug-controls {
+  display: flex;
+  gap: 8px;
+  padding: 8px 20px 14px;
+}
+.ta-debug-controls > select {
+  min-width: 0;
+  flex: 1;
+  width: 0;
+}
+.ta-debug-workspace select {
+  font-size: 13px;
+  min-height: 34px;
+}
+.ta-debug-tabs {
+  display: flex;
+  gap: 22px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ta-debug-tabs button {
+  padding: 9px 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+}
+.ta-debug-tabs button[aria-selected="true"] {
+  border-color: var(--primary);
+  color: var(--foreground);
+  font-weight: 600;
+}
+.ta-debug-body {
+  padding: 16px 20px 24px;
+}
+.ta-debug-body > * + * {
+  margin-top: 14px;
+}
+.ta-debug-body fieldset {
+  min-width: 0;
+}
+.ta-debug-body .tea-field {
+  margin-bottom: 15px;
+}
+.ta-debug-body .tea-field > span {
+  font-size: 12px;
+}
+.ta-debug-body .tea-field input,
+.ta-debug-body .tea-field textarea {
+  font-size: 13px;
+}
+.ta-debug-notice {
+  background: var(--muted);
+  border-left: 2px solid var(--border);
+  padding: 10px 12px;
+  color: var(--muted-foreground);
+  line-height: 1.75;
+  font-size: 12px;
+}
+.ta-debug-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.ta-debug-step-actions,
+.ta-debug-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ta-debug-step-actions {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ta-debug-save-actions {
+  margin-top: 20px;
+}
+.ta-debug-step-actions button {
+  font-size: 12px;
+  padding-inline: 9px;
+}
+.ta-debug-placeholder {
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted-foreground);
+}
+.ta-debug-disclosure,
+.ta-debug-step-detail > details {
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+}
+.ta-debug-body summary {
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.ta-debug-body details[open] > summary {
+  margin-bottom: 12px;
+}
+.ta-debug-task {
+  padding: 10px 0 0;
+}
+.ta-debug-task > strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 12px;
+  color: var(--muted-foreground);
+}
+.ta-debug-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+.ta-debug-section-heading strong {
+  font-weight: 600;
+  font-size: 13px;
+}
+.ta-debug-section-heading > span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.ta-debug-expectation {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0 14px;
+}
+.ta-debug-expectation > div {
+  display: flex;
+  gap: 8px;
+}
+.ta-debug-expectation select {
+  min-width: 0;
+  flex: 1;
+  width: 100%;
+}
+.ta-debug-expectation textarea {
+  font-size: 13px;
+}
+.ta-debug-documents > label {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 0;
+  line-height: 1.5;
+}
+.ta-debug-documents input {
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+.ta-debug-documents small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.ta-debug-step-list {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+.ta-debug-step-list button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 9px 8px;
+  border-radius: var(--radius-sm);
+}
+.ta-debug-step-list button[aria-pressed="true"] {
+  background: var(--muted);
+}
+.ta-debug-step-list button > span {
+  flex: 1;
+}
+.ta-debug-step-list button > small {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.ta-debug-results .ta-output-text {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.ta-debug-result-status {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 18px 0 12px;
+  color: var(--muted-foreground);
+}
+.ta-debug-data,
+.ta-debug-task-data dl {
+  display: grid;
+  gap: 12px;
+  font-size: 12px;
+}
+.ta-debug-data dt,
+.ta-debug-task-data dt {
+  color: var(--muted-foreground);
+  margin-bottom: 4px;
+}
+.ta-debug-data dd,
+.ta-debug-task-data dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ta-debug-value {
+  white-space: pre-wrap;
+  line-height: 1.75;
+}
+.ta-debug-data-list > div + div {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.ta-debug-check-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+}
+.ta-debug-check-row > strong {
+  font-weight: 500;
+}
+.ta-debug-check-row > span {
+  color: var(--tea-success);
+}
+.ta-debug-check-row[data-status="missing"] > span {
+  color: var(--tea-warning);
+}
+.ta-debug-check-row[data-status="conflict"] > span {
+  color: var(--destructive);
+}
+.ta-debug-check-row > small {
+  grid-column: 1 / -1;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.ta-debug-task-data > strong {
+  display: block;
+  margin-bottom: 12px;
+}
+.ta-debug-task-data dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.ta-debug-raw {
+  max-height: 380px;
+  padding: 12px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  background: var(--muted);
+  border-radius: var(--radius-sm);
+}
+.ta-debug-evaluations > h4,
+.ta-debug-results h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0;
+}
+.ta-debug-evaluations > div {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 9px 0;
+}
+.ta-debug-evaluations > div > svg {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.ta-debug-evaluations strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.ta-debug-evaluations p,
+.ta-debug-evaluations small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.75;
+}
+.ta-debug-evaluations [data-status="failed"] > svg {
+  color: var(--destructive);
+}
+.ta-debug-history > div {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+}
+.ta-debug-history > div > div {
+  flex: 1;
+}
+.ta-debug-history strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+.ta-debug-history span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.ta-debug-history button {
+  padding-inline: 7px;
+  font-size: 12px;
+}
+.ta-debug-batch > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+}
+.ta-debug-batch strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.ta-debug-batch span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ta-debug-batch > p {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ta-debug-comparison-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.ta-debug-comparison > details {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ta-debug-before,
+.ta-debug-after {
+  padding: 10px 12px;
+  border-left: 2px solid var(--border);
+  margin-top: 8px;
+  background: var(--muted);
+}
+.ta-debug-after {
+  border-left-color: var(--primary);
+}
+.ta-debug-comparison small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.ta-debug-comparison p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+  font-size: 12px;
+}
+.ta-node.running {
+  border-color: var(--primary);
+}
+.ta-node.cached {
+  border-style: dashed;
+}
+.ta-running-icon {
+  animation: ta-debug-spin 1s linear infinite;
+}
+@keyframes ta-debug-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ta-running-icon {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .ta-debug-title {
+    padding-left: 14px;
+  }
+  .ta-debug-controls {
+    padding-inline: 14px;
+    gap: 5px;
+  }
+  .ta-debug-tabs {
+    padding-inline: 14px;
+    gap: 20px;
+  }
+  .ta-debug-body {
+    padding: 14px;
+  }
+  .ta-debug-step-actions {
+    gap: 4px;
   }
 }

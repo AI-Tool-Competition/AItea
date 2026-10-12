@@ -2,6 +2,7 @@
 
 import { Check, LoaderCircle, Minus, Pause, X } from "lucide-react";
 
+import { countryLabel } from "@/core/tea/countries";
 import type {
   DebugEvaluation,
   DebugRun,
@@ -277,6 +278,7 @@ const labels: Record<string, string> = {
   reference_status: "适用状态",
   source_url: "来源",
   document_ids: "限定资料",
+  country: "资料国家",
   evidence_ids: "关联材料",
   evidence_refs: "依据",
   score: "相关程度",
@@ -406,7 +408,13 @@ function ReadableData({
         <div key={key}>
           <dt>{labels[key] ?? key}</dt>
           <dd>
-            {["document_ids", "evidence_ids", "evidence_refs"].includes(key) ? (
+            {key === "country" ? (
+              <span>
+                {countryLabel(typeof item === "string" ? item : "unassigned")}
+              </span>
+            ) : ["document_ids", "evidence_ids", "evidence_refs"].includes(
+                key,
+              ) ? (
               <span>
                 {Array.isArray(item) ? `${item.length} 份` : "当前资料库"}
               </span>
@@ -436,6 +444,16 @@ export function DebugRunComparison({
     if (before !== after) changes.push({ label, before, after });
   };
   add("测试问题", previous.request.input, current.request.input);
+  add(
+    "目的地",
+    previous.request.template.destination,
+    current.request.template.destination,
+  );
+  const country = (run: DebugRun) =>
+    run.country === undefined
+      ? "旧记录未标注"
+      : countryLabel(run.country ?? "unassigned");
+  add("资料国家", country(previous), country(current));
   const agent = (run: DebugRun) =>
     run.request.template.stages.find((stage) => stage.id === run.stage_id)
       ?.analysis ?? run.request.template.agent;

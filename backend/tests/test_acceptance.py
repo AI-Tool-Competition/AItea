@@ -131,10 +131,20 @@ def test_legal_review_and_effective_dates_gate_retrieval(client):
     doc = upload(
         client, case["id"], "法规演示.txt", "samplelegalneedle 这是一条用于系统测试的非真实法律文字。"
     )
+    classified = client.patch(
+        f"/api/tea/documents/{doc['id']}/classification",
+        json={"collection": "country:ID", "level": "primary", "expected_revision": 0},
+    )
+    assert classified.status_code == 200, classified.text
     url = f"/api/tea/documents/{doc['id']}/metadata"
     response = client.patch(
         url,
-        json={"expected_revision": 0, "kind": "law", "jurisdiction": "Indonesia", "review_status": "draft"},
+        json={
+            "expected_revision": classified.json()["metadata_revision"],
+            "kind": "law",
+            "jurisdiction": "Indonesia",
+            "review_status": "draft",
+        },
     )
     assert response.status_code == 200, response.text
     search = {"query": "samplelegalneedle", "case_id": case["id"]}
@@ -142,7 +152,7 @@ def test_legal_review_and_effective_dates_gate_retrieval(client):
     reviewed = client.patch(
         url,
         json={
-            "expected_revision": 1,
+            "expected_revision": response.json()["metadata_revision"],
             "review_status": "published",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
@@ -153,7 +163,7 @@ def test_legal_review_and_effective_dates_gate_retrieval(client):
     hits = client.post("/api/tea/search", json={**search, "as_of": "2025-06-01"}).json()["items"]
     assert len(hits) == 1
     assert hits[0]["metadata"]["kind"] == "law"
-    assert hits[0]["metadata_revision"] == 2
+    assert hits[0]["metadata_revision"] == reviewed.json()["metadata_revision"]
     assert client.patch(url, json={"expected_revision": 1, "language": "id"}).status_code == 409
 
 

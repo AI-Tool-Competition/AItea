@@ -175,7 +175,14 @@ export function ConfigurationDebugger({
             {debug.progress || "正在运行…"}
           </p>
         )}
-        {tab === "sample" && <DebugSampleEditor debug={debug} stage={stage} />}
+        {tab === "sample" && (
+          <DebugSampleEditor
+            key={draft.destination}
+            debug={debug}
+            stage={stage}
+            destination={draft.destination}
+          />
+        )}
         {tab === "result" && (
           <>
             {runnableStepId && (

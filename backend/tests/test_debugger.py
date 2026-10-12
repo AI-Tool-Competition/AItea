@@ -22,6 +22,9 @@ def client(tmp_path):
 
 def request(client, **changes):
     template = client.get("/api/tea/templates").json()["items"][0]
+    # Generic runner tests use unassigned sample material; country boundaries
+    # are covered separately against real national classifications.
+    template["destination"] = "待确认目的地"
     template["agent"]["steps"] = [
         {"id": kind, "type": kind, "label": kind, "enabled": True, "instructions": ""}
         for kind in ("retrieve", "check", "guide")
@@ -208,11 +211,11 @@ def test_debug_migration_upgrades_existing_database_idempotently(client, tmp_pat
     with client.app.state.service.db.transaction() as conn:
         conn.execute("DROP TABLE IF EXISTS debug_runs")
         conn.execute("DROP TABLE IF EXISTS debug_samples")
-        conn.execute("DELETE FROM schema_migrations WHERE version=7")
+        conn.execute("DELETE FROM schema_migrations WHERE version=8")
     Service(tmp_path)
     Service(tmp_path)
     with closing(client.app.state.service.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=7").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=8").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0] > 0
         assert conn.execute("SELECT COUNT(*) FROM debug_samples").fetchone()[0] == 0
 

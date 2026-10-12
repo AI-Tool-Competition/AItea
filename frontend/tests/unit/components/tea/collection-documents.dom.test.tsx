@@ -84,7 +84,7 @@ describe("document version and relationship operations", () => {
       screen.getByRole("link", { name: "下载原件" }).getAttribute("href"),
     ).toBe("/api/tea/documents/law-v1/download");
     fireEvent.click(screen.getByRole("button", { name: "返回资料目录" }));
-    expect(await screen.findByText(/一级资料 · v2/)).toBeTruthy();
+    expect(await screen.findByText(/一级资料.*v2/)).toBeTruthy();
   });
 
   it("shows parsed secondary laws separately from raw attachments and pins incoming relations to versions", async () => {

@@ -524,6 +524,7 @@ def test_slow_stream_cannot_extend_model_generation_indefinitely(client, monkeyp
 
 def test_retrieval_after_guidance_is_not_presented_as_its_supporting_evidence(client):
     value = template(client)
+    value["destination"] = "待确认目的地"  # This test uses an unassigned library sample.
     value["agent"] = agent("guide", "retrieve")
     uploaded = client.post(
         "/api/tea/documents",

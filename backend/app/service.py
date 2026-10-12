@@ -67,6 +67,9 @@ class Service:
         self._active_chats = set()
         self.archive = LegalArchive(self)
         self.collection = CollectionService(self)
+        from .checklists import ChecklistService
+
+        self.checklists = ChecklistService(self)
 
     @property
     def capabilities(self):
@@ -635,6 +638,15 @@ class Service:
             )
         }
         classifications = {}
+        countries = {
+            row["document_id"]: row["country"]
+            for row in conn.execute(
+                f"""SELECT d.id document_id,COALESCE(dc.country,pc.country) country FROM documents d
+                    LEFT JOIN document_countries dc ON dc.document_id=d.id
+                    LEFT JOIN document_countries pc ON pc.document_id=d.parent_id WHERE d.id IN ({placeholders})""",
+                ids,
+            )
+        }
         for row in conn.execute(
             f"SELECT * FROM legal_classifications WHERE document_id IN ({placeholders}) ORDER BY collection",
             ids,
@@ -643,6 +655,7 @@ class Service:
         result = []
         for row in rows:
             doc = self.document_base(row)
+            doc["country"] = countries.get(row["id"])
             saved = metadata.get(row["id"])
             if saved:
                 doc.update(
@@ -776,16 +789,10 @@ class Service:
             with self.db.transaction() as conn:
                 if case_id:
                     self.own_case(conn, owner, case_id)
-                if source_url:
-                    previous = conn.execute(
-                        "SELECT * FROM documents WHERE owner_id=? AND source_url=? AND case_id IS ? AND role=? AND parent_id IS ? ORDER BY version DESC LIMIT 1",
-                        (owner, source_url, case_id, role, parent_id),
-                    ).fetchone()
-                else:
-                    previous = conn.execute(
-                        "SELECT * FROM documents WHERE owner_id=? AND case_id IS ? AND filename=? AND role=? AND parent_id IS ? ORDER BY version DESC LIMIT 1",
-                        (owner, case_id, filename, role, parent_id),
-                    ).fetchone()
+                previous = conn.execute(
+                    "SELECT * FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC LIMIT 1",
+                    (owner, family),
+                ).fetchone()
                 if (
                     previous
                     and previous["content_hash"] == content_hash
@@ -857,14 +864,39 @@ class Service:
         q=None,
         legal_level=None,
         collection=None,
+        country=None,
     ):
+        from .countries import country_from_collection, document_country, resolve_country
+
+        scope = country_from_collection(collection) if collection else None
+        if country and scope and country != scope:
+            fail(422, "country_mismatch", "采集组与所选国家不一致")
+        country = country or scope
         with closing(self.db.connect()) as conn:
             if case_id:
-                self.own_case(conn, owner, case_id)
+                case = self.own_case(conn, owner, case_id)
+                destination = resolve_country(json.loads(case["template"])["destination"])
+                if destination:
+                    if country and country != destination:
+                        fail(422, "country_mismatch", "业务只能选择目标国家的法规")
+                    country = destination
+            parent = self.own_document(conn, owner, parent_id) if parent_id else None
+            if parent and country is None:
+                country = document_country(conn, parent_id)
             conditions = ["owner_id=?", "case_id IS ?"]
             parameters = [owner, case_id]
+            if country and country != "unassigned":
+                conditions.append(
+                    """(EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id) AND dc.country=?)
+                    OR (documents.case_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM document_countries dc
+                        WHERE dc.document_id=COALESCE(documents.parent_id,documents.id))))"""
+                )
+                parameters.append(country)
+            else:
+                conditions.append(
+                    "NOT EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id))"
+                )
             if parent_id:
-                parent = self.own_document(conn, owner, parent_id)
                 if parent["case_id"] != case_id or parent["role"] != "primary":
                     fail(404, "not_found", "当前资料库中未找到一级资料")
                 if role == "primary":
@@ -883,7 +915,11 @@ class Service:
                 conditions.append("role='secondary'")
             elif legal_level:
                 conditions.append("role='primary'")
-                primary = "EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id AND lc.level='primary') OR NOT EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id)"
+                primary = """COALESCE((SELECT lc.level='primary' FROM legal_classifications lc
+                    JOIN document_countries dc ON dc.document_id=lc.document_id
+                    WHERE lc.document_id=documents.id AND lc.collection='country:'||dc.country),
+                    EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id AND lc.level='primary')
+                    OR NOT EXISTS(SELECT 1 FROM legal_classifications lc WHERE lc.document_id=documents.id))"""
                 conditions.append(f"({primary})" if legal_level == "primary" else f"NOT ({primary})")
             if q and q.strip():
                 pattern = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -920,16 +956,44 @@ class Service:
                 "warnings": manifest.get("warnings", []),
             }
 
-    def search(self, owner, query, case_id=None, limit=5, as_of=None, collection=None, document_ids=None):
+    def search(
+        self,
+        owner,
+        query,
+        case_id=None,
+        limit=5,
+        as_of=None,
+        collection=None,
+        country=None,
+        document_ids=None,
+    ):
         from .ingestion import embed_texts, lexical_search
 
         historical = as_of is not None
         as_of = as_of or datetime.now(timezone.utc).date()
         with closing(self.db.connect()) as conn:
+            from .countries import country_from_collection, resolve_country
+
+            scope = country_from_collection(collection) if collection else None
+            if country and scope and country != scope:
+                fail(422, "country_mismatch", "检索国家与采集组不一致")
+            country = country or scope
             if case_id:
-                self.own_case(conn, owner, case_id)
+                case = self.own_case(conn, owner, case_id)
+                destination = resolve_country(json.loads(case["template"])["destination"])
+                if destination:
+                    if country and country != destination:
+                        fail(422, "country_mismatch", "业务只能检索目标国家的法规")
+                    country = destination
             rows, metadata, limited = self.archive.retrieval_rows(
-                conn, owner, case_id, collection, as_of, historical, document_ids
+                conn,
+                owner,
+                case_id,
+                collection,
+                as_of,
+                historical,
+                country=None if country == "unassigned" else country,
+                document_ids=document_ids,
             )
         chunks = []
         for row in rows:
@@ -1295,6 +1359,7 @@ class Service:
             )
         }
         result["plan"] = CollectionPlan.model_validate(json.loads(row["plan"])).model_dump()
+        result["checklist"] = json.loads(row["checklist"]) if row["checklist"] else None
         if latest_run is ...:
             latest = conn.execute(
                 "SELECT * FROM collection_runs WHERE source_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
@@ -1330,67 +1395,71 @@ class Service:
                 "total": total,
             }
 
-    def save_source(self, owner, payload, id=None):
+    def save_source(self, owner, payload, id=None, conn=None):
         from .models import CollectionPlan
         from .ingestion import _validated_url
 
-        with self.db.transaction() as conn:
-            if id:
-                row = conn.execute("SELECT * FROM sources WHERE owner_id=? AND id=?", (owner, id)).fetchone()
-                if not row:
-                    fail(404, "not_found", "未找到采集来源")
-                if (
-                    payload.get("expected_revision") is not None
-                    and payload["expected_revision"] != row["revision"]
-                ):
-                    fail(409, "stale_source", "来源配置已有更新，请刷新后保存")
-                values = self.source_dict(row, conn) | {k: v for k, v in payload.items() if v is not None}
-                self.collection.validate_plan(conn, owner, values["plan"])
-                try:
-                    _validated_url(values["url"])
-                except ValueError as exc:
-                    fail(422, "invalid_source", str(exc))
-                conn.execute(
-                    "UPDATE sources SET name=?,url=?,enabled=?,interval_hours=?,tags=?,updated_at=?,plan=?,revision=revision+1 WHERE id=?",
-                    (
-                        values["name"],
-                        values["url"],
-                        int(values["enabled"]),
-                        values["interval_hours"],
-                        dump(values["tags"]),
-                        now(),
-                        dump(values["plan"]),
-                        id,
-                    ),
-                )
-            else:
-                plan = CollectionPlan.model_validate(payload.get("plan", {})).model_dump()
-                self.collection.validate_plan(conn, owner, plan)
-                try:
-                    _validated_url(payload["url"])
-                except ValueError as exc:
-                    fail(422, "invalid_source", str(exc))
-                id, at = uid(), now()
-                conn.execute(
-                    "INSERT INTO sources(id,owner_id,name,url,enabled,interval_hours,tags,last_fetched_at,last_attempt_at,status,last_error,created_at,updated_at,plan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        id,
-                        owner,
-                        payload["name"],
-                        payload["url"],
-                        int(payload["enabled"]),
-                        payload["interval_hours"],
-                        dump(payload["tags"]),
-                        None,
-                        None,
-                        "idle",
-                        None,
-                        at,
-                        at,
-                        dump(plan),
-                    ),
-                )
-            return self.source_dict(conn.execute("SELECT * FROM sources WHERE id=?", (id,)).fetchone(), conn)
+        if conn is None:
+            with self.db.transaction() as conn:
+                return self.save_source(owner, payload, id, conn)
+        if id:
+            row = conn.execute("SELECT * FROM sources WHERE owner_id=? AND id=?", (owner, id)).fetchone()
+            if not row:
+                fail(404, "not_found", "未找到采集来源")
+            if row["checklist"]:
+                fail(409, "checklist_source", "清单来源由版本化计划管理，请在采集清单中操作")
+            if (
+                payload.get("expected_revision") is not None
+                and payload["expected_revision"] != row["revision"]
+            ):
+                fail(409, "stale_source", "来源配置已有更新，请刷新后保存")
+            values = self.source_dict(row, conn) | {k: v for k, v in payload.items() if v is not None}
+            self.collection.validate_plan(conn, owner, values["plan"])
+            try:
+                _validated_url(values["url"])
+            except ValueError as exc:
+                fail(422, "invalid_source", str(exc))
+            conn.execute(
+                "UPDATE sources SET name=?,url=?,enabled=?,interval_hours=?,tags=?,updated_at=?,plan=?,revision=revision+1 WHERE id=?",
+                (
+                    values["name"],
+                    values["url"],
+                    int(values["enabled"]),
+                    values["interval_hours"],
+                    dump(values["tags"]),
+                    now(),
+                    dump(values["plan"]),
+                    id,
+                ),
+            )
+        else:
+            plan = CollectionPlan.model_validate(payload.get("plan", {})).model_dump()
+            self.collection.validate_plan(conn, owner, plan)
+            try:
+                _validated_url(payload["url"])
+            except ValueError as exc:
+                fail(422, "invalid_source", str(exc))
+            id, at = uid(), now()
+            conn.execute(
+                "INSERT INTO sources(id,owner_id,name,url,enabled,interval_hours,tags,last_fetched_at,last_attempt_at,status,last_error,created_at,updated_at,plan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    id,
+                    owner,
+                    payload["name"],
+                    payload["url"],
+                    int(payload["enabled"]),
+                    payload["interval_hours"],
+                    dump(payload["tags"]),
+                    None,
+                    None,
+                    "idle",
+                    None,
+                    at,
+                    at,
+                    dump(plan),
+                ),
+            )
+        return self.source_dict(conn.execute("SELECT * FROM sources WHERE id=?", (id,)).fetchone(), conn)
 
     def due_sources(self):
         with closing(self.db.connect()) as conn:

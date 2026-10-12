@@ -16,6 +16,7 @@ from time import monotonic, perf_counter
 
 import httpx
 
+from .countries import resolve_country
 from .db import dump
 from .streaming import StreamCancelled
 
@@ -246,6 +247,7 @@ def run_workflow(
         "tasks": [{"id": task["id"], "title": task["title"], "values": task["values"]} for task in tasks],
     }
     mode = service.capabilities["assistant_mode"]
+    country = resolve_country(template["destination"])
     result = {
         "output": "本次没有执行指导步骤。请查看步骤结果与规则检查。",
         "trace": [],
@@ -301,6 +303,7 @@ def run_workflow(
                             filter(None, [step.get("instructions", ""), content or stage["name"]])
                         )[:2000],
                         "document_ids": document_ids,
+                        "country": country,
                         "limit": agent["retrieval_limit"],
                     }
                 elif kind == "check":
@@ -352,7 +355,9 @@ def run_workflow(
                     query = "\n".join(filter(None, [step.get("instructions", ""), content or stage["name"]]))[
                         :2000
                     ]
-                    search_options = {"document_ids": document_ids} if document_ids is not None else {}
+                    search_options = {"country": country or "unassigned"}
+                    if document_ids is not None:
+                        search_options["document_ids"] = document_ids
                     retrieval = service.search(
                         owner, query, case_id, agent["retrieval_limit"], **search_options
                     )

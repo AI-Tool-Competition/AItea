@@ -89,7 +89,9 @@ class CollectionService:
     def validate_plan(self, conn, owner, plan):
         from .ingestion import _validated_url
         from .service import fail
+        from .countries import country_from_collection, document_country
 
+        country = country_from_collection(plan["collection"])
         for url in plan["seed_urls"]:
             try:
                 _validated_url(url)
@@ -99,94 +101,133 @@ class CollectionService:
             doc = self.service.own_document(conn, owner, id)
             if doc["case_id"] or doc["role"] != "primary":
                 fail(422, "invalid_primary", "采集来源只能关联账号公共库中的一级法规")
+            if country and document_country(conn, id) != country:
+                fail(422, "country_mismatch", "一级法规必须属于当前国家")
             row = conn.execute(
                 "SELECT level FROM legal_classifications WHERE document_id=? AND collection=?",
                 (id, plan["collection"]),
             ).fetchone()
-            if row and row[0] != "primary":
+            if (country and not row) or (row and row[0] != "primary"):
                 fail(422, "invalid_primary", "所选法规在当前采集组中不是一级资料")
 
-    def enqueue(self, owner, source_id, payload, *, scheduled=False):
+    def enqueue(
+        self, owner, source_id, payload, *, scheduled=False, conn=None, trusted_plan=None, request_hash=None
+    ):
         from .ingestion import _validated_url
         from .service import fail
 
-        request_hash = hashlib.sha256(dump([source_id, payload.get("entries")]).encode()).hexdigest()
-        with self.db.transaction() as conn:
-            source = conn.execute(
-                "SELECT * FROM sources WHERE owner_id=? AND id=?", (owner, source_id)
-            ).fetchone()
-            if not source:
-                fail(404, "not_found", "未找到采集来源")
-            if (
-                scheduled
-                and not conn.execute(
-                    """SELECT 1 FROM sources s WHERE s.id=? AND s.enabled=1
-                AND (s.last_attempt_at IS NULL OR julianday(s.last_attempt_at)+s.interval_hours/24.0<=julianday('now'))
-                AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))""",
-                    (source_id,),
-                ).fetchone()
-            ):
-                return None  # Re-check due state atomically; another scheduler/manual request may have won.
-            previous = conn.execute(
-                "SELECT * FROM collection_runs WHERE owner_id=? AND client_request_id=?",
-                (owner, payload["client_request_id"]),
-            ).fetchone()
-            if previous:
-                if previous["request_hash"] != request_hash:
-                    fail(409, "request_conflict", "同一请求标识不能用于不同的采集内容")
-                return self.run_dict(conn, previous)
-            plan = CollectionPlan.model_validate(json.loads(source["plan"])).model_dump()
-            self.validate_plan(conn, owner, plan)
-            entries = payload.get("entries") or [{"url": url} for url in [source["url"], *plan["seed_urls"]]]
-            unique = {}
-            for entry in entries:
-                try:
-                    url, host = _validated_url(entry["url"])
-                except ValueError as exc:
-                    fail(422, "invalid_source", str(exc))
-                if url in unique and unique[url].get("identity_key") != entry.get("identity_key"):
-                    fail(422, "ambiguous_identity", "同一网址不能指定多个法规标识")
-                unique[url] = dict(entry) | {"url": url, "host": host}
-            if len(unique) > plan["max_items"]:
-                fail(422, "collection_limit", "种子网址数量超过本次采集上限")
-            outstanding = conn.execute(
-                "SELECT COUNT(*) FROM collection_items WHERE status IN ('queued','fetching')"
-            ).fetchone()[0]
-            owned = conn.execute(
-                "SELECT COUNT(*) FROM collection_items WHERE owner_id=? AND status IN ('queued','fetching')",
-                (owner,),
-            ).fetchone()[0]
-            if outstanding + len(unique) > 2000 or owned + len(unique) > 1000:
-                fail(429, "collection_backpressure", "采集队列已满，请等待已有任务完成")
-            plan["tags"] = list(dict.fromkeys(json.loads(source["tags"])))
-            id, at = uid(), now()
-            conn.execute(
-                "INSERT INTO collection_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    id,
+        request_hash = (
+            request_hash or hashlib.sha256(dump([source_id, payload.get("entries")]).encode()).hexdigest()
+        )
+        if conn is None:
+            with self.db.transaction() as conn:
+                return self.enqueue(
                     owner,
                     source_id,
-                    payload["client_request_id"],
-                    request_hash,
-                    dump(plan),
-                    "queued",
-                    1,
-                    None,
-                    at,
-                    at,
-                ),
-            )
-            for entry in unique.values():
-                self._insert_item(
-                    conn, id, owner, entry["url"], plan["level"], identity_key=entry.get("identity_key")
+                    payload,
+                    scheduled=scheduled,
+                    conn=conn,
+                    trusted_plan=trusted_plan,
+                    request_hash=request_hash,
                 )
-            conn.execute(
-                "UPDATE sources SET status='processing',last_attempt_at=?,last_error=NULL WHERE id=?",
-                (at, source_id),
+        source = conn.execute(
+            "SELECT * FROM sources WHERE owner_id=? AND id=?", (owner, source_id)
+        ).fetchone()
+        if not source:
+            fail(404, "not_found", "未找到采集来源")
+        if source["checklist"] and trusted_plan is None:
+            fail(409, "checklist_source", "请从采集清单发现候选并选择正文，目录不能直接入库")
+        if (
+            scheduled
+            and not conn.execute(
+                """SELECT 1 FROM sources s WHERE s.id=? AND s.enabled=1
+            AND (s.last_attempt_at IS NULL OR julianday(s.last_attempt_at)+s.interval_hours/24.0<=julianday('now'))
+            AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))""",
+                (source_id,),
+            ).fetchone()
+        ):
+            return None  # Re-check due state atomically; another scheduler/manual request may have won.
+        previous = conn.execute(
+            "SELECT * FROM collection_runs WHERE owner_id=? AND client_request_id=?",
+            (owner, payload["client_request_id"]),
+        ).fetchone()
+        if previous:
+            if previous["request_hash"] != request_hash:
+                fail(409, "request_conflict", "同一请求标识不能用于不同的采集内容")
+            return self.run_dict(conn, previous)
+        plan = trusted_plan or CollectionPlan.model_validate(json.loads(source["plan"])).model_dump()
+        self.validate_plan(conn, owner, plan)
+        entries = payload.get("entries") or [{"url": url} for url in [source["url"], *plan["seed_urls"]]]
+        unique = {}
+        for entry in entries:
+            try:
+                url, host = _validated_url(entry["url"])
+            except ValueError as exc:
+                fail(422, "invalid_source", str(exc))
+            if url in unique and unique[url].get("identity_key") != entry.get("identity_key"):
+                fail(422, "ambiguous_identity", "同一网址不能指定多个法规标识")
+            unique[url] = dict(entry) | {"url": url, "host": host}
+        if len(unique) > plan["max_items"]:
+            fail(422, "collection_limit", "种子网址数量超过本次采集上限")
+        outstanding = conn.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE status IN ('queued','fetching')"
+        ).fetchone()[0]
+        owned = conn.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE owner_id=? AND status IN ('queued','fetching')",
+            (owner,),
+        ).fetchone()[0]
+        if outstanding + len(unique) > 2000 or owned + len(unique) > 1000:
+            fail(429, "collection_backpressure", "采集队列已满，请等待已有任务完成")
+        plan["tags"] = list(dict.fromkeys(json.loads(source["tags"])))
+        id, at = uid(), now()
+        conn.execute(
+            "INSERT INTO collection_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                id,
+                owner,
+                source_id,
+                payload["client_request_id"],
+                request_hash,
+                dump(plan),
+                "queued",
+                1,
+                None,
+                at,
+                at,
+            ),
+        )
+        for entry in unique.values():
+            self._insert_item(
+                conn,
+                id,
+                owner,
+                entry["url"],
+                plan["level"],
+                identity_key=entry.get("identity_key"),
+                purpose=entry.get("purpose", "document") if trusted_plan else "document",
+                depth=entry.get("depth", 0) if trusted_plan else 0,
+                candidate_id=entry.get("candidate_id") if trusted_plan else None,
             )
-            return self.run_dict(conn, self.own_run(conn, owner, id))
+        conn.execute(
+            "UPDATE sources SET status='processing',last_attempt_at=?,last_error=NULL WHERE id=?",
+            (at, source_id),
+        )
+        return self.run_dict(conn, self.own_run(conn, owner, id))
 
-    def _insert_item(self, conn, run_id, owner, url, level, *, identity_key=None, parent=None):
+    def _insert_item(
+        self,
+        conn,
+        run_id,
+        owner,
+        url,
+        level,
+        *,
+        identity_key=None,
+        parent=None,
+        purpose="document",
+        depth=0,
+        candidate_id=None,
+    ):
         # NULL parents do not deduplicate under SQLite UNIQUE, so check under the same write lock.
         if conn.execute(
             "SELECT 1 FROM collection_items WHERE run_id=? AND url=? AND level=? AND parent_document_id IS ?",
@@ -194,9 +235,23 @@ class CollectionService:
         ).fetchone():
             return
         conn.execute(
-            """INSERT INTO collection_items(id,run_id,owner_id,url,host,identity_key,level,parent_document_id,status,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (uid(), run_id, owner, url, urlsplit(url).hostname, identity_key, level, parent, "queued", now()),
+            """INSERT INTO collection_items(id,run_id,owner_id,url,host,identity_key,level,parent_document_id,status,created_at,purpose,depth,candidate_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                uid(),
+                run_id,
+                owner,
+                url,
+                urlsplit(url).hostname,
+                identity_key,
+                level,
+                parent,
+                "queued",
+                now(),
+                purpose,
+                depth,
+                candidate_id,
+            ),
         )
 
     def own_run(self, conn, owner, run_id):
@@ -215,7 +270,8 @@ class CollectionService:
         placeholders = ",".join("?" for _ in run_ids)
         rows = conn.execute(
             f"""SELECT i.run_id,COUNT(*) total,
-            COALESCE(SUM(i.status='stored'),0) stored, COALESCE(SUM(i.status='failed'),0) failed,
+            COALESCE(SUM(i.status='stored'),0) stored, COALESCE(SUM(i.status='discovered'),0) pages,
+            COALESCE(SUM(i.status='failed'),0) failed,
             COALESCE(SUM(i.status IN ('queued','fetching')),0) pending,
             COALESCE(SUM(i.status='stored' AND p.status IN ('queued','processing')),0) processing,
             COALESCE(SUM(i.status='stored' AND (p.status='completed' OR p.document_id IS NULL)),0) processed,
@@ -230,6 +286,7 @@ class CollectionService:
                 for key in (
                     "total",
                     "stored",
+                    "pages",
                     "failed",
                     "pending",
                     "processing",
@@ -243,16 +300,20 @@ class CollectionService:
     def run_dict(self, conn, row, counts=None):
         if counts is None:
             counts = self.run_counts(conn, [row["id"]]).get(row["id"], {})
-        return {
-            key: row[key]
-            for key in ("id", "source_id", "status", "revision", "error", "created_at", "updated_at")
-        } | counts
+        return (
+            {
+                key: row[key]
+                for key in ("id", "source_id", "status", "revision", "error", "created_at", "updated_at")
+            }
+            | counts
+            | {"kind": json.loads(row["plan"]).get("checklist", {}).get("kind", "collection")}
+        )
 
     def run_detail(self, owner, run_id, limit=50, offset=0):
         with closing(self.db.connect()) as conn:
             run = self.run_dict(conn, self.own_run(conn, owner, run_id))
             rows = conn.execute(
-                """SELECT i.id,i.url,i.level,i.status,i.attempts,i.document_id,i.error,i.final_url,i.fetched_at,
+                """SELECT i.id,i.url,i.level,i.purpose,i.status,i.attempts,i.document_id,i.error,i.final_url,i.fetched_at,
                 p.status processing_status,p.error processing_error
                 FROM collection_items i LEFT JOIN processing_jobs p ON p.document_id=i.document_id
                 WHERE i.run_id=? ORDER BY i.created_at,i.id LIMIT ? OFFSET ?""",
@@ -288,6 +349,11 @@ class CollectionService:
             if action == "cancel":
                 if row["status"] in ("completed", "partial", "cancelled"):
                     return self.run_dict(conn, row)
+                for item in conn.execute(
+                    "SELECT * FROM collection_items WHERE run_id=? AND status IN ('queued','fetching')",
+                    (run_id,),
+                ).fetchall():
+                    self.service.checklists.release_candidate(conn, dict(item))
                 conn.execute(
                     "UPDATE collection_items SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE run_id=? AND status IN ('queued','fetching')",
                     (run_id,),
@@ -296,6 +362,24 @@ class CollectionService:
             else:
                 if row["status"] not in ("partial", "cancelled"):
                     fail(409, "run_active", "请等待当前采集结束后重试失败项")
+                if json.loads(row["plan"]).get("checklist"):
+                    if conn.execute(
+                        "SELECT 1 FROM collection_runs WHERE source_id=? AND id<>? AND status IN ('queued','running')",
+                        (row["source_id"], run_id),
+                    ).fetchone():
+                        fail(409, "collection_active", "本条目已有进行中的任务")
+                    candidates = conn.execute(
+                        """SELECT c.id,c.status FROM collection_items i
+                        JOIN checklist_candidates c ON c.id=i.candidate_id WHERE i.run_id=?
+                        AND i.status IN ('failed','cancelled')""",
+                        (run_id,),
+                    ).fetchall()
+                    if any(candidate["status"] not in ("pending", "stored") for candidate in candidates):
+                        fail(409, "candidate_unavailable", "重试候选已排除或正在采集，请刷新")
+                    conn.executemany(
+                        "UPDATE checklist_candidates SET status='queued',revision=revision+1 WHERE id=?",
+                        [(c["id"],) for c in candidates],
+                    )
                 retryable = conn.execute(
                     """SELECT COUNT(*) FROM collection_items i
                     LEFT JOIN processing_jobs p ON p.document_id=i.document_id
@@ -430,6 +514,7 @@ class CollectionService:
             )
             if exhausted:
                 if table == "collection_items":
+                    self.service.checklists.release_candidate(conn, dict(row))
                     self._refresh(conn, row["run_id"])
                 else:
                     conn.execute(
@@ -544,6 +629,15 @@ class CollectionService:
             plan = json.loads(claim["plan"])
             attachments = []
             blob = fetched["blob"]
+            checklist_result = (
+                self.service.checklists.inspect(plan, fetched) if plan.get("checklist") else None
+            )
+            kind_hint = plan.get("checklist", {}).get("definition", {}).get("item", {}).get("kind")
+            if plan.get("checklist", {}).get("kind") == "discovery":
+                with self.db.transaction() as conn:
+                    if self._valid_claim(conn, claim):
+                        self.service.checklists.save_page(conn, claim, fetched, plan, checklist_result)
+                return
             if (
                 plan["discover_attachments"]
                 and claim["level"] != "attachment"
@@ -571,11 +665,14 @@ class CollectionService:
                     primary_document_ids=plan["primary_document_ids"]
                     if claim["level"] == "secondary"
                     else [],
+                    kind_hint="law" if kind_hint == "treaty" else kind_hint,
                 )
                 conn.execute(
                     """UPDATE collection_items SET status='stored',document_id=?,final_url=?,fetched_at=?,error=NULL,lease_token=NULL,lease_until=NULL WHERE id=?""",
                     (doc["id"], fetched["url"], now(), claim["id"]),
                 )
+                if plan.get("checklist"):
+                    self.service.checklists.stored_candidate(conn, claim, doc)
                 conn.execute(
                     """INSERT INTO collection_http_cache VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,url) DO UPDATE SET
                     document_id=excluded.document_id,etag=excluded.etag,last_modified=excluded.last_modified,final_url=excluded.final_url""",
@@ -714,6 +811,8 @@ class CollectionService:
                 )
                 self._refresh_document(conn, claim[key])
             else:
+                if exhausted:
+                    self.service.checklists.release_candidate(conn, claim)
                 if getattr(error, "retry_after", None):
                     conn.execute(
                         "INSERT INTO collection_host_cooldowns VALUES(?,?) ON CONFLICT(host) DO UPDATE SET available_at=MAX(available_at,excluded.available_at)",

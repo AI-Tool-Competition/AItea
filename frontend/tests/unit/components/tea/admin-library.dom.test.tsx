@@ -80,10 +80,11 @@ describe("admin library", () => {
     ).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
     view.rerender(<Sources key="real" compact />);
+    fireEvent.click(screen.getByRole("button", { name: "自定义来源" }));
     await screen.findByText("暂无来源");
     expect(screen.queryByText("进口登记资料 · 开发样例")).toBeNull();
     expect(screen.getByRole("button", { name: "添加来源" })).toBeTruthy();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("refreshes the open secondary list after an attachment upload without losing the selected view", async () => {

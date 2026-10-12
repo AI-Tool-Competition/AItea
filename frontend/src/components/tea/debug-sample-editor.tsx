@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { errorMessage, teaRequest } from "@/core/tea/api";
+import { countryLabel } from "@/core/tea/countries";
 import type {
   DebugExpectation,
   Document,
@@ -21,9 +22,11 @@ import { ErrorNotice } from "./shared";
 export function DebugSampleEditor({
   debug,
   stage,
+  destination,
 }: {
   debug: WorkflowDebugger;
   stage: StageDefinition;
+  destination: string;
 }) {
   const { sample, editSample } = debug;
   const locked = debug.running || debug.working;
@@ -53,6 +56,7 @@ export function DebugSampleEditor({
             .map(([, value]) => value),
   );
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [country, setCountry] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -62,12 +66,13 @@ export function DebugSampleEditor({
     const abort = new AbortController();
     setLoading(true);
     setError("");
-    teaRequest<ListResult<Document>>(
-      `/documents?role=primary&limit=50&offset=${offset}`,
+    teaRequest<ListResult<Document> & { country: string | null }>(
+      `/templates/debug/documents?destination=${encodeURIComponent(destination)}&limit=50&offset=${offset}`,
       { signal: abort.signal },
     )
       .then((page) => {
         if (abort.signal.aborted) return;
+        setCountry(page.country);
         setDocuments((items) =>
           offset
             ? [...items, ...page.items.filter((item) => !item.case_id)]
@@ -82,7 +87,7 @@ export function DebugSampleEditor({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [offset, retry]);
+  }, [destination, offset, retry]);
   function updateExpectation(value: DebugExpectation) {
     editSample({
       expectations: sample.expectations.map((item) =>
@@ -188,7 +193,7 @@ export function DebugSampleEditor({
           <summary>
             检索资料 ·{" "}
             {sample.document_ids === null
-              ? "当前资料库"
+              ? "目的地资料库"
               : `${sample.document_ids.length} 份`}
           </summary>
           <label className="tea-field">
@@ -201,11 +206,14 @@ export function DebugSampleEditor({
                 })
               }
             >
-              <option value="library">当前共有资料库</option>
+              <option value="library">目的地共有资料库</option>
               <option value="selected">指定资料（可留空）</option>
             </select>
           </label>
           <p className="ta-hint">
+            {loading
+              ? "正在读取资料…"
+              : `范围：${countryLabel(country ?? "unassigned")}。 `}
             保存时固定资料版本；审核或索引变化后，重新保存可更新。留空可测试没有依据的情况。
           </p>
           {sample.document_ids !== null && (
@@ -242,9 +250,18 @@ export function DebugSampleEditor({
               {sample.document_ids.some(
                 (id) => !documents.some((item) => item.id === id),
               ) && (
-                <p className="ta-hint">
-                  部分已选资料未在本页显示，选择状态仍保留。
-                </p>
+                <div>
+                  <p className="ta-hint">
+                    部分已选资料不在本页，可能属于旧的国家范围。运行前会校验。
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => editSample({ document_ids: [] })}
+                  >
+                    清空资料选择
+                  </Button>
+                </div>
               )}
             </div>
           )}

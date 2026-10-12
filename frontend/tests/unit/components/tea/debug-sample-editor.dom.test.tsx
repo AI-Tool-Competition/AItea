@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -54,13 +55,15 @@ const template: Template = {
 function Editor({
   values = {},
   expectations = [],
+  destination = template.destination,
 }: {
   values?: Record<string, Record<string, string | number>>;
   expectations?: DebugExpectation[];
+  destination?: string;
 }) {
   const debug = useWorkflowDebugger({
     ownerId: "test",
-    draft: template,
+    draft: { ...template, destination },
     stageId: "prepare",
   });
   return (
@@ -73,7 +76,12 @@ function Editor({
       <button onClick={() => void debug.loadSample("stored")}>
         读取已保存样例
       </button>
-      <DebugSampleEditor debug={debug} stage={template.stages[0]!} />
+      <DebugSampleEditor
+        key={destination}
+        debug={debug}
+        stage={template.stages[0]!}
+        destination={destination}
+      />
       <output data-testid="values">
         {JSON.stringify(debug.sample.task_values)}
       </output>
@@ -90,6 +98,61 @@ afterEach(() => {
 });
 
 describe("debug sample repair", () => {
+  it("uses the server destination scope and ignores a late response from the previous country", async () => {
+    let resolveOld!: (response: Response) => void;
+    const old = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const urls: string[] = [];
+    const doc = (id: string, title: string) => ({
+      id,
+      title,
+      filename: id,
+      role: "primary",
+      case_id: null,
+      version: 1,
+      status: "ready",
+    });
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (
+        typeof url === "string" &&
+        url.includes("/templates/debug/documents?")
+      ) {
+        urls.push(url);
+        if (url.includes(encodeURIComponent("印度尼西亚"))) return old;
+        return new Response(
+          JSON.stringify({
+            items: [doc("sg", "新加坡法规")],
+            total: 1,
+            country: "SG",
+          }),
+        );
+      }
+      return new Response(JSON.stringify({ items: [], total: 0 }));
+    });
+    const editor = render(<Editor />);
+    await waitFor(() => expect(urls).toHaveLength(1));
+    editor.rerender(<Editor destination="新加坡" />);
+    await waitFor(() => expect(urls).toHaveLength(2));
+    fireEvent.change(screen.getByLabelText("资料范围"), {
+      target: { value: "selected" },
+    });
+    await screen.findByText("新加坡法规");
+    await act(async () => {
+      resolveOld(
+        new Response(
+          JSON.stringify({
+            items: [doc("id", "印尼法规")],
+            total: 1,
+            country: "ID",
+          }),
+        ),
+      );
+    });
+    expect(screen.queryByText("印尼法规")).toBeNull();
+    expect(urls[1]).toContain(`destination=${encodeURIComponent("新加坡")}`);
+  });
+
   it("lets an unchanged saved sample refresh its evidence snapshot without duplicating it", async () => {
     const sample: DebugSample = {
       id: "stored",

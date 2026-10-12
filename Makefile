@@ -26,7 +26,7 @@ export SYNC
 
 PNPM := npx --yes pnpm@10.26.2
 
-.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build
+.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory
 
 help:
 	@printf '%s\n' \
@@ -40,6 +40,7 @@ help:
 	  'make dev-check        检查开发启动与工作树工具' \
 	  'make check            运行后端、前端类型与茶业务交互检查' \
 	  'make build / start    构建 / 启动本地生产预览' \
+	  'make archive-inventory COUNTRY=ID  导出资料目录，可选 OWNER=账号ID' \
 	  'make worktree NAME=feature/foo  创建隔离开发工作树' \
 	  '选项：SYNC=auto|force|skip，API_PORT=8000，WEB_PORT=3000'
 
@@ -73,6 +74,11 @@ start:
 
 worktree:
 	python3 scripts/worktree.py
+
+archive-inventory: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
+archive-inventory: export TEA_INVENTORY_OWNER = $(OWNER)
+archive-inventory:
+	cd backend && uv run --locked python -m app.archive_inventory
 
 backend-check:
 	uv run --project backend --locked pytest backend/tests --basetemp=.dev/pytest

@@ -40,16 +40,25 @@ export function DocumentRelations({
   const [adding, setAdding] = useState(
     () => !!(key && relationDrafts.has(key)),
   );
-  const [draft, setDraft] = useState<RelationDraft>(
-    () =>
-      (key ? relationDrafts.get(key) : undefined) ?? {
-        target: [],
-        collection: document.classifications?.[0]?.collection ?? "default",
-        relation: "cites",
-        locator: "",
-      },
-  );
-  const { target, collection, relation, locator } = draft;
+  const [draft, setDraft] = useState<RelationDraft>(() => {
+    const saved = key ? relationDrafts.get(key) : undefined;
+    const fixed = document.country ? `country:${document.country}` : undefined;
+    if (saved)
+      return fixed && saved.collection !== fixed
+        ? { ...saved, collection: fixed, target: [] }
+        : saved;
+    return {
+      target: [],
+      collection:
+        fixed ?? document.classifications?.[0]?.collection ?? "default",
+      relation: "cites",
+      locator: "",
+    };
+  });
+  const { target, relation, locator } = draft;
+  const collection = document.country
+    ? `country:${document.country}`
+    : draft.collection;
   const dirty = useRef(false);
   function update(next: Partial<RelationDraft>) {
     const value = { ...draft, ...next };
@@ -169,6 +178,7 @@ export function DocumentRelations({
                 <span>关联采集组</span>
                 <Input
                   required
+                  readOnly={!!document.country}
                   value={collection}
                   onChange={(e) =>
                     update({ collection: e.target.value, target: [] })
@@ -200,6 +210,11 @@ export function DocumentRelations({
                 primaryOnly={secondary}
                 excludeId={document.id}
                 scope={document.case_id}
+                country={
+                  document.country ??
+                  (document.case_id ? undefined : "unassigned")
+                }
+                collection={document.country ? collection : undefined}
                 multiple={false}
               />
             </fieldset>

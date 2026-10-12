@@ -276,6 +276,7 @@ class Search(StrictModel):
     limit: int = Field(default=5, ge=1, le=20)
     as_of: date | None = None
     collection: str | None = Field(default=None, min_length=1, max_length=100)
+    country: str | None = Field(default=None, pattern=r"^(?:[A-Z]{2}|unassigned)$")
 
 
 Tag = Annotated[str, Field(min_length=1, max_length=80)]
@@ -314,6 +315,39 @@ class CollectionStart(StrictModel):
 
 class RevisionInput(StrictModel):
     expected_revision: int = Field(ge=1)
+
+
+class ChecklistConfigure(StrictModel):
+    expected_version: int = Field(ge=1)
+
+
+class ChecklistDiscover(StrictModel):
+    client_request_id: str = Field(min_length=1, max_length=100)
+    confirm_condition: bool = False
+
+
+class ChecklistCollect(ChecklistDiscover):
+    candidate_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=1, max_length=200
+    )
+    level: Literal["primary", "secondary"]
+    primary_document_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        default_factory=list, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def valid_anchors(self):
+        if self.level == "secondary" and not self.primary_document_ids:
+            raise ValueError("二级法规需关联至少一份本国一级法规")
+        if self.level == "primary" and self.primary_document_ids:
+            raise ValueError("一级法规不能指定父法规")
+        return self
+
+
+class CandidatePatch(StrictModel):
+    expected_revision: int = Field(ge=1)
+    status: Literal["pending", "excluded"]
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class ClassificationPatch(StrictModel):

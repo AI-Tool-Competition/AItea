@@ -117,15 +117,24 @@ class AdminStudio:
                 "model": os.getenv("LLM_MODEL"),
                 "base": os.getenv("LLM_BASE_URL"),
                 "embedding": self.service.embedding_fingerprint(),
-                "runner_version": 1,
+                "runner_version": 2,
             }
         )
         # Iterate bounded-size metadata rows instead of collecting document bodies.
         for row in conn.execute(
-            """SELECT d.id,d.version,d.content_hash,d.status,d.case_id,d.filename,d.source_url,
+            """SELECT d.id,d.version,d.content_hash,d.status,d.case_id,d.filename,d.source_url,dc.country,
             COALESCE(m.revision,0) metadata_revision FROM documents d
             LEFT JOIN document_metadata m ON m.document_id=d.id
+            LEFT JOIN document_countries dc ON dc.document_id=d.id
             WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary' ORDER BY d.id""",
+            (owner, case["id"]),
+        ):
+            include(dict(row))
+        for row in conn.execute(
+            """SELECT c.document_id,c.collection,c.level,c.revision FROM legal_classifications c
+            JOIN documents d ON d.id=c.document_id WHERE d.owner_id=?
+            AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary'
+            ORDER BY c.document_id,c.collection""",
             (owner, case["id"]),
         ):
             include(dict(row))

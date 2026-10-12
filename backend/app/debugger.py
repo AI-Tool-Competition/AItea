@@ -11,13 +11,14 @@ from datetime import datetime, timedelta, timezone
 from .assistant import reuse_trace
 from .catalog import DocumentMetadata, eligible
 from .db import dump, now, uid
+from .countries import resolve_country
 from .streaming import StreamCancelled
 
 MAX_SAMPLES = 100
 MAX_RUNS = 100
 MAX_RUN_BYTES = 16 * 1024 * 1024
 MAX_OWNER_BYTES = 64 * 1024 * 1024
-RUNNER_VERSION = 2
+RUNNER_VERSION = 3
 
 
 def digest(value):
@@ -30,7 +31,28 @@ class WorkflowDebugger:
     def __init__(self, service):
         self.service, self.db = service, service.db
         with self.db.transaction() as conn:
-            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=7").fetchone():
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE version=8").fetchone():
+                return
+            tables = {
+                row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            existing = {"debug_samples", "debug_runs"} & tables
+            if existing and existing != {"debug_samples", "debug_runs"}:
+                raise RuntimeError("incomplete workflow debugger schema; no data was changed")
+            if existing:
+                # An unpublished debugger branch used 7 before country/checklist
+                # main claimed it. Relabel only that identifiable branch schema,
+                # preserving every sample/run; ChecklistService then applies 7.
+                country_tables = {"document_countries", "checklist_bindings"} & tables
+                source_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)")}
+                if not country_tables and "checklist" not in source_columns:
+                    conn.execute("DELETE FROM schema_migrations WHERE version=7")
+                elif (
+                    country_tables != {"document_countries", "checklist_bindings"}
+                    or "checklist" not in source_columns
+                ):
+                    raise RuntimeError("incomplete country/checklist schema; no data was changed")
+            else:
                 conn.execute("""CREATE TABLE debug_samples(
                     owner_id TEXT NOT NULL REFERENCES users(id), id TEXT NOT NULL,
                     template_id TEXT NOT NULL, stage_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -49,7 +71,7 @@ class WorkflowDebugger:
                 conn.execute(
                     "CREATE INDEX debug_runs_scope ON debug_runs(owner_id,template_id,stage_id,created_at,id)"
                 )
-                conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (7, now()))
+            conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (8, now()))
 
     def inputs(self, payload):
         from .service import fail
@@ -81,20 +103,28 @@ class WorkflowDebugger:
                     fail(422, "invalid_expectation", "预期检查项不属于当前节点，请调整预期或配置")
         return template, stage, tasks
 
-    def document_scope(self, conn, owner, document_ids):
+    def documents(self, owner, destination, limit=50, offset=0):
+        country = resolve_country(destination)
+        return self.service.documents(
+            owner, role="primary", country=country or "unassigned", limit=limit, offset=offset
+        ) | {"country": country}
+
+    def document_scope(self, conn, owner, document_ids, country=None):
         """Bind selection, immutable versions and mutable eligibility without loading file bodies."""
         from .service import fail
 
-        sql = """SELECT d.id,d.version,d.content_hash,d.status,d.filename,d.title,d.source_url,d.family_id,
+        sql = """SELECT d.id,d.version,d.content_hash,d.status,d.filename,d.title,d.source_url,d.family_id,dc.country,
             COALESCE(m.revision,0) metadata_revision,m.payload metadata_payload,length(CAST(d.manifest AS BLOB)) manifest_size,
             (SELECT MAX(v.version) FROM documents v WHERE v.owner_id=d.owner_id AND v.family_id=d.family_id) family_version
             FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
+            LEFT JOIN document_countries dc ON dc.document_id=d.id
             WHERE d.owner_id=? AND d.case_id IS NULL AND d.role='primary' """
         parameters = [owner]
         if document_ids is None:
-            sql += " AND d.status='ready'"
+            sql += " AND d.status='ready' AND dc.country IS ?"
+            parameters.append(country)
         elif not document_ids:
-            return [], [], digest([])
+            return [], [], digest({"country": country, "documents": []})
         else:
             document_ids = sorted(set(document_ids))
             sql += " AND d.id IN (" + ",".join("?" for _ in document_ids) + ")"
@@ -104,6 +134,8 @@ class WorkflowDebugger:
             fail(422, "document_scope_too_large", "测试最多使用 200 份资料，请选择较小的资料范围")
         if document_ids is not None and len(rows) != len(document_ids):
             fail(404, "not_found", "未找到部分测试资料，请确认资料属于当前账号的资料库")
+        if any(row["country"] != country for row in rows):
+            fail(422, "country_mismatch", "测试资料必须属于配置的目的国；目的地未确认时仅可选择未分国资料")
         if any(row["status"] != "ready" for row in rows):
             fail(409, "document_not_ready", "测试资料尚未准备好，请等待解析完成或重新选择")
         if sum(row["manifest_size"] for row in rows) > 64 * 1024 * 1024:
@@ -149,7 +181,7 @@ class WorkflowDebugger:
             item["classifications"] = classifications.get(row["id"], [])
             item["manifest_hash"] = manifests[row["id"]]
             details.append(item)
-        return [row["id"] for row in rows], versions, digest(details)
+        return [row["id"] for row in rows], versions, digest({"country": country, "documents": details})
 
     def sample(self, owner, template_id, sample_id, conn=None, *, private=False):
         from .service import fail
@@ -185,6 +217,7 @@ class WorkflowDebugger:
         if template_id != payload.template.id or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", sample_id):
             fail(422, "invalid_sample_id", "样例编号或流程编号无效")
         template, stage, _ = self.inputs(payload)
+        country = resolve_country(template["destination"])
         with self.db.transaction() as conn:
             existing = conn.execute(
                 "SELECT revision FROM debug_samples WHERE owner_id=? AND template_id=? AND id=?",
@@ -201,7 +234,9 @@ class WorkflowDebugger:
                 >= MAX_SAMPLES
             ):
                 fail(409, "sample_limit", "最多保存 100 个测试样例，请删除不再使用的样例")
-            document_ids, versions, scope_hash = self.document_scope(conn, owner, payload.document_ids)
+            document_ids, versions, scope_hash = self.document_scope(
+                conn, owner, payload.document_ids, country
+            )
             at = now()
             result = payload.model_dump(exclude={"expected_revision"}) | {
                 "id": sample_id,
@@ -209,6 +244,7 @@ class WorkflowDebugger:
                 "template": template,
                 "stage_id": stage["id"],
                 "document_ids": document_ids,
+                "country": country,
                 "document_versions": versions,
                 "revision": revision + 1,
                 "updated_at": at,
@@ -439,6 +475,7 @@ class WorkflowDebugger:
                     fail(409, "debug_in_progress", "相同试运行正在执行，请稍后查看记录")
                 fail(409, "debug_interrupted", "上次运行已中断，请使用新的运行标识重试")
             template, stage, tasks = self.inputs(payload)
+            country = resolve_country(template["destination"])
             agent = stage.get("analysis") or template["agent"]
             step_ids = [step["id"] for step in agent["steps"]]
             for selected in (payload.start_step_id, payload.stop_after_step_id):
@@ -447,7 +484,9 @@ class WorkflowDebugger:
             start_index = step_ids.index(payload.start_step_id) if payload.start_step_id else 0
             if payload.stop_after_step_id and step_ids.index(payload.stop_after_step_id) < start_index:
                 fail(422, "invalid_step_range", "结束步骤不能位于起始步骤之前")
-            document_ids, versions, scope_hash = self.document_scope(conn, owner, payload.document_ids)
+            document_ids, versions, scope_hash = self.document_scope(
+                conn, owner, payload.document_ids, country
+            )
             request = raw_request | {"stage_id": stage["id"], "document_ids": document_ids}
             if payload.sample_id:
                 sample = self.sample(owner, template["id"], payload.sample_id, conn, private=True)
@@ -523,6 +562,7 @@ class WorkflowDebugger:
                 "request": request,
                 "sample_id": payload.sample_id,
                 "document_versions": versions,
+                "country": country,
                 "source_run_id": payload.source_run_id,
             }
             initial = result | metadata | {"status": "cancelled", "evaluations": []}
@@ -604,7 +644,7 @@ class WorkflowDebugger:
             ):
                 status = "paused"
             with closing(self.db.connect()) as conn:
-                _, current_versions, current_scope = self.document_scope(conn, owner, document_ids)
+                _, current_versions, current_scope = self.document_scope(conn, owner, document_ids, country)
                 if current_scope != scope_hash or current_versions != versions:
                     status, error = (
                         "failed",

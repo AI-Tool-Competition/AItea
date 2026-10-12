@@ -243,6 +243,15 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store, no-transform"},
         )
 
+    @app.get("/api/tea/templates/debug/documents")
+    def debug_documents(
+        destination: str = Query(min_length=1, max_length=100),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        current=Depends(user),
+    ):
+        return service.studio.debugger.documents(current["id"], destination, limit, offset)
+
     @app.get("/api/tea/templates/debug/runs/{run_id}")
     def debug_run(run_id: str, current=Depends(user)):
         return service.studio.debugger.run(current["id"], run_id)
@@ -368,6 +377,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         q: str | None = Query(None, max_length=200),
         legal_level: Literal["primary", "secondary", "attachment"] | None = None,
         collection: str | None = Query(None, min_length=1, max_length=100),
+        country: str | None = Query(None, pattern=r"^(?:[A-Z]{2}|unassigned)$"),
         current=Depends(user),
     ):
         return service.documents(
@@ -380,6 +390,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             q=q,
             legal_level=legal_level,
             collection=collection,
+            country=country,
         )
 
     @app.post("/api/tea/documents", status_code=201)
@@ -468,7 +479,13 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     @app.post("/api/tea/search")
     def search(payload: models.Search, current=Depends(user)):
         return service.search(
-            current["id"], payload.query, payload.case_id, payload.limit, payload.as_of, payload.collection
+            current["id"],
+            payload.query,
+            payload.case_id,
+            payload.limit,
+            payload.as_of,
+            payload.collection,
+            payload.country,
         )
 
     @app.post("/api/tea/cases/{case_id}/artifacts", status_code=201)
@@ -541,6 +558,45 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
     ):
         return service.collection.runs(current["id"], id, limit, offset)
+
+    @app.get("/api/tea/collection-plans")
+    def collection_plans(current=Depends(user)):
+        return service.checklists.catalog()
+
+    @app.get("/api/tea/collection-plans/{id}")
+    def collection_plan(id: str, current=Depends(user)):
+        return service.checklists.detail(current["id"], id)
+
+    @app.post("/api/tea/collection-plans/{id}/configure")
+    def configure_plan(id: str, payload: models.ChecklistConfigure, current=Depends(user)):
+        return service.checklists.configure(current["id"], id, payload.expected_version)
+
+    @app.post("/api/tea/collection-plans/{id}/discover", status_code=202)
+    def discover_plan_all(id: str, payload: models.ChecklistDiscover, current=Depends(user)):
+        return service.checklists.discover_all(current["id"], id, payload.client_request_id)
+
+    @app.post("/api/tea/collection-plans/{id}/items/{item_id}/discover", status_code=202)
+    def discover_plan(id: str, item_id: str, payload: models.ChecklistDiscover, current=Depends(user)):
+        return service.checklists.start(current["id"], id, item_id, payload.model_dump(), kind="discovery")
+
+    @app.get("/api/tea/collection-plans/{id}/items/{item_id}/candidates")
+    def plan_candidates(
+        id: str,
+        item_id: str,
+        status: Literal["pending", "stored", "excluded"] = "pending",
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        current=Depends(user),
+    ):
+        return service.checklists.candidates(current["id"], id, item_id, status, limit, offset)
+
+    @app.post("/api/tea/collection-plans/{id}/items/{item_id}/collect", status_code=202)
+    def collect_plan(id: str, item_id: str, payload: models.ChecklistCollect, current=Depends(user)):
+        return service.checklists.start(current["id"], id, item_id, payload.model_dump(), kind="collection")
+
+    @app.patch("/api/tea/collection-candidates/{id}")
+    def patch_candidate(id: str, payload: models.CandidatePatch, current=Depends(user)):
+        return service.checklists.patch_candidate(current["id"], id, payload.model_dump(exclude_none=True))
 
     @app.get("/api/tea/collection-runs/{id}")
     def collection_run(

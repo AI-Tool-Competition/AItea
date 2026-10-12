@@ -13,6 +13,8 @@ export function DocumentChooser({
   selected,
   onChange,
   scope,
+  collection,
+  country,
   primaryOnly = false,
   excludeId,
   multiple = true,
@@ -20,6 +22,8 @@ export function DocumentChooser({
   selected: string[];
   onChange: (ids: string[]) => void;
   scope?: string | null;
+  collection?: string;
+  country?: string;
   primaryOnly?: boolean;
   excludeId?: string;
   multiple?: boolean;
@@ -45,6 +49,8 @@ export function DocumentChooser({
       offset: String(offset),
     });
     if (scope) params.set("case_id", scope);
+    if (collection) params.set("collection", collection);
+    if (country) params.set("country", country);
     if (primaryOnly) params.set("legal_level", "primary");
     if (search) params.set("q", search);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
@@ -70,10 +76,13 @@ export function DocumentChooser({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [scope, search, offset, retry, primaryOnly]);
+  }, [scope, collection, country, search, offset, retry, primaryOnly]);
   const options = page.items.filter(
     (doc) =>
-      doc.id !== excludeId && (!primaryOnly || doc.legal_level !== "secondary"),
+      doc.id !== excludeId &&
+      (!primaryOnly || doc.legal_level !== "secondary") &&
+      (!country ||
+        (country === "unassigned" ? !doc.country : doc.country === country)),
   );
   return (
     <div className="ta-document-chooser">

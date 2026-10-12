@@ -10,6 +10,7 @@ import {
   splitTags,
   type ClassificationDraft,
 } from "@/core/tea/collection-drafts";
+import { countryLabel, useCollectionCountries } from "@/core/tea/countries";
 import { type Document, type DocumentDetail } from "@/core/tea/types";
 
 import { ActionButton, ErrorNotice } from "./shared";
@@ -24,16 +25,31 @@ export function DocumentClassificationEditor({
   onSaved: (document: Document) => void;
 }) {
   const key = ownerId ? `${ownerId}:${document.id}` : undefined;
-  const first = document.classifications?.[0];
-  const [draft, setDraft] = useState<ClassificationDraft>(
-    () =>
-      (key ? classificationDrafts.get(key) : undefined) ?? {
-        collection: first?.collection ?? "default",
-        level: first?.level ?? "primary",
-        tags: (first?.tags ?? document.tags).join(", "),
-        expected_revision: first?.revision ?? 0,
-      },
-  );
+  const fixedCollection = document.country
+    ? `country:${document.country}`
+    : undefined;
+  const countries = useCollectionCountries(ownerId, !document.country);
+  const first =
+    document.classifications?.find(
+      (item) => item.collection === fixedCollection,
+    ) ?? document.classifications?.[0];
+  const [draft, setDraft] = useState<ClassificationDraft>(() => {
+    const saved = key ? classificationDrafts.get(key) : undefined;
+    if (saved)
+      return fixedCollection && saved.collection !== fixedCollection
+        ? {
+            ...saved,
+            collection: fixedCollection,
+            expected_revision: first?.revision ?? 0,
+          }
+        : saved;
+    return {
+      collection: fixedCollection ?? first?.collection ?? "default",
+      level: first?.level ?? "primary",
+      tags: (first?.tags ?? document.tags).join(", "),
+      expected_revision: first?.revision ?? 0,
+    };
+  });
   const [error, setError] = useState("");
   const [conflict, setConflict] = useState(false);
   const [latest, setLatest] = useState<Document>();
@@ -69,8 +85,13 @@ export function DocumentClassificationEditor({
         : {}),
     });
   }
-  async function save() {
+  async function save(override?: ClassificationDraft) {
     if (request.current) return;
+    const submitted = {
+      ...(override ?? draft),
+      ...(fixedCollection ? { collection: fixedCollection } : {}),
+    };
+    if (override) update(submitted);
     const abort = new AbortController();
     request.current = abort;
     setBusy(true);
@@ -80,16 +101,16 @@ export function DocumentClassificationEditor({
     try {
       const next = await patch<Document>(
         `/documents/${encodeURIComponent(document.id)}/classification`,
-        { ...draft, tags: splitTags(draft.tags) },
+        { ...submitted, tags: splitTags(submitted.tags) },
         abort.signal,
       );
       if (abort.signal.aborted) return;
       const saved = next.classifications?.find(
-        (item) => item.collection === draft.collection,
+        (item) => item.collection === submitted.collection,
       );
       setDraft({
-        ...draft,
-        expected_revision: saved?.revision ?? draft.expected_revision + 1,
+        ...submitted,
+        expected_revision: saved?.revision ?? submitted.expected_revision + 1,
       });
       if (key) classificationDrafts.delete(key);
       dirty.current = false;
@@ -123,12 +144,17 @@ export function DocumentClassificationEditor({
     }
   }
   const latestClassification = latest?.classifications?.find(
-    (item) => item.collection === draft.collection,
+    (item) =>
+      item.collection ===
+      (latest?.country ? `country:${latest.country}` : draft.collection),
   );
   function resolveConflict(keep: boolean) {
     if (!latest) return;
     update({
       ...draft,
+      collection: latest?.country
+        ? `country:${latest.country}`
+        : draft.collection,
       expected_revision: latestClassification?.revision ?? 0,
       ...(keep
         ? {}
@@ -137,6 +163,7 @@ export function DocumentClassificationEditor({
             tags: (latestClassification?.tags ?? []).join(", "),
           }),
     });
+    onSaved(latest);
     setError("");
     setConflict(false);
     setLatest(undefined);
@@ -156,8 +183,9 @@ export function DocumentClassificationEditor({
               <span>采集组</span>
               <Input
                 required
+                readOnly={!!fixedCollection}
                 list={`collections-${document.id}`}
-                value={draft.collection}
+                value={fixedCollection ?? draft.collection}
                 onChange={(e) => collection(e.target.value)}
               />
               <datalist id={`collections-${document.id}`}>
@@ -182,6 +210,38 @@ export function DocumentClassificationEditor({
               </select>
             </label>
           </div>
+          {!document.country && (
+            <div className="ta-document-country-assign">
+              <span>未分国</span>
+              {countries.countries.map((code) => (
+                <ActionButton
+                  type="button"
+                  key={code}
+                  size="sm"
+                  variant="outline"
+                  busy={busy}
+                  onClick={() =>
+                    void save({
+                      ...draft,
+                      collection: `country:${code}`,
+                      expected_revision:
+                        document.classifications?.find(
+                          (item) => item.collection === `country:${code}`,
+                        )?.revision ?? 0,
+                    })
+                  }
+                >
+                  归入{countryLabel(code)}
+                </ActionButton>
+              ))}
+              {countries.error && (
+                <ErrorNotice
+                  message={countries.error}
+                  onRetry={countries.retry}
+                />
+              )}
+            </div>
+          )}
           <label className="tea-field">
             <span>分类标签</span>
             <Input

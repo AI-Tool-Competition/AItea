@@ -25,6 +25,7 @@ import {
   safeSourceUrl,
   teaRequest,
 } from "@/core/tea/api";
+import { countryLabel, useCollectionCountries } from "@/core/tea/countries";
 import {
   type CaseSummary,
   type Citation,
@@ -111,6 +112,7 @@ export function UploadDialog({
   onOpenChange,
   caseId,
   initialParentId,
+  initialCountry,
   cases,
   onDone,
 }: {
@@ -118,6 +120,7 @@ export function UploadDialog({
   onOpenChange: (value: boolean) => void;
   caseId?: string;
   initialParentId?: string;
+  initialCountry?: string;
   cases: CaseSummary[];
   onDone: () => void;
 }) {
@@ -126,6 +129,14 @@ export function UploadDialog({
   const [parent, setParent] = useState("");
   const [tags, setTags] = useState("");
   const [docs, setDocs] = useState<Document[]>([]);
+  const [attachmentCountry, setAttachmentCountry] = useState(
+    initialCountry ?? "",
+  );
+  const countries = useCollectionCountries(
+    undefined,
+    open && role === "secondary" && !scope && !initialCountry,
+  );
+  const parentCountry = attachmentCountry || countries.defaultCountry;
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -134,30 +145,76 @@ export function UploadDialog({
     if (!open) return;
     setScope(caseId ?? "");
     setRole(initialParentId ? "secondary" : "primary");
+    setAttachmentCountry(initialCountry ?? "");
     setFile(null);
     setError("");
-  }, [open, caseId, initialParentId]);
+  }, [open, caseId, initialParentId, initialCountry]);
   useEffect(() => {
-    if (!open) return;
-    const controller = new AbortController();
-    setParent(scope === (caseId ?? "") ? (initialParentId ?? "") : "");
-    setDocs([]);
-    teaRequest<ListResult<Document>>(
-      `/documents${scope ? `?case_id=${encodeURIComponent(scope)}` : ""}`,
-      { signal: controller.signal },
+    if (
+      !open ||
+      role !== "secondary" ||
+      (!scope && !initialCountry && !countries.ready)
     )
-      .then((result) =>
-        setDocs(
-          result.items.filter(
-            (d) => d.role === "primary" && d.case_id === (scope || null),
-          ),
-        ),
-      )
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(errorMessage(e));
+      return;
+    const controller = new AbortController();
+    setParent(
+      scope === (caseId ?? "") &&
+        (!initialCountry || parentCountry === initialCountry)
+        ? (initialParentId ?? "")
+        : "",
+    );
+    setDocs([]);
+    async function readParents() {
+      const original =
+        initialParentId && scope === (caseId ?? "")
+          ? (
+              await teaRequest<DocumentDetail>(
+                `/documents/${encodeURIComponent(initialParentId)}?limit=1`,
+                { signal: controller.signal },
+              )
+            ).document
+          : undefined;
+      if (controller.signal.aborted) return;
+      const params = new URLSearchParams({
+        role: "primary",
+        limit: "100",
+        offset: "0",
       });
+      if (scope) params.set("case_id", scope);
+      else
+        params.set(
+          "country",
+          original ? (original.country ?? "unassigned") : parentCountry,
+        );
+      const result = await teaRequest<ListResult<Document>>(
+        `/documents?${params}`,
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      const options = result.items.filter(
+        (document) =>
+          document.role === "primary" && document.case_id === (scope || null),
+      );
+      setDocs(
+        original && !options.some((document) => document.id === original.id)
+          ? [original, ...options]
+          : options,
+      );
+    }
+    void readParents().catch((e) => {
+      if (!controller.signal.aborted) setError(errorMessage(e));
+    });
     return () => controller.abort();
-  }, [scope, open, initialParentId, caseId]);
+  }, [
+    scope,
+    open,
+    role,
+    initialParentId,
+    initialCountry,
+    caseId,
+    parentCountry,
+    countries.ready,
+  ]);
   async function upload() {
     if (!file || submitting.current) return;
     if (file.size > 20 * 1024 * 1024) {
@@ -238,6 +295,27 @@ export function UploadDialog({
             />
           </label>
         </div>
+        {role === "secondary" && !scope && !initialParentId && (
+          <label className="tea-field">
+            <span>主文件国家</span>
+            <select
+              value={countries.ready ? parentCountry : ""}
+              disabled={busy || !countries.ready}
+              onChange={(event) => setAttachmentCountry(event.target.value)}
+            >
+              {!countries.ready && <option value="">读取国家…</option>}
+              {countries.countries.map((code) => (
+                <option key={code} value={code}>
+                  {countryLabel(code)}
+                </option>
+              ))}
+              <option value="unassigned">未分国</option>
+            </select>
+          </label>
+        )}
+        {role === "secondary" && countries.error && (
+          <ErrorNotice message={countries.error} onRetry={countries.retry} />
+        )}
         {role === "secondary" && (
           <label className="tea-field">
             <span>关联到主文件</span>
@@ -280,12 +358,17 @@ export function Library({
   revision,
   cases,
   initialCaseId,
+  ownerId,
 }: {
   onUpload: (caseId?: string) => void;
   revision: number;
   cases: CaseSummary[];
   initialCaseId?: string;
+  ownerId?: string;
 }) {
+  const countries = useCollectionCountries(ownerId);
+  const [countrySelection, setCountrySelection] = useState("");
+  const country = countrySelection || countries.defaultCountry;
   const [docs, setDocs] = useState<Document[]>([]);
   const [scope, setScope] = useState(initialCaseId ?? "");
   const [total, setTotal] = useState(0);
@@ -297,16 +380,40 @@ export function Library({
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Document>();
   const [reload, setReload] = useState(0);
+  const requests = useRef<{ search?: AbortController; more?: AbortController }>(
+    {},
+  );
+  const scopeKey = `${ownerId ?? "session"}:${scope}:${country}`;
+  const currentScope = useRef(scopeKey);
+  currentScope.current = scopeKey;
+  function resetReads() {
+    requests.current.search?.abort();
+    requests.current.more?.abort();
+    requests.current = {};
+    setHits(null);
+    setSearching(false);
+    setMoreBusy(false);
+    setSelected(undefined);
+  }
   useEffect(() => {
+    const active = requests.current;
+    return () => {
+      active.search?.abort();
+      active.more?.abort();
+    };
+  }, [scope, country, ownerId]);
+  useEffect(() => {
+    if (!countries.ready) return;
     const controller = new AbortController();
     setLoading(true);
-    teaRequest<ListResult<Document>>(
-      `/documents${scope ? `?case_id=${encodeURIComponent(scope)}` : ""}`,
-      {
-        signal: controller.signal,
-      },
-    )
+    const params = new URLSearchParams({ limit: "100", offset: "0" });
+    if (scope) params.set("case_id", scope);
+    else params.set("country", country);
+    teaRequest<ListResult<Document>>(`/documents?${params}`, {
+      signal: controller.signal,
+    })
       .then((data) => {
+        if (controller.signal.aborted) return;
         setDocs(data.items);
         setTotal(data.total);
         setError("");
@@ -318,14 +425,26 @@ export function Library({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [revision, reload, scope]);
+  }, [revision, reload, scope, country, countries.ready, ownerId]);
   async function loadMore() {
-    if (moreBusy) return;
+    if (requests.current.more || !countries.ready) return;
+    const abort = new AbortController();
+    const requestedScope = scopeKey;
+    requests.current.more = abort;
     setMoreBusy(true);
     try {
+      const params = new URLSearchParams({
+        limit: "100",
+        offset: String(docs.length),
+      });
+      if (scope) params.set("case_id", scope);
+      else params.set("country", country);
       const data = await teaRequest<ListResult<Document>>(
-        `/documents?limit=100&offset=${docs.length}${scope ? `&case_id=${encodeURIComponent(scope)}` : ""}`,
+        `/documents?${params}`,
+        { signal: abort.signal },
       );
+      if (abort.signal.aborted || currentScope.current !== requestedScope)
+        return;
       setDocs((current) => [
         ...new Map(
           [...current, ...data.items].map((doc) => [doc.id, doc]),
@@ -333,26 +452,33 @@ export function Library({
       ]);
       setTotal(data.total);
     } catch (e) {
-      setError(errorMessage(e));
+      if (!abort.signal.aborted) setError(errorMessage(e));
     } finally {
-      setMoreBusy(false);
+      if (requests.current.more === abort) requests.current.more = undefined;
+      if (!abort.signal.aborted) setMoreBusy(false);
     }
   }
   async function search() {
-    if (!query.trim() || searching) return;
+    if (!query.trim() || requests.current.search || !countries.ready) return;
+    const abort = new AbortController();
+    const requestedScope = scopeKey;
+    requests.current.search = abort;
     setSearching(true);
     setError("");
     try {
-      const data = await post<{ items: Citation[] }>("/search", {
-        query,
-        limit: 8,
-        ...(scope ? { case_id: scope } : {}),
-      });
-      setHits(data.items);
+      const data = await post<{ items: Citation[] }>(
+        "/search",
+        { query, limit: 8, ...(scope ? { case_id: scope } : { country }) },
+        abort.signal,
+      );
+      if (!abort.signal.aborted && currentScope.current === requestedScope)
+        setHits(data.items);
     } catch (e) {
-      setError(errorMessage(e));
+      if (!abort.signal.aborted) setError(errorMessage(e));
     } finally {
-      setSearching(false);
+      if (requests.current.search === abort)
+        requests.current.search = undefined;
+      if (!abort.signal.aborted) setSearching(false);
     }
   }
   return (
@@ -363,18 +489,14 @@ export function Library({
           上传资料
         </Button>
       </SectionHeading>
-      <p className="tea-page-intro">
-        统一整理业务材料与参考文件，保留原文、版本和引用位置。
-      </p>
       <label className="tea-field">
         <span>资料范围</span>
         <select
           value={scope}
           onChange={(e) => {
+            resetReads();
             setScope(e.target.value);
-            setHits(null);
             setQuery("");
-            setSelected(undefined);
           }}
         >
           <option value="">账号公共资料库</option>
@@ -383,6 +505,27 @@ export function Library({
               {c.title}
             </option>
           ))}
+        </select>
+      </label>
+      <label className="tea-field">
+        <span>资料国家</span>
+        <select
+          aria-label="资料国家"
+          value={scope ? "case" : countries.ready ? country : ""}
+          disabled={!!scope || !countries.ready}
+          onChange={(event) => {
+            resetReads();
+            setCountrySelection(event.target.value);
+          }}
+        >
+          {!!scope && <option value="case">按业务目的地</option>}
+          {!countries.ready && <option value="">读取国家…</option>}
+          {countries.countries.map((code) => (
+            <option value={code} key={code}>
+              {countryLabel(code)}
+            </option>
+          ))}
+          <option value="unassigned">未分国</option>
         </select>
       </label>
       <form
@@ -402,10 +545,17 @@ export function Library({
           }}
           placeholder="搜索法规条款、材料内容或关键词…"
         />
-        <ActionButton busy={searching} type="submit" disabled={!query.trim()}>
+        <ActionButton
+          busy={searching}
+          type="submit"
+          disabled={!query.trim() || !countries.ready}
+        >
           检索
         </ActionButton>
       </form>
+      {countries.error && (
+        <ErrorNotice message={countries.error} onRetry={countries.retry} />
+      )}
       {error && (
         <ErrorNotice message={error} onRetry={() => setReload((r) => r + 1)} />
       )}

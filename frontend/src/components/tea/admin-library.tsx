@@ -24,6 +24,7 @@ import {
   safeSourceUrl,
   teaRequest,
 } from "@/core/tea/api";
+import { countryLabel, useCollectionCountries } from "@/core/tea/countries";
 import { librarySamples } from "@/core/tea/library-samples";
 import {
   type CaseSummary,
@@ -50,10 +51,13 @@ export function AdminLibrary({
 }: {
   cases: CaseSummary[];
   revision: number;
-  onUpload: (scope?: string, parent?: string) => void;
+  onUpload: (scope?: string, parent?: string, country?: string) => void;
   samples?: boolean;
   ownerId?: string;
 }) {
+  const countries = useCollectionCountries(ownerId, !samples);
+  const [countrySelection, setCountrySelection] = useState("");
+  const country = countrySelection || countries.defaultCountry;
   const [scope, setScope] = useState("");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -82,6 +86,7 @@ export function AdminLibrary({
       setError("");
       return;
     }
+    if (!countries.ready) return;
     const abort = new AbortController();
     setLoading(true);
     setError("");
@@ -91,6 +96,7 @@ export function AdminLibrary({
       offset: String(offset),
     });
     if (scope) params.set("case_id", scope);
+    else params.set("country", country);
     if (search) params.set("q", search);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
       signal: abort.signal,
@@ -105,7 +111,16 @@ export function AdminLibrary({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [scope, offset, search, revision, retry, samples]);
+  }, [
+    scope,
+    country,
+    countries.ready,
+    offset,
+    search,
+    revision,
+    retry,
+    samples,
+  ]);
   if (selected)
     return (
       <DocumentInspector
@@ -119,7 +134,13 @@ export function AdminLibrary({
           setRetry((value) => value + 1);
         }}
         onSelect={setSelected}
-        onUpload={() => onUpload(selected.case_id ?? undefined, selected.id)}
+        onUpload={() =>
+          onUpload(
+            selected.case_id ?? undefined,
+            selected.id,
+            selected.country ?? "unassigned",
+          )
+        }
         onSaved={(next) => {
           setSelected(next);
           setData((current) => ({
@@ -155,6 +176,28 @@ export function AdminLibrary({
         </form>
         {!samples && (
           <select
+            className="ta-country-filter"
+            aria-label="资料国家"
+            value={scope ? "case" : countries.ready ? country : ""}
+            disabled={!!scope || !countries.ready}
+            onChange={(event) => {
+              setCountrySelection(event.target.value);
+              setOffset(0);
+              setExpanded(new Set());
+            }}
+          >
+            {!!scope && <option value="case">按业务目的地</option>}
+            {!countries.ready && <option value="">读取国家…</option>}
+            {countries.countries.map((code) => (
+              <option value={code} key={code}>
+                {countryLabel(code)}
+              </option>
+            ))}
+            <option value="unassigned">未分国</option>
+          </select>
+        )}
+        {!samples && (
+          <select
             aria-label="资料范围"
             value={scope}
             onChange={(e) => {
@@ -177,6 +220,9 @@ export function AdminLibrary({
           </Button>
         )}
       </div>
+      {countries.error && (
+        <ErrorNotice message={countries.error} onRetry={countries.retry} />
+      )}
       {error && (
         <ErrorNotice
           message={error}
@@ -252,8 +298,9 @@ export function AdminLibrary({
                           >
                             <strong>{doc.title}</strong>
                             <small>
-                              {documentLevel(doc)} · v{doc.version} ·{" "}
-                              {sizeLabel(doc.size)}
+                              {documentLevel(doc)} ·{" "}
+                              {countryLabel(doc.country ?? "unassigned")} · v
+                              {doc.version} · {sizeLabel(doc.size)}
                             </small>
                           </button>
                         </div>
@@ -295,7 +342,12 @@ export function AdminLibrary({
                             onUpload={
                               samples
                                 ? undefined
-                                : () => onUpload(scope || undefined, doc.id)
+                                : () =>
+                                    onUpload(
+                                      scope || undefined,
+                                      doc.id,
+                                      doc.country ?? "unassigned",
+                                    )
                             }
                           />
                         </td>
@@ -587,6 +639,11 @@ function DocumentInspector({
         <div>
           <div>
             <span className="ta-badge">{documentLevel(document)}</span>
+            {!samples && (
+              <span className="ta-badge">
+                {countryLabel(document.country ?? "unassigned")}
+              </span>
+            )}
             <span className="ta-template-version">v{document.version}</span>
           </div>
           <h2>{document.title}</h2>

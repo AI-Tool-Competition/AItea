@@ -8,18 +8,32 @@ from pathlib import Path
 from urllib.parse import urldefrag
 
 from .blob_store import BlobStore
+from .countries import country_from_collection, document_country, resolve_country
 from .db import dump, now, uid
 
 
 def family_key(
-    owner, filename, source_url=None, case_id=None, role="primary", parent_id=None, identity_key=None
+    owner,
+    filename,
+    source_url=None,
+    case_id=None,
+    role="primary",
+    parent_id=None,
+    identity_key=None,
+    country=None,
 ):
     identity = (
         ("key", identity_key)
         if identity_key
         else (("url", urldefrag(source_url)[0]) if source_url else ("filename", filename))
     )
-    return hashlib.sha256(dump([owner, case_id, role, parent_id, identity]).encode()).hexdigest()
+    base = hashlib.sha256(dump([owner, case_id, role, parent_id, identity]).encode()).hexdigest()
+    return _country_family(base, country) if country else base
+
+
+def _country_family(base, country):
+    country_from_collection(f"country:{country}")
+    return hashlib.sha256(dump(["country", country, base]).encode()).hexdigest()
 
 
 class LegalArchive:
@@ -81,17 +95,30 @@ class LegalArchive:
             "SELECT collection,level,tags,revision FROM legal_classifications WHERE document_id=? ORDER BY collection",
             (document["id"],),
         ).fetchall()
-        return self.with_classifications(document, rows)
+        country = document_country(conn, document["id"])
+        if not country and document["role"] == "secondary" and document.get("parent_id"):
+            country = document_country(conn, document["parent_id"])
+        return self.with_classifications(document | {"country": country}, rows)
 
     def with_classifications(self, document, rows):
         classifications = [
             {key: row[key] for key in ("collection", "level", "revision")} | {"tags": json.loads(row["tags"])}
             for row in rows
         ]
+        national = [
+            row
+            for row in rows
+            if document.get("country") and row["collection"] == f"country:{document['country']}"
+        ]
+        effective_rows = national or rows
         level = (
             "attachment"
             if document["role"] == "secondary"
-            else ("secondary" if rows and all(row["level"] == "secondary" for row in rows) else "primary")
+            else (
+                "secondary"
+                if effective_rows and all(row["level"] == "secondary" for row in effective_rows)
+                else "primary"
+            )
         )
         tags = (
             list(dict.fromkeys(tag for item in classifications for tag in item["tags"]))
@@ -101,16 +128,125 @@ class LegalArchive:
         return document | {"classifications": classifications, "legal_level": level, "tags": tags}
 
     def can_index(self, conn, document_id, collection=None):
+        requested_country = country_from_collection(collection)
+        country = document_country(conn, document_id)
+        if requested_country and requested_country != country:
+            return False
         rows = conn.execute(
             "SELECT collection,level FROM legal_classifications WHERE document_id=?", (document_id,)
         ).fetchall()
+        national = [row for row in rows if country and row["collection"] == f"country:{country}"]
+        if national and national[0]["level"] != "primary":
+            return False
         if collection:
             return any(row["collection"] == collection and row["level"] == "primary" for row in rows)
         return not rows or any(row["level"] == "primary" for row in rows)
 
+    def _bind_country(self, conn, owner, document, country, *, family_prepared=False, kind_hint=None):
+        """Bind the complete immutable version family, without moving raw files."""
+        from .service import fail
+
+        if kind_hint is not None and kind_hint not in {"law", "guidance", "case"}:
+            fail(422, "invalid_document_kind", "国别资料类型必须为法规、指引或案例")
+        if document["case_id"]:
+            case = self.service.own_case(conn, owner, document["case_id"])
+            destination = resolve_country(json.loads(case["template"]).get("destination"))
+            if destination and destination != country:
+                fail(422, "country_mismatch", "业务资料只能归入该业务目标国家")
+        current = document_country(conn, document["id"])
+        if current:
+            if current != country:
+                fail(422, "country_mismatch", "资料国别已固定，不能改为其他国家")
+            return
+        family = document["family_id"]
+        if conn.execute(
+            """SELECT 1 FROM documents d JOIN document_countries c ON c.document_id=d.id
+            WHERE d.owner_id=? AND d.family_id=? AND c.country<>? LIMIT 1""",
+            (owner, family, country),
+        ).fetchone():
+            fail(422, "country_mismatch", "同一法规的历史版本不能跨国家混用")
+        if conn.execute(
+            """SELECT 1 FROM legal_relations r
+            JOIN documents s ON s.id=r.source_document_id JOIN documents t ON t.id=r.target_document_id
+            LEFT JOIN document_countries sc ON sc.document_id=s.id
+            LEFT JOIN document_countries tc ON tc.document_id=t.id
+            WHERE r.owner_id=? AND (
+                (s.family_id=? AND t.family_id<>? AND (tc.country IS NULL OR tc.country<>?)) OR
+                (t.family_id=? AND s.family_id<>? AND (sc.country IS NULL OR sc.country<>?))) LIMIT 1""",
+            (owner, family, family, country, family, family, country),
+        ).fetchone():
+            fail(
+                422,
+                "country_relation_conflict",
+                "资料已有未定国或其他国家的关联，请保留历史关系并单独导入国别原件",
+            )
+        # A file uploaded before country scoping has a legacy family key. Move
+        # every version together so subsequent unscoped uploads cannot replace it.
+        if not family_prepared:
+            scoped_family = _country_family(family, country)
+            if conn.execute(
+                "SELECT 1 FROM documents WHERE owner_id=? AND family_id=? LIMIT 1", (owner, scoped_family)
+            ).fetchone():
+                fail(422, "country_family_conflict", "该国已有同一法规家族，请使用已有国别原件")
+            conn.execute(
+                "UPDATE documents SET family_id=? WHERE owner_id=? AND family_id=?",
+                (scoped_family, owner, family),
+            )
+            family = scoped_family
+        # Country assignment changes the legal applicability boundary. A normal
+        # upload's default business/published state is not legal review evidence.
+        # Only newly bound versions are reset; repeats retain an explicit review.
+        from .catalog import DocumentMetadata
+
+        cursor = ""
+        while rows := conn.execute(
+            """SELECT d.id,d.case_id,d.filename,d.source_url,m.payload,m.revision
+            FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
+            WHERE d.owner_id=? AND d.family_id=? AND d.role='primary' AND d.id>?
+                AND NOT EXISTS(SELECT 1 FROM document_countries c WHERE c.document_id=d.id)
+            ORDER BY d.id LIMIT 200""",
+            (owner, family, cursor),
+        ).fetchall():
+            for row in rows:
+                metadata = (
+                    json.loads(row["payload"])
+                    if row["payload"]
+                    else DocumentMetadata().model_dump(mode="json")
+                )
+                metadata.update(
+                    kind=(kind_hint or "law")
+                    if metadata["kind"] in {"business", "demo"}
+                    else metadata["kind"],
+                    jurisdiction=country,
+                    review_status="draft",
+                )
+                payload = dump(DocumentMetadata.model_validate(metadata).model_dump(mode="json"))
+                revision, at = (row["revision"] or 0) + 1, now()
+                conn.execute(
+                    """INSERT INTO document_metadata VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(document_id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision,
+                    reviewed_by=NULL,reviewed_at=NULL,updated_at=excluded.updated_at""",
+                    (row["id"], payload, revision, None, None, at),
+                )
+                conn.execute(
+                    "INSERT INTO document_metadata_history VALUES(?,?,?,?,?)",
+                    (row["id"], revision, payload, owner, at),
+                )
+                if row["id"] != document["id"]:
+                    # The classification entry point invalidates the selected
+                    # version; older references in this family also need review.
+                    self.service.metadata_changed(conn, row)
+            cursor = rows[-1]["id"]
+        conn.execute(
+            """INSERT OR IGNORE INTO document_countries(document_id,country)
+            SELECT id,? FROM documents WHERE owner_id=? AND family_id=?""",
+            (country, owner, family),
+        )
+
     def classify(self, conn, owner, document, collection, level, tags, *, expected_revision=None):
         from .service import fail
 
+        country = country_from_collection(collection)
         if document["role"] != "primary":
             fail(422, "attachment_classification", "普通附件不能设为法规，请单独导入法规原件")
         previous = conn.execute(
@@ -129,6 +265,8 @@ class LegalArchive:
         if len(tags) > 20:
             fail(422, "too_many_tags", "合并后的标签超过 20 项，请整理标签后重试")
         if previous and previous["level"] == level and json.loads(previous["tags"]) == tags:
+            if country:
+                self._bind_country(conn, owner, document, country)
             return
         if (
             not previous
@@ -138,6 +276,8 @@ class LegalArchive:
             >= 20
         ):
             fail(422, "too_many_collections", "每份资料最多加入 20 个采集组")
+        if country:
+            self._bind_country(conn, owner, document, country)
         revision += 1
         at = now()
         conn.execute(
@@ -168,7 +308,7 @@ class LegalArchive:
             if self.can_index(conn, document_id):
                 self.service.collection.queue_processing(conn, document_id, owner)
             self.service.metadata_changed(conn, doc)
-            return self.service.document_dict(doc, conn=conn)
+            return self.service.document_dict(self.service.own_document(conn, owner, document_id), conn=conn)
 
     def versions(self, owner, document_id, limit=20, offset=0):
         from .service import DOCUMENT_SUMMARY
@@ -200,6 +340,13 @@ class LegalArchive:
         ):
             fail(422, "invalid_relation", "关联法规必须是同一资料范围内的两份独立正文")
         collection = payload["collection"]
+        country = country_from_collection(collection)
+        source_country, target_country = (
+            document_country(conn, source_id),
+            document_country(conn, target["id"]),
+        )
+        if source_country != target_country or (country and source_country != country):
+            fail(422, "country_mismatch", "关联法规必须已归属同一国家，不能通过其他采集组跨国关联")
         # Explicitly selecting an uploaded primary as an anchor adds it to the collection.
         self.classify(conn, owner, source, collection, "primary", json.loads(source["tags"]))
         if not conn.execute(
@@ -263,13 +410,27 @@ class LegalArchive:
         identity_key=None,
         parent_id=None,
         primary_document_ids=(),
+        kind_hint=None,
     ):
+        from .service import fail
+
+        country = country_from_collection(collection)
         filename = (
             re.sub(r"[\x00-\x1f\x7f]", "", Path(filename.replace("\\", "/")).name)[:180] or "source.bin"
         )
         role = "secondary" if level == "attachment" else "primary"
+        if parent_id:
+            parent = self.service.own_document(conn, owner, parent_id)
+            if document_country(conn, parent["id"]) != country:
+                fail(422, "country_mismatch", "附件与主文件必须属于同一国家范围")
         family = family_key(
-            owner, filename, source_url, role=role, parent_id=parent_id, identity_key=identity_key
+            owner,
+            filename,
+            source_url,
+            role=role,
+            parent_id=parent_id,
+            identity_key=identity_key,
+            country=country,
         )
         previous = conn.execute(
             "SELECT * FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC LIMIT 1",
@@ -310,6 +471,8 @@ class LegalArchive:
                 ),
             )
             doc = self.service.own_document(conn, owner, id)
+        if country:
+            self._bind_country(conn, owner, doc, country, family_prepared=True, kind_hint=kind_hint)
         if level != "attachment":
             was_indexable = self.can_index(conn, doc["id"])
             self.classify(conn, owner, doc, collection, level, tags)
@@ -339,18 +502,39 @@ class LegalArchive:
                 )
         return doc
 
-    def retrieval_rows(self, conn, owner, case_id, collection, as_of, historical):
+    def retrieval_rows(self, conn, owner, case_id, collection, as_of, historical, country=None):
         """Choose applicable versions before loading bounded manifests; lists stay body-free."""
         from .catalog import DocumentMetadata
 
         business = dump(DocumentMetadata().model_dump(mode="json"))
         law = dump(DocumentMetadata(kind="law", review_status="draft").model_dump(mode="json"))
+        collection_country = country_from_collection(collection)
+        if country:
+            country_from_collection(f"country:{country}")
+            if collection_country and collection_country != country:
+                from .service import fail
+
+                fail(422, "country_mismatch", "检索国家与采集组不一致")
         membership = """(NOT EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id)
             OR EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.level='primary'))"""
         parameters = [business, law, owner, case_id]
+        business_material = """(v.country IS NULL AND v.case_id IS NOT NULL
+            AND json_extract(v.metadata_payload,'$.kind')='business')"""
+        scope = """v.country IS NULL AND NOT EXISTS(
+            SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.collection LIKE 'country:%')"""
+        if country:
+            scope = f"(v.country=? OR {business_material})"
+            parameters.append(country)
+            membership = f"""(EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id
+                AND c.collection='country:'||v.country AND c.level='primary') OR
+                (NOT EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id
+                    AND c.collection='country:'||v.country) AND {membership}))"""
         if collection:
-            membership = "EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.collection=? AND c.level='primary')"
+            requested_membership = "EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.collection=? AND c.level='primary')"
+            membership = f"({membership} AND {requested_membership})" if country else requested_membership
             parameters.append(collection)
+        if country:
+            membership = f"({business_material} OR {membership})"
         period = """json_extract(v.metadata_payload,'$.review_status')='published'
             AND (json_extract(v.metadata_payload,'$.effective_from') IS NULL OR json_extract(v.metadata_payload,'$.effective_from')<=?)
             AND (json_extract(v.metadata_payload,'$.effective_to') IS NULL OR json_extract(v.metadata_payload,'$.effective_to')>=?)"""
@@ -362,15 +546,16 @@ class LegalArchive:
                 AND (v.family_rank=1 OR json_extract(v.metadata_payload,'$.effective_to') IS NOT NULL)))"""
         candidates = conn.execute(
             f"""WITH versions AS (
-            SELECT d.id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,length(d.manifest) manifest_size,
+            SELECT d.id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,dc.country,length(d.manifest) manifest_size,
                 COALESCE(m.payload,CASE WHEN d.source_url IS NULL THEN ? ELSE ? END) metadata_payload,
                 COALESCE(m.revision,0) metadata_revision,m.reviewed_at,
                 ROW_NUMBER() OVER(PARTITION BY d.family_id ORDER BY d.version DESC,d.created_at DESC,d.id DESC) family_rank
             FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
+            LEFT JOIN document_countries dc ON dc.document_id=d.id
             WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary'
         ), applicable AS (
             SELECT v.*,ROW_NUMBER() OVER(PARTITION BY v.family_id ORDER BY v.version DESC,v.id DESC) selected
-            FROM versions v WHERE {membership} AND {period} AND {history} AND v.status='ready'
+            FROM versions v WHERE {scope} AND {membership} AND {period} AND {history} AND v.status='ready'
         ) SELECT * FROM applicable WHERE selected=1 ORDER BY created_at DESC,id DESC LIMIT 501""",
             parameters,
         ).fetchall()

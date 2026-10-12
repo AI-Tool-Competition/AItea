@@ -64,7 +64,11 @@ export function Admin({
     process.env.NODE_ENV === "development" &&
     searchParams.get("sample") === "1";
   const [menuOpen, setMenuOpen] = useState(false);
-  const [upload, setUpload] = useState<{ scope?: string; parent?: string }>();
+  const [upload, setUpload] = useState<{
+    scope?: string;
+    parent?: string;
+    country?: string;
+  }>();
   const [libraryRevision, setLibraryRevision] = useState(0);
   const navigationPage = page === "sources" ? "library" : page;
   const current = pages[navigationPage];
@@ -212,7 +216,9 @@ export function Admin({
               cases={bootstrap.cases}
               revision={libraryRevision}
               samples={samples}
-              onUpload={(scope, parent) => setUpload({ scope, parent })}
+              onUpload={(scope, parent, country) =>
+                setUpload({ scope, parent, country })
+              }
             />
           ) : (
             <Sources
@@ -231,6 +237,7 @@ export function Admin({
         }}
         caseId={upload?.scope}
         initialParentId={upload?.parent}
+        initialCountry={upload?.country}
         cases={bootstrap.cases}
         onDone={() => setLibraryRevision((value) => value + 1)}
       />

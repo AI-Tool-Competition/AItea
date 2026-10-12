@@ -208,6 +208,7 @@ export function Admin({
           ) : page === "library" ? (
             <AdminLibrary
               key={`${bootstrap.user.id}:${samples}`}
+              ownerId={bootstrap.user.id}
               cases={bootstrap.cases}
               revision={libraryRevision}
               samples={samples}
@@ -216,6 +217,7 @@ export function Admin({
           ) : (
             <Sources
               key={`${bootstrap.user.id}:${samples}`}
+              ownerId={bootstrap.user.id}
               compact
               samples={samples}
             />

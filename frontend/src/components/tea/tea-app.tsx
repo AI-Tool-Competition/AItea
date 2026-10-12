@@ -26,6 +26,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { errorMessage, post, TeaApiError, teaRequest } from "@/core/tea/api";
+import { clearCollectionDrafts } from "@/core/tea/collection-drafts";
 import {
   type Bootstrap,
   type CaseDetail,
@@ -376,6 +377,7 @@ export function TeaApp({
   const [logoutBusy, setLogoutBusy] = useState(false);
   useEffect(() => {
     const expired = () => {
+      clearCollectionDrafts();
       setBootstrap(undefined);
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
     };
@@ -465,6 +467,7 @@ export function TeaApp({
       clearTaskDrafts();
       clearChatDrafts();
       clearStudioDrafts();
+      clearCollectionDrafts();
       setBootstrap(undefined);
       setRecord(undefined);
       setCaseId("");
@@ -602,7 +605,7 @@ export function TeaApp({
             }}
           />
         ) : view === "sources" ? (
-          <Sources />
+          <Sources key={bootstrap.user.id} ownerId={bootstrap.user.id} />
         ) : (
           <div className="tea-page tea-account-page">
             <h1>账号管理</h1>

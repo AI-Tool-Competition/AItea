@@ -71,7 +71,7 @@ export const librarySamples: DocumentDetail[] = [
     },
     {
       title: "第三章 · 关联资料",
-      text: "本主资料关联《名词定义 · 引用资料样例》。展开目录中的二级资料可以查看对应文件。",
+      text: "本主资料附带《名词说明 · 附件样例》。展开目录中的附件可以查看对应文件。",
     },
   ]),
   documentSample("sample-label", "产品标签规范 · 主资料样例", [
@@ -91,7 +91,7 @@ export const librarySamples: DocumentDetail[] = [
   ]),
   documentSample(
     "sample-definitions",
-    "名词定义 · 引用资料样例",
+    "名词说明 · 附件样例",
     [
       {
         title: "名词定义",

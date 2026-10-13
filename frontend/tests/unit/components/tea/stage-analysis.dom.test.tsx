@@ -45,6 +45,36 @@ function response() {
   );
 }
 describe("proactive stage analysis", () => {
+  it("keeps waiting through an existing run and automatically displays its result", async () => {
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          'event: error\ndata: {"code":"analysis_in_progress","message":"本业务正在分析"}\n\n',
+          { headers: { "Content-Type": "text/event-stream" } },
+        ),
+      )
+      .mockImplementation(async () => response());
+    render(
+      <StageAnalysisPanel
+        accountId="account-one"
+        record={record}
+        stage={stage}
+        onUpdate={() => undefined}
+      />,
+    );
+    await screen.findByText("已有分析正在运行，正在等待结果…");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      screen
+        .getByRole("region", { name: "节点开始分析" })
+        .getAttribute("aria-busy"),
+    ).toBe("true");
+    await waitFor(() =>
+      expect(screen.getByText("本节点编辑：node-report")).toBeTruthy(),
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
   it("automatically analyzes an available stage without changing task state", async () => {
     const fetcher = rs
       .spyOn(globalThis, "fetch")

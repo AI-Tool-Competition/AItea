@@ -73,6 +73,8 @@ AuditEvent = `{id,type,title,detail,created_at}`.
 
 Analysis is persisted per case/stage/input fingerprint: frozen configuration, task/confirmed facts, applicable document versions/review revisions, artifacts, provider configuration and applicability date. Repeated calls return the stored result (including its original `case_revision`); chat-only revision changes do not trigger another analysis. Failed results require explicit `retry:true` to execute again. Concurrent requests return 409 `analysis_in_progress`; an abandoned claim expires after 30 minutes. Retrieval and generation execute outside write transactions. If relevant inputs change before completion, no stale result is published and the request returns 409 `analysis_stale`.
 
+If the linked editable report is being refreshed, node reads return `analysis_in_progress` without replacing the stored node record. After refresh, reads reuse the updated report without another execution. Expired legal reservations are recovered before checking the linked report revision, allowing explicit retries to resume an interrupted refresh.
+
 - POST `/cases/{id}/stages/{stage_id}/analysis/stream` accepts the same body and gates as the JSON endpoint. SSE emits `status`, `start` (legal report ID), actual `step` progress and `done` with `{analysis: StageAnalysis}`. A persisted failed run returns `done` with `analysis.status=failed`; request/context failures emit `error`. A valid cached result emits `done` without fabricated step events. Responses disable buffering/cache. Disconnect or cancellation releases the node claim and keeps the legal record/checkpoint; a later request resumes it. Legal fact snapshots also invalidate cached entries; manual paragraph edits alone do not trigger generation.
 
 ## Conversation

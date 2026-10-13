@@ -172,17 +172,23 @@ class AdminStudio:
             ).fetchone()
             previous = None
             if prior:
+                # Expiring a reservation advances its report revision. Read the
+                # revision afterwards so an interrupted inline refresh can resume.
+                legal.expire_requests(conn)
                 previous = legal.mark_stale(
                     conn,
                     legal.own(conn, owner, case_id, json.loads(prior["payload"])["legal_analysis_id"]),
                     legal.snapshot(conn, owner, case),
                 )
+                if previous["status"] == "running":
+                    # Keep the existing node cache while its linked report is
+                    # refreshed; an admission conflict must not replace it.
+                    fail(409, "analysis_in_progress", "此节点的报告正在分析，请稍后重新查看")
             if existing and existing["status"] in ("completed", "failed"):
                 cached = json.loads(existing["payload"])
                 same_inputs = previous and previous.get("_snapshot") == legal.snapshot(conn, owner, case)
                 if (
                     same_inputs
-                    and previous["status"] != "running"
                     and (previous["status"] not in ("failed", "cancelled") or not payload.retry)
                 ):
                     return cached | self.node_result(stage_id, previous)

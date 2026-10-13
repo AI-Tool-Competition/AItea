@@ -1,6 +1,8 @@
 """Node entry uses the editable six-step analysis, scoped to that node."""
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -161,3 +163,66 @@ def test_entry_retry_recovers_a_report_failed_by_inline_refresh(client, monkeypa
     recovered = client.post(route, json={"expected_revision": case["revision"], "retry": True}).json()
     assert recovered["status"] == "completed"
     assert recovered["legal_analysis_id"] == report["id"]
+
+
+def test_entry_waits_for_inline_refresh_without_discarding_cache_or_running_twice(client, monkeypatch):
+    case, route = entry(client)
+    first = client.post(route, json={"expected_revision": case["revision"]}).json()
+    url = f"/api/tea/cases/{case['id']}/legal/analyses/{first['legal_analysis_id']}"
+    report = client.get(url).json()
+    service = client.app.state.service
+    engine = service.legal.execute_engine
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def hold_refresh(*args, **kwargs):
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return engine(*args, **kwargs)
+
+    monkeypatch.setattr(service.legal, "execute_engine", hold_refresh)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        refreshing = pool.submit(
+            client.post,
+            url + "/refresh",
+            json={"expected_revision": report["revision"], "client_request_id": "inline-refresh"},
+        )
+        assert entered.wait(5)
+        try:
+            waiting = client.post(route, json={"expected_revision": case["revision"]})
+            assert waiting.status_code == 409, waiting.text
+            assert waiting.json()["error"]["code"] == "analysis_in_progress"
+        finally:
+            release.set()
+        refreshed = refreshing.result(timeout=5)
+    assert refreshed.status_code == 200, refreshed.text
+    resumed = client.post(route, json={"expected_revision": case["revision"]})
+    assert resumed.status_code == 200, resumed.text
+    assert len(calls) == 1
+    assert resumed.json()["id"] == first["id"]
+    assert resumed.json()["legal_revision"] == refreshed.json()["revision"]
+
+
+def test_entry_retry_expires_an_abandoned_inline_refresh_before_reading_its_revision(client):
+    case, route = entry(client)
+    first = client.post(route, json={"expected_revision": case["revision"]}).json()
+    url = f"/api/tea/cases/{case['id']}/legal/analyses/{first['legal_analysis_id']}"
+    report = client.get(url).json()
+    owner = client.get("/api/tea/auth/me").json()["id"]
+    service = client.app.state.service
+    service.legal.reserve(
+        owner,
+        case["id"],
+        {"expected_revision": report["revision"], "client_request_id": "abandoned-inline"},
+        report["id"],
+    )
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE legal_requests SET expires_at=? WHERE case_id=? AND client_id=?",
+            ("2020-01-01T00:00:00+00:00", case["id"], "abandoned-inline"),
+        )
+    resumed = client.post(route, json={"expected_revision": case["revision"], "retry": True})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "completed"
+    assert resumed.json()["legal_analysis_id"] == report["id"]

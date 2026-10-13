@@ -4,7 +4,7 @@ import { RefreshCw, Sparkles, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { errorMessage, TeaApiError, teaRequest } from "@/core/tea/api";
+import { errorMessage, teaRequest } from "@/core/tea/api";
 import { legalModules } from "@/core/tea/configuration";
 import { subscribeNodeAnalysis } from "@/core/tea/node-analysis";
 import type {
@@ -85,9 +85,7 @@ function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
           setError(
             e instanceof Error && e.name === "AbortError"
               ? "分析已停止，已保存的内容仍然保留。可重试继续。"
-              : e instanceof TeaApiError && e.code === "analysis_in_progress"
-                ? "本业务正在分析，稍后重试即可读取结果。"
-                : errorMessage(e),
+              : errorMessage(e),
           );
       })
       .finally(() => {

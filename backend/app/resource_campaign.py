@@ -18,7 +18,10 @@ ACTIVE = {"queued", "running"}
 
 def validate_extension(previous, current):
     if (
-        any(previous.get(key) != current.get(key) for key in ("items", "confirm_items", "live_models"))
+        any(
+            previous.get(key) != current.get(key)
+            for key in ("items", "confirm_items", "live_models", "selection")
+        )
         or any(current[key] < previous[key] for key in ("discovery_batches", "originals_per_item"))
         or all(current[key] == previous[key] for key in ("discovery_batches", "originals_per_item"))
     ):
@@ -35,12 +38,25 @@ class ResourceCampaign:
         selected = options["items"] or list(definitions)
         if not selected or len(selected) != len(set(selected)) or set(selected) - definitions.keys():
             raise ValueError("Campaign items must be unique identifiers from the selected plan")
-        if not 1 <= options["discovery_batches"] <= 20 or not 0 <= options["originals_per_item"] <= 20:
+        original_limit = 200 if options.get("selection") else 20
+        if (
+            not 1 <= options["discovery_batches"] <= 20
+            or not 0 <= options["originals_per_item"] <= original_limit
+        ):
             raise ValueError("Campaign limits exceed the bounded discovery or original budget")
         if set(options["confirm_items"]) - set(selected):
             raise ValueError("Conditional confirmation must refer to selected items")
         self.options = options | {"items": selected}
         self.definitions = {key: definitions[key] for key in selected}
+        from .campaign_selection import CampaignSelection, validate_selection
+
+        selection = validate_selection(self.plan, self.options)
+        if (
+            not selection
+            and self.plan["country"] == "SG"
+            and sum(key.startswith("3.") for key in selected) * options["originals_per_item"] > 45
+        ):
+            raise ValueError("Singapore regulatory sampling must remain within the checklist limit of 45")
         if state is not None:
             if (
                 state.get("format") != 1
@@ -93,6 +109,9 @@ class ResourceCampaign:
                 },
             }
             self.save()
+        self.selection = CampaignSelection(self, selection) if selection else None
+        if self.selection:
+            self.selection.seed()
 
     def save(self):
         self.state["updated_at"] = now()
@@ -107,6 +126,7 @@ class ResourceCampaign:
                 item_id,
                 pending["payload"],
                 kind=pending["kind"],
+                defer_relations=bool(self.selection and pending["payload"].get("level") == "secondary"),
             )
         except AppError as error:
             # Queue pressure is temporary. Preserve the exact request, including
@@ -121,14 +141,14 @@ class ResourceCampaign:
         record.pop("submission", None)
         self.save()
 
-    def _prepare(self, item_id, record, kind, candidates=None):
+    def _prepare(self, item_id, record, kind, candidates=None, level="primary", anchors=()):
         number = len(record[kind + "_runs"])
         payload = {
             "client_request_id": f"campaign:{self.state['id']}:{item_id}:{kind}:{number}",
             "confirm_condition": item_id in self.options["confirm_items"],
         }
         if candidates:
-            payload.update(candidate_ids=candidates, level="primary", primary_document_ids=[])
+            payload.update(candidate_ids=candidates, level=level, primary_document_ids=list(anchors))
             record["selected_candidates"].extend(candidates)
         record["submission"] = {"kind": kind, "payload": payload}
         self.save()  # Persist intent BEFORE the service transaction.
@@ -141,6 +161,13 @@ class ResourceCampaign:
             runs = {
                 row["id"]: row["status"]
                 for row in conn.execute("SELECT id,status FROM collection_runs WHERE owner_id=?", (owner,))
+            }
+            fetching = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT run_id FROM collection_items WHERE owner_id=? AND status IN ('queued','fetching')",
+                    (owner,),
+                )
             }
         for item_id, item in self.definitions.items():
             record = self.state["items"][item_id]
@@ -155,33 +182,51 @@ class ResourceCampaign:
             if record.get("submission"):
                 self._submit(item_id, record)
                 continue
-            if any(
-                runs.get(run_id) in ACTIVE for run_id in record["discovery_runs"] + record["collection_runs"]
+            active_runs = [
+                run_id
+                for run_id in record["discovery_runs"] + record["collection_runs"]
+                if runs.get(run_id) in ACTIVE
+            ]
+            if active_runs and (
+                not self.selection
+                or any(run_id in fetching or run_id in record["discovery_runs"] for run_id in active_runs)
             ):
                 continue
             with closing(self.service.db.connect()) as conn:
                 binding = self.service.checklists.binding(conn, owner, self.plan, item)
                 remaining = self.options["originals_per_item"] - len(record["selected_candidates"])
                 candidates = []
+                level = "primary"
+                anchors = []
+                record.pop("waiting_for_primary", None)
                 waiting = 0
                 if binding:
                     excluded = record["selected_candidates"]
                     marks = ",".join("?" for _ in excluded)
                     restriction = f"AND id NOT IN ({marks})" if excluded else ""
-                    candidates = [
-                        row[0]
-                        for row in conn.execute(
-                            f"""SELECT id FROM checklist_candidates WHERE binding_id=? AND status='pending'
-                        {restriction} ORDER BY created_at,id LIMIT ?""",
-                            (binding["id"], *excluded, max(0, remaining)),
+                    if self.selection and remaining > 0:
+                        candidates, level, anchors, missing = self.selection.choose(
+                            conn, binding, record, remaining
                         )
-                    ]
+                        if missing:
+                            record["waiting_for_primary"] = missing
+                    elif not self.selection:
+                        candidates = [
+                            row[0]
+                            for row in conn.execute(
+                                f"""SELECT id FROM checklist_candidates WHERE binding_id=? AND status='pending'
+                        {restriction} ORDER BY created_at,id LIMIT ?""",
+                                (binding["id"], *excluded, max(0, remaining)),
+                            )
+                        ]
                     waiting = conn.execute(
                         "SELECT COUNT(*) FROM checklist_frontier WHERE binding_id=? AND status!='visited'",
                         (binding["id"],),
                     ).fetchone()[0]
+            if active_runs and (not candidates or level != "secondary"):
+                continue
             if candidates:
-                self._prepare(item_id, record, "collection", candidates)
+                self._prepare(item_id, record, "collection", candidates, level, anchors)
             elif (
                 len(record["discovery_runs"]) < self.options["discovery_batches"]
                 and (not record["discovery_runs"] or waiting)
@@ -190,12 +235,59 @@ class ResourceCampaign:
                 self._prepare(item_id, record, "discovery")
             else:
                 record["phase"] = "bounded" if waiting or remaining <= 0 else "exhausted"
+        if self.selection:
+            for record in self.state["items"].values():
+                if record.get("waiting_for_primary") and record["phase"] in {"bounded", "exhausted"}:
+                    dependencies = [
+                        self.state["items"][self.selection.materials[key].item_id]
+                        for key in record["waiting_for_primary"]
+                    ]
+                    if any(
+                        peer["phase"] not in {"blocked", "skipped", "bounded", "exhausted"}
+                        for peer in dependencies
+                    ):
+                        record["phase"] = "waiting"
+                    else:
+                        record.update(
+                            phase="blocked",
+                            error="Selected primary originals are unavailable; secondary files remain discovery originals",
+                        )
         active = any(
             record["phase"] not in {"blocked", "skipped", "bounded", "exhausted"}
             for record in self.state["items"].values()
         )
+        if self.selection:
+            self.state["mapping"] = self.selection.associations()
         self.save()
         return active
+
+    def retry_embeddings(self):
+        """One explicit retry of complete primaries; no OCR or source gets reset."""
+        from .ingestion_quality import text_complete
+
+        retried = []
+        with self.service.db.transaction() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT d.id,d.manifest,b.item_id FROM documents d
+                JOIN processing_jobs p ON p.document_id=d.id
+                JOIN checklist_candidates c ON c.document_id=d.id JOIN checklist_bindings b ON b.id=c.binding_id
+                WHERE d.owner_id=? AND b.plan_id=? AND b.version=? AND p.phase='embed' AND p.status='failed'""",
+                (self.state["owner_id"], self.plan["id"], self.plan["version"]),
+            ).fetchall()
+            for row in rows:
+                if (
+                    row["item_id"] not in self.definitions
+                    or not text_complete(json.loads(row["manifest"]))
+                    or not self.service.archive.can_index(conn, row["id"])
+                ):
+                    continue
+                self.service.collection.queue_processing(conn, row["id"], self.state["owner_id"])
+                self.service.collection._refresh_document(conn, row["id"])
+                self.state["items"][row["item_id"]].update(phase="waiting", error=None)
+                retried.append(row["id"])
+        self.state.setdefault("embedding_retries", []).append({"at": now(), "document_ids": retried})
+        self.save()
+        return retried
 
     def verify_originals(self):
         from .blob_store import _verify_existing
@@ -221,10 +313,101 @@ class ResourceCampaign:
         self.state["integrity"] = results
         self.save()
 
+    def revalidate_layout(self):
+        """Recheck a derived table warning; retain original OCR pixels and reading."""
+        from .blob_store import _verify_existing
+        from .ingestion import TABLE_LAYOUT_VERSION, rebuild_pdf_manifest
+        from .ingestion_quality import text_complete, validate_ocr_page
+        from .parsing import parse_bounded
+
+        owner = self.state["owner_id"]
+        with closing(self.service.db.connect()) as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT d.*,b.item_id FROM documents d
+                JOIN processing_jobs p ON p.document_id=d.id JOIN checklist_candidates c ON c.document_id=d.id
+                JOIN checklist_bindings b ON b.id=c.binding_id WHERE d.owner_id=? AND b.plan_id=? AND b.version=?
+                AND p.status='failed' AND p.phase='parse' AND d.mime_type='application/pdf' AND d.size<=?""",
+                (owner, self.plan["id"], self.plan["version"], 20 * 1024 * 1024),
+            ).fetchall()
+        results = []
+        for row in rows:
+            if row["item_id"] not in self.definitions:
+                continue
+            manifest = json.loads(row["manifest"])
+            candidates = [
+                page
+                for page in manifest.get("pages", [])
+                if "table_layout_not_preserved" in page.get("ocr", {}).get("uncertain_spans", [])
+                and page.get("ocr", {}).get("complete") is True
+            ]
+            if not candidates or manifest.get("archive_pdf"):
+                continue
+            digest = row["content_hash"]
+            path = (
+                self.service.archive.blobs.blobs_dir
+                / hashlib.sha256(owner.encode()).hexdigest()
+                / digest[:2]
+                / digest[2:4]
+                / digest
+            )
+            if Path(row["storage_path"]) != path:
+                raise ValueError("Layout original is outside its account content store")
+            _verify_existing(path, digest, row["size"])
+            fresh = parse_bounded(row["filename"], path.read_bytes(), row["mime_type"])
+            if fresh["source_hash"] != digest or len(fresh.get("pages", [])) != len(manifest["pages"]):
+                raise ValueError("Layout review does not match the immutable original")
+            changed = []
+            for page in candidates:
+                original = fresh["pages"][page["page"] - 1]
+                if (
+                    original["source_hash"] != page["source_hash"]
+                    or original["native_text"] != page["native_text"]
+                    or "table_layout" in original["reasons"]
+                    or original.get("native_table")
+                ):
+                    continue
+                page["layout_revalidation"] = {
+                    "version": TABLE_LAYOUT_VERSION,
+                    "source_hash": digest,
+                    "page": page["page"],
+                    "previous_page_hash": hashlib.sha256(dump(page).encode()).hexdigest(),
+                    "previous_reasons": list(page["reasons"]),
+                    "previous_uncertain_spans": list(page["ocr"]["uncertain_spans"]),
+                    "basis": "bounded_original_geometry_recheck_same_native_text",
+                }
+                page["reasons"] = [reason for reason in page["reasons"] if reason != "table_layout"]
+                page["ocr"]["uncertain_spans"] = [
+                    warning
+                    for warning in page["ocr"]["uncertain_spans"]
+                    if warning != "table_layout_not_preserved"
+                ]
+                validate_ocr_page(page)
+                changed.append(page["page"])
+            if not changed:
+                continue
+            rebuilt = rebuild_pdf_manifest(manifest)
+            with self.service.db.transaction() as conn:
+                current = self.service.own_document(conn, owner, row["id"])
+                job = conn.execute(
+                    "SELECT status FROM processing_jobs WHERE document_id=?", (row["id"],)
+                ).fetchone()
+                if current["manifest"] != row["manifest"] or not job or job[0] != "failed":
+                    raise ValueError("Layout checkpoint changed during review")
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(rebuilt), row["id"]))
+                if text_complete(rebuilt):
+                    self.service.collection.queue_processing(conn, row["id"], owner)
+                    self.service.collection._refresh_document(conn, row["id"])
+                    self.state["items"][row["item_id"]].update(phase="waiting", error=None)
+            results.append({"document_id": row["id"], "pages": changed, "source_hash": digest})
+        self.state.setdefault("layout_revalidations", []).append({"at": now(), "documents": results})
+        self.save()
+        return results
+
     def report(self, status="running"):
         owner = self.state["owner_id"]
         detail = self.service.checklists.detail(owner, self.plan["id"])
         indexed = {item["item_id"]: item for item in detail["items"]}
+        fingerprint = self.service.embedding_fingerprint()
         documents, errors, failures = {}, {}, {}
         with closing(self.service.db.connect()) as conn:
             failures = {
@@ -243,12 +426,26 @@ class ResourceCampaign:
                 json_array_length(d.manifest,'$.chunks') chunks,
                 json_array_length(d.manifest,'$.pages') pages,
                 json_extract(d.manifest,'$.quality') quality,
-                json_extract(m.payload,'$.review_status') review_status
+                json_extract(m.payload,'$.review_status') review_status,
+                l.level legal_level,
+                json_extract(d.manifest,'$.embedding_fingerprint') embedding_fingerprint,
+                (SELECT COUNT(*) FROM retrieval_chunks rc WHERE rc.document_id=d.id) indexed_chunks,
+                (SELECT COUNT(*) FROM json_each(d.manifest,'$.pages') p
+                    WHERE json_type(p.value,'$.ocr.image_blob')='object') ocr_images,
+                (SELECT COUNT(*) FROM retrieval_vectors v JOIN retrieval_chunks rc ON rc.rowid=v.chunk_rowid
+                    WHERE rc.document_id=d.id AND v.fingerprint=? AND v.input_hash=rc.input_hash) vector_count
                 FROM checklist_candidates c JOIN checklist_bindings b ON b.id=c.binding_id
                 JOIN documents d ON d.id=c.document_id
                 LEFT JOIN document_metadata m ON m.document_id=d.id
+                LEFT JOIN legal_classifications l ON l.document_id=d.id AND l.collection=?
                 WHERE b.owner_id=? AND b.plan_id=? AND b.version=? ORDER BY b.item_id,d.id""",
-                (owner, self.plan["id"], self.plan["version"]),
+                (
+                    fingerprint,
+                    f"country:{self.plan['country']}",
+                    owner,
+                    self.plan["id"],
+                    self.plan["version"],
+                ),
             )
             for row in rows:
                 document = dict(row)
@@ -261,6 +458,13 @@ class ResourceCampaign:
                 document["pending_parse_pages"] = (quality or {}).get("pending_parse_pages", [])
                 document["failed_pages"] = (quality or {}).get("failed_pages", [])
                 document["review_pages"] = (quality or {}).get("review_pages", [])
+                document["vector_complete"] = (
+                    document["legal_level"] == "primary"
+                    and document["text_complete"]
+                    and bool(fingerprint)
+                    and document["embedding_fingerprint"] == fingerprint
+                    and document["vector_count"] == document["indexed_chunks"]
+                )
                 documents.setdefault(row["item_id"], []).append(document)
             for row in conn.execute(
                 """SELECT * FROM (SELECT b.item_id,i.url,i.error,i.status,i.attempts,
@@ -299,6 +503,7 @@ class ResourceCampaign:
             "plan_version": self.plan["version"],
             "country": self.plan["country"],
             "legal_review": "draft_only_not_legal_approval",
+            "mapping": self.state.get("mapping", []),
             "scope": self.options,
             "workers": {
                 "download": self.service.collection.download_workers,
@@ -314,6 +519,20 @@ class ResourceCampaign:
                 "originals": len(all_documents),
                 "original_bytes": sum(doc["size"] for doc in all_documents.values()),
                 "text_complete": sum(doc["text_complete"] for doc in all_documents.values()),
+                "primary_originals": sum(doc["legal_level"] == "primary" for doc in all_documents.values()),
+                "secondary_originals": sum(
+                    doc["legal_level"] == "secondary" for doc in all_documents.values()
+                ),
+                "primary_vector_complete": sum(doc["vector_complete"] for doc in all_documents.values()),
+                "vectors": sum(doc["vector_count"] for doc in all_documents.values()),
+                "ocr_images": sum(doc["ocr_images"] for doc in all_documents.values()),
+                "secondary_vectors": sum(
+                    doc["vector_count"] for doc in all_documents.values() if doc["legal_level"] == "secondary"
+                ),
+                "mapped_relations": sum(row["status"] == "mapped" for row in self.state.get("mapping", [])),
+                "unresolved_relations": sum(
+                    row["status"] != "mapped" for row in self.state.get("mapping", [])
+                ),
                 "integrity_verified": sum(
                     doc["integrity_verified"] is True for doc in all_documents.values()
                 ),

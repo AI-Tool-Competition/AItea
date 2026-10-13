@@ -718,7 +718,7 @@ class CollectionService:
                     identity_key=claim["identity_key"],
                     parent_id=claim["parent_document_id"],
                     primary_document_ids=plan["primary_document_ids"]
-                    if claim["level"] == "secondary"
+                    if claim["level"] == "secondary" and not plan.get("checklist", {}).get("defer_relations")
                     else [],
                     kind_hint="law" if kind_hint == "treaty" else kind_hint,
                 )

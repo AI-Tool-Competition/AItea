@@ -1,0 +1,73 @@
+{
+  "plan_id": "singapore-demo-20261009",
+  "source_document_sha256": "cd3f72ba56c05b62c55a8dfe558a53fe84978613843d9712380cc5d01b5feb47",
+  "materials": [
+    {
+      "key": "sfa-label-guide",
+      "item_id": "3.2",
+      "url": "https://www.sfa.gov.sg/docs/default-source/food-manufacturing-and-storage/a-guide-to-food-labelling-and-advertisements.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food",
+      "locator": "A Guide to Food Labelling and Advertisements"
+    },
+    {
+      "key": "sfa-label-amendment-explanation",
+      "item_id": "3.2",
+      "url": "https://www.sfa.gov.sg/docs/default-source/food-manufacturing-and-storage/labelling-amendments-to-the-food-regulations.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "sfa-label-guide"
+      ],
+      "evidence_url": "https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food",
+      "locator": "Briefing Deck for Amendments to Labelling Requirements for Prepacked Food"
+    },
+    {
+      "key": "gst-business-guide",
+      "item_id": "3.3",
+      "url": "https://www.iras.gov.sg/docs/default-source/e-tax/etaxguide_gst_gst-general-guide-for-businesses(1).pdf?sfvrsn=8a66716d_110",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.iras.gov.sg/taxes/goods-services-tax-(gst)/basics-of-gst/goods-and-services-tax-(gst)-what-it-is-and-how-it-works",
+      "locator": "GST: General Guide for Businesses"
+    },
+    {
+      "key": "trade-mark-geographical-names",
+      "item_id": "3.7",
+      "url": "https://isomer-user-content.by.gov.sg/61/5eb05195-6a37-4c2f-b7cb-3f1daf22a6bc/chapter-5---geographical-names.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.ipos.gov.sg/about-ip/trade-marks/tm-guides/",
+      "locator": "Trade Marks Work Manual: Geographical Names / Assignment"
+    },
+    {
+      "key": "trade-mark-assignment",
+      "item_id": "3.7",
+      "url": "https://file.go.gov.sg/chapter22---assignment.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "trade-mark-geographical-names"
+      ],
+      "evidence_url": "https://www.ipos.gov.sg/about-ip/trade-marks/tm-guides/",
+      "locator": "Trade Marks Work Manual: Geographical Names / Assignment"
+    },
+    {
+      "key": "price-transparency",
+      "item_id": "3.5",
+      "url": "https://isomer-user-content.by.gov.sg/45/7de28130-f216-4802-992d-42ceec341ca3/CCCS%20Guidelines%20on%20Price%20Transparency_HR.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.ccs.gov.sg/consumer-protection/legislation-and-guidelines/guidelines-on-price-transparency/",
+      "locator": "CCCS Guidelines on Price Transparency"
+    },
+    {
+      "key": "china-singapore-dta",
+      "item_id": "5.3",
+      "url": "https://www.iras.gov.sg/media/docs/default-source/uploadedfiles/pdf/ratificationsingaporechinadtafinalwithprotocol.pdf?sfvrsn=9b057a88_2",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.iras.gov.sg/taxes/international-tax/international-tax-agreements-concluded-by-singapore/list-of-dtas-limited-dtas-and-eoi-arrangements",
+      "locator": "China–Singapore DTA and protocol; signature, entry into force and tax applicability remain separate"
+    }
+  ]
+}

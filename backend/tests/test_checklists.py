@@ -37,10 +37,10 @@ def discover(client, code="1.3", request="first"):
     return response.json()
 
 
-def test_catalog_is_indonesia_only_and_not_an_implicit_data_seed(client):
+def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(client):
     catalog = client.get("/api/tea/collection-plans")
     assert catalog.status_code == 200
-    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 29)]
+    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 29), ("SG", 16)]
     detail = client.get(BASE).json()
     assert len(detail["plan"]["chapters"]) == 5
     assert len(detail["items"]) == 29
@@ -49,7 +49,15 @@ def test_catalog_is_indonesia_only_and_not_an_implicit_data_seed(client):
         detail["plan"]["source_document"]["sha256"]
         == "eee5a9d8b42183dd4a3ad09ca53903ded3e47141ad9b187360b6d5a27a38e944"
     )
-    assert client.get(BASE.replace(PLAN, "singapore-demo-20261009")).status_code == 404
+    singapore = client.get(BASE.replace(PLAN, "singapore-demo-20261009")).json()
+    assert (
+        singapore["plan"]["source_document"]["sha256"]
+        == "cd3f72ba56c05b62c55a8dfe558a53fe84978613843d9712380cc5d01b5feb47"
+    )
+    assert len(singapore["plan"]["channels"]) == 6
+    assert [item["id"] for item in singapore["plan"]["items"] if item["conditional"]] == ["4.1", "4.2"]
+    assert singapore["plan"]["items"][3]["execution"] == "dataset_review"
+    assert all(item["source_id"] is None for item in singapore["items"])
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):

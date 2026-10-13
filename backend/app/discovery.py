@@ -40,7 +40,10 @@ _PDF_BUTTON = re.compile(
     r"\s*(?:loadPdf|toggleSubMenu)\(this,\s*(['\"])(https://[^'\"<>\s]+\.pdf)\1\)\s*;?\s*",
     re.I,
 )
-_WTO_SERVICE_FILE = re.compile(r"Q:/SCHD/(?:GATS-SC/SC43|GATS-EL/EL43)(?:(?:S|R|C)[1-9]\d{0,2})*\.pdf", re.I)
+_WTO_SERVICE_FILES = {
+    "ID": re.compile(r"Q:/SCHD/(?:GATS-SC/SC43|GATS-EL/EL43)(?:(?:S|R|C)[1-9]\d{0,2})*\.pdf", re.I),
+    "SG": re.compile(r"Q:/SCHD/(?:GATS-SC/SC76|GATS-EL/EL76)(?:(?:S|R|C)[1-9]\d{0,2})*\.pdf", re.I),
+}
 _HIDDEN_TAGS = {"script", "style", "template", "noscript"}
 _ERROR_HEADING = re.compile(
     r"(?:^|\b)(?:just a moment|access denied|403\s+forbidden|404\s+(?:error|not found)|"
@@ -74,8 +77,8 @@ def _canonical(url: str, base: str | None = None) -> tuple[str, str]:
         scheme = parsed.scheme
         if (
             scheme == "http"
-            and parsed.netloc == "jdih.bandung.go.id"
-            and urlsplit(base).hostname == "jdih.bandung.go.id"
+            and parsed.netloc in {"jdih.bandung.go.id", "www.wto.org", "www.iras.gov.sg"}
+            and urlsplit(base).hostname == parsed.netloc
         ):
             scheme = "https"
         value = urlunsplit(
@@ -480,6 +483,9 @@ class _Recipe:
         self.wto_services = recipe.get("wto_services", False)
         if not isinstance(self.wto_services, bool):
             raise ValueError("WTO 服务承诺配置无效。")
+        self.wto_member = recipe.get("wto_member", "ID")
+        if self.wto_member not in _WTO_SERVICE_FILES:
+            raise ValueError("WTO 成员配置无效。")
         self.bkpm_investment = recipe.get("bkpm_investment", False)
         if not isinstance(self.bkpm_investment, bool):
             raise ValueError("BKPM 投资目录配置无效。")
@@ -548,7 +554,7 @@ class _Recipe:
             "/dol2fe/Pages/SS/directdoc.aspx",
             "/dol2fe/Pages/SS/directdoc2.aspx",
         }:
-            if not self.wto_services or not _wto_service_file(url):
+            if not self.wto_services or not _wto_service_file(url, self.wto_member):
                 return None
             return "document" if parsed.path.endswith("directdoc2.aspx") else "detail"
         if urlsplit(url).hostname == _SETNEG_HOST:
@@ -622,7 +628,7 @@ def _court_purpose(url: str, category: str) -> str | None:
     return None
 
 
-def _wto_service_file(url: str) -> str | None:
+def _wto_service_file(url: str, member="ID") -> str | None:
     try:
         values = parse_qsl(urlsplit(url).query, keep_blank_values=True, max_num_fields=10)
     except ValueError:
@@ -633,13 +639,13 @@ def _wto_service_file(url: str) -> str | None:
         len(query) != len(values)
         or not set(query) <= {"filename", "Open"}
         or ("Open" in query and query["Open"] != "True")
-        or not _WTO_SERVICE_FILE.fullmatch(filename)
+        or not _WTO_SERVICE_FILES[member].fullmatch(filename)
     ):
         return None
     return filename.upper().removesuffix(".PDF") + ".pdf"
 
 
-def _wto_legacy_document(url: str) -> str | None:
+def _wto_legacy_document(url: str, member="ID") -> str | None:
     parsed = urlsplit(url)
     if (
         parsed.scheme not in {"http", "https"}
@@ -647,8 +653,9 @@ def _wto_legacy_document(url: str) -> str | None:
         or parsed.path != "/imrd/directdoc.asp"
     ):
         return None
+    schedule = "43" if member == "ID" else "76"
     match = re.fullmatch(
-        r"DDFDocuments/t/SCHD/((?:GATS-SC/SC43|GATS-EL/EL43)(?:(?:S|R|C)[1-9]\d{0,2})*)\.wpf",
+        rf"DDFDocuments/t/SCHD/((?:GATS-SC/SC{schedule}|GATS-EL/EL{schedule})(?:(?:S|R|C)[1-9]\d{{0,2}})*)\.wpf",
         unquote(parsed.query),
         re.I,
     )
@@ -786,14 +793,14 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         if (
             host != "docs.wto.org"
             or rules.purpose(target) != "document"
-            or _wto_service_file(target) != _wto_service_file(current)
+            or _wto_service_file(target, rules.wto_member) != _wto_service_file(current, rules.wto_member)
         ):
-            return _result(reason="WTO 文档跳转未指向同一印尼正式文书，未确认原件。")
+            return _result(reason="WTO 文档跳转未指向同一成员正式文书，未确认原件。")
         return _result(
             matched=True,
             purpose=purpose,
             links=[
-                {"url": target, "purpose": "document", "title": _wto_service_file(target).rsplit("/", 1)[-1]}
+                {"url": target, "purpose": "document", "title": _wto_service_file(target, rules.wto_member).rsplit("/", 1)[-1]}
             ],
         )
     if not visible:
@@ -808,7 +815,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
             continue
         try:
             target = (
-                _wto_legacy_document(link.url)
+                _wto_legacy_document(link.url, rules.wto_member)
                 if rules.wto_services and urlsplit(current).hostname == "www.wto.org"
                 else None
             )
@@ -1087,6 +1094,25 @@ def recipe_for(item: dict) -> dict:
             for key, value in parse_qsl(urlsplit(seed["url"]).query):
                 if key.casefold() == "subtype":
                     result["required_query"][key] = value
+        return result
+    if _country(item) == "SG":
+        from .singapore_discovery import scope_recipe
+
+        result["exclude_patterns"] = [
+            r"(?:^|/)(?:login|logout|sign-in|careers|contact-us|sitemap|news|news-events|press-releases|events)(?:/|\?|$)",
+            r"(?:^|/)(?:privacy-policy|terms-of-use)(?:/|\?|$)",
+        ]
+        result = scope_recipe(item, result)
+        if item.get("id") == "5.2":
+            result["wto_services"] = True
+            result["wto_member"] = "SG"
+            result["catalog_patterns"] += [r"^/member/singapore/?(?:\?|$)", r"^/browse/\d+/file_browser/?(?:\?|$)"]
+            result["detail_patterns"] += [r"^/english/docs_e/legal_e/[^/?]+\.htm(?:\?|$)"]
+            result["document_patterns_by_host"] = {
+                "www.wto.org": [r"^/english/docs_e/legal_e/downloads_e/[a-z0-9_-]+\.pdf(?:\?|$)", r"^/english/tratop_e/serv_e/telecom_e/sc76\.pdf$"],
+                "goods-schedules.wto.org": [r"^/system/files/\d{4}-\d{2}/[a-z0-9_.-]+\.pdf(?:\?|$)"],
+                "docs.wto.org": [r"^/gattdocs/q/(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.pdf(?:\?|$)"],
+            }
         return result
     for seed in seeds:
         path = urlsplit(seed["url"]).path

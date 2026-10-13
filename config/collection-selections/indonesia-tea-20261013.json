@@ -1,0 +1,235 @@
+{
+  "plan_id": "indonesia-20261003",
+  "source_document_sha256": "eee5a9d8b42183dd4a3ad09ca53903ded3e47141ad9b187360b6d5a27a38e944",
+  "materials": [
+    {
+      "key": "rcep-chapter-1",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-1.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 1"
+    },
+    {
+      "key": "rcep-chapter-2",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-2.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 2"
+    },
+    {
+      "key": "rcep-chapter-3",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 3"
+    },
+    {
+      "key": "rcep-chapter-4",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-4.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 4"
+    },
+    {
+      "key": "rcep-chapter-5",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-5.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 5"
+    },
+    {
+      "key": "rcep-chapter-6",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-6.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 6"
+    },
+    {
+      "key": "rcep-chapter-7",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-7.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 7"
+    },
+    {
+      "key": "rcep-chapter-8",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-8.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 8"
+    },
+    {
+      "key": "rcep-chapter-9",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-9.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 9"
+    },
+    {
+      "key": "rcep-chapter-10",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-10.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 10"
+    },
+    {
+      "key": "rcep-chapter-11",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-11.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 11"
+    },
+    {
+      "key": "rcep-chapter-12",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-12.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 12"
+    },
+    {
+      "key": "rcep-chapter-13",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-13.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 13"
+    },
+    {
+      "key": "rcep-chapter-14",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-14.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 14"
+    },
+    {
+      "key": "rcep-chapter-15",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-15.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 15"
+    },
+    {
+      "key": "rcep-chapter-16",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-16.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 16"
+    },
+    {
+      "key": "rcep-chapter-17",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-17.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 17"
+    },
+    {
+      "key": "rcep-chapter-18",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-18.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 18"
+    },
+    {
+      "key": "rcep-chapter-19",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-19.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 19"
+    },
+    {
+      "key": "rcep-chapter-20",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-20.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 20"
+    },
+    {
+      "key": "rcep-preamble",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/00-Title-page-Table-of-Contents-and-Preamble.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-1"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Preamble & Table of Contents"
+    },
+    {
+      "key": "rcep-annex-3b",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3B.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-3"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 3B: Minimum Information Requirements"
+    },
+    {
+      "key": "mk-puu-164-2026",
+      "item_id": "3.1",
+      "url": "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU",
+      "locator": "PUU / official original; review operative part and affected provisions"
+    },
+    {
+      "key": "mk-puu-38-2026",
+      "item_id": "3.1",
+      "url": "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14258_1778572852.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU",
+      "locator": "PUU / official original; review operative part and affected provisions"
+    },
+    {
+      "key": "wto-air-34",
+      "item_id": "5.4",
+      "url": "https://docs.wto.org/gattdocs/q/TR/AIR/34.PDF",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.wto.org/english/docs_e/legal_e/legal_e.htm",
+      "locator": "AIR/34 historical legal-text family; membership and current force require review"
+    }
+  ]
+}

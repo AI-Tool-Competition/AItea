@@ -233,7 +233,8 @@ class _Partitions:
                         os.fsync(fd)
                     finally:
                         os.close(fd)
-            fd = os.open(directory / filename, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+            fd = os.open(directory / filename, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            os.fchmod(fd, 0o600)
             self.stream = os.fdopen(fd, "w", encoding="utf-8")
             self.key = key
         return self.stream
@@ -663,7 +664,36 @@ def _relations(conn, partitions, summary, owner, country):
         _count(summary, "relations", row["source_country"], anomalies)
 
 
-def export_inventory(data_dir, *, country=None, owner=None):
+def _texts(conn, partitions, summary, owner, country):
+    """One immutable original at a time; secondary legal text stays outside RAG."""
+    where, params = _where(owner, country)
+    cursor = conn.execute(
+        f"""SELECT d.id,d.owner_id,d.version,d.content_hash,d.source_url,d.filename,{_COUNTRY} country,
+        l.level,json_extract(d.manifest,'$.elements') elements,
+        json_extract(d.manifest,'$.chunks') chunks,json_extract(d.manifest,'$.quality') quality,
+        json_extract(m.payload,'$.review_status') review_status
+        FROM {_DOCUMENTS}
+        LEFT JOIN legal_classifications l ON l.document_id=d.id AND l.collection='country:'||dc.country
+        LEFT JOIN document_metadata m ON m.document_id=d.id
+        WHERE {where} AND d.role='primary' ORDER BY d.id""", params,
+    )
+    while (row := cursor.fetchone()) is not None:
+        elements, chunks = json.loads(row["elements"] or "[]"), json.loads(row["chunks"] or "[]")
+        quality = json.loads(row["quality"] or "null")
+        complete = bool(chunks) and (quality is None or quality.get("complete") is True)
+        record = {
+            "document_id": row["id"], "version": row["version"], "source_hash": row["content_hash"],
+            "country": row["country"], "legal_level": row["level"], "source_url": row["source_url"],
+            "filename": row["filename"], "review_status": row["review_status"],
+            "text_complete": complete, "quality": quality, "elements": elements,
+            "chunks": [{key: chunk.get(key) for key in ("id", "text", "locator", "section_path")} for chunk in chunks],
+        }
+        _write_jsonl(partitions.file(row["owner_id"], row["country"], "texts.jsonl"), record)
+        summary["text_documents"] += 1
+        summary["complete_text_documents"] += int(complete)
+
+
+def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
     """Publish a catalog and return its Path and summary; no services are started."""
     country, owner = country or None, owner or None
     _country_key(country)
@@ -703,6 +733,8 @@ def export_inventory(data_dir, *, country=None, owner=None):
                 "content_hashes": "database_values_not_recomputed",
                 "scope": "stored_records_only",
             }
+            if include_text:
+                summary.update(text_documents=0, complete_text_documents=0)
             dw, dp = _where(owner, country)
             pw, pp = _where(owner, country, "b.owner_id", "b.country")
             summary["owners"] = conn.execute(
@@ -723,6 +755,8 @@ def export_inventory(data_dir, *, country=None, owner=None):
                 _ocr_regions(conn, partitions, originals, summary, owner, country)
                 _pages(conn, partitions, originals, summary, owner, country)
                 _relations(conn, partitions, summary, owner, country)
+                if include_text:
+                    _texts(conn, partitions, summary, owner, country)
             conn.rollback()
         summary.update(completed=True, completed_at=_now())
         summary["anomaly_counts"] = dict(sorted(summary["anomaly_counts"].items()))

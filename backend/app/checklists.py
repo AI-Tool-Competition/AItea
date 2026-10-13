@@ -424,7 +424,7 @@ class ChecklistService:
                 fail(409, "request_conflict", "同一请求标识不能用于不同采集内容")
             return self.service.collection.run_dict(conn, row)
 
-    def start(self, owner, plan_id, item_id, payload, *, kind):
+    def start(self, owner, plan_id, item_id, payload, *, kind, defer_relations=False):
         from .service import fail
 
         plan, item = self.definition(plan_id, item_id)
@@ -432,15 +432,16 @@ class ChecklistService:
         recipe = recipe_for(item)
         if recipe["adapter"] == "manual":
             fail(409, "adapter_required", recipe["reason"])
-        fingerprint = self._request_hash(plan, item, kind, payload)
+        fingerprint = self._request_hash(plan, item, kind, payload | {"defer_relations": True} if defer_relations else payload)
         with self.db.transaction() as conn:
             previous = self._previous(conn, owner, payload, fingerprint)
             if previous:
                 return previous
             binding, _ = self._configure_item(conn, owner, plan, item)
             if conn.execute(
-                "SELECT 1 FROM collection_runs WHERE source_id=? AND status IN ('queued','running')",
-                (binding["source_id"],),
+                """SELECT 1 FROM collection_runs r WHERE r.source_id=? AND r.status IN ('queued','running')
+                AND (?=0 OR EXISTS(SELECT 1 FROM collection_items i WHERE i.run_id=r.id AND i.status IN ('queued','fetching')))""",
+                (binding["source_id"], int(defer_relations and kind == "collection")),
             ).fetchone():
                 fail(409, "collection_active", "本条目已有进行中的任务")
             level = payload.get("level", "primary")
@@ -512,6 +513,7 @@ class ChecklistService:
                 "definition": json.loads(binding["snapshot"]),
                 "recipe": recipe,
                 "confirmed_condition": payload.get("confirm_condition", False),
+                "defer_relations": defer_relations,
             }
             run = self.service.collection.enqueue(
                 owner,

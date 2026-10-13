@@ -7,9 +7,9 @@ import hashlib
 import json
 import multiprocessing
 import os
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 from verify_ingestion import configure_models, terminate_owned, write_report
 
@@ -28,16 +28,37 @@ def options_for(args, plan):
         or set(confirmed) - set(selected)
     ):
         raise ValueError("items and confirm-items must be unique identifiers from the selected plan")
-    return {
+    options = {
         "items": selected,
         "confirm_items": confirmed,
         "discovery_batches": args.discovery_batches,
         "originals_per_item": args.originals_per_item,
         "live_models": args.live_models,
     }
+    if args.selection:
+        from app.campaign_selection import validate_selection
+
+        if (
+            args.selection.is_symlink()
+            or not args.selection.is_file()
+            or args.selection.stat().st_size > 2 * 1024 * 1024
+        ):
+            raise ValueError("selection must be a regular JSON file of at most 2 MiB")
+        options["selection"] = json.loads(args.selection.read_text())
+        options["selection"] = validate_selection(plan, options).model_dump()
+    return options
 
 
-def child(output, plan_id, options, state, extend, models_env):
+def child(
+    output,
+    plan_id,
+    options,
+    state,
+    extend,
+    models_env,
+    retry_embeddings,
+    revalidate_layout,
+):
     if hasattr(os, "setsid"):
         os.setsid()
     os.umask(0o077)
@@ -61,6 +82,10 @@ def child(output, plan_id, options, state, extend, models_env):
                 extend=extend,
                 checkpoint=lambda payload: write_report(output, payload, "campaign.json"),
             )
+            if revalidate_layout:
+                campaign.revalidate_layout()
+            if retry_embeddings:
+                campaign.retry_embeddings()
             workers = CollectionWorkers(service.collection).start()
             started = time.monotonic()
             while campaign.step():
@@ -76,6 +101,15 @@ def child(output, plan_id, options, state, extend, models_env):
                 summary["categories_with_candidates"] < summary["categories"]
                 or summary["integrity_verified"] != summary["originals"]
                 or summary["text_complete"] != summary["originals"]
+                or summary["unresolved_relations"]
+                or summary["secondary_vectors"]
+                or (
+                    options["live_models"]
+                    and summary["primary_vector_complete"] != summary["primary_originals"]
+                )
+                or (
+                    options.get("selection") and summary["originals"] < len(options["selection"]["materials"])
+                )
                 or (
                     options["originals_per_item"]
                     and summary["categories_with_originals"] < summary["categories"]
@@ -84,13 +118,16 @@ def child(output, plan_id, options, state, extend, models_env):
             report["status"] = "finished_with_gaps" if gaps else "finished_scope"
             report["elapsed_seconds"] = round(time.monotonic() - started, 3)
             inventory = export_inventory(
-                output, country=campaign.plan["country"], owner=campaign.state["owner_id"]
+                output,
+                country=campaign.plan["country"],
+                owner=campaign.state["owner_id"],
+                include_text=True,
             )
             report["inventory"] = inventory | {"path": str(inventory["path"])}
             campaign.state["status"] = report["status"]
             campaign.save()
             write_report(output, report)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- child failure must preserve a safe checkpoint
             path = output / "report.json"
             report = json.loads(path.read_text()) if path.exists() else {}
             report.update(status="failed", error_type=type(error).__name__)
@@ -111,10 +148,14 @@ def main():
     output_default = os.getenv("TEA_CAMPAIGN_OUTPUT")
     parser.add_argument("--output", type=Path, default=output_default, required=not bool(output_default))
     parser.add_argument(
-        "--items", default=os.getenv("TEA_CAMPAIGN_ITEMS"), help="Comma-separated checklist identifiers"
+        "--items",
+        default=os.getenv("TEA_CAMPAIGN_ITEMS"),
+        help="Comma-separated checklist identifiers",
     )
     parser.add_argument(
-        "--confirm-items", default="", help="Explicitly confirmed conditional item identifiers"
+        "--confirm-items",
+        default="",
+        help="Explicitly confirmed conditional item identifiers",
     )
     parser.add_argument(
         "--discovery-batches",
@@ -127,8 +168,8 @@ def main():
         "--originals-per-item",
         type=int,
         default=os.getenv("TEA_CAMPAIGN_ORIGINALS", "0"),
-        choices=range(21),
-        metavar="0..20",
+        choices=range(201),
+        metavar="0..200 (sampling: 0..20)",
     )
     parser.add_argument(
         "--time-budget",
@@ -141,11 +182,30 @@ def main():
     parser.add_argument("--extend", action="store_true", default=os.getenv("TEA_CAMPAIGN_EXTEND") == "1")
     parser.add_argument("--live-models", action="store_true")
     parser.add_argument("--models-env", type=Path)
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        help="Checklist-scoped original URLs, material tiers and association evidence",
+    )
+    parser.add_argument(
+        "--retry-embeddings",
+        action="store_true",
+        help="On resume, retry failed complete primary embeddings once",
+    )
+    parser.add_argument(
+        "--revalidate-layout",
+        action="store_true",
+        help="On resume, recheck false table geometry warnings against immutable originals",
+    )
     args = parser.parse_args()
     lock = None
     try:
         if args.extend and not args.resume:
             raise ValueError("extend requires --resume")
+        if args.retry_embeddings and not (args.resume and args.live_models):
+            raise ValueError("retry-embeddings requires --resume and real model configuration")
+        if args.revalidate_layout and not args.resume:
+            raise ValueError("revalidate-layout requires --resume")
         if args.live_models != bool(args.models_env) or (args.models_env and not args.models_env.is_file()):
             raise ValueError("real providers require both --live-models and an existing --models-env file")
         plan = load_blueprints().get(args.plan_id)
@@ -154,7 +214,7 @@ def main():
         options = options_for(args, plan)
         if (
             not 1 <= args.discovery_batches <= 20
-            or not 0 <= args.originals_per_item <= 20
+            or not 0 <= args.originals_per_item <= (200 if options.get("selection") else 20)
             or not 10 <= args.time_budget <= 7200
         ):
             raise ValueError("campaign budgets exceed the supported bounds")
@@ -201,6 +261,8 @@ def main():
             state,
             args.extend,
             str(args.models_env.resolve()) if args.models_env else None,
+            args.retry_embeddings,
+            args.revalidate_layout,
         ),
     )
     try:

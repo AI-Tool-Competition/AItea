@@ -56,6 +56,10 @@ _MIME_EXTENSIONS = {
     "text/html": ".html",
     "text/plain": ".txt",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/x-msaccess": ".mdb",
+    "application/vnd.ms-access": ".mdb",
+    "application/msaccess": ".mdb",
 }
 
 
@@ -584,9 +588,19 @@ def parse_file(
     if not extension:
         extension = _MIME_EXTENSIONS.get(mime_type.split(";")[0].strip().lower(), "")
         filename += extension
+    if extension == ".xls" and parser == "basic":
+        from .xls_parsing import parse_xls
+
+        return parse_xls(content, filename=filename)
+    if extension == ".mdb" and parser == "basic":
+        from .mdb_parsing import parse_mdb
+
+        return parse_mdb(content, filename=filename)
     supported = {".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf"}
     if extension not in supported:
-        raise ValueError("支持 PDF、DOCX、HTML、TXT 和 Markdown；旧版 DOC 请转换为 DOCX。")
+        raise ValueError(
+            "支持 PDF、DOCX、XLS、HTML、TXT 和 Markdown；MDB 需配置只读工具，旧版 DOC 请转换为 DOCX。"
+        )
     if parser == "docling":
         # Explicit opt-in prevents accidental model downloads on a basic installation.
         if not os.environ.get("DOCLING_MODELS_PATH"):
@@ -1256,7 +1270,10 @@ def _download(
         # Some official domains advertise IPv6 without a reachable route from
         # this host. All answers are validated before ordering or connecting.
         proxy = None
-        if any(os.getenv(key) for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS")):
+        if any(
+            os.getenv(key)
+            for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS")
+        ):
             from .collection_proxy import PinnedProxyHTTPSConnection, proxy_for_host, resolve_addresses
 
             addresses = resolve_addresses(host, deadline=deadline, fallback=_public_addresses)

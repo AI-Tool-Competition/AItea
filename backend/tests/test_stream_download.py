@@ -180,6 +180,45 @@ def test_explicit_range_binds_offsets_total_and_strong_validator(transport):
     assert headers[0]["response_status"] == 206
 
 
+def test_dedicated_dataset_range_exceeds_generic_total_only_with_exact_binding(transport):
+    responses, requests, _ = transport
+    start = 200 * 1024 * 1024
+    total = 764 * 1024 * 1024
+    responses.append(Response([b"csv!"], status=206, headers={
+        "Content-Length": "4", "Content-Range": f"bytes {start}-{start + 3}/{total}", "ETag": '"fixed-version"',
+    }))
+    result = download(byte_range=(start, start + 3), max_bytes=4,
+                      range_total_bytes=total, range_validator='"fixed-version"')
+    assert result["content"] == b"csv!" and result["total_size"] == total
+    assert requests[0][2]["Range"] == f"bytes={start}-{start + 3}"
+
+
+@pytest.mark.parametrize("status,actual_total", [(200, 800), (206, 763 * 1024 * 1024)])
+def test_dataset_range_rejects_whole_file_or_different_total_before_reading(transport, status, actual_total):
+    responses, _, _ = transport
+    response = Response([b"csv!"], status=status, headers={
+        "Content-Length": "4", "Content-Range": f"bytes 0-3/{actual_total}",
+    })
+    responses.append(response)
+    with pytest.raises(ingestion.DownloadError):
+        download(byte_range=(0, 3), max_bytes=4, range_total_bytes=764 * 1024 * 1024)
+    assert response.reads == 0
+
+
+@pytest.mark.parametrize("options", [
+    {"range_total_bytes": 200 * 1024 * 1024},
+    {"byte_range": (0, 7), "max_bytes": 4, "range_total_bytes": 8},
+    {"byte_range": (0, 3), "range_total_bytes": 1024 * 1024 * 1024 + 1},
+    {"byte_range": (0, 3), "range_total_bytes": True},
+    {"byte_range": (200 * 1024 * 1024, 200 * 1024 * 1024 + 3)},
+])
+def test_dataset_opt_in_cannot_remove_response_or_generic_file_limits(transport, options):
+    _, requests, _ = transport
+    with pytest.raises(ingestion.DownloadError):
+        download(**options)
+    assert not requests
+
+
 @pytest.mark.parametrize("header", ["bytes 3-6/12", "bytes 4-8/12", "bytes 4-7/*", "bytes 4-7/3"])
 def test_malformed_or_unrequested_ranges_are_not_consumed(transport, header):
     responses, _, _ = transport

@@ -680,12 +680,247 @@ def lexical_search(query: str, chunks: list[dict], limit: int = 5) -> list[dict]
     return sorted(hits, key=lambda item: item["score"], reverse=True)[:limit]
 
 
+_EMBEDDING_PROFILES: dict[str, dict] = {}
+_EMBEDDING_PROFILE_LOCK = threading.Lock()
+_EMBEDDING_PROFILE_LIMIT = 32
+_EMBEDDING_HTTP_SLOTS = threading.BoundedSemaphore(2)
+
+
+class EmbeddingServiceError(ValueError):
+    """Safe provider failure; the durable queue owns long waits and outer retries."""
+
+    def __init__(self, *, retryable: bool, retry_after: float | None = None):
+        super().__init__("Embedding 服务请求失败，请检查服务配置或稍后重试。")
+        self.retryable = retryable
+        self.retry_after = retry_after if retryable else None
+
+
+class EmbeddingProviderDeferred(EmbeddingServiceError):
+    """Provider cooldown or bounded capacity deferred a call that issued no HTTP."""
+
+    def __init__(self, retry_after: float):
+        super().__init__(retryable=True, retry_after=retry_after)
+
+
+def _embedding_profile_key() -> str | None:
+    values = [os.getenv("EMBEDDING_" + name, "").strip() for name in ("BASE_URL", "API_KEY", "MODEL")]
+    if not all(values):
+        return None
+    # Separate credentials/models without retaining their values in the bounded cache.
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
+def _embedding_profile(key: str | None, *, size=None, cooldown=None) -> dict:
+    if key is None:
+        return {}
+    with _EMBEDDING_PROFILE_LOCK:
+        previous = _EMBEDDING_PROFILES.pop(key, {})
+        if size is not None:
+            previous["size"] = min(previous.get("size", 64), size)
+        if cooldown is not None:
+            previous["available_at"] = max(previous.get("available_at", 0), time.monotonic() + cooldown)
+        _EMBEDDING_PROFILES[key] = previous
+        while len(_EMBEDDING_PROFILES) > _EMBEDDING_PROFILE_LIMIT:
+            del _EMBEDDING_PROFILES[next(iter(_EMBEDDING_PROFILES))]
+        return dict(previous)
+
+
 def embedding_batch_size() -> int:
-    """Tune provider throughput without changing chunk contents or vector identity."""
+    """A configured ceiling, reduced after observed provider batch failures.
+
+    Subsequent durable jobs checkpoint the learned size instead of repeating the
+    oversized request. The profile is process-local and does not change model or
+    input fingerprints; explicit provider tuning survives process restarts.
+    """
     value = os.getenv("EMBEDDING_BATCH_SIZE", "64").strip()
     if not value.isdigit() or not 1 <= int(value) <= 64:
         raise ValueError("EMBEDDING_BATCH_SIZE 必须为 1 至 64 的整数。")
+    return min(int(value), _embedding_profile(_embedding_profile_key()).get("size", 64))
+
+
+def embedding_request_concurrency() -> int:
+    """Operator opt-in; all callers still share two process-wide HTTP slots."""
+    value = os.getenv("EMBEDDING_REQUEST_CONCURRENCY", "1").strip()
+    if value not in {"1", "2"}:
+        raise ValueError("EMBEDDING_REQUEST_CONCURRENCY 必须为 1 或 2。")
     return int(value)
+
+
+def embedding_claim_size() -> int:
+    """Bounded durable claim size, separate from the actual HTTP batch ceiling."""
+    return embedding_batch_size() * embedding_request_concurrency()
+
+
+class _EmbeddingCallCancelled(Exception):
+    """Internal cooperative cancellation; never becomes a queue failure."""
+
+
+class _EmbeddingCall(AbstractContextManager):
+    def __init__(self, profile_key: str | None):
+        self.profile_key = profile_key
+        self.deadline = time.monotonic() + 300
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.failures = self.active = self.requests = 0
+
+    def __exit__(self, *args) -> None:
+        # Exit before the executor context drains, including operator interrupts.
+        self.stop.set()
+
+    def check(self) -> None:
+        if self.stop.is_set():
+            raise _EmbeddingCallCancelled()
+        if time.monotonic() >= self.deadline:
+            raise EmbeddingServiceError(retryable=True)
+        remaining = _embedding_profile(self.profile_key).get("available_at", 0) - time.monotonic()
+        if remaining > 0:
+            self.defer(min(300, remaining))
+
+    def defer(self, delay: float) -> None:
+        # Queue attempts are only reset when this complete call issued no HTTP.
+        with self.lock:
+            attempted = self.requests > 0
+        if attempted:
+            raise EmbeddingServiceError(retryable=True, retry_after=delay)
+        raise EmbeddingProviderDeferred(retry_after=delay)
+
+    def begin_request(self) -> None:
+        self.check()
+        with self.lock:
+            # Reserve failures for in-flight requests too, so two retry lanes
+            # together cannot exceed eight failed attempts in one complete call.
+            if self.failures + self.active >= 8:
+                raise EmbeddingServiceError(retryable=True)
+            self.active += 1
+            self.requests += 1
+
+    def end_request(self, *, failed: bool) -> None:
+        with self.lock:
+            self.active -= 1
+            self.failures += int(failed)
+
+
+def _embedding_response(client, batch: list[str], base: str, key: str, model: str, call: _EmbeddingCall):
+    import httpx
+
+    call.check()
+    if not _EMBEDDING_HTTP_SLOTS.acquire(timeout=max(0, min(5.0, call.deadline - time.monotonic()))):
+        call.check()
+        call.defer(1.0)
+    begun, failed = False, False
+    try:
+        call.begin_request()
+        begun = True
+        # Slot waiting consumes the same complete-call budget as HTTP/retries.
+        response_deadline = min(call.deadline, time.monotonic() + 35)
+        request_timeout = max(0.001, min(30.0, call.deadline - time.monotonic()))
+        with client.stream(
+            "POST",
+            base.rstrip("/") + "/embeddings",
+            json={"model": model, "input": batch, "encoding_format": "float"},
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=httpx.Timeout(request_timeout, connect=min(10.0, request_timeout)),
+        ) as response:
+            response.raise_for_status()
+            payload = bytearray()
+            for block in response.iter_bytes():
+                if call.stop.is_set():
+                    raise _EmbeddingCallCancelled()
+                payload.extend(block)
+                if len(payload) > 16 * 1024 * 1024:
+                    raise ValueError("Embedding 服务响应超过 16 MB。")
+                if time.monotonic() > response_deadline:
+                    raise httpx.ReadTimeout("Embedding response deadline exceeded")
+            return json.loads(payload)
+    except httpx.HTTPError:
+        failed = True
+        raise
+    finally:
+        if begun:
+            call.end_request(failed=failed)
+        _EMBEDDING_HTTP_SLOTS.release()
+
+
+def _embedding_batches(client, texts: list[str], base: str, key: str, model: str, call: _EmbeddingCall):
+    import httpx
+
+    vectors: list[list[float]] = []
+    dimension = None
+    batch_size = embedding_batch_size()
+    start, singleton_failures = 0, 0
+    try:
+        while start < len(texts):
+            call.check()
+            batch_size = min(batch_size, embedding_batch_size())
+            batch = texts[start : start + batch_size]
+            try:
+                body = _embedding_response(client, batch, base, key, model, call)
+            except httpx.HTTPError as exc:
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                retryable = isinstance(
+                    exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+                ) or (status in {408, 429} or status is not None and 500 <= status <= 599)
+                retry_after = (
+                    _retry_after(exc.response.headers.get("Retry-After"))
+                    if isinstance(exc, httpx.HTTPStatusError) and retryable
+                    else None
+                )
+                if status == 429 or retry_after:
+                    delay = retry_after if retry_after is not None else 2.0
+                    _embedding_profile(call.profile_key, cooldown=delay)
+                    raise EmbeddingServiceError(retryable=True, retry_after=delay) from None
+                shrink = isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)) or status in {408, 413, 504}
+                with call.lock:
+                    can_retry = call.failures < 8
+                if shrink and len(batch) > 1 and can_retry and time.monotonic() < call.deadline:
+                    batch_size = max(1, len(batch) // 2)
+                    _embedding_profile(call.profile_key, size=batch_size)
+                    continue
+                singleton_failures += 1
+                if retryable and singleton_failures < 3 and can_retry and time.monotonic() < call.deadline:
+                    time.sleep(
+                        max(
+                            0,
+                            min(1.0, 0.25 * 2 ** (singleton_failures - 1), call.deadline - time.monotonic()),
+                        )
+                    )
+                    continue
+                raise EmbeddingServiceError(retryable=retryable) from None
+            except EmbeddingServiceError:
+                raise
+            except (ValueError, UnicodeDecodeError):
+                raise EmbeddingServiceError(retryable=False) from None
+            data = body.get("data") if isinstance(body, dict) else None
+            if not isinstance(data, list) or len(data) != len(batch):
+                raise ValueError("Embedding 服务返回数量与输入不一致。")
+            if any(not isinstance(entry, dict) or type(entry.get("index")) is not int for entry in data) or {
+                entry["index"] for entry in data
+            } != set(range(len(batch))):
+                raise ValueError("Embedding 服务返回索引无效。")
+            for entry in sorted(data, key=lambda item: item["index"]):
+                vector = entry.get("embedding")
+                if (
+                    not isinstance(vector, list)
+                    or not vector
+                    or len(vector) > 65536
+                    or any(
+                        isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n)
+                        for n in vector
+                    )
+                ):
+                    raise ValueError("Embedding 服务返回无效向量。")
+                if not any(vector):
+                    raise ValueError("Embedding 服务返回零向量。")
+                dimension = dimension or len(vector)
+                if len(vector) != dimension:
+                    raise ValueError("Embedding 向量维度不一致。")
+                vectors.append([float(value) for value in vector])
+            start += len(batch)
+            singleton_failures = 0
+        return vectors
+    except Exception:
+        call.stop.set()
+        raise
 
 
 def embed_texts(texts: list[str]) -> list[list[float]] | None:
@@ -713,55 +948,61 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
     if len(texts) > 10000 or any(not isinstance(text, str) or len(text) > 20000 for text in texts):
         raise ValueError("Embedding 输入超过处理限制。")
     import httpx
+    from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
-    vectors: list[list[float]] = []
-    dimension = None
+    concurrency = embedding_request_concurrency()
     batch_size = embedding_batch_size()
+    call = _EmbeddingCall(_embedding_profile_key())
+    # HTTPX read timeouts bound inactivity, not a complete trickling response.
+    # The existing response/call deadlines remain shared across both lanes.
     with httpx.Client(
         timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=False
     ) as client:
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start : start + batch_size]
-            try:
-                with client.stream(
-                    "POST",
-                    base.rstrip("/") + "/embeddings",
-                    json={"model": model, "input": batch, "encoding_format": "float"},
-                    headers={"Authorization": f"Bearer {key}"},
-                ) as response:
-                    response.raise_for_status()
-                    payload = bytearray()
-                    for block in response.iter_bytes():
-                        payload.extend(block)
-                        if len(payload) > 16 * 1024 * 1024:
-                            raise ValueError("Embedding 服务响应超过 16 MB。")
-                    body = json.loads(payload)
-            except (httpx.HTTPError, ValueError) as exc:
-                raise ValueError("Embedding 服务请求失败，请检查服务配置或稍后重试。") from exc
-            data = body.get("data") if isinstance(body, dict) else None
-            if not isinstance(data, list) or len(data) != len(batch):
-                raise ValueError("Embedding 服务返回数量与输入不一致。")
-            if {entry.get("index") for entry in data if isinstance(entry, dict)} != set(range(len(batch))):
-                raise ValueError("Embedding 服务返回索引无效。")
-            for entry in sorted(data, key=lambda item: item["index"]):
-                vector = entry.get("embedding")
-                if (
-                    not isinstance(vector, list)
-                    or not vector
-                    or len(vector) > 65536
-                    or any(
-                        isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n)
-                        for n in vector
+        if concurrency == 1 or len(texts) <= batch_size:
+            return _embedding_batches(client, texts, base, key, model, call)
+        vectors, start, dimension = [], 0, None
+        # Only one wave of at most two futures exists. HTTPX clients are thread
+        # safe; drain workers before closing the shared client on every exit.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="tea-embedding") as pool, call:
+            while start < len(texts):
+                call.check()
+                size = embedding_batch_size()
+                batches = [
+                    texts[offset : offset + size]
+                    for offset in range(start, min(len(texts), start + 2 * size), size)
+                ]
+                futures = {
+                    pool.submit(_embedding_batches, client, batch, base, key, model, call): index
+                    for index, batch in enumerate(batches)
+                }
+                results, errors = {}, []
+                for future in as_completed(futures):
+                    try:
+                        results[futures[future]] = future.result()
+                    except Exception as exc:
+                        call.stop.set()
+                        errors.append(exc)
+                        for pending in futures:
+                            pending.cancel()
+                if errors:
+                    error = next(
+                        (
+                            exc
+                            for exc in errors
+                            if not isinstance(exc, (_EmbeddingCallCancelled, CancelledError))
+                        ),
+                        errors[0],
                     )
-                ):
-                    raise ValueError("Embedding 服务返回无效向量。")
-                if not any(vector):
-                    raise ValueError("Embedding 服务返回零向量。")
-                dimension = dimension or len(vector)
-                if len(vector) != dimension:
-                    raise ValueError("Embedding 向量维度不一致。")
-                vectors.append([float(value) for value in vector])
-    return vectors
+                    raise error from None
+                for index in range(len(batches)):
+                    for vector in results[index]:
+                        dimension = dimension or len(vector)
+                        if len(vector) != dimension:
+                            call.stop.set()
+                            raise ValueError("Embedding 向量维度不一致。")
+                        vectors.append(vector)
+                start += sum(len(batch) for batch in batches)
+        return vectors
 
 
 class DownloadError(ValueError):
@@ -945,6 +1186,7 @@ def _download(
     max_bytes: int | None = None,
     byte_range: tuple[int, int] | None = None,
     range_validator: str | None = None,
+    range_total_bytes: int | None = None,
     on_headers: Callable[[dict], None] | None = None,
 ) -> dict:
     """Read a bounded HTTPS resource, optionally into an atomic blob consumer.
@@ -959,12 +1201,19 @@ def _download(
     max_bytes = MAX_BYTES if max_bytes is None else max_bytes
     if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ORIGINAL_BYTES:
         raise DownloadError("原件传输额度无效，最多 128 MB。")
+    if range_total_bytes is not None and (
+        byte_range is None
+        or type(range_total_bytes) is not int
+        or not 1 <= range_total_bytes <= 1024 * 1024 * 1024
+    ):
+        raise DownloadError("专用数据集必须指定有效分段及不超过 1 GB 的固定总大小。")
     if byte_range is not None:
         if (
             not isinstance(byte_range, tuple)
             or len(byte_range) != 2
             or any(type(value) is not int for value in byte_range)
-            or not 0 <= byte_range[0] <= byte_range[1] < max_bytes
+            or not 0 <= byte_range[0] <= byte_range[1] < (range_total_bytes or max_bytes)
+            or (range_total_bytes is not None and byte_range[1] - byte_range[0] + 1 > max_bytes)
             or validators
             or json_body is not None
             or accept_compressed_html
@@ -997,14 +1246,24 @@ def _download(
             raise DownloadError("关联附件重定向到了不同来源，已拒绝抓取。")
         # Some official domains advertise IPv6 without a reachable route from
         # this host. All answers are validated before ordering or connecting.
-        addresses = sorted(
-            _public_addresses(host, deadline=deadline), key=lambda row: row[0] != socket.AF_INET
-        )
+        proxy = None
+        if any(os.getenv(key) for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS")):
+            from .collection_proxy import PinnedProxyHTTPSConnection, proxy_for_host, resolve_addresses
+
+            addresses = resolve_addresses(host, deadline=deadline, fallback=_public_addresses)
+            proxy = proxy_for_host(host)
+        else:
+            addresses = _public_addresses(host, deadline=deadline)
+        addresses = sorted(addresses, key=lambda row: row[0] != socket.AF_INET)
         with connection_slot(host) if connection_slot else nullcontext():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise DownloadError("抓取超过总时间限制。", retryable=True)
-            connection = _PinnedHTTPSConnection(host, addresses[0], min(15.0, remaining))
+            connection = (
+                PinnedProxyHTTPSConnection(host, addresses[0], min(15.0, remaining), proxy=proxy)
+                if proxy is not None
+                else _PinnedHTTPSConnection(host, addresses[0], min(15.0, remaining))
+            )
             connection.alternate_addresses = addresses[1:]
             connection.deadline = deadline
             expired = threading.Event()
@@ -1040,6 +1299,10 @@ def _download(
                     else "identity",
                     "Accept": "application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,*/*;q=0.5",
                 }
+                if os.getenv("COLLECTION_BROWSER_HEADERS_HOSTS"):
+                    from .official_source_recovery import request_headers_for
+
+                    headers.update(request_headers_for(host))
                 headers.update({key: value for key, value in conditionals.items() if value is not None})
                 if byte_range is not None:
                     headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
@@ -1089,6 +1352,8 @@ def _download(
                     )
                 if response.status == 206 and byte_range is None:
                     raise DownloadError("抓取来源返回了不完整的分段响应。")
+                if range_total_bytes is not None and response.status != 206:
+                    raise DownloadError("专用数据集必须返回与固定总大小一致的分段响应。")
                 encoding = response.getheader("Content-Encoding", "identity").strip().lower()
                 compressed = (accept_compressed_html or accept_compressed_json) and encoding == "gzip"
                 if encoding not in {"identity", ""} and not compressed:
@@ -1110,7 +1375,8 @@ def _download(
                         raise DownloadError("分段响应缺少有效的完整文件范围。")
                     range_start, range_end, total_size = map(int, match.groups())
                     if (
-                        not 0 <= range_start <= range_end < total_size <= max_bytes
+                        not 0 <= range_start <= range_end < total_size <= (range_total_bytes or max_bytes)
+                        or (range_total_bytes is not None and total_size != range_total_bytes)
                         or range_start != byte_range[0]
                         or range_end != min(byte_range[1], total_size - 1)
                         or (expected_length is not None and expected_length != range_end - range_start + 1)

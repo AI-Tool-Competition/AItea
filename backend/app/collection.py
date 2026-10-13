@@ -769,7 +769,7 @@ class CollectionService:
             self._failure(claim, error, processing=False)
 
     def process_item(self, claim):
-        from .ingestion import embed_texts, embedding_batch_size
+        from .ingestion import embed_texts, embedding_claim_size
         from .parsing import ocr_bounded, parse_bounded
         from .ingestion_quality import OCR_VALIDATION_VERSION, ocr_pending, quality_warning, text_complete
         from .vision import vision_ocr_configured
@@ -928,7 +928,7 @@ class CollectionService:
                     ).fetchone():
                         self.service.index.sync_document(conn, doc["id"])
                     batch = self.service.index.pending(
-                        conn, doc["id"], fingerprint, limit=embedding_batch_size()
+                        conn, doc["id"], fingerprint, limit=embedding_claim_size()
                     )
                 if batch:
                     vectors = embed_texts([chunk["retrieval_text"] for chunk in batch])
@@ -995,6 +995,7 @@ class CollectionService:
         from .parsing import ProcessingDeferred
         from .transfers import TransferPending
         from .service import AppError
+        from .ingestion import EmbeddingProviderDeferred, EmbeddingServiceError
 
         # Unexpected exceptions/paths/provider response bodies never become public error text.
         safe = (
@@ -1005,16 +1006,17 @@ class CollectionService:
         retryable = getattr(error, "retryable", not isinstance(error, (ValueError, AppError)))
         # Model/network failures may be transient; deterministic parse failures are not.
         if processing and claim["phase"] == "embed":
-            retryable = True
+            retryable = error.retryable if isinstance(error, EmbeddingServiceError) else True
             safe = "向量服务暂不可用，原件和正文已保留"
         transfer_progress = not processing and isinstance(error, TransferPending)
-        deferred = (processing and isinstance(error, ProcessingDeferred)) or transfer_progress
+        provider_wait = processing and isinstance(error, EmbeddingProviderDeferred)
+        deferred = (processing and isinstance(error, ProcessingDeferred)) or transfer_progress or provider_wait
         exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
         delay = min(
             300, max(2 ** claim["attempts"] + random.random(), getattr(error, "retry_after", None) or 0)
         )
         if deferred:
-            delay = 0 if transfer_progress else 5
+            delay = min(300, max(1, error.retry_after)) if provider_wait else (0 if transfer_progress else 5)
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):

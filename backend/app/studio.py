@@ -2,15 +2,12 @@
 
 import hashlib
 import json
-import logging
 import os
 import re
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from .db import dump, now, uid
-
-logger = logging.getLogger(__name__)
 
 
 class AdminStudio:
@@ -117,7 +114,7 @@ class AdminStudio:
                 "model": os.getenv("LLM_MODEL"),
                 "base": os.getenv("LLM_BASE_URL"),
                 "embedding": self.service.embedding_fingerprint(),
-                "runner_version": 2,
+                "runner_version": 3,
             }
         )
         # Iterate bounded-size metadata rows instead of collecting document bodies.
@@ -145,13 +142,15 @@ class AdminStudio:
             include(dict(row))
         return digest.hexdigest()
 
-    def analyze(self, owner, case_id, stage_id, payload):
-        from .service import fail
+    def analyze(self, owner, case_id, stage_id, payload, *, emit=None, check_cancelled=None):
+        from .service import AppError, fail
+        from .streaming import StreamCancelled
 
+        legal = self.service.legal
         with self.db.transaction() as conn:
             case = self.service.case_detail(owner, case_id, conn)
             self.service.check_revision(case, payload.expected_revision)
-            stage = next((stage for stage in case["stages"] if stage["id"] == stage_id), None)
+            stage = next((item for item in case["stages"] if item["id"] == stage_id), None)
             if stage is None:
                 fail(404, "not_found", "未找到办理节点")
             if stage["status"] == "locked":
@@ -161,70 +160,106 @@ class AdminStudio:
                 "SELECT * FROM stage_analyses WHERE case_id=? AND stage_id=? AND fingerprint=?",
                 (case_id, stage_id, fingerprint),
             ).fetchone()
-            if existing:
-                if existing["status"] == "completed" or (
-                    existing["status"] == "failed" and not payload.retry
+            if existing and existing["status"] == "running" and existing["expires_at"] > now():
+                fail(409, "analysis_in_progress", "此节点正在分析，请稍后重新查看")
+            # The link lives in the existing payload, including interrupted runs.
+            # Only node-entry records qualify; separate question histories remain intact.
+            prior = conn.execute(
+                """SELECT payload FROM stage_analyses WHERE case_id=? AND stage_id=?
+                AND json_extract(payload,'$.legal_analysis_id') IS NOT NULL
+                ORDER BY expires_at DESC,id DESC LIMIT 1""",
+                (case_id, stage_id),
+            ).fetchone()
+            previous = None
+            if prior:
+                # Expiring a reservation advances its report revision. Read the
+                # revision afterwards so an interrupted inline refresh can resume.
+                legal.expire_requests(conn)
+                previous = legal.mark_stale(
+                    conn,
+                    legal.own(conn, owner, case_id, json.loads(prior["payload"])["legal_analysis_id"]),
+                    legal.snapshot(conn, owner, case),
+                )
+                if previous["status"] == "running":
+                    # Keep the existing node cache while its linked report is
+                    # refreshed; an admission conflict must not replace it.
+                    fail(409, "analysis_in_progress", "此节点的报告正在分析，请稍后重新查看")
+            if existing and existing["status"] in ("completed", "failed"):
+                cached = json.loads(existing["payload"])
+                same_inputs = previous and previous.get("_snapshot") == legal.snapshot(conn, owner, case)
+                if (
+                    same_inputs
+                    and (previous["status"] not in ("failed", "cancelled") or not payload.retry)
                 ):
-                    return json.loads(existing["payload"])
-                if existing["status"] == "running" and existing["expires_at"] > now():
-                    fail(409, "analysis_in_progress", "此节点正在分析，请稍后重新查看")
+                    return cached | self.node_result(stage_id, previous)
             analysis_id = uid()
             expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+            link = {"legal_analysis_id": previous["id"]} if previous else {}
             conn.execute(
-                """INSERT INTO stage_analyses VALUES(?,?,?,?,?,?,NULL)
+                """INSERT INTO stage_analyses VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(case_id,stage_id,fingerprint) DO UPDATE SET id=excluded.id,
-                status=excluded.status,expires_at=excluded.expires_at,payload=NULL""",
-                (case_id, stage_id, fingerprint, analysis_id, "running", expires_at),
+                status=excluded.status,expires_at=excluded.expires_at,payload=excluded.payload""",
+                (case_id, stage_id, fingerprint, analysis_id, "running", expires_at, dump(link)),
             )
 
-        # Retrieval/providers run after the claim transaction has committed.
+        def progress(event, data):
+            if event == "start":
+                link["legal_analysis_id"] = data["analysis_id"]
+                with self.db.transaction() as conn:
+                    conn.execute("UPDATE stage_analyses SET payload=? WHERE id=?", (dump(link), analysis_id))
+            if emit:
+                emit(event, data)
+
+        # Providers run outside the claim transaction. LegalAnalysis owns revisions,
+        # cancellation checkpoints, evidence rules and preservation of manual edits.
         try:
-            result = self.service.run_workflow(
+            request = {"client_request_id": "node-" + analysis_id}
+            if previous:
+                request["expected_revision"] = previous["revision"]
+            else:
+                request.update(
+                    stage_id=stage_id,
+                    question=f"开始「{stage['name']}」：{stage['description']}。请分析现有资料、缺项与下一步办理建议。",
+                )
+            report = legal.analyze(
                 owner,
-                case["template"],
-                stage,
-                f"开始「{stage['name']}」：{stage['description']}。请分析现有资料、缺项与下一步办理建议。",
-                stage["tasks"],
-                case_id=case_id,
-                context={
-                    "facts": case["facts"],
-                    "company": case["company"],
-                    "product": case["product"],
-                    "mode": next(
-                        (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
-                    ),
-                },
+                case_id,
+                request,
+                analysis_id=previous["id"] if previous else None,
+                emit=progress,
+                check_cancelled=check_cancelled,
             )
-        except Exception:
-            logger.warning("stage_analysis_failed", exc_info=True)
-            result = {
-                "stage_id": stage_id,
-                "output": "节点分析暂时不可用，可以稍后重试。",
-                "checks": [],
-                "citations": [],
-                "assistant_mode": self.service.capabilities["assistant_mode"],
-                "trace": [
-                    {
-                        "id": "analysis",
-                        "label": "节点分析",
-                        "status": "failed",
-                        "detail": "分析执行失败，未更新任务状态。",
-                    }
-                ],
-            }
-        result.update(
-            id=analysis_id,
-            case_revision=case["revision"],
-            created_at=now(),
-            status="failed" if any(step["status"] == "failed" for step in result["trace"]) else "completed",
-        )
+        except (AppError, StreamCancelled) as error:
+            if isinstance(error, AppError) and error.code == "legal_analysis_failed" and link:
+                report = legal.get(owner, case_id, link["legal_analysis_id"])
+            else:
+                with self.db.transaction() as conn:
+                    conn.execute("UPDATE stage_analyses SET status='cancelled' WHERE id=?", (analysis_id,))
+                if isinstance(error, AppError) and error.code == "analysis_context_changed":
+                    fail(409, "analysis_stale", "分析期间资料已有更新，请基于当前资料重新分析")
+                raise
+        except BaseException:
+            with self.db.transaction() as conn:
+                conn.execute("UPDATE stage_analyses SET status='cancelled' WHERE id=?", (analysis_id,))
+            raise
+        result = self.node_result(stage_id, report) | {
+            "id": analysis_id,
+            "case_id": case_id,
+            "case_revision": case["revision"],
+            "created_at": now(),
+        }
         with self.db.transaction() as conn:
             current = self.service.case_detail(owner, case_id, conn)
             claim = conn.execute("SELECT id FROM stage_analyses WHERE id=?", (analysis_id,)).fetchone()
-            stale = not claim or self.fingerprint(conn, owner, current) != fingerprint
+            saved = legal.own(conn, owner, case_id, report["id"])
+            stale = (
+                not claim
+                or self.fingerprint(conn, owner, current) != fingerprint
+                or saved.get("_snapshot") != legal.snapshot(conn, owner, current)
+            )
             if stale:
-                # Never expose a result against a data/configuration snapshot that moved.
-                conn.execute("DELETE FROM stage_analyses WHERE id=?", (analysis_id,))
+                # Keep the report link for the next attempt, never serve a stale result.
+                conn.execute("UPDATE stage_analyses SET status='cancelled' WHERE id=?", (analysis_id,))
             else:
                 conn.execute(
                     "UPDATE stage_analyses SET status=?,payload=? WHERE id=?",
@@ -233,3 +268,55 @@ class AdminStudio:
         if stale:
             fail(409, "analysis_stale", "分析期间资料已有更新，请基于当前资料重新分析")
         return result
+
+    def node_context(self, owner, case, stage_id):
+        """Bounded, current report context for follow-up chat, including manual text."""
+        legal = self.service.legal
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                """SELECT payload FROM stage_analyses WHERE case_id=? AND stage_id=?
+                AND json_extract(payload,'$.legal_analysis_id') IS NOT NULL
+                ORDER BY expires_at DESC,id DESC LIMIT 1""",
+                (case["id"], stage_id),
+            ).fetchone()
+            if not row:
+                return None
+            report = legal.own(conn, owner, case["id"], json.loads(row["payload"])["legal_analysis_id"])
+            current = report.get("_snapshot") == legal.snapshot(conn, owner, case)
+            context = {"id": report["id"], "revision": report["revision"], "status": report["status"]}
+            if not current or report["status"] in ("running", "failed", "cancelled"):
+                return context | {"notice": "节点分析尚未完成或资料已变化，请先检查最新资料，不沿用旧结论。"}
+            return context | {
+                "question": report["question"][:2000],
+                "sections": [
+                    {
+                        "title": section["title"],
+                        "content": section["content"][:1500],
+                        "edited": section["edited"],
+                        "needs_review": section["needs_review"],
+                    }
+                    for section in report["sections"][:6]
+                ],
+                "truncated": len(report["sections"]) > 6
+                or any(len(s["content"]) > 1500 for s in report["sections"]),
+                "followups": report["result"]["followups"][:12],
+            }
+
+    @staticmethod
+    def node_result(stage_id, report):
+        result = report["result"]
+        outputs = [step.get("output_data") or {} for step in result.get("trace", [])]
+        hybrid = any(
+            output.get("retrieval_mode") == "hybrid"
+            or any(item.get("mode") == "hybrid" for item in output.get("coverage", []))
+            for output in outputs
+        )
+        return {
+            **result,
+            "stage_id": stage_id,
+            "checks": [],
+            "retrieval_mode": "hybrid" if hybrid else "lexical",
+            "legal_analysis_id": report["id"],
+            "legal_revision": report["revision"],
+            "status": "failed" if report["status"] in ("failed", "cancelled") else "completed",
+        }

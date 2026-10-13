@@ -15,7 +15,7 @@ import {
   Settings2,
   UserRound,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   DropdownMenu,
@@ -63,10 +63,13 @@ export function TeaNavigation({
   cases,
   caseId,
   record,
+  recordLoading,
   stageId,
+  libraryCaseId,
   onNavigate,
   onCase,
   onStage,
+  onLibrary,
   onCreate,
 }: {
   view: TeaView;
@@ -74,14 +77,18 @@ export function TeaNavigation({
   cases: CaseSummary[];
   caseId: string;
   record?: CaseDetail;
+  recordLoading: boolean;
   stageId: string;
+  libraryCaseId: string;
   onNavigate: (view: TeaView) => void;
   onCase: (id: string) => void;
   onStage: (id: string) => void;
+  onLibrary: (id: string) => void;
   onCreate: () => void;
 }) {
   const { open, isMobile, setOpenMobile } = useSidebar();
-  const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
+  const [expandedCaseId, setExpandedCaseId] = useState<string | null>(caseId);
+  useEffect(() => setExpandedCaseId(caseId), [caseId]);
   function navigate(action: () => void) {
     action();
     setOpenMobile(false);
@@ -114,23 +121,34 @@ export function TeaNavigation({
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup className="pt-1">
-          <SidebarMenu>
-            {teaNavigationItems.slice(0, 2).map((item) => (
-              <SidebarMenuItem key={item.id}>
-                <SidebarMenuButton
-                  isActive={view === item.id}
-                  tooltip={item.label}
-                  aria-label={item.label}
-                  onClick={() => navigate(() => onNavigate(item.id))}
-                >
-                  <item.icon />
-                  <span>{item.label}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroup>
+        {!open && !isMobile && caseId && (
+          <SidebarGroup className="pt-1">
+            <SidebarMenu>
+              {teaNavigationItems.slice(0, 2).map((item) => (
+                <SidebarMenuItem key={item.id}>
+                  <SidebarMenuButton
+                    isActive={
+                      view === item.id &&
+                      (item.id !== "library" || libraryCaseId === caseId)
+                    }
+                    tooltip={item.label}
+                    aria-label={item.label}
+                    onClick={() =>
+                      navigate(() =>
+                        item.id === "library"
+                          ? onLibrary(caseId)
+                          : onCase(caseId),
+                      )
+                    }
+                  >
+                    <item.icon />
+                    <span>{item.label}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
+        )}
         {(open || isMobile) && (
           <SidebarGroup className="tea-business-group">
             <SidebarGroupLabel>我的出口业务</SidebarGroupLabel>
@@ -138,16 +156,25 @@ export function TeaNavigation({
               {cases.map((business) => (
                 <SidebarMenuItem className="tea-business" key={business.id}>
                   <SidebarMenuButton
-                    isActive={caseId === business.id && view === "workspace"}
+                    isActive={
+                      caseId === business.id &&
+                      (view === "workspace" ||
+                        (view === "library" && libraryCaseId === business.id))
+                    }
                     className="tea-business-title"
-                    onClick={() => navigate(() => onCase(business.id))}
+                    title={business.title}
+                    onClick={() => {
+                      setExpandedCaseId(business.id);
+                      navigate(() => onCase(business.id));
+                    }}
                   >
                     {caseId === business.id ? <FolderOpen /> : <FolderClosed />}
                     <span>{business.title}</span>
                   </SidebarMenuButton>
                   <SidebarMenuAction
-                    aria-label={`${expandedCaseId === business.id ? "收起" : "展开"}业务阶段：${business.title}`}
+                    aria-label={`${expandedCaseId === business.id ? "收起" : "展开"}业务：${business.title}`}
                     aria-expanded={expandedCaseId === business.id}
+                    aria-controls={`tea-business-${business.id}`}
                     onClick={() => {
                       const expanding = expandedCaseId !== business.id;
                       setExpandedCaseId(expanding ? business.id : null);
@@ -161,17 +188,26 @@ export function TeaNavigation({
                       <ChevronRight />
                     )}
                   </SidebarMenuAction>
-                  {expandedCaseId === business.id &&
-                    caseId === business.id &&
-                    record?.id === business.id && (
-                      <div className="tea-subconversations">
-                        {record.stages.map((stage) => (
+                  {expandedCaseId === business.id && caseId === business.id && (
+                    <div
+                      className="tea-subconversations"
+                      id={`tea-business-${business.id}`}
+                      role="group"
+                      aria-label={`${business.title}的对话与资料库`}
+                    >
+                      {record?.id === business.id &&
+                        record.stages.map((stage) => (
                           <button
                             key={stage.id}
                             className={
                               stageId === stage.id && view === "workspace"
                                 ? "active"
                                 : ""
+                            }
+                            aria-current={
+                              stageId === stage.id && view === "workspace"
+                                ? "page"
+                                : undefined
                             }
                             onClick={() => navigate(() => onStage(stage.id))}
                           >
@@ -185,8 +221,29 @@ export function TeaNavigation({
                             )}
                           </button>
                         ))}
-                      </div>
-                    )}
+                      {recordLoading && (
+                        <span className="tea-business-loading" role="status">
+                          正在读取对话…
+                        </span>
+                      )}
+                      <button
+                        className={
+                          view === "library" && libraryCaseId === business.id
+                            ? "tea-business-library active"
+                            : "tea-business-library"
+                        }
+                        aria-current={
+                          view === "library" && libraryCaseId === business.id
+                            ? "page"
+                            : undefined
+                        }
+                        onClick={() => navigate(() => onLibrary(business.id))}
+                      >
+                        <BookOpen size={14} />
+                        <span>资料库</span>
+                      </button>
+                    </div>
+                  )}
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
@@ -227,6 +284,12 @@ export function TeaNavigation({
                   账号管理
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => navigate(() => onNavigate("library"))}
+                >
+                  <BookOpen />
+                  公共资料库
+                </DropdownMenuItem>
                 {teaNavigationItems.slice(2).map((item) => (
                   <DropdownMenuItem
                     key={item.id}

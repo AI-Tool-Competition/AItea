@@ -246,7 +246,8 @@ def test_stage_analysis_is_persistent_idempotent_and_does_not_change_case(client
     result = first.json()
     assert result["status"] == "completed"
     assert result["case_revision"] == before["revision"]
-    assert result["checks"]
+    assert [step["id"] for step in result["trace"]] == [f"qa0{i}" for i in range(1, 7)]
+    assert result["legal_analysis_id"]
     assert client.post(analysis_url(before), json=payload | {"retry": True}).json() == result
     with TestClient(create_app(data_dir=tmp_path)) as restarted:
         restarted.cookies.update(client.cookies)
@@ -305,19 +306,18 @@ def enable_live(monkeypatch):
 
 
 def test_failed_analysis_is_visible_and_only_explicit_retry_calls_provider(client, monkeypatch):
-    import app.assistant as assistant
 
     value = case(client)
-    enable_live(monkeypatch)
+    engine = client.app.state.service.legal.execute_engine
     calls = []
 
-    def provider(*args):
+    def provider(*args, **kwargs):
         calls.append(args)
         if len(calls) == 1:
             raise TimeoutError("test failure")
-        return "重新生成的节点建议"
+        return engine(*args, **kwargs)
 
-    monkeypatch.setattr(assistant, "generate_guidance", provider)
+    monkeypatch.setattr(client.app.state.service.legal, "execute_engine", provider)
     first = client.post(analysis_url(value), json={"expected_revision": value["revision"]})
     assert first.status_code == 200, first.text
     assert first.json()["status"] == "failed"
@@ -336,20 +336,19 @@ def test_failed_analysis_is_visible_and_only_explicit_retry_calls_provider(clien
 def test_analysis_claim_prevents_duplicate_provider_calls_without_holding_write_lock(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    import app.assistant as assistant
 
     value = case(client)
-    enable_live(monkeypatch)
+    engine = client.app.state.service.legal.execute_engine
     started, release = Event(), Event()
     calls = []
 
-    def provider(*args):
+    def provider(*args, **kwargs):
         calls.append(args)
         started.set()
         assert release.wait(5)
-        return "节点建议"
+        return engine(*args, **kwargs)
 
-    monkeypatch.setattr(assistant, "generate_guidance", provider)
+    monkeypatch.setattr(client.app.state.service.legal, "execute_engine", provider)
     payload = {"expected_revision": value["revision"]}
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(client.post, analysis_url(value), json=payload)
@@ -369,15 +368,14 @@ def test_analysis_claim_prevents_duplicate_provider_calls_without_holding_write_
 
 
 def test_analysis_rejects_results_when_case_changes_during_generation(client, monkeypatch):
-    import app.assistant as assistant
 
     value = case(client)
     owner = client.get("/api/tea/auth/me").json()["id"]
     task = value["stages"][0]["tasks"][0]
     service = client.app.state.service
-    enable_live(monkeypatch)
+    engine = client.app.state.service.legal.execute_engine
 
-    def provider(*args):
+    def provider(*args, **kwargs):
         service.patch_task(
             owner,
             value["id"],
@@ -387,9 +385,9 @@ def test_analysis_rejects_results_when_case_changes_during_generation(client, mo
                 "values": {task["fields"][0]["key"]: "已变化"},
             },
         )
-        return "基于旧资料的指导"
+        return engine(*args, **kwargs)
 
-    monkeypatch.setattr(assistant, "generate_guidance", provider)
+    monkeypatch.setattr(client.app.state.service.legal, "execute_engine", provider)
     response = client.post(analysis_url(value), json={"expected_revision": value["revision"]})
     assert response.status_code == 409, response.text
     assert response.json()["error"]["code"] == "analysis_stale"
@@ -445,7 +443,7 @@ def test_unlocked_stage_analysis_and_chat_use_stage_override(client):
     ).json()
     response = client.post(analysis_url(value, "stage-1"), json={"expected_revision": verified["revision"]})
     assert response.status_code == 200, response.text
-    assert [row["id"] for row in response.json()["trace"]] == ["step-0", "step-1"]
+    assert [row["id"] for row in response.json()["trace"]] == [f"qa0{i}" for i in range(1, 7)]
     chat = client.post(
         f"/api/tea/cases/{value['id']}/messages",
         json={"stage_id": "stage-1", "content": "请分析", "client_message_id": "override-chat"},

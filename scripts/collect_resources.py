@@ -63,6 +63,7 @@ def child(
     revalidate_native_tables,
     retry_ocr_recovery,
     revalidate_pdf_decode,
+    include_source_mapping=False,
 ):
     if hasattr(os, "setsid"):
         os.setsid()
@@ -139,6 +140,7 @@ def child(
                 country=campaign.plan["country"],
                 owner=campaign.state["owner_id"],
                 include_text=True,
+                include_source_mapping=include_source_mapping,
             )
             report["inventory"] = inventory | {"path": str(inventory["path"])}
             campaign.state["status"] = report["status"]
@@ -205,6 +207,11 @@ def main():
     )
     parser.add_argument("--live-models", action="store_true")
     parser.add_argument("--models-env", type=Path)
+    parser.add_argument(
+        "--include-source-mapping",
+        action="store_true",
+        help="Export native package, image, table and conversion source mappings in inventory format 5",
+    )
     parser.add_argument(
         "--selection",
         type=Path,
@@ -344,6 +351,7 @@ def main():
             args.revalidate_native_tables,
             args.retry_ocr_recovery,
             args.revalidate_pdf_decode,
+            args.include_source_mapping,
         ),
     )
     try:

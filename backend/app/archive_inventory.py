@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–13 without opening originals.
+"""Export a private, read-only inventory of schema 7–14 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -23,9 +23,11 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from .blob_store import _sync_directory
+from .ingestion_quality import text_complete
+from .native_mapping_inventory import MAX_MANIFEST_BYTES, MAX_RECORD_BYTES, mappings, validate_mapping
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13)
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14)
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
@@ -100,7 +102,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–13; use the matching application version"
+                "archive inventory requires schema 7–14; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -130,7 +132,7 @@ def _validate_schema(conn):
             )
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–13 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–14 database") from exc
 
 
 class _Originals:
@@ -1432,8 +1434,8 @@ def _texts(conn, partitions, summary, owner, country):
     where, params = _where(owner, country)
     cursor = conn.execute(
         f"""SELECT d.id,d.owner_id,d.version,d.content_hash,d.source_url,d.filename,{_COUNTRY} country,
-        l.level,json_extract(d.manifest,'$.elements') elements,
-        json_extract(d.manifest,'$.chunks') chunks,json_extract(d.manifest,'$.quality') quality,
+        l.level,CASE WHEN length(CAST(d.manifest AS BLOB))<={MAX_MANIFEST_BYTES}
+            THEN d.manifest END manifest,
         json_extract(m.payload,'$.review_status') review_status
         FROM {_DOCUMENTS}
         LEFT JOIN legal_classifications l ON l.document_id=d.id AND l.collection='country:'||dc.country
@@ -1442,9 +1444,17 @@ def _texts(conn, partitions, summary, owner, country):
         params,
     )
     while (row := cursor.fetchone()) is not None:
-        elements, chunks = json.loads(row["elements"] or "[]"), json.loads(row["chunks"] or "[]")
-        quality = json.loads(row["quality"] or "null")
-        complete = bool(chunks) and (quality is None or quality.get("complete") is True)
+        anomalies = []
+        manifest = _json_value(row["manifest"], dict, {}, anomalies, "manifest")
+        elements, chunks = manifest.get("elements", []), manifest.get("chunks", [])
+        if not isinstance(elements, list) or not isinstance(chunks, list):
+            elements, chunks = [], []
+            anomalies.append("invalid_manifest_structure")
+        quality = manifest.get("quality")
+        try:
+            complete = bool(chunks) and not anomalies and text_complete(manifest)
+        except (TypeError, KeyError, AttributeError):
+            complete = False
         record = {
             "document_id": row["id"],
             "version": row["version"],
@@ -1458,15 +1468,131 @@ def _texts(conn, partitions, summary, owner, country):
             "quality": quality,
             "elements": elements,
             "chunks": [
-                {key: chunk.get(key) for key in ("id", "text", "locator", "section_path")} for chunk in chunks
+                {key: chunk.get(key) for key in ("id", "text", "locator", "section_path")}
+                for chunk in chunks
+                if isinstance(chunk, dict)
             ],
+            "anomalies": sorted(set(anomalies)),
         }
         _write_jsonl(partitions.file(row["owner_id"], row["country"], "texts.jsonl"), record)
         summary["text_documents"] += 1
         summary["complete_text_documents"] += int(complete)
 
 
-def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
+def _mapping_manifest(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate manifest field")
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError("non-finite manifest value")
+
+    value = json.loads(raw, object_pairs_hook=unique, parse_constant=invalid_constant)
+    if not isinstance(value, dict):
+        raise ValueError("invalid manifest")
+    return value
+
+
+def _source_mappings(conn, partitions, originals, summary, owner, country):
+    """Stream explicit mapping records; attachments never expose their manifest."""
+    where, params = _where(owner, country)
+    cursor = conn.execute(
+        f"""SELECT d.id,d.owner_id,d.version,d.content_hash,d.size,d.storage_path,d.role,
+        d.status,{_COUNTRY} country,l.level,
+        CASE WHEN d.role='primary' THEN length(CAST(d.manifest AS BLOB)) END manifest_size,
+        CASE WHEN d.role='primary' AND length(CAST(d.manifest AS BLOB))<={MAX_MANIFEST_BYTES}
+            THEN d.manifest END manifest
+        FROM {_DOCUMENTS} LEFT JOIN legal_classifications l
+            ON l.document_id=d.id AND l.collection='country:'||dc.country
+        WHERE {where} ORDER BY d.owner_id,COALESCE({_COUNTRY},''),d.id""",
+        params,
+    )
+    while (row := cursor.fetchone()) is not None:
+        original, anomalies = originals.inspect(row["storage_path"], row["size"])
+        pointer = {
+            "document_id": row["id"],
+            "document_version": row["version"],
+            "owner_sha256": _owner_hash(row["owner_id"]),
+            "country": row["country"],
+            "source_hash": row["content_hash"],
+            "role": row["role"],
+            "legal_level": "attachment" if row["role"] != "primary" else row["level"],
+            "mapping_record_indexed": False,
+        }
+        stream = partitions.file(row["owner_id"], row["country"], "source-mapping.jsonl")
+        count, gaps = 0, 0
+
+        def emit(kind, value, json_pointer=None):
+            nonlocal count, gaps
+            record = {**pointer, "record_kind": kind, "manifest_pointer": json_pointer, **value}
+            encoded = json.dumps(record, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) > MAX_RECORD_BYTES:
+                record = {
+                    **pointer,
+                    "record_kind": "mapping_gap",
+                    "manifest_pointer": json_pointer,
+                    "anomalies": ["mapping_record_exceeds_limit"],
+                }
+                gaps += 1
+            _write_jsonl(stream, record)
+            count += 1
+
+        start = {
+            "original": original,
+            "status": row["status"],
+            "manifest_size": row["manifest_size"],
+            "text_complete": None,
+            "projection_complete": False,
+            "anomalies": anomalies,
+        }
+        if row["role"] != "primary":
+            start["mapping_status"] = "attachment_original_only"
+            emit("document", start)
+        elif row["manifest"] is None:
+            start["mapping_status"] = "manifest_unavailable"
+            start["anomalies"] = [*anomalies, "manifest_missing_or_exceeds_limit"]
+            emit("document", start)
+            gaps += 1
+        else:
+            try:
+                raw = row["manifest"].encode("utf-8")
+                manifest_hash = hashlib.sha256(raw).hexdigest()
+                manifest = _mapping_manifest(row["manifest"])
+                if manifest.get("source_hash", row["content_hash"]) != row["content_hash"]:
+                    raise ValueError("manifest source mismatch")
+                pointer["manifest_sha256"] = manifest_hash
+                start.update(
+                    mapping_status="stored_manifest_projection",
+                    text_complete=bool(manifest.get("chunks")) and text_complete(manifest),
+                )
+                emit("document", start)
+                for kind, path, mapping in mappings(manifest, manifest_hash):
+                    validate_mapping(mapping, row["content_hash"])
+                    emit(kind, {"mapping": mapping}, path)
+            except (TypeError, ValueError, AttributeError, KeyError, RecursionError, UnicodeError):
+                if count == 0:
+                    start["mapping_status"] = "invalid_manifest"
+                    emit("document", start)
+                emit("mapping_gap", {"anomalies": ["invalid_native_mapping_manifest"]})
+                gaps += 1
+        emit(
+            "document_end",
+            {
+                "projection_complete": row["role"] == "primary" and not gaps,
+                "mapping_gaps": gaps,
+                "record_count_before_end": count,
+            },
+        )
+        summary["source_mapping_documents"] += 1
+        summary["source_mapping_records"] += count
+        summary["source_mapping_gaps"] += gaps
+
+
+def export_inventory(data_dir, *, country=None, owner=None, include_text=False, include_source_mapping=False):
     """Publish a catalog and return its Path and summary; no services are started."""
     country, owner = country or None, owner or None
     _country_key(country)
@@ -1488,7 +1614,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 4,
+                "format_version": 5 if include_source_mapping else 4,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -1510,6 +1636,15 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
             }
             if include_text:
                 summary.update(text_documents=0, complete_text_documents=0)
+            if include_source_mapping:
+                summary.update(
+                    source_mapping_documents=0,
+                    source_mapping_records=0,
+                    source_mapping_gaps=0,
+                    source_mapping_scope="stored_manifest_allowlist_only_not_legal_completeness",
+                    source_mapping_manifest_limit=MAX_MANIFEST_BYTES,
+                    source_mapping_record_limit=MAX_RECORD_BYTES,
+                )
             dw, dp = _where(owner, country)
             pw, pp = _where(owner, country, "b.owner_id", "b.country")
             summary["owners"] = conn.execute(
@@ -1532,6 +1667,8 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
                 _relations(conn, partitions, summary, owner, country)
                 if include_text:
                     _texts(conn, partitions, summary, owner, country)
+                if include_source_mapping:
+                    _source_mappings(conn, partitions, originals, summary, owner, country)
             conn.rollback()
         summary.update(completed=True, completed_at=_now())
         summary["anomaly_counts"] = dict(sorted(summary["anomaly_counts"].items()))
@@ -1562,16 +1699,24 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–13)"
+        description="Export a read-only catalog of stored originals (schema 7–14)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")
     )
     parser.add_argument("--country", default=os.getenv("TEA_INVENTORY_COUNTRY") or None)
     parser.add_argument("--owner", default=os.getenv("TEA_INVENTORY_OWNER") or None)
+    parser.add_argument("--include-text", action="store_true")
+    parser.add_argument("--include-source-mapping", action="store_true")
     args = parser.parse_args(argv)
     try:
-        report = export_inventory(args.data_dir, country=args.country, owner=args.owner)
+        report = export_inventory(
+            args.data_dir,
+            country=args.country,
+            owner=args.owner,
+            include_text=args.include_text,
+            include_source_mapping=args.include_source_mapping,
+        )
     except InventoryError as exc:
         print(str(exc), file=sys.stderr)
         return 1

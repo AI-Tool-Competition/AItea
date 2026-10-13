@@ -4,6 +4,7 @@ import re
 
 
 COUNTRY_ALIASES = {
+    "CN": ("China", "中国", "中华人民共和国"),
     "ID": ("Indonesia", "印尼", "印度尼西亚"),
     "SG": ("Singapore", "新加坡"),
 }

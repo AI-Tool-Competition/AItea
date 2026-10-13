@@ -357,9 +357,20 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-@pytest.mark.parametrize("version", [7, 8])
+@pytest.mark.parametrize("version", [7, 8, 9])
 def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
     document(archive, "law")
+    if version < 9:
+        with archive.db.transaction() as conn:
+            for table in (
+                "legal_requests",
+                "legal_analysis_versions",
+                "legal_analyses",
+                "legal_fact_versions",
+                "legal_facts",
+            ):
+                conn.execute("DROP TABLE " + table)
+            conn.execute("DELETE FROM schema_migrations WHERE version=9")
     if version == 7:
         with archive.db.transaction() as conn:
             conn.execute("DROP TABLE debug_runs")
@@ -372,7 +383,7 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
     assert archive.db.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [6, 9])
+@pytest.mark.parametrize("version", [6, 10])
 def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, version):
     from app.archive_inventory import InventoryError, export_inventory
 

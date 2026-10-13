@@ -3269,3 +3269,271 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
+
+/* Legal workbench follows the existing tea panels and theme tokens. */
+.tea-panel-tabs {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tea-sidepanel-header > button {
+  flex-shrink: 0;
+}
+.tea-legal-workbench {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tea-legal-heading,
+.tea-legal-toolbar,
+.tea-legal-analysis > header,
+.tea-legal-issue > header,
+.tea-legal-pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tea-legal-heading {
+  align-items: flex-start;
+}
+.tea-legal-heading > svg {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.tea-legal-heading h3 {
+  font-size: 17px;
+  font-weight: 600;
+}
+.tea-legal-heading p,
+.tea-legal-note,
+.tea-legal-pagination,
+.tea-legal-analysis > header small {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted-foreground);
+}
+.tea-legal-workbench h4,
+.tea-legal-workbench h5,
+.tea-legal-result h4,
+.tea-legal-result h5 {
+  font-weight: 600;
+  line-height: 1.6;
+}
+.tea-legal-workbench .tea-field {
+  margin: 0;
+}
+.tea-legal-workbench form,
+.tea-legal-history,
+.tea-legal-analysis,
+.tea-legal-facts,
+.tea-legal-followups,
+.tea-legal-sections,
+.tea-legal-section,
+.tea-legal-result,
+.tea-legal-rule,
+.tea-legal-policy > fieldset,
+.tea-legal-requirements,
+.tea-legal-preview[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.tea-legal-workbench select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.tea-legal-history,
+.tea-legal-facts,
+.tea-legal-sections,
+.tea-legal-versions,
+.tea-legal-rule,
+.tea-legal-program,
+.tea-legal-preview {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+.tea-legal-workbench summary,
+.tea-legal-policy summary,
+.tea-legal-result summary {
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.8;
+  padding: 5px 0;
+  color: var(--foreground);
+}
+.tea-legal-workbench summary:focus-visible,
+.tea-legal-policy summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.tea-legal-workbench summary svg,
+.tea-legal-policy summary svg {
+  display: inline;
+  margin-right: 5px;
+}
+.tea-legal-fact,
+.tea-legal-requirement {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.tea-legal-fact legend,
+.tea-legal-requirement legend {
+  padding: 0 5px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.tea-legal-fact > button,
+.tea-legal-section > button {
+  align-self: flex-start;
+}
+.tea-legal-fact details > :not(summary) {
+  margin-top: 12px;
+}
+.tea-legal-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+}
+.tea-legal-evidence .tea-checkbox {
+  overflow-wrap: anywhere;
+  align-items: flex-start;
+}
+.tea-legal-conflict,
+.tea-legal-gaps,
+.tea-legal-deadline {
+  border-left: 2px solid var(--border);
+  padding: 7px 12px;
+  font-size: 12px;
+  line-height: 1.75;
+  background: var(--muted);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.tea-legal-conflict > button {
+  margin-top: 8px;
+  white-space: normal;
+  height: auto;
+  min-height: 32px;
+}
+.tea-legal-issue {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1.8;
+  min-width: 0;
+}
+.tea-legal-conclusion {
+  font-weight: 500;
+}
+.tea-legal-issue p,
+.tea-legal-prose,
+.tea-legal-diff del,
+.tea-legal-diff ins {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tea-legal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tea-legal-actions .ta-badge {
+  margin-right: 6px;
+}
+.tea-legal-result ul {
+  padding-left: 18px;
+  list-style: disc;
+}
+.tea-legal-diff {
+  display: grid;
+  gap: 12px;
+  font-size: 12px;
+  margin: 8px 0 12px;
+}
+.tea-legal-diff strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted-foreground);
+}
+.tea-legal-diff del,
+.tea-legal-diff ins {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.tea-legal-diff del {
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+.tea-legal-diff ins {
+  background: var(--muted);
+  text-decoration: none;
+}
+.tea-legal-public-trace pre {
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.tea-legal-number-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.tea-legal-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.tea-legal-program > div {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.tea-legal-program p {
+  color: var(--muted-foreground);
+}
+.tea-legal-policy .ta-hint {
+  margin: 0;
+}
+.tea-legal-pagination {
+  justify-content: space-between;
+}
+.tea-legal-versions li {
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+@media (max-width: 767px) {
+  .tea-legal-workbench {
+    padding: 22px 18px;
+  }
+  .tea-mobile-panel .tea-panel-tabs {
+    gap: 16px;
+  }
+  .tea-legal-number-fields {
+    grid-template-columns: 1fr;
+  }
+  .tea-legal-workbench .tea-checkbox {
+    min-height: 30px;
+  }
+}

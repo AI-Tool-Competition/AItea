@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { type AgentStep, type Template } from "./types";
+import { type AgentConfig, type AgentStep, type Template } from "./types";
 
 // Drafts may be incomplete. Publication and test runs use the server's stricter
 // validation, while import rejects unknown rules instead of silently losing them.
@@ -33,8 +33,48 @@ const taskSchema = z
     output_template: optionalText,
   })
   .strict();
+const legalPolicySchema = z
+  .object({
+    enabled: z.boolean(),
+    jurisdictions: z.array(z.string()).max(20),
+    question_limit: z.number().int().min(1).max(5),
+    max_rounds: z.number().int().min(1).max(3),
+    retrieval_limit: z.number().int().min(1).max(20),
+    rules: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            title: z.string(),
+            module: z.enum(["qa01", "qa02", "qa03", "qa04", "qa05", "qa06"]),
+            enabled: z.boolean(),
+            execution: z.enum(["model", "manual"]),
+            domains: z.array(z.string()),
+            jurisdictions: z.array(z.string()),
+            condition: z.string(),
+            instructions: z.string(),
+            required_facts: z.array(
+              z
+                .object({
+                  key: z.string(),
+                  label: z.string(),
+                  purpose: z.string(),
+                  decisive: z.boolean(),
+                })
+                .strict(),
+            ),
+            output_requirements: z.string(),
+            review_required: z.boolean(),
+            source_reference: z.string(),
+          })
+          .strict(),
+      )
+      .max(60),
+  })
+  .strict();
 const agentSchema = z
   .object({
+    legal: legalPolicySchema.nullish(),
     language: z.string(),
     instructions: z.string(),
     retrieval_limit: z.number(),
@@ -153,6 +193,15 @@ const fieldNames: Record<string, string> = {
   id: "编号",
   version: "版本",
   required: "必填要求",
+  legal: "法律分析",
+  rules: "规则卡",
+  jurisdictions: "适用国家",
+  required_facts: "事实要求",
+  question_limit: "每组追问数量",
+  max_rounds: "分析轮次",
+  output_requirements: "输出要求",
+  review_required: "复核要求",
+  source_reference: "规则来源",
 };
 export function configurationIssueLabel(path: string, template: Template) {
   const parts = path.split(".");
@@ -169,4 +218,28 @@ export function configurationIssueLabel(path: string, template: Template) {
     else labels.push(fieldNames[part] ?? part);
   }
   return labels.filter(Boolean).join(" › ") || "整个配置";
+}
+
+// The legal runtime has fixed program stages. Rule cards change their policy,
+// never their order or mandatory checks; legacy workflows keep their steps.
+export const legalModules = [
+  { id: "qa01", title: "问题识别与初步检索" },
+  { id: "qa02", title: "事实梳理与必要追问" },
+  { id: "qa03", title: "法域与适用规则" },
+  { id: "qa04", title: "检索依据与覆盖核对" },
+  { id: "qa05", title: "法律分析与期限核对" },
+  { id: "qa06", title: "报告与复核建议" },
+] as const;
+export function analysisSteps(agent: AgentConfig): AgentStep[] {
+  if (!agent.legal?.enabled) return agent.steps;
+  return legalModules.map((module) => ({
+    id: module.id,
+    label: module.title,
+    type: module.id === "qa04" ? "retrieve" : "guide",
+    enabled: true,
+    instructions: agent
+      .legal!.rules.filter((rule) => rule.enabled && rule.module === module.id)
+      .map((rule) => rule.instructions)
+      .join("\n"),
+  }));
 }

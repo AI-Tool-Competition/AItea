@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { errorMessage, TeaApiError, teaRequest } from "@/core/tea/api";
 import {
+  analysisSteps,
   configurationIssueLabel,
   configurationSchema,
 } from "@/core/tea/configuration";
@@ -271,8 +272,8 @@ function EditorSession({
   const analysis = editingDefault
     ? draft.agent
     : (selected.analysis ?? draft.agent);
-  const selectedStep =
-    analysis.steps.find((step) => step.id === stepId) ?? analysis.steps[0];
+  const steps = analysisSteps(analysis);
+  const selectedStep = steps.find((step) => step.id === stepId) ?? steps[0];
   function update(next: Template) {
     configuration.update(next);
     setValidation(undefined);
@@ -410,7 +411,7 @@ function EditorSession({
       stepId={stepId || undefined}
       onStep={setStepId}
       onEdit={(id) => {
-        if (!analysis.steps.some((step) => step.id === id)) return;
+        if (!steps.some((step) => step.id === id)) return;
         setStepId(id);
         setDebugOpen(false);
         setEditRequest((value) => value + 1);

@@ -94,7 +94,7 @@ function invalidStream() {
   );
 }
 
-// Both tea consumers use the same framing, cancellation and resource limits.
+// Tea consumers use the same framing, cancellation and resource limits.
 // Progress does not turn an incomplete stream into a successful result.
 async function streamTea<T>(
   path: string,
@@ -434,6 +434,14 @@ export function safeSourceUrl(url?: string | null) {
   }
 }
 import type {
+  LegalAnalysis,
+  LegalFact,
+  LegalFactInput,
+  LegalHistory,
+  LegalPolicyDefaults,
+  LegalResult,
+  LegalStreamEvent,
+  Template,
   DebugRequest,
   DebugRun,
   DebugStreamEvent,
@@ -442,3 +450,314 @@ import type {
   MessageStreamEvent,
   TraceStep,
 } from "./types";
+
+const legalPath = (caseId: string) =>
+  `/cases/${encodeURIComponent(caseId)}/legal`;
+export const getLegalPolicy = (signal?: AbortSignal) =>
+  teaRequest<LegalPolicyDefaults>("/legal/policy", { signal });
+export function getLegalHistory(
+  caseId: string,
+  stageId: string,
+  offset = 0,
+  signal?: AbortSignal,
+) {
+  return teaRequest<LegalHistory>(
+    `${legalPath(caseId)}?stage_id=${encodeURIComponent(stageId)}&limit=20&offset=${offset}`,
+    { signal },
+  );
+}
+export function getLegalAnalysis(
+  caseId: string,
+  analysisId: string,
+  signal?: AbortSignal,
+) {
+  return teaRequest<LegalAnalysis>(
+    `${legalPath(caseId)}/analyses/${encodeURIComponent(analysisId)}`,
+    { signal },
+  );
+}
+function strings(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
+}
+function legalFactShape(value: unknown): boolean {
+  return (
+    record(value) &&
+    typeof value.key === "string" &&
+    typeof value.label === "string" &&
+    typeof value.source === "string" &&
+    (value.value === null ||
+      typeof value.value === "string" ||
+      (typeof value.value === "number" && Number.isFinite(value.value))) &&
+    typeof value.confirmed === "boolean" &&
+    ["unknown", "low", "medium", "high"].includes(
+      String(value.extraction_confidence),
+    ) &&
+    ["unverified", "verified", "conflict"].includes(
+      String(value.evidence_status),
+    ) &&
+    strings(value.evidence_refs) &&
+    Array.isArray(value.conflicts) &&
+    value.conflicts.every(
+      (item) =>
+        record(item) &&
+        typeof item.source === "string" &&
+        strings(item.evidence_refs),
+    ) &&
+    (value.resolved_conflicts === undefined ||
+      (Array.isArray(value.resolved_conflicts) &&
+        value.resolved_conflicts.every(
+          (item) =>
+            record(item) &&
+            typeof item.source === "string" &&
+            strings(item.evidence_refs),
+        ))) &&
+    typeof value.revision === "number" &&
+    Number.isInteger(value.revision) &&
+    value.revision >= 0
+  );
+}
+function legalRequirementShape(value: unknown): boolean {
+  return (
+    record(value) &&
+    typeof value.key === "string" &&
+    typeof value.label === "string" &&
+    typeof value.purpose === "string" &&
+    typeof value.decisive === "boolean"
+  );
+}
+function legalCitationShape(value: unknown): boolean {
+  return (
+    record(value) &&
+    typeof value.document_id === "string" &&
+    typeof value.title === "string" &&
+    typeof value.excerpt === "string" &&
+    record(value.locator)
+  );
+}
+function legalSectionShape(value: unknown): boolean {
+  return (
+    record(value) &&
+    typeof value.id === "string" &&
+    typeof value.issue_id === "string" &&
+    typeof value.title === "string" &&
+    typeof value.content === "string"
+  );
+}
+function legalIssueShape(value: unknown): boolean {
+  return (
+    record(value) &&
+    typeof value.id === "string" &&
+    typeof value.question === "string" &&
+    ["information", "legal"].includes(String(value.kind)) &&
+    ["supported", "unsupported", "conditional", "undetermined"].includes(
+      String(value.status),
+    ) &&
+    typeof value.conclusion === "string" &&
+    typeof value.explanation === "string" &&
+    typeof value.needs_review === "boolean" &&
+    strings(value.domains) &&
+    strings(value.jurisdictions) &&
+    strings(value.fact_keys) &&
+    strings(value.gaps) &&
+    Array.isArray(value.missing_facts) &&
+    value.missing_facts.every(legalRequirementShape) &&
+    Array.isArray(value.citations) &&
+    value.citations.every(legalCitationShape) &&
+    Array.isArray(value.conditions) &&
+    value.conditions.every(
+      (item) =>
+        record(item) &&
+        typeof item.label === "string" &&
+        typeof item.reason === "string" &&
+        ["met", "not_met", "unknown", "not_applicable"].includes(
+          String(item.state),
+        ) &&
+        strings(item.citation_ids) &&
+        strings(item.fact_keys),
+    ) &&
+    Array.isArray(value.actions) &&
+    value.actions.every(
+      (item) =>
+        record(item) &&
+        typeof item.id === "string" &&
+        typeof item.title === "string" &&
+        typeof item.details === "string" &&
+        [
+          "mandatory",
+          "conditional",
+          "recommended",
+          "commercial",
+          "unverified",
+        ].includes(String(item.nature)),
+    ) &&
+    Array.isArray(value.deadlines) &&
+    value.deadlines.every(
+      (item) =>
+        record(item) &&
+        typeof item.id === "string" &&
+        typeof item.label === "string" &&
+        ["calculated", "conditional", "unavailable"].includes(
+          String(item.status),
+        ) &&
+        (item.date === null || typeof item.date === "string") &&
+        (item.timezone === null || typeof item.timezone === "string") &&
+        strings(item.assumptions) &&
+        strings(item.missing_prerequisites) &&
+        strings(item.citation_ids),
+    )
+  );
+}
+function legalAnalysisShape(value: unknown): value is LegalAnalysis {
+  if (!record(value) || !record(value.result)) return false;
+  const result = value.result;
+  return (
+    typeof value.id === "string" &&
+    typeof value.case_id === "string" &&
+    typeof value.stage_id === "string" &&
+    typeof value.question === "string" &&
+    typeof value.revision === "number" &&
+    Number.isInteger(value.revision) &&
+    value.revision >= 1 &&
+    [
+      "running",
+      "completed",
+      "needs_input",
+      "needs_review",
+      "failed",
+      "cancelled",
+    ].includes(String(value.status)) &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string" &&
+    (value.error === null || typeof value.error === "string") &&
+    strings(value.affected_issue_ids) &&
+    Array.isArray(value.sections) &&
+    value.sections.every(
+      (item) =>
+        legalSectionShape(item) &&
+        record(item) &&
+        typeof item.generated_content === "string" &&
+        (item.suggested_content === null ||
+          typeof item.suggested_content === "string") &&
+        typeof item.edited === "boolean" &&
+        typeof item.needs_review === "boolean",
+    ) &&
+    typeof result.question === "string" &&
+    typeof result.output === "string" &&
+    ["demo", "live"].includes(String(result.assistant_mode)) &&
+    Array.isArray(result.issues) &&
+    result.issues.every(legalIssueShape) &&
+    Array.isArray(result.facts) &&
+    result.facts.every(legalFactShape) &&
+    Array.isArray(result.followups) &&
+    result.followups.every(legalRequirementShape) &&
+    Array.isArray(result.sections) &&
+    result.sections.every(legalSectionShape) &&
+    Array.isArray(result.trace) &&
+    result.trace.every(isTraceStep) &&
+    strings(result.gaps) &&
+    Array.isArray(result.citations) &&
+    result.citations.every(legalCitationShape)
+  );
+}
+
+export function streamLegalAnalysis(
+  caseId: string,
+  request:
+    | { stage_id: string; question: string; client_request_id: string }
+    | { expected_revision: number; client_request_id: string },
+  {
+    analysisId,
+    signal,
+    onEvent,
+  }: {
+    analysisId?: string;
+    signal?: AbortSignal;
+    onEvent: (event: LegalStreamEvent) => void;
+  },
+): Promise<LegalAnalysis> {
+  const path = analysisId
+    ? `${legalPath(caseId)}/analyses/${encodeURIComponent(analysisId)}/refresh/stream`
+    : `${legalPath(caseId)}/analyses/stream`;
+  return streamTea(path, request, {
+    signal,
+    maxBytes: 32 * 1024 * 1024,
+    maxDurationMs: 20 * 60_000,
+    onFrame(event, data) {
+      if (event === "done") {
+        const value = data.analysis;
+        if (
+          !legalAnalysisShape(value) ||
+          value.case_id !== caseId ||
+          ("stage_id" in request && value.stage_id !== request.stage_id) ||
+          (analysisId !== undefined && value.id !== analysisId)
+        )
+          throw invalidStream();
+        return value;
+      }
+      if (event === "step") {
+        if (!isTraceStep(data)) throw invalidStream();
+        onEvent({ event, data });
+      } else if (event === "status") {
+        if (typeof data.label !== "string") throw invalidStream();
+        onEvent({ event, data: { label: data.label } });
+      }
+    },
+  });
+}
+export function saveLegalFact(
+  caseId: string,
+  key: string,
+  input: LegalFactInput,
+  signal?: AbortSignal,
+) {
+  return patch<{ fact: LegalFact; affected_analysis_ids: string[] }>(
+    `${legalPath(caseId)}/facts/${encodeURIComponent(key)}`,
+    input,
+    signal,
+  );
+}
+export function saveLegalSection(
+  caseId: string,
+  analysisId: string,
+  sectionId: string,
+  input: {
+    expected_revision: number;
+    content: string;
+    accept_suggestion?: boolean;
+  },
+  signal?: AbortSignal,
+) {
+  return patch<LegalAnalysis>(
+    `${legalPath(caseId)}/analyses/${encodeURIComponent(analysisId)}/sections/${encodeURIComponent(sectionId)}`,
+    input,
+    signal,
+  );
+}
+export function getLegalVersions(
+  caseId: string,
+  analysisId: string,
+  offset = 0,
+  signal?: AbortSignal,
+) {
+  return teaRequest<{
+    items: { revision: number; created_at: string }[];
+    total: number;
+  }>(
+    `${legalPath(caseId)}/analyses/${encodeURIComponent(analysisId)}/versions?limit=20&offset=${offset}`,
+    { signal },
+  );
+}
+export function previewLegalAnalysis(
+  template: Template,
+  stageId: string,
+  input: string,
+  signal?: AbortSignal,
+) {
+  return post<LegalResult>(
+    "/templates/legal/preview",
+    { template, stage_id: stageId, input },
+    signal,
+  );
+}

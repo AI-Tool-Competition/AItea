@@ -33,6 +33,7 @@ import {
   type Template,
   type User,
 } from "@/core/tea/types";
+import { clearLegalDrafts } from "@/core/tea/use-legal-workbench";
 
 import { Admin, type AdminPage } from "./admin";
 import { clearArtifactDrafts } from "./artifact-panel";
@@ -378,6 +379,7 @@ export function TeaApp({
   useEffect(() => {
     const expired = () => {
       clearChatDrafts();
+      clearLegalDrafts();
       clearCollectionDrafts();
       setBootstrap(undefined);
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
@@ -467,6 +469,7 @@ export function TeaApp({
       clearArtifactDrafts();
       clearTaskDrafts();
       clearChatDrafts();
+      clearLegalDrafts();
       clearStudioDrafts();
       clearCollectionDrafts();
       setBootstrap(undefined);

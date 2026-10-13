@@ -2,6 +2,7 @@
 
 import { Check, LoaderCircle, Minus, Pause, X } from "lucide-react";
 
+import { analysisSteps } from "@/core/tea/configuration";
 import { countryLabel } from "@/core/tea/countries";
 import type {
   DebugEvaluation,
@@ -469,13 +470,29 @@ export function DebugRunComparison({
     String(agent(current).retrieval_limit),
   );
   const stepNames = (run: DebugRun) =>
-    agent(run)
-      .steps.filter((step) => step.enabled)
+    analysisSteps(agent(run))
+      .filter((step) => step.enabled)
       .map((step) => step.label)
       .join(" → ");
   add("步骤顺序", stepNames(previous), stepNames(current));
-  for (const step of agent(current).steps) {
-    const old = agent(previous).steps.find((item) => item.id === step.id);
+  const legalDescription = (run: DebugRun) => {
+    const policy = agent(run).legal;
+    if (!policy) return "未配置";
+    return (
+      `${policy.enabled ? "已启用" : "未启用"}；额外法域：${policy.jurisdictions.join("、") || "无"}；每组追问 ${policy.question_limit} 项，最多 ${policy.max_rounds} 轮，检索 ${policy.retrieval_limit} 段\n` +
+      policy.rules
+        .map(
+          (rule) =>
+            `${rule.title}（${rule.module.toUpperCase()}，${rule.enabled ? "启用" : "停用"}，${rule.execution === "manual" ? "人工审核" : "模型分析"}）\n领域：${rule.domains.join("、") || "通用"}；国家：${rule.jurisdictions.join("、") || "通用"}；触发：${rule.condition}\n分析：${rule.instructions}\n事实：${rule.required_facts.map((fact) => `${fact.label}：${fact.purpose}${fact.decisive ? "（关键）" : ""}`).join("；")}\n输出：${rule.output_requirements}；${rule.review_required ? "需复核" : "无额外复核"}；来源：${rule.source_reference}`,
+        )
+        .join("\n\n")
+    );
+  };
+  add("法律分析规则", legalDescription(previous), legalDescription(current));
+  for (const step of analysisSteps(agent(current))) {
+    const old = analysisSteps(agent(previous)).find(
+      (item) => item.id === step.id,
+    );
     add(
       `${step.label} · 分析要求`,
       old?.instructions ?? "",

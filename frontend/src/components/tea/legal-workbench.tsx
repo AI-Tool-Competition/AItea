@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, RefreshCw, Scale, Square } from "lucide-react";
+import { ChevronDown, Plus, RefreshCw, Scale, Square } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -56,6 +56,8 @@ function FactEditor({
   busy,
   onEdit,
   onSave,
+  compact = false,
+  drafted = false,
 }: {
   fact: LegalFact;
   input: LegalFactInput;
@@ -64,12 +66,14 @@ function FactEditor({
   busy: boolean;
   onEdit: (patch: Partial<LegalFactInput>) => void;
   onSave: () => void;
+  compact?: boolean;
+  drafted?: boolean;
 }) {
   const conflict = input.expected_revision !== fact.revision;
-  return (
+  const editor = (
     <fieldset className="tea-legal-fact" disabled={busy}>
       <legend>{fact.label}</legend>
-      {purpose && <p className="tea-legal-note">{purpose}</p>}
+      {purpose && !compact && <p className="tea-legal-note">{purpose}</p>}
       <label className="tea-field">
         <span className="sr-only">{fact.label}</span>
         <Input
@@ -246,6 +250,36 @@ function FactEditor({
       </Button>
     </fieldset>
   );
+  if (!compact) return editor;
+  return (
+    <details className="tea-fact-disclosure">
+      <summary>
+        <div>
+          <strong>{fact.label}</strong>
+          {purpose && <span>{purpose}</span>}
+        </div>
+        <small>
+          {conflict
+            ? "版本已变更"
+            : drafted
+              ? input.evidence_status === "conflict"
+                ? "待保存 · 有冲突"
+                : "待保存"
+              : input.evidence_status === "conflict"
+                ? "有冲突"
+                : input.evidence_status === "verified"
+                  ? "已核验"
+                  : input.value === null || String(input.value).trim() === ""
+                    ? "待填写"
+                    : input.confirmed
+                      ? "已确认 · 待核验"
+                      : "待确认"}
+        </small>
+        <ChevronDown size={14} />
+      </summary>
+      {editor}
+    </details>
+  );
 }
 
 type WorkbenchProps = {
@@ -262,14 +296,19 @@ function InlineEditor({
   embedded,
   title,
   children,
+  initiallyOpen = false,
 }: {
   embedded: boolean;
   title: string;
   children: ReactNode;
+  initiallyOpen?: boolean;
 }) {
   return embedded ? (
-    <details className="tea-node-editor">
-      <summary>{title}</summary>
+    <details className="tea-node-editor" open={initiallyOpen || undefined}>
+      <summary>
+        <span>{title}</span>
+        <ChevronDown size={14} />
+      </summary>
       {children}
     </details>
   ) : (
@@ -343,6 +382,8 @@ function ScopedLegalWorkbench({
       <FactEditor
         key={fact.key}
         fact={fact}
+        compact={embedded}
+        drafted={!!legal.draft.facts[fact.key]}
         purpose={purpose}
         input={legal.draft.facts[fact.key] ?? legalFactInput(fact)}
         documents={record.documents}
@@ -352,9 +393,136 @@ function ScopedLegalWorkbench({
       />
     );
   }
+  const questionEditor = (
+    <InlineEditor embedded={embedded} title="补充分析问题">
+      {embedded && analysis && (
+        <p className="tea-legal-note">本次范围：{analysis.question}</p>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void legal.run();
+        }}
+      >
+        <label className="tea-field">
+          <span>法律分析问题</span>
+          <Textarea
+            rows={3}
+            maxLength={10000}
+            value={legal.draft.question}
+            onChange={(e) => legal.editQuestion(e.target.value)}
+            placeholder="例如：这笔出口交易的付款条款有哪些风险？"
+          />
+        </label>
+        <div className="tea-legal-toolbar">
+          <ActionButton
+            size="sm"
+            type="submit"
+            busy={legal.busy === "run"}
+            disabled={
+              !editable ||
+              legal.loading ||
+              !!legal.historyError ||
+              !legal.draft.question.trim()
+            }
+          >
+            开始分析
+          </ActionButton>
+          {legal.busy === "run" && (!embedded || !analysis) && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={legal.stop}
+            >
+              <Square size={13} />
+              停止分析
+            </Button>
+          )}
+        </div>
+      </form>
+    </InlineEditor>
+  );
+  const historyEditor = (
+    <InlineEditor embedded={embedded} title="本节点的分析记录">
+      <div className="tea-legal-history">
+        <h4>本节点的分析记录</h4>
+        {legal.loading ? (
+          <Busy label="读取分析记录…" />
+        ) : legal.historyError ? (
+          <ErrorNotice message={legal.historyError} onRetry={legal.reload} />
+        ) : (
+          <>
+            {legal.history.analyses.length > 0 ? (
+              <label className="tea-field">
+                <span className="sr-only">选择分析记录</span>
+                <select
+                  value={
+                    legal.history.analyses.some(
+                      (item) => item.id === legal.draft.selectedId,
+                    )
+                      ? legal.draft.selectedId
+                      : ""
+                  }
+                  disabled={!!legal.busy}
+                  onChange={(e) => {
+                    setFollowupPage(0);
+                    legal.choose(e.target.value);
+                  }}
+                >
+                  <option value="" disabled>
+                    选择分析记录
+                  </option>
+                  {legal.history.analyses.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.question} · {legalStatusLabel[item.status]} ·{" "}
+                      {dateLabel(item.created_at)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <p className="tea-legal-note">
+                还没有分析记录。写下具体问题即可开始。
+              </p>
+            )}
+            {legal.history.total > 20 && (
+              <nav className="tea-legal-pagination" aria-label="分析历史分页">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={legal.page === 0 || !!legal.busy}
+                  onClick={() => legal.setPage(legal.page - 1)}
+                >
+                  上一页
+                </Button>
+                <span>
+                  第 {legal.page + 1} 页 · 共 {legal.history.total} 条
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={
+                    (legal.page + 1) * 20 >= legal.history.total || !!legal.busy
+                  }
+                  onClick={() => legal.setPage(legal.page + 1)}
+                >
+                  下一页
+                </Button>
+              </nav>
+            )}
+          </>
+        )}
+      </div>
+    </InlineEditor>
+  );
   return (
     <section
-      className={`tea-legal-workbench${embedded ? "tea-legal-embedded" : ""}`}
+      className={
+        embedded
+          ? "tea-legal-workbench tea-legal-embedded"
+          : "tea-legal-workbench"
+      }
       aria-label={embedded ? "本节点分析与编辑" : "法律分析工作台"}
     >
       {!embedded && (
@@ -369,60 +537,15 @@ function ScopedLegalWorkbench({
       {locked && (
         <p className="tea-legal-note">当前节点尚未解锁，可查看已有记录。</p>
       )}
-      <InlineEditor embedded={embedded} title="补充分析问题">
-        {embedded && analysis && (
-          <p className="tea-legal-note">本次范围：{analysis.question}</p>
-        )}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void legal.run();
-          }}
-        >
-          <label className="tea-field">
-            <span>法律分析问题</span>
-            <Textarea
-              rows={3}
-              maxLength={10000}
-              value={legal.draft.question}
-              onChange={(e) => legal.editQuestion(e.target.value)}
-              placeholder="例如：这笔出口交易的付款条款有哪些风险？"
-            />
-          </label>
-          <div className="tea-legal-toolbar">
-            <ActionButton
-              size="sm"
-              type="submit"
-              busy={legal.busy === "run"}
-              disabled={
-                !editable ||
-                legal.loading ||
-                !!legal.historyError ||
-                !legal.draft.question.trim()
-              }
-            >
-              开始分析
-            </ActionButton>
-            {legal.busy === "run" && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={legal.stop}
-              >
-                <Square size={13} />
-                停止分析
-              </Button>
-            )}
-          </div>
-        </form>
-      </InlineEditor>
-      {legal.label && (
+      {!embedded && questionEditor}
+      {legal.label && legal.busy === "run" && (
         <p role="status" className="tea-legal-note">
           {legal.label}
         </p>
       )}
-      {legal.steps.length > 0 && <Trace steps={legal.steps} />}
+      {legal.steps.length > 0 && (legal.busy === "run" || !analysis) && (
+        <Trace steps={legal.steps} running={legal.busy === "run"} />
+      )}
       {legal.error && (
         <>
           <ErrorNotice message={legal.error} />
@@ -436,78 +559,7 @@ function ScopedLegalWorkbench({
           </Button>
         </>
       )}
-      <InlineEditor embedded={embedded} title="本节点的分析记录">
-        <div className="tea-legal-history">
-          <h4>本节点的分析记录</h4>
-          {legal.loading ? (
-            <Busy label="读取分析记录…" />
-          ) : legal.historyError ? (
-            <ErrorNotice message={legal.historyError} onRetry={legal.reload} />
-          ) : (
-            <>
-              {legal.history.analyses.length > 0 ? (
-                <label className="tea-field">
-                  <span className="sr-only">选择分析记录</span>
-                  <select
-                    value={
-                      legal.history.analyses.some(
-                        (item) => item.id === legal.draft.selectedId,
-                      )
-                        ? legal.draft.selectedId
-                        : ""
-                    }
-                    disabled={!!legal.busy}
-                    onChange={(e) => {
-                      setFollowupPage(0);
-                      legal.choose(e.target.value);
-                    }}
-                  >
-                    <option value="" disabled>
-                      选择分析记录
-                    </option>
-                    {legal.history.analyses.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.question} · {legalStatusLabel[item.status]} ·{" "}
-                        {dateLabel(item.created_at)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : (
-                <p className="tea-legal-note">
-                  还没有分析记录。写下具体问题即可开始。
-                </p>
-              )}
-              {legal.history.total > 20 && (
-                <nav className="tea-legal-pagination" aria-label="分析历史分页">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={legal.page === 0 || !!legal.busy}
-                    onClick={() => legal.setPage(legal.page - 1)}
-                  >
-                    上一页
-                  </Button>
-                  <span>
-                    第 {legal.page + 1} 页 · 共 {legal.history.total} 条
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={
-                      (legal.page + 1) * 20 >= legal.history.total ||
-                      !!legal.busy
-                    }
-                    onClick={() => legal.setPage(legal.page + 1)}
-                  >
-                    下一页
-                  </Button>
-                </nav>
-              )}
-            </>
-          )}
-        </div>
-      </InlineEditor>
+      {!embedded && historyEditor}
       {legal.detailLoading && <Busy label="读取分析详情…" />}
       {analysis && (
         <div className="tea-legal-analysis">
@@ -517,30 +569,42 @@ function ScopedLegalWorkbench({
               {legalStatusLabel[analysis.status]}
             </span>
             <small>修订 {analysis.revision}</small>
+            {embedded && legal.busy === "run" ? (
+              <Button size="sm" variant="ghost" onClick={legal.stop}>
+                <Square size={13} />
+                停止分析
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant={embedded ? "ghost" : "outline"}
+                disabled={!editable || legal.detailLoading}
+                onClick={() => void legal.run(true)}
+              >
+                <RefreshCw size={13} />
+                重新分析受影响问题
+              </Button>
+            )}
           </header>
           {analysis.error && <ErrorNotice message={analysis.error} />}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!editable || legal.detailLoading}
-            onClick={() => void legal.run(true)}
-          >
-            <RefreshCw size={13} />
-            重新分析受影响问题
-          </Button>
+
           {embedded && <LegalResultView result={analysis.result} compact />}
           {requirements.length > 0 && (
             <InlineEditor
               embedded={embedded}
               title={`补充信息 · ${requirements.length} 项待核对`}
+              initiallyOpen={embedded}
             >
               <section
                 className="tea-legal-followups"
                 aria-label="需要补充的事实"
               >
-                <h4>先补充这些信息</h4>
+                {!embedded && <h4>先补充这些信息</h4>}
                 <p className="tea-legal-note">
-                  每组最多 {maxQuestions} 项；保存事实后，可重新分析相关问题。
+                  保存事实后，可重新分析相关问题。
+                  {requirements.length > maxQuestions
+                    ? `每组最多 ${maxQuestions} 项。`
+                    : ""}
                 </p>
                 {requirements
                   .slice(
@@ -586,7 +650,15 @@ function ScopedLegalWorkbench({
             </InlineEditor>
           )}
           <InlineEditor embedded={embedded} title="查看详细结论与原文依据">
-            <LegalResultView result={analysis.result} />
+            <LegalResultView
+              result={analysis.result}
+              showTrace={
+                !embedded ||
+                analysis.id !== analysisId ||
+                analysis.revision !== analysisRevision
+              }
+              showMode={!embedded}
+            />
           </InlineEditor>
           {analysis.sections.length > 0 && (
             <InlineEditor embedded={embedded} title="编辑分析报告">
@@ -819,6 +891,12 @@ function ScopedLegalWorkbench({
           </details>
         </section>
       </InlineEditor>
+      {embedded && (
+        <div className="tea-node-secondary">
+          {questionEditor}
+          {historyEditor}
+        </div>
+      )}
     </section>
   );
 }

@@ -23,7 +23,7 @@ SKIP_ENV_VALIDATION=1 NEXT_TELEMETRY_DISABLED=1 pnpm build
 
 `core/tea/node-analysis.ts` 按账号、业务、节点和资料修订号共享尚未完成的请求。快速切换后 500ms 内重返同一节点可重新订阅已有进度；离开超过该窗口取消旧连接，停止和退出立即取消。仅 `analysis_in_progress`、`analysis_busy` 触发自动等待，以 500ms 起步、最长 5s 间隔退避，等待最多 5 分钟，空闲后由服务端返回有效记录或执行同一资料版本的分析。等待保持进度提示和停止入口；权限、资料版本冲突及连接失败直接保留错误与重试入口，不自动重试失败的分析。
 
-复用原 DeerFlow `Conversation`、`MessageResponse`、`ResizablePanelGroup`、`Button`、`Input`、`Dialog`、`Sheet` 等组件。配色、字体和控件来自未修改的 `src/styles/globals.css` 与 UI 原语；`.tea-theme` 仅补充业务布局、状态色和阅读尺寸，跟随原版浅色/深色主题，支持键盘焦点及减少动态效果设置。欢迎页、业务页与管理后台采用简洁商务排版。后台位于 `/tea/admin`，流程以多级列表编辑，节点分析使用工作流画布，编辑栏浮动覆盖在右侧；共用主题颜色、字体与控件，顶部仅保留配置选择及操作。
+复用原 DeerFlow `Conversation`、`MessageResponse`、`ResizablePanelGroup`、`Button`、`Input`、`Dialog`、`Sheet` 等组件。节点与对话中的分析记录通过茶业务 `AnalysisProcess` 适配器复用保留的 `ai-elements/chain-of-thought.tsx` 中的 `ChainOfThought`、`ChainOfThoughtHeader`、`ChainOfThoughtContent` 与 `ChainOfThoughtStep`（来源：`tmp/deer-flow/frontend/src/components/ai-elements/chain-of-thought.tsx`，许可：`DEERFLOW_LICENSE`），不从 `tmp/` 引入运行依赖。过程运行时展开，结束后收起，用户主动收起后不会被后续进度重新打开；执行失败、停止、沿用结果及无需执行分别显示。默认优先展示结论和后续办理，事实采用单项折叠输入；详细依据、原始执行记录、报告编辑与修订历史仍可按需展开，未保存输入保持在原有草稿中。配色、字体和控件来自未修改的 `src/styles/globals.css` 与 UI 原语；`.tea-theme` 仅补充业务布局、状态色和阅读尺寸，跟随原版浅色/深色主题，支持键盘焦点及减少动态效果设置。欢迎页、业务页与管理后台采用简洁商务排版。后台位于 `/tea/admin`，流程以多级列表编辑，节点分析使用工作流画布，编辑栏浮动覆盖在右侧；共用主题颜色、字体与控件，顶部仅保留配置选择及操作。
 
 服务端是已保存业务状态的唯一来源。任务、文稿和配置提交遵守服务端版本检查；HTTP 409 保留本地编辑。未保存的任务、文稿、对话和模板草稿在当前页面生命周期内按业务/文稿/账号模板存于内存，以便在界面内部切换。刷新浏览器仍应先保存；文稿未保存时有离页提示。退出登录清除本地草稿。对话发送 ID 在失败重试时复用，切换节点的过期响应不覆盖当前对话。消息和资料列表提供加载更早/更多入口。
 

@@ -558,55 +558,6 @@
   font-size: 12px;
   color: var(--foreground);
 }
-.tea-trace {
-  margin-top: 13px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-.tea-trace > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 0;
-}
-.tea-trace > summary > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.tea-trace > div {
-  padding: 9px 0 2px 8px;
-}
-.tea-trace > div > div {
-  display: flex;
-  gap: 9px;
-  margin-bottom: 11px;
-}
-.tea-trace-dot {
-  height: 5px;
-  width: 5px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: var(--background);
-}
-.tea-trace-dot.skipped {
-  background: var(--background);
-}
-.tea-trace-dot.failed {
-  background: color-mix(in oklch, var(--destructive) 8%, var(--background));
-}
-.tea-trace strong {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--foreground);
-}
-.tea-trace p {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  line-height: 1.7;
-  margin-top: 4px;
-}
 .tea-assistant-working {
   display: flex;
   align-items: center;
@@ -3460,7 +3411,7 @@
   background: var(--muted);
   text-decoration: none;
 }
-.tea-legal-public-trace pre {
+.tea-analysis-records pre {
   max-height: 280px;
   overflow: auto;
   white-space: pre-wrap;
@@ -3514,7 +3465,8 @@
   }
 }
 
-/* Node analysis is the opening assistant turn; editing stays beside its result. */
+/* Node analysis uses the retained DeerFlow ChainOfThought primitives.
+   Source: tmp/deer-flow/frontend; license: frontend/DEERFLOW_LICENSE. */
 .tea-node-analysis {
   background: transparent;
   border: 0;
@@ -3524,112 +3476,339 @@
   min-width: 0;
 }
 .tea-node-analysis > header {
-  flex-wrap: wrap;
-}
-.tea-node-progress,
-.tea-node-editor {
-  font-size: 13px;
-}
-.tea-node-progress > summary,
-.tea-node-editor > summary {
-  cursor: pointer;
-  color: var(--muted-foreground);
-  padding: 8px 0;
-}
-.tea-node-progress > summary:focus-visible,
-.tea-node-editor > summary:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-.tea-node-progress ol {
-  list-style: none;
-  margin: 4px 0 12px;
-  padding: 0;
-}
-.tea-node-progress li {
-  display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  padding: 8px 0;
+  margin-bottom: 18px;
 }
-.tea-node-step-number {
-  flex: 0 0 22px;
-  height: 22px;
-  border-radius: 50%;
+.tea-node-analysis > header > .tea-node-mark {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  color: var(--foreground);
   background: var(--muted);
-  text-align: center;
-  font-size: 12px;
-  line-height: 22px;
 }
-.tea-node-progress li > div {
-  flex: 1;
+.tea-node-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
-.tea-node-progress strong {
-  font-weight: 500;
+.tea-node-identity strong {
+  font-size: 14px;
+  font-weight: 600;
 }
-.tea-node-progress p {
-  margin: 3px 0 0;
+.tea-node-identity > span {
+  font-size: 12px;
   color: var(--muted-foreground);
+}
+.tea-analysis-process {
+  min-width: 0;
+  margin-bottom: 16px;
+}
+.tea-message-body .tea-analysis-process {
+  margin: 12px 0 0;
+}
+.tea-analysis-trigger {
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  font-size: 13px;
+}
+.tea-analysis-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.tea-analysis-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tea-analysis-content {
+  margin-top: 16px;
+  animation: none;
+}
+.tea-analysis-steps {
+  padding: 0 12px;
+}
+.tea-analysis-step {
+  gap: 12px;
+  padding-bottom: 20px;
+  color: var(--muted-foreground);
+  animation: none;
+}
+.tea-analysis-step:last-child {
+  padding-bottom: 0;
+}
+.tea-analysis-step > div:first-child > div {
+  top: 24px;
+  bottom: -12px;
+}
+.tea-analysis-step:last-child > div:first-child > div {
+  display: none;
+}
+.tea-analysis-step[data-state="running"] {
+  color: var(--foreground);
+}
+.tea-analysis-step[data-state="failed"] > div:first-child,
+.tea-analysis-step[data-state="failed"] .tea-analysis-step-heading > span {
+  color: var(--destructive);
+}
+.tea-analysis-step-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   line-height: 1.6;
+}
+.tea-analysis-step-heading strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.tea-analysis-step-heading > span {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.tea-analysis-step-detail {
+  max-width: 70ch;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.tea-node-progress small {
-  flex-shrink: 0;
+.tea-analysis-records {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.tea-analysis-records summary {
   color: var(--muted-foreground);
+  padding: 4px 0;
 }
-.tea-node-progress [data-state="running"] .tea-node-step-number {
-  background: var(--primary);
-  color: var(--primary-foreground);
-}
-.tea-node-progress [data-state="failed"] small {
-  color: var(--destructive);
+.tea-analysis-records > div {
+  margin-top: 10px;
 }
 .tea-node-running {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted-foreground);
 }
 .tea-legal-workbench.tea-legal-embedded {
   padding: 0;
-  gap: 4px;
+  gap: 0;
 }
 .tea-legal-embedded .tea-legal-analysis {
-  gap: 10px;
+  gap: 16px;
 }
-.tea-legal-embedded .tea-legal-analysis > header {
-  flex-wrap: wrap;
+.tea-legal-embedded .tea-legal-analysis > header h4 {
+  margin-right: auto;
+}
+.tea-legal-embedded .tea-legal-analysis > header > button {
+  font-size: 12px;
+}
+.tea-node-editor {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.tea-node-editor > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  list-style: none;
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.tea-node-editor > summary::-webkit-details-marker,
+.tea-fact-disclosure > summary::-webkit-details-marker {
+  display: none;
 }
 .tea-node-editor[open] > summary {
   color: var(--foreground);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+}
+.tea-node-editor > summary > svg,
+.tea-fact-disclosure > summary > svg {
+  margin: 0;
+  transition: transform 160ms ease-out;
+}
+.tea-node-editor[open] > summary > svg,
+.tea-fact-disclosure[open] > summary > svg {
+  transform: rotate(180deg);
+}
+.tea-node-editor .tea-legal-history,
+.tea-node-editor .tea-legal-facts,
+.tea-node-editor .tea-legal-sections {
+  border: 0;
+  padding: 0 0 16px;
+}
+.tea-node-secondary {
+  display: flex;
+  flex-direction: column;
 }
 .tea-node-summary {
-  line-height: 1.75;
   font-size: 14px;
+  line-height: 1.85;
   overflow-wrap: anywhere;
 }
-.tea-node-summary p {
-  margin: 4px 0 8px;
+.tea-node-conclusion {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
 }
-.tea-node-summary ul {
-  margin: 4px 0 8px;
-  padding-left: 20px;
+.tea-node-conclusion:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
-.tea-node-summary li > span {
+.tea-node-conclusion:last-child {
+  padding-bottom: 0;
+}
+.tea-node-conclusion > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.tea-node-conclusion > header > small {
   font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-conclusion-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.tea-conclusion-state::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.tea-conclusion-state[data-status="supported"] {
+  color: var(--tea-success);
+}
+.tea-conclusion-state[data-status="conditional"],
+.tea-conclusion-state[data-status="undetermined"] {
+  color: var(--tea-warning);
+}
+.tea-node-conclusion > p {
+  max-width: 70ch;
+}
+.tea-node-conclusion > ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.tea-node-conclusion li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 13px;
+}
+.tea-node-conclusion li > span:first-child {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-legal-embedded .tea-legal-followups {
+  gap: 0;
+  padding-bottom: 8px;
+}
+.tea-legal-embedded .tea-legal-followups > .tea-legal-note {
+  margin-bottom: 8px;
+}
+.tea-fact-disclosure {
+  border-bottom: 1px solid var(--border);
+}
+.tea-fact-disclosure:last-of-type {
+  border-bottom: 0;
+}
+.tea-fact-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  list-style: none;
+  padding: 12px 0;
+}
+.tea-fact-disclosure > summary > div {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tea-fact-disclosure > summary strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.tea-fact-disclosure > summary span,
+.tea-fact-disclosure > summary small {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-fact-disclosure > summary small {
+  text-align: right;
+}
+.tea-fact-disclosure > .tea-legal-fact {
+  border: 0;
+  padding: 4px 0 16px;
+}
+.tea-fact-disclosure .tea-legal-fact legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.tea-legal-gap-details > ul {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.8;
   color: var(--muted-foreground);
 }
 .tea-node-analysis > footer {
   flex-wrap: wrap;
 }
 @media (max-width: 640px) {
-  .tea-node-analysis > header > span {
-    margin-left: 24px;
+  .tea-node-identity strong {
+    font-size: 13px;
+  }
+  .tea-legal-embedded .tea-legal-analysis > header h4 {
     flex-basis: 100%;
   }
-  .tea-node-progress li {
+  .tea-legal-embedded .tea-legal-analysis > header > button {
+    margin-left: auto;
+    padding-inline: 4px;
+  }
+  .tea-analysis-steps {
+    padding-inline: 4px;
+  }
+  .tea-fact-disclosure > summary {
     gap: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tea-analysis-process *,
+  .tea-node-editor > summary > svg,
+  .tea-fact-disclosure > summary > svg {
+    animation: none !important;
+    transition: none !important;
   }
 }

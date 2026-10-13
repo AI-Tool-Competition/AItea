@@ -1,9 +1,11 @@
 "use client";
-import { AlertCircle, Check, ChevronDown, Leaf, Loader2 } from "lucide-react";
+import { AlertCircle, Check, Leaf, Loader2 } from "lucide-react";
 import { type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { type Check as CheckResult, type TraceStep } from "@/core/tea/types";
+
+import { AnalysisProcess } from "./analysis-process";
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
@@ -101,29 +103,15 @@ export function Checks({ checks }: { checks: CheckResult[] }) {
     </div>
   );
 }
-export function Trace({ steps }: { steps: TraceStep[] }) {
-  if (!steps.length) return null;
+export function Trace({
+  steps,
+  running = false,
+}: {
+  steps: TraceStep[];
+  running?: boolean;
+}) {
   return (
-    <details className="tea-trace">
-      <summary>
-        <span>
-          <Check size={13} />
-          依据与检查记录 · {steps.length} 步
-        </span>
-        <ChevronDown size={14} />
-      </summary>
-      <div>
-        {steps.map((step) => (
-          <div key={step.id}>
-            <span className={`tea-trace-dot ${step.status}`} />
-            <div>
-              <strong>{step.label}</strong>
-              <p>{step.detail}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </details>
+    <AnalysisProcess steps={steps} running={running} title="依据与检查记录" />
   );
 }
 export function ActionButton({

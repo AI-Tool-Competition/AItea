@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { StrictMode } from "react";
 
 import { StageAnalysisPanel } from "@/components/tea/stage-analysis";
@@ -190,5 +197,137 @@ describe("proactive stage analysis", () => {
     );
     expect(screen.queryByText("本节点编辑：node-report")).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("collapses a completed process and connects its disclosure to the saved steps", async () => {
+    const completed = {
+      ...result,
+      trace: Array.from({ length: 6 }, (_, index) => ({
+        id: `qa0${index + 1}`,
+        label: `分析阶段 ${index + 1}`,
+        status: "completed",
+        detail: `已保存的步骤说明 ${index + 1}`,
+      })),
+    };
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        `event: done\ndata: ${JSON.stringify({ analysis: completed })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    render(
+      <StageAnalysisPanel
+        accountId="completed-owner"
+        record={record}
+        stage={stage}
+        onUpdate={() => undefined}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("本节点编辑：node-report")).toBeTruthy(),
+    );
+    const trigger = screen.getByRole("button", {
+      name: /分析过程.*6\s*\/\s*6/,
+    });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("已保存的步骤说明 1")).toBeNull();
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("已保存的步骤说明 1")).toBeTruthy();
+    const content = document.getElementById(
+      trigger.getAttribute("aria-controls")!,
+    );
+    expect(content?.contains(screen.getByText("已保存的步骤说明 1"))).toBe(
+      true,
+    );
+  });
+  it("keeps partial failures distinct from completed steps", async () => {
+    const partial = {
+      ...result,
+      status: "failed",
+      trace: [
+        {
+          id: "qa01",
+          label: "问题识别",
+          status: "completed",
+          detail: "已核对问题",
+        },
+        {
+          id: "qa02",
+          label: "事实梳理",
+          status: "failed",
+          detail: "资料读取失败，等待重试",
+        },
+      ],
+    };
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        `event: done\ndata: ${JSON.stringify({ analysis: partial })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    render(
+      <StageAnalysisPanel
+        accountId="partial-owner"
+        record={record}
+        stage={stage}
+        onUpdate={() => undefined}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("本节点编辑：node-report")).toBeTruthy(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /分析未完成.*1\s*\/\s*6/ }),
+    );
+    expect(screen.getByText("资料读取失败，等待重试")).toBeTruthy();
+    expect(screen.getAllByText("已完成")).toHaveLength(1);
+    expect(screen.getAllByText("未执行")).toHaveLength(4);
+  });
+  it("respects a manual collapse when the next streamed step arrives", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(value) {
+            controller = value;
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    render(
+      <StageAnalysisPanel
+        accountId="stream-owner"
+        record={record}
+        stage={stage}
+        onUpdate={() => undefined}
+      />,
+    );
+    const send = (detail: string) =>
+      controller.enqueue(
+        new TextEncoder().encode(
+          `event: step\ndata: ${JSON.stringify({ id: "qa01", label: "问题识别", status: "running", detail })}\n\n`,
+        ),
+      );
+    await act(async () => send("正在识别业务问题"));
+    const trigger = screen.getByRole("button", {
+      name: /正在分析.*0\s*\/\s*6/,
+    });
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(trigger);
+    await act(async () => send("继续核对业务范围"));
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("继续核对业务范围")).toBeNull();
+    await act(async () => {
+      controller.enqueue(
+        new TextEncoder().encode(
+          `event: done\ndata: ${JSON.stringify({ analysis: result })}\n\n`,
+        ),
+      );
+      controller.close();
+    });
+    await waitFor(() =>
+      expect(screen.getByText("本节点编辑：node-report")).toBeTruthy(),
+    );
   });
 });

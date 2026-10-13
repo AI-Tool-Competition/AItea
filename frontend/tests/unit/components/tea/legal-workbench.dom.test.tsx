@@ -71,6 +71,8 @@ const record = {
   template: { agent: {} },
   stages: [{ id: "prepare", status: "active" }],
 } as unknown as CaseDetail;
+const requestPath = (path: Parameters<typeof fetch>[0]) =>
+  typeof path === "string" ? path : path instanceof URL ? path.href : path.url;
 const response = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status });
 const history = { facts: [fact], analyses: [analysis], total: 1 };
@@ -540,7 +542,9 @@ it("opens the node's saved report inline and retains a draft across refreshed re
   await waitFor(() =>
     expect(screen.getByLabelText("报告段落：交付建议")).toBeTruthy(),
   );
-  expect(screen.getByRole("region", { name: "本节点分析与编辑" })).toBeTruthy();
+  const workbench = screen.getByRole("region", { name: "本节点分析与编辑" });
+  expect(workbench.classList.contains("tea-legal-workbench")).toBe(true);
+  expect(workbench.classList.contains("tea-legal-embedded")).toBe(true);
   expect(screen.queryByRole("heading", { name: "法律分析" })).toBeNull();
   const editor = screen.getByLabelText("报告段落：交付建议");
   fireEvent.click(screen.getByText("编辑分析报告"));
@@ -567,4 +571,178 @@ it("opens the node's saved report inline and retains a draft across refreshed re
       ([, options]) => !options?.method || options.method === "GET",
     ),
   ).toBe(true);
+});
+
+it("opens one requested fact at a time and preserves its unsaved input when collapsed", async () => {
+  const selected = structuredClone(analysis);
+  selected.result.followups = [
+    {
+      key: "business_name",
+      label: "企业工商注册全称",
+      purpose: "确认企业主体",
+      decisive: true,
+    },
+  ];
+  mockApi(selected);
+  render(
+    <LegalWorkbench
+      accountId="compact-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByLabelText("企业工商注册全称")).toBeTruthy(),
+  );
+  const label = screen
+    .getAllByText("企业工商注册全称")
+    .find((element) => element.closest("summary"));
+  expect(label).toBeTruthy();
+  const disclosure = label!.closest("details")!;
+  expect(disclosure.open).toBe(false);
+  fireEvent.click(label!);
+  expect(disclosure.open).toBe(true);
+  fireEvent.change(screen.getByLabelText("企业工商注册全称"), {
+    target: { value: "保留的企业名称" },
+  });
+  fireEvent.click(label!);
+  expect(disclosure.open).toBe(false);
+  fireEvent.click(label!);
+  expect(
+    screen.getByLabelText<HTMLInputElement>("企业工商注册全称").value,
+  ).toBe("保留的企业名称");
+  expect(
+    rs
+      .mocked(globalThis.fetch)
+      .mock.calls.every(
+        ([, options]) => !options?.method || options.method === "GET",
+      ),
+  ).toBe(true);
+});
+
+it("keeps the selected report's execution records available when its revision differs from the node report", async () => {
+  const selected = structuredClone(analysis);
+  selected.revision = 2;
+  selected.result.trace = [
+    {
+      id: "qa01",
+      label: "问题核对",
+      status: "completed",
+      detail: "本次修订的检查说明",
+      input_data: { scope: "新修订输入" },
+    },
+  ];
+  mockApi(selected);
+  render(
+    <LegalWorkbench
+      accountId="trace-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
+  );
+  await waitFor(() => expect(screen.getByText("修订 2")).toBeTruthy());
+  fireEvent.click(screen.getByText("查看详细结论与原文依据"));
+  fireEvent.click(screen.getByRole("button", { name: /依据与检查记录/ }));
+  expect(screen.getByText("本次修订的检查说明")).toBeTruthy();
+  fireEvent.click(screen.getByText("查看输入与结果"));
+  expect(screen.getByText(/新修订输入/)).toBeTruthy();
+});
+
+it("marks edited verified facts as unsaved in their collapsed summary", async () => {
+  const verified = {
+    ...fact,
+    confirmed: true,
+    evidence_status: "verified" as const,
+    evidence_refs: ["source-one"],
+    review_note: "已核对原件",
+  };
+  const selected = {
+    ...analysis,
+    result: { ...analysis.result, facts: [verified] },
+  };
+  rs.spyOn(globalThis, "fetch").mockImplementation(async (path) =>
+    response(
+      requestPath(path).includes("/analyses/")
+        ? selected
+        : { facts: [verified], analyses: [selected], total: 1 },
+    ),
+  );
+  render(
+    <LegalWorkbench
+      accountId="verified-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
+  );
+  await waitFor(() => expect(screen.getByLabelText("交付日期")).toBeTruthy());
+  fireEvent.click(screen.getByText("核对已记录的事实 · 1 项"));
+  const label = screen
+    .getAllByText("交付日期")
+    .find((element) => element.closest("summary"))!;
+  const disclosure = label.closest("details")!;
+  expect(disclosure.querySelector("summary")!.textContent).toContain("已核验");
+  fireEvent.click(label);
+  fireEvent.change(screen.getByLabelText("交付日期"), {
+    target: { value: "2026-10-09" },
+  });
+  fireEvent.click(label);
+  expect(disclosure.querySelector("summary")!.textContent).toContain("待保存");
+  expect(disclosure.querySelector("summary")!.textContent).not.toContain(
+    "已核验",
+  );
+});
+
+it("keeps stop available in the result heading during an embedded reanalysis", async () => {
+  let signal: AbortSignal | undefined;
+  rs.spyOn(globalThis, "fetch").mockImplementation(async (path, options) => {
+    if (options?.method === "POST") {
+      signal = options.signal!;
+      return new Response(new ReadableStream<Uint8Array>(), {
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    return response(
+      requestPath(path).includes("/analyses/") ? analysis : history,
+    );
+  });
+  render(
+    <LegalWorkbench
+      accountId="stop-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "重新分析受影响问题" }),
+    ).toBeTruthy(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "重新分析受影响问题" }));
+  await waitFor(() => expect(signal).toBeTruthy());
+  const heading = screen.getByRole("heading", {
+    name: "分析结论与下一步",
+  }).parentElement!;
+  const stop = heading.querySelector("button");
+  expect(stop?.textContent).toContain("停止分析");
+  fireEvent.click(stop!);
+  expect(signal?.aborted).toBe(true);
+  await waitFor(() =>
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", {
+        name: "重新分析受影响问题",
+      }).disabled,
+    ).toBe(false),
+  );
 });

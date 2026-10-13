@@ -573,7 +573,12 @@ def _treaty_context(row):
 
 def _parse_page_evidence(raw, anomalies, row=None):
     limit = (
-        4 * 1024 * 1024 if row is not None and row["evidence_is_treaty"] and _treaty_context(row) else 16384
+        4 * 1024 * 1024
+        if row is not None
+        and (
+            row["evidence_is_treaty"] and _treaty_context(row) or row["evidence_is_wto"] and _wto_context(row)
+        )
+        else 16384
     )
     try:
         valid_size = isinstance(raw, str) and len(raw.encode("utf-8")) <= limit
@@ -596,6 +601,17 @@ def _parse_page_evidence(raw, anomalies, row=None):
             or request.get("url") != row["final_url"]
         ):
             anomalies.append("invalid_treaty_source_provenance")
+            return {}
+    if value and scope.get("provider") in _WTO_PROVIDERS:
+        request = value.get("request", {})
+        if (
+            not _wto_context(row)
+            or not isinstance(request, dict)
+            or request.get("method") != "GET"
+            or request.get("url") != row["final_url"]
+            or scope.get("member") != row["country"]
+        ):
+            anomalies.append("invalid_wto_source_provenance")
             return {}
     return value
 
@@ -699,7 +715,394 @@ def _page_evidence(raw, anomalies, *, value=None):
         for key in ("legal_status_inferred", "exhaustive_content_verified"):
             if scope.get(key) is False:
                 result["scope"][key] = False
+    if scope.get("provider") in _WTO_PROVIDERS:
+        for key in (
+            "member",
+            "member_name",
+            "member_id",
+            "schedule",
+            "schedule_number",
+            "page",
+            "family",
+            "language",
+            "procedure_symbol",
+            "source_url",
+            "source_sha256",
+            "status_filter",
+            "protocol_symbol_source",
+        ):
+            if scalar(scope.get(key)):
+                result["scope"][key] = scope[key]
+        for key in (
+            "legal_status_inferred",
+            "exhaustive_content_verified",
+            "itip_exports_verified",
+            "include_pre_wto",
+            "member_bound",
+            "bundle_members_verified",
+        ):
+            if type(scope.get(key)) is bool:
+                result["scope"][key] = scope[key]
     return result
+
+
+_WTO_PROVIDERS = {"wto-goods-public", "wto-docs-public", "wto-goods-bundle-audit"}
+
+
+def _wto_context(row):
+    """Only the two frozen WTO items can carry larger public source evidence."""
+    from .wto_discovery import purpose
+
+    if row is None:
+        return False
+    try:
+        country, plan, code, minimum = {
+            "ID": ("ID", "indonesia-20261003", "5.4", 6),
+            "SG": ("SG", "singapore-demo-20261009", "5.2", 3),
+        }[row["country"]]
+        return (
+            row["plan_id"] == plan
+            and type(row["plan_version"]) is int
+            and row["plan_version"] >= minimum
+            and row["checklist_item_id"] == code
+            and row["purpose"] in {"catalog", "detail"}
+            and row["owner_id"] == row["run_owner_id"] == row["source_owner_id"]
+            and row["source_id"] == row["run_source_id"]
+            and row["url"] == row["item_url"] == row["final_url"]
+            and purpose(row["final_url"], country) == row["purpose"]
+            and re.fullmatch(r"[a-f0-9]{64}", row["content_hash"]) is not None
+            and row["storage_path"].endswith(
+                f"/files/blobs/{_owner_hash(row['owner_id'])}/"
+                f"{row['content_hash'][:2]}/{row['content_hash'][2:4]}/{row['content_hash']}"
+            )
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _wto_document(document, scope, country, anomalies):
+    from .discovery import _canonical
+    from .wto_discovery import GOODS, MEMBERS, filename_matches, original_filename, purpose
+
+    if not isinstance(document, dict) or len(json.dumps(document, ensure_ascii=True)) > 32 * 1024:
+        raise ValueError("invalid_wto_catalog_record")
+    info = MEMBERS[country]
+    if document.get("legal_review_status") != "not_reviewed":
+        raise ValueError("invalid_wto_catalog_record")
+    if scope["provider"] == "wto-goods-public":
+        if (
+            document.get("schedule") != info["schedule"]
+            or document.get("schedule_number") != info["number"]
+            or type(document.get("schedule_number")) is not int
+        ):
+            raise ValueError("invalid_wto_catalog_record")
+        if "file_browser_urls" in document:
+            symbol, urls = document.get("procedure_symbol"), document.get("file_browser_urls")
+            if (
+                not isinstance(symbol, str)
+                or not symbol
+                or not _catalog_text(symbol, 300)
+                or document.get("identity_key") != f"wto-goods:{country}:procedure:{symbol}"
+                or document.get("member_id") != info["node"]
+                or type(document.get("member_id")) is not int
+                or not isinstance(urls, list)
+                or len(urls) > 10
+                or not all(
+                    isinstance(url, str)
+                    and purpose(url, country) == "detail"
+                    and urlsplit(url).hostname == GOODS
+                    for url in urls
+                )
+                or document.get("original_policy") != ("public_file_browser" if urls else "catalog_only")
+                or document.get("missing_original") is not (not urls)
+                or any(
+                    not isinstance(document.get(key), str) or not _catalog_text(document[key], 1000)
+                    for key in ("status", "procedure_type", "last_date", "certifications")
+                )
+            ):
+                raise ValueError("invalid_wto_catalog_record")
+            keys = {
+                "identity_key",
+                "procedure_symbol",
+                "schedule",
+                "schedule_number",
+                "member_id",
+                "status",
+                "procedure_type",
+                "last_date",
+                "certifications",
+                "file_browser_urls",
+                "original_policy",
+                "missing_original",
+                "legal_review_status",
+            }
+        else:
+            target, dates = document.get("original_url"), document.get("document_dates")
+            if not isinstance(target, str) or len(target) > 2048:
+                raise ValueError("invalid_wto_catalog_record")
+            canonical, host = _canonical(target)
+            accepted = purpose(target, country) == "document"
+            if (
+                target != canonical
+                or host != GOODS
+                or urlsplit(target).query
+                or not urlsplit(target).path.startswith("/system/files/")
+                or document.get("identity_key")
+                != f"wto-goods:{country}:file:{hashlib.sha256(target.encode()).hexdigest()}"
+                or document.get("procedure_symbol") != scope.get("procedure_symbol")
+                or document.get("source_format") != urlsplit(target).path.rsplit(".", 1)[-1].lower()
+                or document.get("original_policy")
+                != ("public_original" if accepted else "unsupported_public_path")
+                or document.get("representation_equivalence_verified") is not False
+                or not isinstance(dates, list)
+                or len(dates) > 20
+                or not all(isinstance(date, str) and _catalog_text(date, 100) for date in dates)
+                or any(
+                    not isinstance(document.get(key), str) or not _catalog_text(document[key], limit)
+                    for key, limit in (("filename", 240), ("language", 200), ("collection", 1000))
+                )
+            ):
+                raise ValueError("invalid_wto_catalog_record")
+            keys = {
+                "identity_key",
+                "original_url",
+                "filename",
+                "language",
+                "collection",
+                "procedure_symbol",
+                "document_dates",
+                "schedule",
+                "schedule_number",
+                "source_format",
+                "original_policy",
+                "legal_review_status",
+                "representation_equivalence_verified",
+            }
+        record = {key: document[key] for key in keys}
+    else:
+        metadata, originals = document.get("source_metadata"), document.get("originals")
+        if not isinstance(metadata, dict) or not isinstance(originals, list) or len(originals) > 2:
+            raise ValueError("invalid_wto_catalog_record")
+        safe_fields = {
+            "CATID",
+            "SYMBOL",
+            "CATTITLE",
+            "CONCERNEDCOUNTRIES",
+            "COLLECTION",
+            "ISSUINGDATE",
+            "RESTRICTIONTYPENAME",
+            "HasAccess",
+            "FILENAMESA",
+            "FILENAMESB",
+            "FILENAMESC",
+        }
+        selected = {key: metadata[key] for key in safe_fields if key in metadata}
+        if set(metadata) - safe_fields:
+            anomalies.append("wto_metadata_fields_omitted")
+        identifier, symbol = metadata.get("CATID"), metadata.get("SYMBOL")
+        if (
+            not isinstance(identifier, str)
+            or not re.fullmatch(r"[1-9]\d{0,9}", identifier)
+            or document.get("identity_key") != f"wto-docs:{identifier}"
+            or not isinstance(symbol, str)
+            or not symbol
+            or not _catalog_text(symbol, 300)
+            or document.get("symbol") != symbol
+            or document.get("title") != metadata.get("CATTITLE", "")[:1000]
+            or any(
+                not isinstance(value, str) or not _catalog_text(value, 20_000) for value in selected.values()
+            )
+            or document.get("original_policy")
+            != ("public_original" if metadata.get("HasAccess") == "True" else "catalog_only")
+            or document.get("missing_original")
+            is not (not (metadata.get("HasAccess") == "True" and originals))
+        ):
+            raise ValueError("invalid_wto_catalog_record")
+        if scope.get("member_bound") is True and (
+            metadata.get("CONCERNEDCOUNTRIES") != info["name"]
+            or metadata.get("COLLECTION") != "SCHD"
+            or not re.fullmatch(
+                re.escape(scope["family"])
+                + r"(?:/(?:Suppl\.[1-9]\d{0,2}|Rev\.[1-9]\d{0,2}|Corr\.[1-9]\d{0,2}))*",
+                symbol,
+            )
+        ):
+            raise ValueError("invalid_wto_catalog_record")
+        if scope.get("member_bound") is False and scope["family"] not in symbol.split("#"):
+            raise ValueError("invalid_wto_catalog_record")
+        seen = set()
+        for original in originals:
+            if not isinstance(original, dict) or set(original) != {"slot", "original_url", "filename"}:
+                raise ValueError("invalid_wto_catalog_record")
+            slot, target = original["slot"], original["original_url"]
+            if (
+                slot not in {"FILENAMESA", "FILENAMESB"}
+                or slot in seen
+                or original["filename"] != metadata.get(slot)
+                or original_filename(target, country) != original["filename"].upper()
+                or not filename_matches(original["filename"], symbol, scope["family"], country)
+            ):
+                raise ValueError("invalid_wto_catalog_record")
+            seen.add(slot)
+        expected = {
+            slot
+            for slot in ("FILENAMESA", "FILENAMESB")
+            if filename_matches(metadata.get(slot), symbol, scope["family"], country)
+        }
+        if seen != expected:
+            raise ValueError("invalid_wto_catalog_record")
+        keys = {
+            "identity_key",
+            "title",
+            "symbol",
+            "source_metadata",
+            "originals",
+            "original_policy",
+            "missing_original",
+            "legal_review_status",
+        }
+        record = {key: document[key] for key in keys - {"source_metadata"}} | {"source_metadata": selected}
+    if set(document) - keys:
+        anomalies.append("wto_metadata_fields_omitted")
+    record["source_record_sha256"] = hashlib.sha256(
+        json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return record
+
+
+def _wto_catalog_documents(row, page_record, value, partitions, summary):
+    from .wto_discovery import DOCS, GOODS, MEMBERS, PROTOCOL_SOURCES, catalog_family
+
+    scope, country = value.get("scope", {}), row["country"]
+    pointer = {
+        "provider": scope.get("provider")
+        if scope.get("provider") in _WTO_PROVIDERS
+        else "wto-public-unverified",
+        "owner_sha256": page_record["owner_sha256"],
+        **{
+            key: page_record[key]
+            for key in (
+                "country",
+                "plan_id",
+                "plan_version",
+                "checklist_item_id",
+                "binding_id",
+                "source_id",
+                "run_id",
+            )
+        },
+        "source_page_id": row["item_id"],
+        "source_hash": row["content_hash"],
+        "source_url": row["final_url"],
+        "source_original": page_record["original"],
+        "retrieval_eligible": False,
+    }
+
+    def emit(record, anomalies, *, valid):
+        _write_jsonl(
+            partitions.file(row["owner_id"], country, "catalog-documents.jsonl"),
+            {**pointer, **record, "anomalies": sorted(set(anomalies))},
+        )
+        _count(summary, "catalog_documents" if valid else "catalog_document_gaps", country, anomalies)
+
+    try:
+        info = MEMBERS[country]
+        if (
+            not _wto_context(row)
+            or scope.get("member") != country
+            or scope.get("legal_status_inferred") is not False
+            or scope.get("exhaustive_content_verified") is not False
+        ):
+            raise ValueError
+        if scope.get("provider") == "wto-goods-bundle-audit":
+            if (
+                scope.get("original_url") != row["final_url"]
+                or scope.get("member_id") != info["node"]
+                or type(scope.get("member_id")) is not int
+                or scope.get("bundle_members_verified") is not False
+                or scope.get("documents") != []
+            ):
+                raise ValueError
+            return  # The raw ZIP remains a discovery-page audit asset.
+        documents = scope.get("documents")
+        if (
+            scope.get("source_url") != row["final_url"]
+            or scope.get("source_sha256") != row["content_hash"]
+            or scope.get("member_name") != info["name"]
+            or scope.get("itip_exports_verified") is not False
+            or not isinstance(documents, list)
+            or len(documents) > 1000
+        ):
+            raise ValueError
+        parsed = urlsplit(row["final_url"])
+        if scope.get("provider") == "wto-goods-public":
+            if (
+                parsed.hostname != GOODS
+                or scope.get("schedule") != info["schedule"]
+                or scope.get("schedule_number") != info["number"]
+                or type(scope.get("schedule_number")) is not int
+            ):
+                raise ValueError
+            if row["purpose"] == "catalog":
+                total, page = scope.get("total"), scope.get("page")
+                query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                if (
+                    type(total) is not int
+                    or not 0 <= total <= 20_000
+                    or type(page) is not int
+                    or page != int(query.get("page", "0"))
+                    or scope.get("page_size") != 10
+                    or type(scope.get("page_size")) is not int
+                    or type(scope.get("returned")) is not int
+                    or scope.get("returned") != len(documents)
+                    or len(documents) != max(0, min(10, total - page * 10))
+                    or scope.get("status_filter") != "All"
+                    or scope.get("include_pre_wto") is not True
+                    or scope.get("member_id") != info["node"]
+                ):
+                    raise ValueError
+            elif not isinstance(scope.get("procedure_symbol"), str) or not _catalog_text(
+                scope["procedure_symbol"], 300
+            ):
+                raise ValueError
+        elif scope.get("provider") == "wto-docs-public":
+            family = catalog_family(row["final_url"], country)
+            if (
+                parsed.hostname != DOCS
+                or family != scope.get("family")
+                or scope.get("language") != "English"
+                or scope.get("member_bound") is not (family not in PROTOCOL_SOURCES)
+                or scope.get("protocol_symbol_source") != PROTOCOL_SOURCES.get(family)
+                or type(scope.get("total")) is not int
+                or scope["total"] != len(documents)
+                or type(scope.get("returned")) is not int
+                or scope.get("returned") != len(documents)
+                or len(documents) > 100
+            ):
+                raise ValueError
+        else:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        page_record["anomalies"].append("invalid_wto_catalog_page")
+        emit({"export_status": "invalid_page"}, ["invalid_wto_catalog_page"], valid=False)
+        return
+    seen = set()
+    for index, document in enumerate(documents):
+        anomalies = list(page_record["anomalies"])
+        try:
+            record = _wto_document(document, scope, country, anomalies)
+            if scope["provider"] == "wto-docs-public" or row["purpose"] == "catalog":
+                if record["identity_key"] in seen:
+                    raise ValueError("duplicate_wto_catalog_record")
+                seen.add(record["identity_key"])
+        except (KeyError, TypeError, ValueError, AttributeError, RecursionError):
+            emit(
+                {"export_status": "invalid_record", "source_row_index": index},
+                [*anomalies, "invalid_wto_catalog_record"],
+                valid=False,
+            )
+        else:
+            emit({**record, "export_status": "exported", "source_row_index": index}, anomalies, valid=True)
 
 
 def _catalog_text(value, limit):
@@ -935,6 +1338,12 @@ def _pages(conn, partitions, originals, summary, owner, country):
         if summary["schema_version"] >= 11
         else "0"
     )
+    is_wto = (
+        "CASE WHEN json_valid(e.evidence) THEN json_extract(e.evidence,'$.scope.provider') "
+        "IN ('wto-goods-public','wto-docs-public','wto-goods-bundle-audit') ELSE 0 END"
+        if summary["schema_version"] >= 11
+        else "0"
+    )
     evidence_join = (
         "LEFT JOIN checklist_page_evidence e ON e.item_id=p.item_id"
         if summary["schema_version"] >= 11
@@ -945,7 +1354,7 @@ def _pages(conn, partitions, originals, summary, owner, country):
         b.source_id,i.run_id,i.status fetch_status,i.url item_url,r.owner_id run_owner_id,r.source_id run_source_id,
         s.owner_id source_owner_id,
         CASE WHEN json_valid(p.warnings) THEN json_array_length(p.warnings) END warning_count,
-        {evidence} evidence,{is_treaty} evidence_is_treaty
+        {evidence} evidence,{is_treaty} evidence_is_treaty,{is_wto} evidence_is_wto
         FROM {_PAGES} JOIN collection_runs r ON r.id=i.run_id
         LEFT JOIN sources s ON s.id=b.source_id {evidence_join} WHERE {where}
         ORDER BY b.owner_id,b.country,b.plan_id,b.version,b.item_id,p.created_at,p.item_id""",
@@ -984,6 +1393,8 @@ def _pages(conn, partitions, originals, summary, owner, country):
         )
         if row["evidence_is_treaty"]:
             _catalog_documents(row, record, value, partitions, summary)
+        if row["evidence_is_wto"]:
+            _wto_catalog_documents(row, record, value, partitions, summary)
         _write_jsonl(partitions.file(row["owner_id"], row["country"], "discovery-pages.jsonl"), record)
         _count(summary, "discovery_pages", row["country"], anomalies)
 

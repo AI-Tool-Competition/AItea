@@ -1,6 +1,6 @@
 {
   "id": "singapore-demo-20261009",
-  "version": 2,
+  "version": 3,
   "country": "SG",
   "title": "六堡茶新加坡出海法律资料采集清单（比赛Demo版）",
   "source_document": {
@@ -1071,6 +1071,41 @@
           "url": "https://www.wto.org/english/thewto_e/countries_e/singapore_e.htm",
           "purpose": "catalog",
           "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DGATS%2FSC%2F76%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "官网 country_docs_e.js 发布的只读英文 XML 目录；仅该成员 SC/EL 符号族，须核 HasAccess、国别及完整计数，目录不作为法规正文。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DGATS%2FEL%2F76%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "官网 country_docs_e.js 发布的只读英文 XML 目录；仅该成员 SC/EL 符号族，须核 HasAccess、国别及完整计数，目录不作为法规正文。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F641%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/tratop_e/trips_e/wtl641_e.htm 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F940%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/res_e/publications_e/ai17_e/wto_agree_art10_oth.pdf 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F1144%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/tratop_e/rulesneg_e/fish_e/agreement_fisheries_subsidies_e.htm 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://www.wto.org/english/docs_e/legal_e/legal_e.htm",
+          "purpose": "catalog",
+          "note": "WTO 总入口的规定分支；商品目录只保留 Singapore、Schedule LXXIII (73)、memberID36723、Any 状态和 pre-WTO，真实原件及 ZIP 审计分开。"
+        },
+        {
+          "url": "https://goods-schedules.wto.org/member/singapore",
+          "purpose": "catalog",
+          "note": "WTO 总入口的规定分支；商品目录只保留 Singapore、Schedule LXXIII (73)、memberID36723、Any 状态和 pre-WTO，真实原件及 ZIP 审计分开。"
         }
       ],
       "trusted_hosts": [
@@ -1132,7 +1167,8 @@
         "service_exports": [
           "GATS Commitments",
           "MFN Exemptions"
-        ]
+        ],
+        "wto_public_catalog": true
       }
     },
     {

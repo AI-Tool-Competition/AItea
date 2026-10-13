@@ -184,6 +184,14 @@ def request_parameters(url: str, definition: dict) -> dict:
     the same URL and a body generated here, never an arbitrary stored body.
     """
     current, host = _canonical(url)
+    item = definition.get("item", definition)
+    wto = recipe_for(item).get("wto_public_catalog", False)
+    if wto and host in {"docs.wto.org", "goods-schedules.wto.org"}:
+        country = _country(item)
+        expected = definition.get("country", definition.get("plan", {}).get("country", country))
+        if expected != country or not _Recipe(recipe_for(item)).purpose(current):
+            raise ValueError("WTO 请求超出可信成员和公开目录范围。")
+        return {}
     if host == "api-treaty-room.kemlu.go.id":
         from .treaty_room_discovery import purpose
 
@@ -498,6 +506,9 @@ class _Recipe:
         self.wto_member = recipe.get("wto_member", "ID")
         if self.wto_member not in _WTO_SERVICE_FILES:
             raise ValueError("WTO 成员配置无效。")
+        self.wto_public_catalog = recipe.get("wto_public_catalog", False)
+        if not isinstance(self.wto_public_catalog, bool):
+            raise ValueError("WTO 公开目录配置无效。")
         self.bkpm_investment = recipe.get("bkpm_investment", False)
         if not isinstance(self.bkpm_investment, bool):
             raise ValueError("BKPM 投资目录配置无效。")
@@ -555,6 +566,14 @@ class _Recipe:
         parsed = urlsplit(url)
         if parsed.hostname not in self.hosts or self.matches(url, self.exclude_patterns):
             return None
+        if self.wto_public_catalog and parsed.hostname in {"docs.wto.org", "goods-schedules.wto.org"}:
+            from .wto_discovery import purpose
+
+            # Unhandled GATT originals use the existing official-file rules.
+            # A goods/API/viewer path must never fall back to looser patterns.
+            value = purpose(url, self.wto_member)
+            if value or parsed.hostname == "goods-schedules.wto.org" or parsed.path.startswith("/dol2fe/"):
+                return value
         if parsed.hostname == "api-treaty-room.kemlu.go.id":
             from .treaty_room_discovery import purpose
 
@@ -785,6 +804,12 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
     if not content:
         return _result(reason="页面为空，不能确认原文。")
     mime = mime_type.split(";", 1)[0].strip().casefold()
+    if rules.wto_public_catalog:
+        from .wto_discovery import inspect
+
+        inspected = inspect(current, content, mime, rules)
+        if inspected is not None:
+            return inspected
     if mime == "application/pdf" or content.startswith(b"%PDF-"):
         if purpose == "document" and content.startswith(b"%PDF-"):
             return _result(matched=True, purpose=purpose)
@@ -1060,6 +1085,13 @@ def recipe_for(item: dict) -> dict:
         "required_query": {},
         "max_links": 200,
     }
+    wto_member = _country(item)
+    if (wto_member, item.get("id")) in {("ID", "5.4"), ("SG", "5.2")} and item.get("limits", {}).get(
+        "wto_public_catalog"
+    ) is True:
+        result["wto_public_catalog"] = True
+        result["wto_services"] = True
+        result["wto_member"] = wto_member
     if adapter == "bpk":
         result.update(
             catalog_patterns=[r"^/Search(?:\?|$)"]
@@ -1170,6 +1202,10 @@ def recipe_for(item: dict) -> dict:
                 "goods-schedules.wto.org": [r"^/system/files/\d{4}-\d{2}/[a-z0-9_.-]+\.pdf(?:\?|$)"],
                 "docs.wto.org": [r"^/gattdocs/q/(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.pdf(?:\?|$)"],
             }
+            if result.get("wto_public_catalog"):
+                result["document_patterns_by_host"]["www.wto.org"].append(
+                    r"^/english/docs_e/legal_e/[a-z0-9_-]+\.pdf(?:\?|$)"
+                )
         return result
     for seed in seeds:
         path = urlsplit(seed["url"]).path
@@ -1280,6 +1316,10 @@ def recipe_for(item: dict) -> dict:
                 "www.wto.org": result["document_patterns"]
                 + [r"^/english/tratop_e/serv_e/telecom_e/sc43\.pdf$"]
             }
+            if result.get("wto_public_catalog"):
+                result["document_patterns_by_host"]["www.wto.org"].append(
+                    r"^/english/docs_e/legal_e/[a-z0-9_-]+\.pdf(?:\?|$)"
+                )
     if "docs.wto.org" in hosts:
         result["document_patterns"].append(r"^/gattdocs/q/(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.pdf(?:\?|$)")
     if "goods-schedules.wto.org" in hosts:

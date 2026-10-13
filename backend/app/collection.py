@@ -705,6 +705,7 @@ class CollectionService:
             with self.db.transaction() as conn:
                 if not self._valid_claim(conn, claim):
                     return
+                self.service.checklists.verify_wto_candidate_origin(conn, claim, plan, checklist_result)
                 doc = self.service.archive.store_original(
                     conn,
                     claim["owner_id"],
@@ -1010,7 +1011,9 @@ class CollectionService:
             safe = "向量服务暂不可用，原件和正文已保留"
         transfer_progress = not processing and isinstance(error, TransferPending)
         provider_wait = processing and isinstance(error, EmbeddingProviderDeferred)
-        deferred = (processing and isinstance(error, ProcessingDeferred)) or transfer_progress or provider_wait
+        deferred = (
+            (processing and isinstance(error, ProcessingDeferred)) or transfer_progress or provider_wait
+        )
         exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
         delay = min(
             300, max(2 ** claim["attempts"] + random.random(), getattr(error, "retry_after", None) or 0)

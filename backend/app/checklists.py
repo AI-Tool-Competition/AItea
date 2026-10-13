@@ -642,7 +642,10 @@ class ChecklistService:
         # Catalog JSON/HTML have their own bound; neither becomes legal text.
         blob = fetched["blob"]
         mime = fetched["mime_type"].split(";", 1)[0].strip().lower()
-        if mime in {"text/html", "application/xhtml+xml", "application/json"} and blob.size > MAX_HTML_BYTES:
+        if (
+            mime in {"text/html", "application/xhtml+xml", "application/json", "text/xml", "application/xml"}
+            and blob.size > MAX_HTML_BYTES
+        ):
             raise ValueError("目录或详情页超过 4 MiB 解析上限")
         with blob.path.open("rb") as stream:
             body = stream.read(MAX_HTML_BYTES)
@@ -777,6 +780,81 @@ class ChecklistService:
                 "UPDATE collection_runs SET error=? WHERE id=?", ("；".join(warnings)[:500], claim["run_id"])
             )
         self.service.collection._refresh(conn, claim["run_id"])
+
+    @staticmethod
+    def verify_wto_candidate_origin(conn, claim, plan, result):
+        """Unknown MDB bytes require the current member-bound catalog chain."""
+        scope = result.get("scope", {}) if isinstance(result, dict) else {}
+        if not isinstance(scope, dict) or scope.get("pending_format_verification") is not True:
+            return
+        from .wto_discovery import MEMBERS
+
+        checklist = plan.get("checklist", {})
+        row = conn.execute(
+            """SELECT c.url,c.discovered_from,b.country,b.plan_id,b.version,b.item_id,
+            p.content_hash,p.storage_path,p.final_url,p.purpose,e.evidence
+            FROM checklist_candidates c JOIN checklist_bindings b ON b.id=c.binding_id
+            JOIN checklist_pages p ON p.binding_id=b.id AND p.final_url=c.discovered_from
+            JOIN checklist_page_evidence e ON e.item_id=p.item_id
+            WHERE c.id=? AND c.binding_id=? AND c.url=? AND b.owner_id=?
+            ORDER BY p.created_at DESC,p.item_id DESC LIMIT 1""",
+            (claim.get("candidate_id"), checklist.get("binding_id"), claim["url"], claim["owner_id"]),
+        ).fetchone()
+        try:
+            if (
+                row is None
+                or not isinstance(row["evidence"], str)
+                or len(row["evidence"].encode()) > MAX_HTML_BYTES
+            ):
+                raise ValueError
+            evidence = json.loads(row["evidence"])
+            source = evidence["scope"]
+            member = scope["member"]
+            minimum, code, identifier = {
+                "ID": (6, "5.4", "indonesia-20261003"),
+                "SG": (3, "5.2", "singapore-demo-20261009"),
+            }[member]
+            documents = source.get("documents")
+            request = evidence.get("request", {})
+            if (
+                row["country"] != member
+                or row["plan_id"] != identifier
+                or row["item_id"] != code
+                or type(row["version"]) is not int
+                or row["version"] < minimum
+                or row["purpose"] != "detail"
+                or row["discovered_from"] != scope["catalog_url"]
+                or source.get("provider") != "wto-goods-public"
+                or source.get("member") != member
+                or source.get("schedule") != MEMBERS[member]["schedule"]
+                or type(source.get("schedule_number")) is not int
+                or source["schedule_number"] != MEMBERS[member]["number"]
+                or source.get("source_url") != row["final_url"]
+                or source.get("source_sha256") != row["content_hash"]
+                or not isinstance(row["content_hash"], str)
+                or len(row["content_hash"]) != 64
+                or any(char not in "0123456789abcdef" for char in row["content_hash"])
+                or not row["storage_path"].endswith(
+                    f"/files/blobs/{hashlib.sha256(claim['owner_id'].encode()).hexdigest()}/"
+                    f"{row['content_hash'][:2]}/{row['content_hash'][2:4]}/{row['content_hash']}"
+                )
+                or not isinstance(request, dict)
+                or request.get("method") != "GET"
+                or request.get("url") != row["final_url"]
+                or not isinstance(documents, list)
+                or len(documents) > 1000
+                or not any(
+                    isinstance(document, dict)
+                    and document.get("original_url") == claim["url"]
+                    and document.get("original_policy") == "public_original"
+                    and document.get("schedule") == MEMBERS[member]["schedule"]
+                    for document in documents
+                )
+            ):
+                raise ValueError
+        except (KeyError, ValueError, TypeError, AttributeError, RecursionError, UnicodeEncodeError):
+            raise ValueError("待识别 MDB 缺少当前成员目录、原件及候选归属的完整映射。") from None
+        scope["current_catalog_sha256"] = row["content_hash"]
 
     def stored_candidate(self, conn, claim, doc):
         if not claim["candidate_id"]:

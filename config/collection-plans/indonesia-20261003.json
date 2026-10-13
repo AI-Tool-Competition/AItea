@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 5,
+  "version": 6,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -2225,6 +2225,31 @@
           "url": "https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?filename=Q:/SCHD/GATS-EL/EL43.pdf&Open=True",
           "purpose": "document",
           "note": "WTO Docs Online 正式 GATS/EL/43 原生 PDF，2026-10-13完整原件已验证；比扫描镜像更适于原文整理。只读文档路径按印尼文号固定校验，后续补充、修订及勘误保留独立版本。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DGATS%2FSC%2F43%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "官网 country_docs_e.js 发布的只读英文 XML 目录；仅该成员 SC/EL 符号族，须核 HasAccess、国别及完整计数，目录不作为法规正文。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DGATS%2FEL%2F43%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "官网 country_docs_e.js 发布的只读英文 XML 目录；仅该成员 SC/EL 符号族，须核 HasAccess、国别及完整计数，目录不作为法规正文。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F641%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/tratop_e/trips_e/wtl641_e.htm 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F940%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/res_e/publications_e/ai17_e/wto_agree_art10_oth.pdf 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F1144%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/tratop_e/rulesneg_e/fish_e/agreement_fisheries_subsidies_e.htm 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
         }
       ],
       "tags": [
@@ -2308,7 +2333,8 @@
           "GATS Commitments",
           "MFN Exemptions"
         ],
-        "max_original_bytes": 134217728
+        "max_original_bytes": 134217728,
+        "wto_public_catalog": true
       },
       "trusted_hosts": [
         "docs.wto.org"

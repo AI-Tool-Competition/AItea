@@ -64,6 +64,12 @@ def read_plan(path):
             if not source.is_file() or not 0 < source.stat().st_size <= 20 * 1024 * 1024:
                 raise ValueError("sample paths must be nonempty regular files at most 20 MiB")
             sample["path"] = str(source)
+        filename = sample.get("filename")
+        if filename is not None and (
+            not isinstance(filename, str) or not 1 <= len(filename) <= 240
+            or re.search(r"[/\\\x00-\x1f\x7f]", filename) or filename in {".", ".."}
+        ):
+            raise ValueError("sample filenames must be plain short display names")
         for key in ("url", "source_url"):
             value = sample.get(key)
             if value is not None and (not isinstance(value, str) or len(value) > 4096):
@@ -89,14 +95,20 @@ def read_plan(path):
     return {"country": country, "samples": samples, "queries": queries}
 
 
-def write_report(output, report):
-    temporary = output / "report.json.tmp"
+def write_report(output, report, filename="report.json"):
+    temporary = output / (filename + ".tmp")
     with temporary.open("w", encoding="utf-8") as handle:
         os.chmod(temporary, 0o600)
         json.dump(report, handle, ensure_ascii=False, indent=2, allow_nan=False)
         handle.flush()
         os.fsync(handle.fileno())
-    temporary.replace(output / "report.json")
+    temporary.replace(output / filename)
+    if hasattr(os, "O_DIRECTORY"):
+        directory = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def blocks(path):
@@ -176,14 +188,15 @@ def run_verification(plan, output, models_env):
         state["primary_document_ids"] = anchors
         if sample.get("path"):
             path = Path(sample["path"])
+            filename = sample.get("filename") or path.name
             blob = service.archive.blobs.put(owner, blocks(path))
             with service.db.transaction() as conn:
                 document = service.archive.store_original(
                     conn,
                     owner,
                     blob,
-                    path.name,
-                    mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                    filename,
+                    mimetypes.guess_type(filename)[0] or "application/octet-stream",
                     sample.get("source_url"),
                     collection=collection,
                     level=sample["level"],
@@ -326,6 +339,7 @@ def run_verification(plan, output, models_env):
             )
         state.update(
             status=document["status"],
+            filename=document["filename"],
             error=document["error"],
             content_hash=document["content_hash"],
             hash_verified=digest.hexdigest() == document["content_hash"],

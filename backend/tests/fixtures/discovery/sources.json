@@ -126,5 +126,13 @@
     "captured_at": "2026-10-13T06:56:10.986173+00:00",
     "response_sha256": "9e7a1ace96fb5b61e37838d26d4f6816ccef840abcbb1559d44af6cc0cd0f4b6",
     "note": "Public API response; omitted only unrelated viewing/download counters. No complete legal text."
+  },
+  "bkpm-investment.json": {
+    "source_url": "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=10&page=1",
+    "method": "GET",
+    "captured_at": "2026-10-13T15:08:18.417015+00:00",
+    "response_sha256": "628963a998cc62bea4e6a7966ac935837fdf6a4bf5459c6623d39e0cd75dbeb4",
+    "fixture_sha256": "8de6bc469b33c64ae6eb7b62f7e15753f8902baf98aa30327f04e7bab2794ae5",
+    "note": "Structural projection: first two official rows and unchanged total/theme/metadata; constructed two-row page for bounded pagination tests. topDocuments is retained only to verify it is ignored."
   }
 }

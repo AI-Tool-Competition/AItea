@@ -1,0 +1,23 @@
+{
+  "country": "ID",
+  "samples": [
+    {
+      "id": "mk-puu-164",
+      "url": "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf",
+      "level": "primary"
+    },
+    {
+      "id": "mk-puu-38",
+      "url": "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14258_1778572852.pdf",
+      "level": "primary"
+    }
+  ],
+  "queries": [
+    {
+      "text": "Mahkamah Konstitusi pengujian undang-undang",
+      "expected_sample_ids": [
+        "mk-puu-164"
+      ]
+    }
+  ]
+}

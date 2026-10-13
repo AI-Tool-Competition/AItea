@@ -33,6 +33,9 @@ _COURT_HOST = "kepaniteraan.mahkamahagung.go.id"
 _COURT_CATEGORIES = {"1.9": "16", "2.1": "10", "2.3": "57"}
 _LKPP_HOST = "jdih.lkpp.go.id"
 _LKPP_FILES = "https://jdih.lkpp.go.id/admin/uploads/documents"
+_BKPM_HOST = "jdih.bkpm.go.id"
+_BKPM_FILES_HOST = "jdih-storage.bkpm.go.id"
+_BKPM_API = "https://jdih.bkpm.go.id/api/document-search"
 _PDF_BUTTON = re.compile(
     r"\s*(?:loadPdf|toggleSubMenu)\(this,\s*(['\"])(https://[^'\"<>\s]+\.pdf)\1\)\s*;?\s*",
     re.I,
@@ -156,6 +159,21 @@ def _setneg_query(url: str, instrument: str) -> tuple[str, dict]:
     raise ValueError("Setneg 仅允许已验证的只读目录、详情和原件接口。")
 
 
+def _bkpm_query(url: str) -> dict:
+    values = parse_qsl(urlsplit(url).query, keep_blank_values=True, max_num_fields=10)
+    query = dict(values)
+    if (
+        len(query) != len(values)
+        or set(query) != {"id_theme", "limit", "page"}
+        or query["id_theme"] != "1"
+        or not all(re.fullmatch(r"[1-9]\d{0,5}", query[key]) for key in ("limit", "page"))
+        or not 1 <= int(query["limit"]) <= 50
+        or not 1 <= int(query["page"]) <= 20_000
+    ):
+        raise ValueError("BKPM 目录仅允许有界的投资主题分页。")
+    return query
+
+
 def request_parameters(url: str, definition: dict) -> dict:
     """Derive public read-only POST bodies from the immutable trusted plan.
 
@@ -163,6 +181,12 @@ def request_parameters(url: str, definition: dict) -> dict:
     the same URL and a body generated here, never an arbitrary stored body.
     """
     current, host = _canonical(url)
+    if host == _BKPM_HOST and urlsplit(current).path == "/api/document-search":
+        item = definition.get("item", definition)
+        if _country(item) != "ID" or item.get("id") != "4.1" or not recipe_for(item).get("bkpm_investment"):
+            raise ValueError("BKPM 请求没有对应的可信投资清单配置。")
+        _bkpm_query(current)
+        return {"accept_compressed_json": True}
     if host != _SETNEG_HOST:
         return {}
     item = definition.get("item", definition)
@@ -456,6 +480,9 @@ class _Recipe:
         self.wto_services = recipe.get("wto_services", False)
         if not isinstance(self.wto_services, bool):
             raise ValueError("WTO 服务承诺配置无效。")
+        self.bkpm_investment = recipe.get("bkpm_investment", False)
+        if not isinstance(self.bkpm_investment, bool):
+            raise ValueError("BKPM 投资目录配置无效。")
         self.max_links = recipe.get("max_links", 200)
         if (
             isinstance(self.max_links, bool)
@@ -507,6 +534,14 @@ class _Recipe:
         parsed = urlsplit(url)
         if parsed.hostname not in self.hosts or self.matches(url, self.exclude_patterns):
             return None
+        if parsed.hostname == _BKPM_HOST and parsed.path == "/api/document-search":
+            if not self.bkpm_investment:
+                return None
+            try:
+                _bkpm_query(url)
+            except ValueError:
+                return None
+            return "catalog"
         if parsed.hostname == _COURT_HOST and parsed.path == "/id/profil-kepaniteraan":
             return _court_purpose(url, self.court_category) if self.court_category else None
         if parsed.hostname == "docs.wto.org" and parsed.path in {
@@ -624,6 +659,73 @@ def _wto_legacy_document(url: str) -> str | None:
     )
 
 
+def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
+    if mime != "application/json" or len(content) > MAX_HTML_BYTES:
+        return _result(reason="BKPM 目录必须返回不超过 4 MiB 的 JSON。")
+    query = _bkpm_query(url)
+    try:
+        data = json.loads(content)
+        rows = data["allDocuments"]
+        total = data["v_peraturan_prior_aggregate"]["aggregate"]["count"]
+    except (ValueError, UnicodeDecodeError, RecursionError, KeyError, TypeError):
+        return _result(reason="BKPM 返回了无效目录结构。")
+    page, length = int(query["page"]), int(query["limit"])
+    offset = (page - 1) * length
+    if (
+        type(total) is not int
+        or not 0 <= total <= 1_000_000
+        or not isinstance(rows, list)
+        or len(rows) != max(0, min(length, total - offset))
+        or not all(
+            isinstance(row, dict)
+            and type(row.get("id")) is int
+            and 0 < row["id"] <= 1_000_000
+            and type(row.get("id_theme")) is int and row["id_theme"] == 1
+            and isinstance(row.get("title"), str)
+            and 0 < len(row["title"]) <= 10_000
+            for row in rows
+        )
+        or len({row["id"] for row in rows}) != len(rows)
+    ):
+        return _result(reason="BKPM 投资主题、总数、分页行数或文书标识不一致。")
+    links, warnings, documents = [], [], []
+    for row in rows:
+        try:
+            target, host = _canonical(row.get("document_file_url") or "")
+        except (ValueError, TypeError):
+            target, host = "", ""
+        if row.get("document_type") != "Peraturan" or host != _BKPM_FILES_HOST or rules.purpose(target) != "document":
+            warnings.append(f"BKPM 文书 {row['id']} 未提供受信法规原件，保留缺口。")
+            continue
+        identity = f"bkpm:{row['id']}"
+        links.append({"url": target, "purpose": "document", "title": row["title"][:300], "identity_key": identity})
+        metadata = {"identity_key": identity, "original_url": target, "title": row["title"][:1000]}
+        slug = row.get("slug")
+        if isinstance(slug, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) and len(slug) <= 500:
+            metadata["detail_url"] = f"https://{_BKPM_HOST}/id/document/{slug}"
+        for name in ("regulation_number", "regulation_type", "establishment_date", "publication_date", "status"):
+            value = row.get(name)
+            if isinstance(value, str) and len(value) <= 200:
+                metadata[name] = value
+        documents.append(metadata)
+    if offset + len(rows) < total:
+        links.append(
+            {
+                "url": _BKPM_API + "?" + urlencode({"id_theme": "1", "limit": length, "page": page + 1}),
+                "purpose": "catalog",
+                "title": "Next page",
+            }
+        )
+    if len(links) > rules.max_links:
+        return _result(reason="BKPM 单页行数超过候选限额，需减小请求分页。")
+    result = _result(matched=True, purpose="catalog", links=links, warnings=warnings)
+    result["scope"] = {
+        "provider": "bkpm", "theme_id": 1, "total": total, "offset": offset,
+        "page_size": length, "returned": len(rows), "documents": documents,
+    }
+    return result
+
+
 def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dict:
     """Inspect one already downloaded page; never treat a match as scope review."""
     rules = _Recipe(recipe)
@@ -645,6 +747,11 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         return _result(reason="PDF 地址、响应类型或文件签名不匹配。")
     if urlsplit(current).hostname == _SETNEG_HOST and purpose in {"catalog", "detail"}:
         return _setneg_json(current, content, mime, rules)
+    if (
+        rules.bkpm_investment and urlsplit(current).hostname == _BKPM_HOST
+        and purpose == "catalog" and urlsplit(current).path == "/api/document-search"
+    ):
+        return _bkpm_json(current, content, mime, rules)
     if mime not in {"text/html", "application/xhtml+xml"}:
         return _result(reason="该格式不进入通用法规发现；数据集须单独审核。")
     if len(content) > MAX_HTML_BYTES:
@@ -1043,6 +1150,15 @@ def recipe_for(item: dict) -> dict:
             # adapter can distinguish original articles from lists and summaries.
             result["detail_patterns"].append(rf"^/{re.escape(branch)}/[^?]+(?:\?|$)")
     # Only official file locations, never a catch-all file extension at any URL.
+    if (
+        _country(item) == "ID" and item.get("id") == "4.1"
+        and _BKPM_FILES_HOST in hosts
+        and any(urlsplit(seed["url"]).path == "/api/document-search" for seed in seeds)
+    ):
+        result["bkpm_investment"] = True
+        result.setdefault("document_patterns_by_host", {})[_BKPM_FILES_HOST] = [
+            r"^/jdih/(?:jdih|userfiles)/[^?]+\.pdf$"
+        ]
     result["document_patterns"].append(
         r"^/(?:sites/default/files|files|uploads?|storage|media|docs|documents|wp-content/uploads|assets)/[^?]+\.pdf(?:\?|$)"
     )

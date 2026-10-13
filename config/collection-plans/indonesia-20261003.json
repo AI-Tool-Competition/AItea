@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 3,
+  "version": 4,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -1443,6 +1443,11 @@
           "url": "https://jdih.bkpm.go.id/id/search",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=50&page=1",
+          "purpose": "catalog",
+          "note": "已核实公开 GET 目录；仅投资主题 id_theme=1，逐件保留详情与正式原件，目录状态不代表法律审核。"
         }
       ],
       "tags": [
@@ -1492,7 +1497,10 @@
       "verbatim_requirements": "抓取内容标题 | 投资｜BKPM／投资部正式规范及法律适用补强\n网页链接 | https://jdih.bkpm.go.id/id/search\n截图示范 | \n\n抓取注意事项 | 采集步骤：从BKPM JDIH按类型、年份查询，点击列表截图红框内的文件条目进入详情页；在详情页截图红框所示 Dokumen 区域点击 Unduh，下载保存 PDF 法律文件正文，并保存必要附件和法律依据。先与法规主库比对同件，再补缺少的原件、状态和关系，识别同号异版。截图用于示范进入详情页和下载文件的操作，具体文件是否收录仍按本条内容取舍标准判断。\n内容取舍：准入、投资义务、限制及监管标准会影响法律结论，相关正式Peraturan和规范性Keputusan／SE保留。OSS操作、办事步骤、表格填写及内部行政文件不收。\n检索适用：投资准入、股权限制或投资合规问题先查UU、PP、Perpres及正式部门法规，再用BKPM补强。许可证的法定条件可解释，平台逐步操作不展开。\n冲突与更新：目录文件逐件核文书性质、制定权限和授权，不能同赋法阶；补强口径与正式法规冲突须回查上位依据。新规关联替代、撤销与适用日，疑点人工核验。",
       "execution": "discovery",
       "adapter": "html_links",
-      "limits": {}
+      "limits": {},
+      "trusted_hosts": [
+        "jdih-storage.bkpm.go.id"
+      ]
     },
     {
       "id": "4.2",

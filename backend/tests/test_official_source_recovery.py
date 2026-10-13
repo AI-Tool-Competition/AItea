@@ -261,10 +261,16 @@ def test_wto_wrapper_reads_fixed_literal_navigation_without_executing_script():
     assert not other_country["matched"]
 
 
-def test_plan_v3_preserves_previous_snapshot_and_declares_real_mirrors():
+def test_current_plan_preserves_previous_snapshots_and_declares_real_mirrors():
     directory = Path(__file__).resolve().parents[2] / "config" / "collection-plans"
     current = json.loads((directory / "indonesia-20261003.json").read_text())
-    assert current["version"] == 3
+    assert current["version"] == 4
+    previous = json.loads((directory / "versions/indonesia-20261003.v3.json").read_text())
+    assert previous["version"] == 3
+    assert next(i for i in previous["items"] if i["id"] == "4.1")["entries"] == [
+        e for e in next(i for i in current["items"] if i["id"] == "4.1")["entries"]
+        if "/api/document-search" not in e["url"]
+    ]
     previous = json.loads((directory / "versions" / "indonesia-20261003.v2.json").read_text())
     assert previous["version"] == 2 and previous["id"] == current["id"]
     assert len(current["items"]) == 29 and current["country"] == "ID"

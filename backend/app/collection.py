@@ -481,7 +481,9 @@ class CollectionService:
                 WHERE i.status='queued' AND i.available_at<=? AND r.status IN ('queued','running')
                 AND COALESCE(h.available_at,0)<=? AND (SELECT COUNT(*) FROM collection_items a
                     WHERE a.host=i.host AND a.status='fetching' AND a.lease_until>?)<?
-                ORDER BY i.created_at,i.id LIMIT 1""",
+                -- Rotate durable runs before taking another page/file from a
+                -- large category sharing the same host.
+                ORDER BY r.updated_at,i.created_at,i.id LIMIT 1""",
                 (timestamp, timestamp, timestamp, self.host_workers),
             ).fetchone()
             if not row:
@@ -492,7 +494,7 @@ class CollectionService:
                 (token, timestamp + LEASE_SECONDS, row["id"]),
             )
             conn.execute(
-                "UPDATE collection_runs SET status='running',updated_at=? WHERE id=? AND status='queued'",
+                "UPDATE collection_runs SET status='running',updated_at=? WHERE id=?",
                 (now(), row["run_id"]),
             )
             return dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}

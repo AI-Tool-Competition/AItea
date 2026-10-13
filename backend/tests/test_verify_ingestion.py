@@ -77,3 +77,28 @@ def test_verifier_rejects_oversize_plan_before_creating_database(tmp_path):
     )
     assert result.returncode != 0
     assert not (tmp_path / "result/tea.sqlite3").exists()
+
+
+def test_verifier_preserves_original_filename_for_content_addressed_samples(tmp_path):
+    original = tmp_path / ("a" * 64)
+    original.write_text("archiverefunique tea export permit")
+    plan = {
+        "samples": [{"id": "archive", "path": str(original), "filename": "official-law.txt"}],
+        "queries": [{"text": "archiverefunique", "expected_sample_ids": ["archive"]}],
+    }
+    result = invoke(tmp_path, plan, "--time-budget", "30")
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads((tmp_path / "result/report.json").read_text())
+    assert report["samples"][0]["filename"] == "official-law.txt"
+    assert report["samples"][0]["complete"]
+    assert report["queries"][0]["restart_consistent"]
+
+
+def test_verifier_rejects_paths_in_display_filenames(tmp_path):
+    original = tmp_path / "original.txt"
+    original.write_text("tea")
+    result = invoke(tmp_path, {"samples": [
+        {"id": "bad", "path": str(original), "filename": "../law.pdf"}
+    ]})
+    assert result.returncode != 0
+    assert not (tmp_path / "result/tea.sqlite3").exists()

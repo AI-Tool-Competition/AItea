@@ -16,9 +16,21 @@ import re
 
 from .ingestion_quality import anchor_present, number_anchors, validate_ocr_page
 
-RECOVERY_VERSION = "legal-region-recovery-v3"
+RECOVERY_VERSION = "legal-region-recovery-v4"
 MAX_TASKS = 24
 _MAX_LOCATOR_CHARS = 20_000
+_NON_LITERAL_UNCERTAINTIES = {
+    "model_reported_incomplete",
+    "table_layout_not_preserved",
+    "blank_response_conflicts_with_native_text",
+    "transcription_much_shorter_than_native_text",
+    "illegible_printed_text",
+    "region_provider_failed",
+    "region_render_failed",
+    "region_attempt_budget_exhausted",
+    "recovery_baseline_changed",
+    "recovery_span_conflict",
+}
 
 
 def _digest(value) -> str:
@@ -29,6 +41,37 @@ def _digest(value) -> str:
 
 def _normal_text(text: str) -> str:
     return " ".join(text.split()).casefold()
+
+
+def _literal_spans(text: str, literal: str) -> list[list[int]]:
+    """Find complete literal spans; ignore whitespace, never letters or case.
+
+    Coordinates always refer to the unmodified text. A match inside a longer
+    word is not the uncertainty's token, even when its letters are identical.
+    """
+    compact = "".join(literal.split())
+    if not compact:
+        return []
+    indices = [index for index, char in enumerate(text) if not char.isspace()]
+    haystack = "".join(text[index] for index in indices)
+    result, cursor = [], 0
+    while (found := haystack.find(compact, cursor)) >= 0:
+        start, end = indices[found], indices[found + len(compact) - 1] + 1
+        first, last = literal.strip()[0], literal.strip()[-1]
+        left_ok = (
+            not (first.isalnum() or first == "_")
+            or start == 0
+            or not (text[start - 1].isalnum() or text[start - 1] == "_")
+        )
+        right_ok = (
+            not (last.isalnum() or last == "_")
+            or end == len(text)
+            or not (text[end].isalnum() or text[end] == "_")
+        )
+        if left_ok and right_ok:
+            result.append([start, end])
+        cursor = found + 1
+    return result
 
 
 def _box_for_range(textpage, indices, start, end, width, height) -> list[float] | None:
@@ -190,9 +233,57 @@ def _plan_regions_input(content, page: dict, page_limit: int) -> list[dict]:
                             "verify_bbox": _pad_box(box, width, height, 8, 6),
                         }
                     )
+            # The native character layer locates a model-reported literal; it
+            # is never the evidence used to clear its independent uncertainty.
+            # Both old OCR and the physical layer must have one exact location.
+            old_text = page.get("text", "")
+            for literal in dict.fromkeys((page.get("ocr") or {}).get("uncertain_spans", [])):
+                if (
+                    not isinstance(literal, str)
+                    or not 2 <= len("".join(literal.split())) <= 128
+                    or literal.strip().casefold() in _NON_LITERAL_UNCERTAINTIES
+                    or literal.startswith("native_ocr_")
+                    or "[illegible]" in literal.casefold()
+                ):
+                    continue
+                candidates = [
+                    span
+                    for span in _literal_spans(old_text, literal)
+                    if old_text[span[0] : span[1]] == literal
+                ]
+                if len(candidates) != 1:
+                    if candidates:
+                        tasks.append({"kind": "unresolved", "reason": "ambiguous_literal_alignment"})
+                    continue
+                matches = _literal_spans(located_text, literal)
+                if len(matches) != 1:
+                    tasks.append({"kind": "unresolved", "reason": "ambiguous_literal_location"})
+                    continue
+                box = _box_for_range(textpage, indices, *matches[0], width, height)
+                if (
+                    box is None
+                    or (box[2] - box[0]) * (box[3] - box[1]) > width * height * 0.10
+                    or box[3] - box[1] > height * 0.12
+                ):
+                    tasks.append({"kind": "unresolved", "reason": "literal_location_too_broad"})
+                    continue
+                tasks.append(
+                    {
+                        "kind": "literal",
+                        "target": {
+                            "uncertainty_exact": literal,
+                            "candidate_span": list(candidates[0]),
+                            "candidate_text": literal,
+                            "native_locator_span": matches[0],
+                            "source_hash": page["source_hash"],
+                            "page": page["page"],
+                        },
+                        "region_bbox": box,
+                        "verify_bbox": _pad_box(box, width, height, 8, 6),
+                    }
+                )
             # Locate uncertain printed lines from surrounding readable words.
             # Neither those words nor any candidate transcription go to the model.
-            old_text = page.get("text", "")
             lines = list(re.finditer(r"[^\n]+", old_text))
             for ordinal, line in enumerate(lines):
                 if "[illegible]" not in line.group().casefold():
@@ -364,6 +455,41 @@ def _agreement(task, regions) -> tuple[str | None, dict | None]:
             "verified_value": list(value),
             "region_ids": [region["region_id"] for region in regions],
         }
+    if task["kind"] == "literal":
+        try:
+            intact = all(
+                region.get("reading_hash") == _digest(read)
+                and region.get("source_hash") == task["target"]["source_hash"]
+                and region.get("page") == task["target"]["page"]
+                and (region.get("image_blob") or {}).get("content_hash") == region.get("image_sha256")
+                for region, read in zip(regions, reads, strict=True)
+            )
+        except (TypeError, ValueError):
+            intact = False
+        if (
+            not intact
+            or len({region.get("region_id") for region in regions}) != 2
+            or regions[0].get("region_bbox") == regions[1].get("region_bbox")
+        ):
+            return None, None
+        candidates, read_spans = [], []
+        for read in reads:
+            spans = _literal_spans(read.get("text", ""), task["target"]["candidate_text"])
+            if len(spans) != 1:
+                return None, None
+            start, end = spans[0]
+            candidates.append(read["text"][start:end])
+            read_spans.append(spans[0])
+        if "".join(candidates[0].split()) != "".join(candidates[1].split()):
+            return None, None
+        return candidates[0], {
+            "field": "literal",
+            "uncertainty_exact": task["target"]["uncertainty_exact"],
+            "candidate_span": task["target"]["candidate_span"],
+            "verified_text": candidates[0],
+            "reading_spans": read_spans,
+            "region_ids": [region["region_id"] for region in regions],
+        }
     # Printed names are complete lines, not inferred from a known signer.
     old_line = task["target"]["candidate_text"]
     suffix = re.sub(r"\[illegible\]", "", old_line, flags=re.I).strip()
@@ -421,6 +547,29 @@ def _finish(page):
         recovery["status"] = "conflict"
         page["status"] = "ocr_uncertain"
         return page
+    # A previous task's checkpoint can be older than the last blind request.
+    # Revalidate all literal proofs before clearing any literal uncertainty.
+    for task in direct:
+        if task["kind"] != "literal":
+            continue
+        regions = [region for region in recovery["regions"] if region.get("region_id") in task["reading_ids"]]
+        replacement, proof = _agreement(task, regions)
+        corrections = [
+            item
+            for item in recovery["corrections"]
+            if item["span"] == task["target"]["candidate_span"]
+            and item["before"] == task["target"]["candidate_text"]
+        ]
+        if (
+            replacement is None
+            or proof not in recovery["verifications"]
+            or len(corrections) != 1
+            or corrections[0]["after"] != replacement
+        ):
+            task["status"] = "conflict"
+            recovery["status"] = "conflict"
+            page["status"] = "ocr_uncertain"
+            return page
     history = metadata["recovery_history"][-1]
     if hashlib.sha256(page["text"].encode()).hexdigest() != history["text_hash"]:
         recovery["status"] = "conflict"
@@ -449,13 +598,31 @@ def _finish(page):
         for task in recovery["tasks"]
         if task["kind"] in {"printed", "search_printed"} and task["status"] == "complete"
     ]
+    proved_literals = {
+        task["target"]["uncertainty_exact"]
+        for task in recovery["tasks"]
+        if task["kind"] == "literal" and task["status"] == "complete"
+    }
     metadata["uncertain_spans"] = [
         span
         for span in metadata.get("uncertain_spans", [])
-        if not ("[illegible]" in span.casefold() and proved_printed)
+        if span not in proved_literals and not ("[illegible]" in span.casefold() and proved_printed)
     ]
+    independent_warnings = [
+        warning
+        for warning in metadata.get("validation_warnings", [])
+        if not (warning.startswith("native_ocr_") and warning.endswith("_mismatch"))
+    ]
+    if metadata.get("complete") is False and "model_reported_incomplete" not in metadata["uncertain_spans"]:
+        metadata["uncertain_spans"].append("model_reported_incomplete")
+    metadata["uncertain_spans"].extend(
+        warning for warning in independent_warnings if warning not in metadata["uncertain_spans"]
+    )
     page["status"] = "ocr_complete"
     validate_ocr_page(page)
+    metadata["validation_warnings"].extend(
+        warning for warning in independent_warnings if warning not in metadata["validation_warnings"]
+    )
     if page["status"] != "ocr_complete":
         recovery["status"] = "conflict"
     page.pop("deferred_reason", None)

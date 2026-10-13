@@ -6,6 +6,7 @@ drafts; automatic sampling never grants legal approval or national coverage.
 
 import hashlib
 import json
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -17,21 +18,52 @@ ACTIVE = {"queued", "running"}
 
 
 def validate_extension(previous, current):
+    added_materials = []
+    if previous.get("selection") != current.get("selection"):
+        from .campaign_selection import MaterialSelection
+
+        if not previous.get("selection") or not current.get("selection"):
+            raise ValueError("Extend cannot replace sampling with a different material selection")
+        before = MaterialSelection.model_validate(previous["selection"])
+        after = MaterialSelection.model_validate(current["selection"])
+        old = {entry.key: entry.model_dump() for entry in before.materials}
+        new = {entry.key: entry.model_dump() for entry in after.materials}
+        if (
+            before.plan_id != after.plan_id
+            or before.source_document_sha256 != after.source_document_sha256
+            or any(new.get(key) != entry for key, entry in old.items())
+            or not new.keys() - old.keys()
+        ):
+            raise ValueError("Extend may only append materials while preserving every existing selection")
+        added_materials = sorted(new.keys() - old.keys())
     if (
         any(
             previous.get(key) != current.get(key)
-            for key in ("items", "confirm_items", "live_models", "selection")
+            for key in ("items", "confirm_items", "live_models")
         )
         or any(current[key] < previous[key] for key in ("discovery_batches", "originals_per_item"))
-        or all(current[key] == previous[key] for key in ("discovery_batches", "originals_per_item"))
+        or (
+            not added_materials
+            and all(current[key] == previous[key] for key in ("discovery_batches", "originals_per_item"))
+        )
     ):
         raise ValueError("Extend may only increase budgets within the same plan, items and model mode")
+    return added_materials
 
 
 class ResourceCampaign:
     def __init__(self, service, plan_id, options, *, state=None, extend=False, checkpoint=lambda _: None):
         self.service = service
-        self.plan = service.checklists.definition(plan_id)
+        if state is not None and (
+            not isinstance(state, dict)
+            or state.get("plan_id") != plan_id
+            or type(state.get("plan_version")) is not int
+            or state["plan_version"] < 1
+        ):
+            raise ValueError("Resume requires the same frozen plan and campaign options")
+        self.plan = service.checklists.definition(
+            plan_id, version=state.get("plan_version") if state is not None else None
+        )
         self.checkpoint = checkpoint
         self.fingerprint = hashlib.sha256(dump(self.plan).encode()).hexdigest()
         definitions = {item["id"]: item for item in self.plan["items"]}
@@ -74,7 +106,13 @@ class ResourceCampaign:
                     raise ValueError("Campaign demonstration account is missing")
             self.state = state
             if extend:
-                validate_extension(state["options"], self.options)
+                added = validate_extension(state["options"], self.options)
+                state.setdefault("extensions", []).append({
+                    "at": now(),
+                    "previous_limits": {key: state["options"][key] for key in ("discovery_batches", "originals_per_item")},
+                    "current_limits": {key: self.options[key] for key in ("discovery_batches", "originals_per_item")},
+                    "added_material_keys": added,
+                })
                 state["options"] = self.options
                 state["status"] = "running"
                 for record in state["items"].values():
@@ -126,6 +164,7 @@ class ResourceCampaign:
                 item_id,
                 pending["payload"],
                 kind=pending["kind"],
+                version=self.plan["version"],
                 defer_relations=bool(self.selection and pending["payload"].get("level") == "secondary"),
             )
         except AppError as error:
@@ -289,6 +328,50 @@ class ResourceCampaign:
         self.save()
         return retried
 
+    def retry_ocr_recovery(self):
+        """Requeue draft review pages for a new recovery implementation only."""
+        from .ocr_recovery import RECOVERY_VERSION
+
+        retried = []
+        with self.service.db.transaction() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT d.id,d.content_hash,d.manifest,b.item_id
+                FROM documents d JOIN processing_jobs p ON p.document_id=d.id
+                JOIN checklist_candidates c ON c.document_id=d.id
+                JOIN checklist_bindings b ON b.id=c.binding_id
+                JOIN document_metadata m ON m.document_id=d.id
+                WHERE d.owner_id=? AND b.plan_id=? AND b.version=?
+                    AND p.phase='parse' AND p.status='failed'
+                    AND json_extract(m.payload,'$.review_status')='draft'""",
+                (self.state["owner_id"], self.plan["id"], self.plan["version"]),
+            ).fetchall()
+            for row in rows:
+                if row["item_id"] not in self.definitions:
+                    continue
+                manifest = json.loads(row["manifest"])
+                outdated = [
+                    page["page"]
+                    for page in manifest.get("pages", [])
+                    if page.get("source_hash") == row["content_hash"]
+                    and page.get("status") == "ocr_uncertain"
+                    and page.get("ocr", {}).get("complete") is True
+                    and page.get("ocr", {}).get("recovery", {}).get("version") != RECOVERY_VERSION
+                    and page.get("ocr", {}).get("uncertain_spans")
+                ]
+                if not outdated:
+                    continue
+                self.service.collection.queue_processing(conn, row["id"], self.state["owner_id"])
+                self.service.collection._refresh_document(conn, row["id"])
+                self.state["items"][row["item_id"]].update(phase="waiting", error=None)
+                retried.append(
+                    {"document_id": row["id"], "source_hash": row["content_hash"], "pages": outdated}
+                )
+        self.state.setdefault("ocr_recovery_retries", []).append(
+            {"at": now(), "recovery_version": RECOVERY_VERSION, "documents": retried}
+        )
+        self.save()
+        return retried
+
     def verify_originals(self):
         from .blob_store import _verify_existing
 
@@ -403,9 +486,130 @@ class ResourceCampaign:
         self.save()
         return results
 
+    def revalidate_native_tables(self):
+        """Replace unfinished table-only extraction from exact, verified native cells.
+
+        Only draft campaign originals qualify. Old pages, including OCR images
+        and readings, are kept as evidence; independent model uncertainty and
+        active processing leases are never overwritten.
+        """
+        from copy import deepcopy
+
+        from .blob_store import _verify_existing
+        from .ingestion import rebuild_pdf_manifest
+        from .parsing import parse_bounded
+        from .pdf_tables import VERSION
+
+        owner = self.state["owner_id"]
+        with self.service.db.transaction() as conn:
+            self.service.collection._expire(conn, "processing_jobs", "processing", time.time())
+            rows = conn.execute(
+                """SELECT DISTINCT d.*,b.item_id FROM documents d
+                JOIN processing_jobs p ON p.document_id=d.id JOIN checklist_candidates c ON c.document_id=d.id
+                JOIN checklist_bindings b ON b.id=c.binding_id JOIN document_metadata m ON m.document_id=d.id
+                WHERE d.owner_id=? AND b.plan_id=? AND b.version=? AND p.status IN ('queued','failed')
+                AND p.phase='parse' AND d.mime_type='application/pdf' AND d.size<=?
+                AND json_extract(m.payload,'$.review_status')='draft'""",
+                (owner, self.plan["id"], self.plan["version"], 20 * 1024 * 1024),
+            ).fetchall()
+        results = []
+        for row in rows:
+            if row["item_id"] not in self.definitions:
+                continue
+            manifest = json.loads(row["manifest"])
+            candidates = [
+                page
+                for page in manifest.get("pages", [])
+                if page.get("reasons") == ["table_layout"]
+                and page.get("status") in {"pending_ocr", "ocr_failed", "ocr_uncertain"}
+                and page.get("ocr", {}).get("complete") is not False
+                and set(page.get("ocr", {}).get("uncertain_spans", [])) <= {"table_layout_not_preserved"}
+                and set(page.get("ocr", {}).get("validation_warnings", [])) <= {"table_layout_not_preserved"}
+                and (
+                    not page.get("ocr", {}).get("text")
+                    or (
+                        page["ocr"].get("complete") is True
+                        and set(page["ocr"].get("uncertain_spans", [])) <= {"table_layout_not_preserved"}
+                    )
+                )
+            ]
+            if not candidates or manifest.get("archive_pdf"):
+                continue
+            digest = row["content_hash"]
+            path = (
+                self.service.archive.blobs.blobs_dir
+                / hashlib.sha256(owner.encode()).hexdigest()
+                / digest[:2]
+                / digest[2:4]
+                / digest
+            )
+            if Path(row["storage_path"]) != path:
+                raise ValueError("Native table original is outside its account content store")
+            _verify_existing(path, digest, row["size"])
+            fresh = parse_bounded(row["filename"], path.read_bytes(), row["mime_type"])
+            if fresh["source_hash"] != digest or len(fresh.get("pages", [])) != len(manifest["pages"]):
+                raise ValueError("Native table revalidation does not match the immutable source")
+            changed = []
+            for old in candidates:
+                native = fresh["pages"][old["page"] - 1]
+                table = native.get("native_table", {})
+                if (
+                    native["source_hash"] != old["source_hash"]
+                    or native["native_text"] != old["native_text"]
+                    or native["status"] != "native"
+                    or native["reasons"]
+                    or table.get("method") != VERSION
+                    or table.get("complete_character_assignment") is not True
+                    or table.get("readers") != ["pypdf", "pypdfium2"]
+                ):
+                    continue
+                replacement = deepcopy(native)
+                replacement["native_revalidation"] = {
+                    "at": now(),
+                    "version": VERSION,
+                    "source_hash": digest,
+                    "basis": "bounded_original_geometry_and_independent_visible_character_assignment",
+                    "previous_page_hash": hashlib.sha256(dump(old).encode()).hexdigest(),
+                    "previous_page": deepcopy(old),
+                }
+                # Keep existing page-image exports valid even though the model
+                # reading is no longer the current text source.
+                if old.get("ocr"):
+                    replacement["ocr"] = deepcopy(old["ocr"])
+                    replacement["ocr"]["used_for_current_text"] = False
+                manifest["pages"][old["page"] - 1] = replacement
+                changed.append(old["page"])
+            if not changed:
+                continue
+            rebuilt = rebuild_pdf_manifest(manifest)
+            with self.service.db.transaction() as conn:
+                current = self.service.own_document(conn, owner, row["id"])
+                job = conn.execute(
+                    "SELECT status FROM processing_jobs WHERE document_id=?", (row["id"],)
+                ).fetchone()
+                metadata = conn.execute(
+                    "SELECT payload FROM document_metadata WHERE document_id=?", (row["id"],)
+                ).fetchone()
+                if (
+                    current["manifest"] != row["manifest"]
+                    or not job
+                    or job[0] not in {"queued", "failed"}
+                    or json.loads(metadata[0]).get("review_status") != "draft"
+                ):
+                    raise ValueError("Native table checkpoint changed during revalidation")
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(rebuilt), row["id"]))
+                self.service.index.sync_document(conn, row["id"], rebuilt)
+                self.service.collection.queue_processing(conn, row["id"], owner)
+                self.service.collection._refresh_document(conn, row["id"])
+                self.state["items"][row["item_id"]].update(phase="waiting", error=None)
+            results.append({"document_id": row["id"], "pages": changed, "source_hash": digest})
+        self.state.setdefault("native_table_revalidations", []).append({"at": now(), "documents": results})
+        self.save()
+        return results
+
     def report(self, status="running"):
         owner = self.state["owner_id"]
-        detail = self.service.checklists.detail(owner, self.plan["id"])
+        detail = self.service.checklists.detail(owner, self.plan["id"], version=self.plan["version"])
         indexed = {item["item_id"]: item for item in detail["items"]}
         fingerprint = self.service.embedding_fingerprint()
         documents, errors, failures = {}, {}, {}
@@ -428,6 +632,8 @@ class ResourceCampaign:
                 json_extract(d.manifest,'$.quality') quality,
                 json_extract(m.payload,'$.review_status') review_status,
                 l.level legal_level,
+                rd.complete index_complete,rd.chunk_count expected_index_chunks,rd.source_hash index_source_hash,
+                EXISTS(SELECT 1 FROM retrieval_dirty dirty WHERE dirty.document_id=d.id) index_dirty,
                 json_extract(d.manifest,'$.embedding_fingerprint') embedding_fingerprint,
                 (SELECT COUNT(*) FROM retrieval_chunks rc WHERE rc.document_id=d.id) indexed_chunks,
                 (SELECT COUNT(*) FROM json_each(d.manifest,'$.pages') p
@@ -438,6 +644,7 @@ class ResourceCampaign:
                 JOIN documents d ON d.id=c.document_id
                 LEFT JOIN document_metadata m ON m.document_id=d.id
                 LEFT JOIN legal_classifications l ON l.document_id=d.id AND l.collection=?
+                LEFT JOIN retrieval_documents rd ON rd.document_id=d.id
                 WHERE b.owner_id=? AND b.plan_id=? AND b.version=? ORDER BY b.item_id,d.id""",
                 (
                     fingerprint,
@@ -462,6 +669,11 @@ class ResourceCampaign:
                     document["legal_level"] == "primary"
                     and document["text_complete"]
                     and bool(fingerprint)
+                    and document["indexed_chunks"] > 0
+                    and document["indexed_chunks"] == document["expected_index_chunks"]
+                    and document["index_complete"] == 1
+                    and document["index_source_hash"] == document["content_hash"]
+                    and not document["index_dirty"]
                     and document["embedding_fingerprint"] == fingerprint
                     and document["vector_count"] == document["indexed_chunks"]
                 )
@@ -471,8 +683,8 @@ class ResourceCampaign:
                 ROW_NUMBER() OVER(PARTITION BY b.item_id ORDER BY i.created_at DESC,i.id) n
                 FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
                 JOIN checklist_bindings b ON b.source_id=r.source_id
-                WHERE b.owner_id=? AND i.error IS NOT NULL) WHERE n<=5""",
-                (owner,),
+                WHERE b.owner_id=? AND b.plan_id=? AND b.version=? AND i.error IS NOT NULL) WHERE n<=5""",
+                (owner, self.plan["id"], self.plan["version"]),
             ):
                 error = dict(row)
                 error.pop("n")

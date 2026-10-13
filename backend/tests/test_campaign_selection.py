@@ -4,6 +4,7 @@ from contextlib import closing
 from copy import deepcopy
 import io
 import json
+import time
 
 import pytest
 from pypdf import PdfWriter
@@ -12,7 +13,7 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 from app.archive_inventory import export_inventory
 from app.checklists import load_blueprints
 from app.discovery import discover_page, recipe_for
-from app.resource_campaign import ResourceCampaign
+from app.resource_campaign import ResourceCampaign, validate_extension
 from app.service import Service
 
 PLAN = "indonesia-20261003"
@@ -54,6 +55,69 @@ def selected_options():
     }
 
 
+def extended_options():
+    value = selected_options()
+    value["originals_per_item"] = 3
+    value["selection"]["materials"].append(
+        {
+            "key": "product-specific-rules",
+            "item_id": "5.3",
+            "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf",
+            "level": "primary",
+            "evidence_url": CATALOG,
+            "locator": "Annex 3A: Product-Specific Rules",
+        }
+    )
+    return value
+
+
+def test_additive_selection_extension_keeps_originals_and_request_history(tmp_path, monkeypatch):
+    service, campaign = run_selected(tmp_path, monkeypatch)
+    previous = deepcopy(campaign.state)
+    with closing(service.db.connect()) as conn:
+        originals = [
+            tuple(row) for row in conn.execute("SELECT id,version,content_hash FROM documents ORDER BY id")
+        ]
+        owner_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    extended = ResourceCampaign(service, PLAN, extended_options(), state=deepcopy(previous), extend=True)
+    assert extended.state["owner_id"] == previous["owner_id"]
+    assert (
+        extended.state["items"]["5.3"]["selected_candidates"]
+        == previous["items"]["5.3"]["selected_candidates"]
+    )
+    assert extended.state["items"]["5.3"]["collection_runs"] == previous["items"]["5.3"]["collection_runs"]
+    assert extended.state["extensions"][-1]["added_material_keys"] == ["product-specific-rules"]
+    with closing(service.db.connect()) as conn:
+        assert [
+            tuple(row) for row in conn.execute("SELECT id,version,content_hash FROM documents ORDER BY id")
+        ] == originals
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == owner_count
+
+
+@pytest.mark.parametrize(
+    "mutation", ["remove", "retier", "url", "anchor", "evidence", "source_hash", "budget"]
+)
+def test_extension_cannot_rewrite_existing_material_or_reduce_limits(mutation):
+    after = extended_options()
+    entries = after["selection"]["materials"]
+    if mutation == "remove":
+        entries.pop(1)
+    elif mutation == "retier":
+        entries[1].update(level="primary", primary_keys=[])
+    elif mutation == "url":
+        entries[0]["url"] = "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-4.pdf"
+    elif mutation == "anchor":
+        entries[1]["primary_keys"] = ["product-specific-rules"]
+    elif mutation == "evidence":
+        entries[0]["locator"] = "Changed source evidence"
+    elif mutation == "source_hash":
+        after["selection"]["source_document_sha256"] = "f" * 64
+    elif mutation == "budget":
+        after["originals_per_item"] = 1
+    with pytest.raises(ValueError):
+        validate_extension(selected_options(), after)
+
+
 def pdf(text):
     writer = PdfWriter()
     page = writer.add_blank_page(600, 800)
@@ -75,7 +139,7 @@ def pdf(text):
     return output.getvalue()
 
 
-def run_selected(tmp_path, monkeypatch, *, shared=True, assert_pipeline=False):
+def run_selected(tmp_path, monkeypatch, *, shared=True, assert_pipeline=False, primary_pdf=None):
     from app import ingestion
 
     for key, value in {
@@ -85,7 +149,7 @@ def run_selected(tmp_path, monkeypatch, *, shared=True, assert_pipeline=False):
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(ingestion, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    primary = pdf(
+    primary = primary_pdf or pdf(
         "Article 3.1 Originating Goods. Products must meet the requirements of this agreement and its rules of origin."
     )
     secondary = pdf(
@@ -158,6 +222,137 @@ def test_embedding_retry_is_limited_to_failed_complete_primaries(tmp_path, monke
             == "failed"
         )
     assert campaign.retry_embeddings() == []
+
+
+@pytest.mark.parametrize("kind", ["cooldown", "invalid_credentials", "rate_limit"])
+def test_embedding_provider_wait_and_permanent_errors_keep_queue_attempts_meaningful(
+    tmp_path, monkeypatch, kind
+):
+    from app.ingestion import EmbeddingProviderDeferred, EmbeddingServiceError
+
+    service, campaign = run_selected(tmp_path, monkeypatch)
+    with service.db.transaction() as conn:
+        primary = conn.execute(
+            "SELECT document_id FROM legal_classifications WHERE level='primary'"
+        ).fetchone()[0]
+        conn.execute(
+            "DELETE FROM retrieval_vectors WHERE chunk_rowid IN (SELECT rowid FROM retrieval_chunks WHERE document_id=?)",
+            (primary,),
+        )
+        service.collection.queue_processing(conn, primary, campaign.state["owner_id"])
+    claim = service.collection.claim_processing()
+    assert claim["phase"] == "embed"
+    error = (
+        EmbeddingProviderDeferred(75)
+        if kind == "cooldown"
+        else EmbeddingServiceError(retryable=kind == "rate_limit", retry_after=75)
+    )
+    started = time.time()
+    service.collection._failure(claim, error, processing=True)
+    with closing(service.db.connect()) as conn:
+        job = conn.execute(
+            "SELECT status,attempts,available_at FROM processing_jobs WHERE document_id=?", (primary,)
+        ).fetchone()
+    assert job["status"] == ("failed" if kind == "invalid_credentials" else "queued")
+    assert job["attempts"] == (0 if kind == "cooldown" else 1)
+    if kind != "invalid_credentials":
+        assert started + 74 <= job["available_at"] <= time.time() + 76
+
+
+@pytest.mark.parametrize(
+    "gate", ["recover", "published", "active_worker", "independent_warning", "empty_independent_warning"]
+)
+def test_native_table_revalidation_preserves_source_and_ocr_and_respects_review_leases(
+    tmp_path, monkeypatch, gate
+):
+    from app.ingestion import rebuild_pdf_manifest
+    from app.catalog import MetadataPatch
+    from test_pdf_tables import merged_header_pdf
+
+    service, campaign = run_selected(tmp_path, monkeypatch, primary_pdf=merged_header_pdf())
+    with service.db.transaction() as conn:
+        identifier = conn.execute(
+            "SELECT document_id FROM legal_classifications WHERE level='primary'"
+        ).fetchone()[0]
+        document = service.own_document(conn, campaign.state["owner_id"], identifier)
+        manifest = json.loads(document["manifest"])
+        page = manifest["pages"][0]
+        page.pop("native_table", None)
+        page.update(
+            status="pending_ocr", text=page["native_text"], reasons=["table_layout"], ocr_required=True
+        )
+        old_ocr = {
+            "complete": True,
+            "text": "Earlier OCR reading retained as immutable evidence",
+            "uncertain_spans": ["table_layout_not_preserved"],
+            "image_blob": {"content_hash": "a" * 64, "size": 20, "storage_path": "files/test-previous-image"},
+        }
+        if gate in {"independent_warning", "empty_independent_warning"}:
+            page["status"] = "ocr_uncertain"
+            old_ocr["uncertain_spans"].append("independent_unreadable_number")
+            if gate == "empty_independent_warning":
+                old_ocr.update(text="", complete=False)
+        page["ocr"] = deepcopy(old_ocr)
+        manifest = rebuild_pdf_manifest(manifest)
+        old_ocr = deepcopy(manifest["pages"][0]["ocr"])
+        conn.execute(
+            'UPDATE documents SET manifest=?,status="processing" WHERE id=?',
+            (json.dumps(manifest), identifier),
+        )
+        conn.execute(
+            'UPDATE processing_jobs SET phase="parse",status=?,lease_until=? WHERE document_id=?',
+            ("processing" if gate == "active_worker" else "queued", time.time() + 300, identifier),
+        )
+    if gate == "published":
+        metadata = service.catalog.metadata_for(identifier)
+        service.catalog.patch_document(
+            campaign.state["owner_id"],
+            identifier,
+            MetadataPatch(expected_revision=metadata["metadata_revision"], review_status="published"),
+            on_changed=service.metadata_changed,
+        )
+    results = campaign.revalidate_native_tables()
+    with closing(service.db.connect()) as conn:
+        current = service.own_document(conn, campaign.state["owner_id"], identifier)
+    assert current["content_hash"] == document["content_hash"] and current["version"] == document["version"]
+    updated = json.loads(current["manifest"])["pages"][0]
+    if gate == "recover":
+        assert results[0]["pages"] == [1]
+        assert (
+            updated["status"] == "native" and updated["native_table"]["method"] == "verified-digital-grid-v2"
+        )
+        assert updated["ocr"]["image_blob"] == old_ocr["image_blob"]
+        assert updated["ocr"]["text"] == old_ocr["text"] and updated["ocr"]["used_for_current_text"] is False
+        assert updated["native_revalidation"]["previous_page"]["ocr"] == old_ocr
+    else:
+        assert not results
+        assert updated["status"] == page["status"] and updated["ocr"] == old_ocr
+
+
+@pytest.mark.parametrize("delete", ["all", "one"])
+def test_report_does_not_mark_missing_chunk_index_as_vector_complete(tmp_path, monkeypatch, delete):
+    service, campaign = run_selected(
+        tmp_path, monkeypatch, primary_pdf=pdf("Original legal evidence. " * 300)
+    )
+    with service.db.transaction() as conn:
+        identifier = conn.execute(
+            "SELECT document_id FROM legal_classifications WHERE level='primary'"
+        ).fetchone()[0]
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM retrieval_chunks WHERE document_id=?", (identifier,)
+            ).fetchone()[0]
+            > 1
+        )
+        if delete == "all":
+            conn.execute("DELETE FROM retrieval_chunks WHERE document_id=?", (identifier,))
+        else:
+            conn.execute(
+                "DELETE FROM retrieval_chunks WHERE rowid=(SELECT rowid FROM retrieval_chunks WHERE document_id=? ORDER BY ordinal DESC LIMIT 1)",
+                (identifier,),
+            )
+    report = campaign.report()
+    assert report["summary"]["primary_vector_complete"] == 0
 
 
 def test_selected_levels_parse_both_vectorize_only_primary_and_map_fixed_versions(tmp_path, monkeypatch):
@@ -278,6 +473,14 @@ def test_singapore_source_recipes_keep_china_treaty_and_member_commitments_scope
     page = b'<title>DTAs</title><a href="/media/docs/default-source/uploadedfiles/pdf/ratificationsingaporechinadtafinalwithprotocol.pdf">China</a><a href="/docs/default-source/pdf/australia-dta.pdf">Australia</a><a href="/taxes/goods-services-tax-(gst)/other">GST</a>'
     result = discover_page(source, page, "text/html", recipe_for(definitions["5.3"]))
     assert len(result["links"]) == 1 and "chinadta" in result["links"][0]["url"]
+    operational = "https://www.iras.gov.sg/docs/default-source/uploadedfiles/pdf/user-guide-(tp)_file-form-c-sfb87cf1c-ae51-4063-802b-e57454d68147.pdf?sfvrsn=bf08a50e_32"
+    page = (
+        '<title>Official tax guides</title><a href="'
+        + operational
+        + '">Tax portal filing steps</a><a href="https://www.iras.gov.sg/docs/default-source/e-tax/etaxguide_gst_general.pdf">GST general guide</a>'
+    ).encode()
+    result = discover_page("https://www.iras.gov.sg/", page, "text/html", recipe_for(definitions["3.3"]))
+    assert len(result["links"]) == 1 and "etaxguide_gst_general" in result["links"][0]["url"]
 
 
 def test_html_main_text_drops_navigation_and_preserves_original_line_locators():
@@ -289,3 +492,61 @@ def test_html_main_text_drops_navigation_and_preserves_original_line_locators():
     assert "Legal requirements" in texts and "original evidence" in texts
     assert all(term not in texts for term in ["OUTSIDE_MENU", "INNER_MENU", "FOOTER"])
     assert manifest["elements"][0]["locator"]["line_start"] == 5
+
+
+@pytest.mark.parametrize(
+    "state", ["outdated", "current", "published", "active", "incomplete", "wrong_source"]
+)
+def test_recovery_retry_keeps_page_evidence_and_respects_version_and_review(tmp_path, monkeypatch, state):
+    from app.db import dump
+    from app.ocr_recovery import RECOVERY_VERSION
+
+    service, campaign = run_selected(tmp_path, monkeypatch)
+    with service.db.transaction() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE source_url=?", (PRIMARY,)).fetchone()
+        manifest = json.loads(row["manifest"])
+        page = manifest["pages"][0]
+        page["status"] = "ocr_uncertain"
+        page["ocr"] = {
+            "complete": state != "incomplete",
+            "uncertain_spans": ["printed_literal"],
+            "image_sha256": "a" * 64,
+            "recovery": {
+                "version": RECOVERY_VERSION if state == "current" else "legal-region-recovery-v3",
+                "status": "conflict",
+            },
+        }
+        if state == "wrong_source":
+            page["source_hash"] = "f" * 64
+        before = dump(manifest)
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (before, row["id"]))
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status=?,lease_until=? WHERE document_id=?",
+            (
+                "processing" if state == "active" else "failed",
+                time.time() + 120 if state == "active" else None,
+                row["id"],
+            ),
+        )
+        if state == "published":
+            conn.execute(
+                "UPDATE document_metadata SET payload=json_set(payload,'$.review_status','published') WHERE document_id=?",
+                (row["id"],),
+            )
+    result = campaign.retry_ocr_recovery()
+    assert bool(result) == (state == "outdated")
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT manifest FROM documents WHERE id=?", (row["id"],)).fetchone()[0] == before
+        job = conn.execute(
+            "SELECT status,phase FROM processing_jobs WHERE document_id=?", (row["id"],)
+        ).fetchone()
+    assert job["status"] == (
+        "queued" if state == "outdated" else "processing" if state == "active" else "failed"
+    )
+    assert job["phase"] == "parse"
+    audit = campaign.state["ocr_recovery_retries"][-1]
+    assert audit["recovery_version"] == RECOVERY_VERSION
+    if result:
+        assert audit["documents"] == [
+            {"document_id": row["id"], "source_hash": row["content_hash"], "pages": [1]}
+        ]

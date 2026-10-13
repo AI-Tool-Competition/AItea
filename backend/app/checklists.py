@@ -6,6 +6,8 @@ All network I/O continues through the bounded, durable collection worker.
 
 import hashlib
 import json
+import os
+import stat
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
@@ -94,17 +96,49 @@ class Blueprint(Definition):
         return self
 
 
+def _read_blueprint(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2_000_000:
+            raise ValueError("collection blueprint must be a bounded regular file")
+        return Blueprint.model_validate_json(handle.read(2_000_001)).model_dump()
+
+
 def load_blueprints():
     directory = Path(__file__).resolve().parents[2] / "config" / "collection-plans"
     plans = {}
     for path in sorted(directory.glob("*.json")):
-        if path.stat().st_size > 2_000_000:
-            raise ValueError("collection blueprint exceeds size limit")
-        plan = Blueprint.model_validate_json(path.read_text()).model_dump()
+        plan = _read_blueprint(path)
         if plan["id"] in plans:
             raise ValueError("duplicate collection blueprint")
         plans[plan["id"]] = plan
     return plans
+
+
+def load_blueprint_version(plan_id, version):
+    """Read one checked-in immutable snapshot; never migrate a running campaign."""
+    if not isinstance(plan_id, str) or type(version) is not int or version < 1:
+        raise ValueError("collection blueprint identifier/version is invalid")
+    current = load_blueprints().get(plan_id)
+    if current is None or version > current["version"]:
+        raise ValueError("collection blueprint version is not available")
+    if version == current["version"]:
+        return current
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "collection-plans"
+        / "versions"
+        / f"{plan_id}.v{version}.json"
+    )
+    try:
+        plan = _read_blueprint(path)
+    except (FileNotFoundError, OSError):
+        raise ValueError("collection blueprint snapshot is not available") from None
+    if plan["id"] != plan_id or plan["version"] != version or plan["country"] != current["country"]:
+        raise ValueError("collection blueprint snapshot identity does not match")
+    return plan
 
 
 class ChecklistService:
@@ -176,12 +210,20 @@ class ChecklistService:
                 BEGIN SELECT RAISE(ABORT,'page evidence is immutable'); END""")
             conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (11, now()))
 
-    def definition(self, plan_id, item_id=None):
+    def definition(self, plan_id, item_id=None, *, version=None):
         from .service import fail
 
         plan = self.plans.get(plan_id)
         if not plan:
             fail(404, "not_found", "未找到采集清单")
+        if version is not None:
+            if type(version) is not int or version < 1:
+                fail(422, "invalid_plan_version", "清单版本必须是正整数")
+            if version != plan["version"]:
+                try:
+                    plan = load_blueprint_version(plan_id, version)
+                except ValueError:
+                    fail(404, "not_found", "未找到指定版本的采集清单")
         if item_id is None:
             return plan
         item = next((item for item in plan["items"] if item["id"] == item_id), None)
@@ -307,8 +349,8 @@ class ChecklistService:
                 skipped.append({"item_id": item["id"], "reason": error.message})
         return {"runs": runs, "started": len(runs), "skipped": skipped}
 
-    def detail(self, owner, plan_id):
-        plan = self.definition(plan_id)
+    def detail(self, owner, plan_id, *, version=None):
+        plan = self.definition(plan_id, version=version)
         with closing(self.db.connect()) as conn:
             bindings = conn.execute(
                 "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
@@ -424,15 +466,17 @@ class ChecklistService:
                 fail(409, "request_conflict", "同一请求标识不能用于不同采集内容")
             return self.service.collection.run_dict(conn, row)
 
-    def start(self, owner, plan_id, item_id, payload, *, kind, defer_relations=False):
+    def start(self, owner, plan_id, item_id, payload, *, kind, defer_relations=False, version=None):
         from .service import fail
 
-        plan, item = self.definition(plan_id, item_id)
+        plan, item = self.definition(plan_id, item_id, version=version)
         self._gate(item, payload)
         recipe = recipe_for(item)
         if recipe["adapter"] == "manual":
             fail(409, "adapter_required", recipe["reason"])
-        fingerprint = self._request_hash(plan, item, kind, payload | {"defer_relations": True} if defer_relations else payload)
+        fingerprint = self._request_hash(
+            plan, item, kind, payload | {"defer_relations": True} if defer_relations else payload
+        )
         with self.db.transaction() as conn:
             previous = self._previous(conn, owner, payload, fingerprint)
             if previous:

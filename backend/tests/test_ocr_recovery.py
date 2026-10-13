@@ -598,3 +598,269 @@ def test_modified_saved_numeric_evidence_does_not_waive_native_conflict(monkeypa
         region["reading"]["text"] += "\nmodified after persistence"
     ingestion_quality.validate_ocr_page(result)
     assert result["status"] == "ocr_uncertain"
+
+
+def literal_page(native="salmon (Hucho hucho)", text="prefix (*Huchohucho*) trailing", literal="Huchohucho"):
+    data, page = uncertain_page(native, text)
+    page.update(status="ocr_uncertain")
+    page["ocr"].update(
+        complete=True,
+        text=text,
+        uncertain_spans=[literal],
+        image_sha256="e" * 64,
+    )
+    return data, page
+
+
+def save_literal_region(rendered):
+    assert hashlib.sha256(base64.b64decode(rendered["image_base64"])).hexdigest() == rendered["image_sha256"]
+    return {"content_hash": rendered["image_sha256"], "storage_path": "regions/" + rendered["region_id"]}
+
+
+def test_literal_locator_uses_unique_whitespace_insensitive_native_character_boxes():
+    data, page = literal_page()
+    tasks = parsing.plan_pdf_ocr_recovery_bounded(data, page)
+    assert len(tasks) == 1 and tasks[0]["kind"] == "literal"
+    target = tasks[0]["target"]
+    start, end = target["candidate_span"]
+    assert page["text"][start:end] == "Huchohucho"
+    assert target["uncertainty_exact"] == "Huchohucho"
+    assert target["source_hash"] == page["source_hash"]
+    assert target["page"] == 1
+    assert tasks[0]["region_bbox"] != tasks[0]["verify_bbox"]
+    assert tasks[0]["region_bbox"][1] < 100
+    assert tasks[0]["region_bbox"][2] < 300
+
+
+@pytest.mark.parametrize(
+    "native,text,reason",
+    [
+        ("Hucho hucho\nHuchohucho", "Huchohucho", "ambiguous_literal_location"),
+        ("Hucho hucho", "Huchohucho and Huchohucho", "ambiguous_literal_alignment"),
+        ("prefixHuchohuchoSuffix", "Huchohucho", "ambiguous_literal_location"),
+    ],
+)
+def test_literal_multiple_occurrences_or_inside_word_location_are_unresolved(native, text, reason):
+    data, page = literal_page(native, text)
+    tasks = parsing.plan_pdf_ocr_recovery_bounded(data, page)
+    assert len(tasks) == 1 and tasks[0]["kind"] == "unresolved"
+    assert tasks[0]["reason"] == reason
+
+
+def test_literal_ocr_substring_does_not_become_a_recoverable_exact_token():
+    data, page = literal_page("Hucho hucho", "prefixHuchohuchoSuffix")
+    assert not parsing.plan_pdf_ocr_recovery_bounded(data, page)
+
+
+def test_blind_literal_agreement_replaces_only_exact_span_and_keeps_all_previous_evidence(monkeypatch):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page()
+    original = deepcopy(page)
+    requests = []
+    readings = iter(["salmon (Hucho hucho)", "(Hucho hucho)\nOther visible text"])
+
+    def read(rendered):
+        assert not ({"native_text", "candidate", "target", "context", "uncertainty_exact"} & rendered.keys())
+        assert "Huchohucho" not in str(
+            {key: value for key, value in rendered.items() if key != "image_base64"}
+        )
+        requests.append(deepcopy(rendered))
+        return {"text": next(readings), "uncertain_spans": [], "graphic_marks": [], "native_hint_chars": 0}
+
+    monkeypatch.setattr(vision, "transcribe_region", read)
+    first = ocr_recovery.recover_page_step(data, page, on_region=save_literal_region)
+    assert first["text"] == original["text"] and first["status"] == "pending_ocr"
+    result = ocr_recovery.recover_page_step(data, first, on_region=save_literal_region)
+    assert result["status"] == "ocr_complete"
+    assert result["text"] == "prefix (*Hucho hucho*) trailing"
+    assert not result["ocr"]["uncertain_spans"]
+    assert result["source_hash"] == original["source_hash"]
+    assert result["native_text"] == original["native_text"]
+    assert result["ocr"]["text"] == original["ocr"]["text"]
+    assert result["ocr"]["image_sha256"] == original["ocr"]["image_sha256"]
+    assert result["ocr"]["image_blob"] == original["ocr"]["image_blob"]
+    assert result["ocr"]["recovery_history"][0]["ocr"] == original["ocr"]
+    assert (
+        result["ocr"]["recovery_history"][0]["text_hash"]
+        == hashlib.sha256(original["text"].encode()).hexdigest()
+    )
+    assert len(requests) == 2 and requests[0]["region_bbox"] != requests[1]["region_bbox"]
+    assert requests[0]["image_sha256"] != requests[1]["image_sha256"]
+    proof = result["ocr"]["recovery"]["verifications"][0]
+    assert proof["field"] == "literal" and proof["uncertainty_exact"] == "Huchohucho"
+    assert proof["verified_text"] == "Hucho hucho" and len(set(proof["region_ids"])) == 2
+    for region in result["ocr"]["recovery"]["regions"]:
+        assert region["reading_hash"] == ocr_recovery._digest(region["reading"])
+        assert region["image_blob"]["content_hash"] == region["image_sha256"]
+    assert page == original
+
+
+@pytest.mark.parametrize(
+    "second,uncertainties",
+    [
+        ("Huchohuco", []),
+        ("HuchoHucho", []),
+        ("Huchohucho", ["unsure about this visible name"]),
+        ("Huchohucho [illegible]", []),
+        ("prefixHuchohuchoSuffix", []),
+        ("Huchohucho and Hucho hucho", []),
+    ],
+)
+def test_literal_disagreement_uncertain_reads_and_substrings_cannot_clear_flag(
+    monkeypatch, second, uncertainties
+):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page()
+    values = iter(
+        [
+            {"text": "Huchohucho", "uncertain_spans": [], "graphic_marks": []},
+            {"text": second, "uncertain_spans": uncertainties, "graphic_marks": []},
+        ]
+    )
+    monkeypatch.setattr(vision, "transcribe_region", lambda _: next(values))
+    result = ocr_recovery.recover_page_step(data, page, on_region=save_literal_region)
+    result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert result["status"] == "ocr_uncertain" and result["text"] == page["text"]
+    assert result["ocr"]["uncertain_spans"] == ["Huchohucho"]
+    assert result["ocr"]["recovery"]["status"] == "conflict"
+
+
+@pytest.mark.parametrize(
+    "flag", ["model_reported_incomplete", "table_layout_not_preserved", "independent_name_issue"]
+)
+def test_literal_proof_does_not_clear_independent_completeness_uncertainties(monkeypatch, flag):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page()
+    page["ocr"]["uncertain_spans"].append(flag)
+    if flag == "model_reported_incomplete":
+        page["ocr"]["complete"] = False
+    monkeypatch.setattr(
+        vision,
+        "transcribe_region",
+        lambda _: {
+            "text": "Huchohucho",
+            "uncertain_spans": [],
+            "graphic_marks": [],
+        },
+    )
+    result = ocr_recovery.recover_page_step(data, page, on_region=save_literal_region)
+    result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert result["ocr"]["uncertain_spans"] == [flag]
+    assert result["status"] == "ocr_uncertain"
+    assert result["ocr"]["complete"] == page["ocr"]["complete"]
+    assert result["ocr"]["recovery"]["tasks"][0]["status"] == "complete"
+
+
+def test_independent_validation_warning_and_model_incomplete_boolean_still_block_literal_page(monkeypatch):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page()
+    page["ocr"].update(complete=False, validation_warnings=["independent_table_warning"])
+    monkeypatch.setattr(
+        vision,
+        "transcribe_region",
+        lambda _: {
+            "text": "Huchohucho",
+            "uncertain_spans": [],
+            "graphic_marks": [],
+        },
+    )
+    result = ocr_recovery.recover_page_step(data, page, on_region=save_literal_region)
+    result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert result["status"] == "ocr_uncertain" and result["ocr"]["complete"] is False
+    assert result["ocr"]["uncertain_spans"] == ["model_reported_incomplete", "independent_table_warning"]
+    assert result["ocr"]["validation_warnings"] == ["independent_table_warning"]
+
+
+def test_structural_flag_cannot_be_proved_as_a_literal_even_if_printed_verbatim():
+    data, page = literal_page(
+        "model_reported_incomplete", "model_reported_incomplete", "model_reported_incomplete"
+    )
+    assert not parsing.plan_pdf_ocr_recovery_bounded(data, page)
+
+
+def test_corrupted_first_literal_reading_cannot_be_used_after_second_frame(monkeypatch):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page()
+    monkeypatch.setattr(
+        vision,
+        "transcribe_region",
+        lambda _: {
+            "text": "Huchohucho",
+            "uncertain_spans": [],
+            "graphic_marks": [],
+        },
+    )
+    result = ocr_recovery.recover_page_step(data, page, on_region=save_literal_region)
+    result["ocr"]["recovery"]["regions"][0]["reading"]["text"] += " modified after persistence"
+    result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert result["status"] == "ocr_uncertain" and result["ocr"]["uncertain_spans"] == ["Huchohucho"]
+
+
+def test_compatible_literal_proof_is_reused_across_recovery_version_upgrade(monkeypatch):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page()
+    monkeypatch.setattr(
+        vision,
+        "transcribe_region",
+        lambda _: {
+            "text": "Huchohucho",
+            "uncertain_spans": [],
+            "graphic_marks": [],
+        },
+    )
+    result = ocr_recovery.recover_page_step(data, page, on_region=save_literal_region)
+    result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    previous_regions = deepcopy(result["ocr"]["recovery"]["regions"])
+    result["ocr"]["recovery"]["version"] = "previous-compatible-region-recipe"
+    result["ocr"]["uncertain_spans"] = ["Huchohucho"]
+    result["status"] = "ocr_uncertain"
+    monkeypatch.setattr(
+        vision, "transcribe_region", lambda _: pytest.fail("compatible proof resent to model")
+    )
+    final = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert final["status"] == "ocr_complete"
+    assert final["ocr"]["recovery"]["reused_tasks"] == 1
+    assert final["ocr"]["recovery"]["regions"] == previous_regions
+
+
+@pytest.mark.parametrize("modified", ["reading", "image_hash", "correction", "proof"])
+def test_final_multi_literal_checkpoint_rechecks_earlier_proof_before_clearing(monkeypatch, modified):
+    from app import ocr_recovery, vision
+
+    data, page = literal_page("Hucho hucho\nSalmo salar", "Huchohucho\nSalmosalar")
+    page["ocr"]["uncertain_spans"] = ["Huchohucho", "Salmosalar"]
+    readings = iter(["Huchohucho", "Huchohucho", "Salmosalar", "Salmosalar"])
+    monkeypatch.setattr(
+        vision,
+        "transcribe_region",
+        lambda _: {
+            "text": next(readings),
+            "uncertain_spans": [],
+            "graphic_marks": [],
+        },
+    )
+    result = page
+    for _ in range(2):
+        result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert result["ocr"]["recovery"]["tasks"][0]["status"] == "complete"
+    assert result["status"] == "pending_ocr"
+    recovery = result["ocr"]["recovery"]
+    if modified == "reading":
+        recovery["regions"][0]["reading"]["text"] += " modified after checkpoint"
+    elif modified == "image_hash":
+        recovery["regions"][0]["image_blob"]["content_hash"] = "a" * 64
+    elif modified == "correction":
+        recovery["corrections"][0]["after"] = "unverified replacement"
+    else:
+        recovery["verifications"][0]["uncertainty_exact"] = "another uncertainty"
+    for _ in range(2):
+        result = ocr_recovery.recover_page_step(data, result, on_region=save_literal_region)
+    assert result["status"] == "ocr_uncertain"
+    assert result["text"] == page["text"]
+    assert result["ocr"]["uncertain_spans"] == ["Huchohucho", "Salmosalar"]

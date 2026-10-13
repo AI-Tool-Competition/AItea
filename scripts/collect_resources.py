@@ -58,6 +58,8 @@ def child(
     models_env,
     retry_embeddings,
     revalidate_layout,
+    revalidate_native_tables,
+    retry_ocr_recovery,
 ):
     if hasattr(os, "setsid"):
         os.setsid()
@@ -84,8 +86,12 @@ def child(
             )
             if revalidate_layout:
                 campaign.revalidate_layout()
+            if revalidate_native_tables:
+                campaign.revalidate_native_tables()
             if retry_embeddings:
                 campaign.retry_embeddings()
+            if retry_ocr_recovery:
+                campaign.retry_ocr_recovery()
             workers = CollectionWorkers(service.collection).start()
             started = time.monotonic()
             while campaign.step():
@@ -99,6 +105,8 @@ def child(
             summary = report["summary"]
             gaps = (
                 summary["categories_with_candidates"] < summary["categories"]
+                or summary["remaining_pages"] > 0
+                or summary["failed_queue_items"] > 0
                 or summary["integrity_verified"] != summary["originals"]
                 or summary["text_complete"] != summary["originals"]
                 or summary["unresolved_relations"]
@@ -140,7 +148,7 @@ def child(
 
 
 def main():
-    from app.checklists import load_blueprints
+    from app.checklists import load_blueprints, load_blueprint_version
     from app.db import dump
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -197,6 +205,16 @@ def main():
         action="store_true",
         help="On resume, recheck false table geometry warnings against immutable originals",
     )
+    parser.add_argument(
+        "--revalidate-native-tables",
+        action="store_true",
+        help="On resume, recheck unfinished draft table pages using verified native cell geometry",
+    )
+    parser.add_argument(
+        "--retry-ocr-recovery",
+        action="store_true",
+        help="On resume, retry draft review pages with a newer region recovery implementation",
+    )
     args = parser.parse_args()
     lock = None
     try:
@@ -206,18 +224,15 @@ def main():
             raise ValueError("retry-embeddings requires --resume and real model configuration")
         if args.revalidate_layout and not args.resume:
             raise ValueError("revalidate-layout requires --resume")
+        if args.revalidate_native_tables and not args.resume:
+            raise ValueError("revalidate-native-tables requires --resume")
+        if args.retry_ocr_recovery and not (args.resume and args.live_models):
+            raise ValueError("retry-ocr-recovery requires --resume and real model configuration")
         if args.live_models != bool(args.models_env) or (args.models_env and not args.models_env.is_file()):
             raise ValueError("real providers require both --live-models and an existing --models-env file")
         plan = load_blueprints().get(args.plan_id)
         if not plan:
             raise ValueError("unknown collection plan")
-        options = options_for(args, plan)
-        if (
-            not 1 <= args.discovery_batches <= 20
-            or not 0 <= args.originals_per_item <= (200 if options.get("selection") else 20)
-            or not 10 <= args.time_budget <= 7200
-        ):
-            raise ValueError("campaign budgets exceed the supported bounds")
         if args.output.is_symlink():
             raise ValueError("output must be a real independent directory")
         output = args.output.resolve()
@@ -231,6 +246,21 @@ def main():
         lock = os.open(output / "campaign.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = json.loads((output / "campaign.json").read_text()) if args.resume else None
+        if state is not None:
+            if (
+                not isinstance(state, dict)
+                or state.get("format") != 1
+                or state.get("plan_id") != args.plan_id
+            ):
+                raise ValueError("resume requires the same frozen plan and campaign options")
+            plan = load_blueprint_version(args.plan_id, state.get("plan_version"))
+        options = options_for(args, plan)
+        if (
+            not 1 <= args.discovery_batches <= 20
+            or not 0 <= args.originals_per_item <= (200 if options.get("selection") else 20)
+            or not 10 <= args.time_budget <= 7200
+        ):
+            raise ValueError("campaign budgets exceed the supported bounds")
         if state is not None and (
             state.get("format") != 1
             or state.get("plan_hash") != hashlib.sha256(dump(plan).encode()).hexdigest()
@@ -263,6 +293,8 @@ def main():
             str(args.models_env.resolve()) if args.models_env else None,
             args.retry_embeddings,
             args.revalidate_layout,
+            args.revalidate_native_tables,
+            args.retry_ocr_recovery,
         ),
     )
     try:

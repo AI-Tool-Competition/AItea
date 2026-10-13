@@ -131,9 +131,47 @@ def test_resume_rejects_changed_scope_or_frozen_definition(tmp_path):
     campaign = ResourceCampaign(service, PLAN, options("1.1"))
     with pytest.raises(ValueError, match="same frozen"):
         ResourceCampaign(service, PLAN, options("1.1", originals=2), state=deepcopy(campaign.state))
-    service.checklists.plans[PLAN]["version"] += 1
+    service.checklists.plans[PLAN]["title"] += " changed without a version"
     with pytest.raises(ValueError, match="same frozen"):
         ResourceCampaign(service, PLAN, options("1.1"), state=deepcopy(campaign.state))
+
+
+def test_campaign_resume_keeps_frozen_definition_bindings_and_report(tmp_path):
+    service = Service(tmp_path)
+    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    frozen = deepcopy(campaign.plan)
+    assert campaign.step()
+    newer = deepcopy(frozen)
+    newer["version"] += 1
+    newer["title"] += " newer"
+    service.checklists.plans[PLAN] = newer
+
+    resumed = ResourceCampaign(service, PLAN, options("1.1"), state=deepcopy(campaign.state))
+    assert resumed.plan == frozen
+    assert resumed.report()["plan_version"] == frozen["version"]
+    # The durable request survives publication of a newer blueprint. A new
+    # request must still bind to the original version rather than the latest.
+    record = resumed.state["items"]["1.1"]
+    record["submission"] = {
+        "kind": "discovery",
+        "payload": {"client_request_id": "frozen-replay", "confirm_condition": False},
+    }
+    resumed._submit("1.1", record)
+    with closing(service.db.connect()) as conn:
+        versions = {row[0] for row in conn.execute("SELECT version FROM checklist_bindings")}
+    assert versions == {frozen["version"]}
+    fresh = ResourceCampaign(service, PLAN, options("1.1"))
+    assert fresh.plan["version"] == newer["version"]
+
+
+def test_resume_rejects_another_plan_before_creating_account_or_binding(tmp_path):
+    service = Service(tmp_path)
+    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    with pytest.raises(ValueError, match="same frozen"):
+        ResourceCampaign(service, "singapore-demo-20261009", options("1.1"), state=deepcopy(campaign.state))
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 0
 
 
 def test_explicit_extension_preserves_account_progress_and_submission_identity(tmp_path):
@@ -252,3 +290,29 @@ def test_cli_preserves_nonempty_output_and_resumes_an_owned_campaign(tmp_path):
     with closing(campaign.service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0] == 0
+
+
+def test_frozen_report_excludes_errors_from_newer_bindings_for_same_account(tmp_path):
+    service = Service(tmp_path)
+    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    assert campaign.step()
+    old_run = campaign.state["items"]["1.1"]["discovery_runs"][0]
+    newer = deepcopy(campaign.plan)
+    newer["version"] += 1
+    service.checklists.plans[PLAN] = newer
+    new_run = service.checklists.start(
+        campaign.state["owner_id"],
+        PLAN,
+        "1.1",
+        {"client_request_id": "new-version-failure", "confirm_condition": False},
+        kind="discovery",
+        version=newer["version"],
+    )
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE collection_items SET error='new blueprint only' WHERE run_id=?", (new_run["id"],)
+        )
+        conn.execute("UPDATE collection_items SET error='frozen blueprint only' WHERE run_id=?", (old_run,))
+    errors = campaign.report()["items"][0]["errors"]
+    assert len(errors) == 2
+    assert all(error["error"] == "frozen blueprint only" for error in errors)

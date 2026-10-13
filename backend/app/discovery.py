@@ -36,6 +36,31 @@ _LKPP_FILES = "https://jdih.lkpp.go.id/admin/uploads/documents"
 _BKPM_HOST = "jdih.bkpm.go.id"
 _BKPM_FILES_HOST = "jdih-storage.bkpm.go.id"
 _BKPM_API = "https://jdih.bkpm.go.id/api/document-search"
+_PDPC_HOST = "www.pdpc.gov.sg"
+_PDPC_GUIDANCE = "/organisations/regulations-decisions/regulatory-guidance"
+_PDPC_GUIDES = (
+    "advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
+    "advisory-guidelines-on-the-personal-data-protection-act-for-selected-topics",
+    "advisory-guidelines-on-the-do-not-call-provisions",
+    "advisory-guidelines-on-requiring-consent-for-marketing-purposes",
+)
+_PDPC_INTERMEDIARIES = "/organisations/resources/guidance-by-topic/guide-to-managing-data-intermediaries"
+_CUSTOMS_TEXT_PATHS = (
+    "/doing-business/import-operations/import-operations-overview/",
+    "/doing-business/import-operations/import-procedures/import-procedures-overview/",
+    "/doing-business/import-operations/import-procedures/types-of-import-permits/",
+    "/doing-business/import-operations/import-procedures/controlled-and-prohibited-goods-for-imports/",
+    "/doing-business/import-operations/import-procedures/retaining-your-trade-documents/",
+    "/doing-business/valuation-duties-and-fees/goods-and-services-tax-gst/",
+    "/doing-business/valuation-duties-and-fees/establishing-customs-value/establishing-customs-value-and-methods/",
+    "/doing-business/business-resources/hs-classification-of-goods/application-for-customs-ruling-on-classification-of-goods/",
+)
+_SG_UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
+_PDPC_FLIGHT_BYTES = 2 * 1024 * 1024
+_PDPC_FLIGHT_RECORD_BYTES = 1024 * 1024
+_PDPC_FLIGHT_RECORDS = 512
+_PDPC_FLIGHT_NODES = 50_000
+_PDPC_FLIGHT_DEPTH = 64
 _PDF_BUTTON = re.compile(
     r"\s*(?:loadPdf|toggleSubMenu)\(this,\s*(['\"])(https://[^'\"<>\s]+\.pdf)\1\)\s*;?\s*",
     re.I,
@@ -361,6 +386,213 @@ class _Link:
     tag: str
     text: list[str] = field(default_factory=list)
     title: str = ""
+    source_locator: dict | None = None
+
+
+class _FlightScripts(HTMLParser):
+    """Collect literal Next Flight pushes without interpreting JavaScript."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.scripts = []
+        self.parts = None
+        self.position = None
+        self.script_index = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.script_index += 1
+            self.parts = [] if not dict(attrs).get("src") else None
+            self.position = self.getpos()
+
+    def handle_data(self, data):
+        if self.parts is not None:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self.parts is not None:
+            body = "".join(self.parts).strip()
+            if body.startswith("self.__next_f.push("):
+                self.scripts.append((self.script_index, self.position, body))
+                if len(self.scripts) > 128:
+                    raise ValueError("PDPC Next 数据块超过上限。")
+            self.parts = None
+
+
+def _flight_json(value: str):
+    # Limit nesting before json.loads; its own recursion limit is much broader
+    # than the verified source protocol. Never accept NaN or Infinity.
+    depth = 0
+    quoted = escaped = False
+    for character in value:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in "[{":
+            depth += 1
+            if depth > _PDPC_FLIGHT_DEPTH:
+                raise ValueError("PDPC Next 数据深度超过上限。")
+        elif character in "]}":
+            depth -= 1
+
+    def reject_constant(_):
+        raise ValueError("PDPC Next 数据包含无效数值。")
+
+    try:
+        return json.loads(value, parse_constant=reject_constant)
+    except (RecursionError, json.JSONDecodeError) as exc:
+        raise ValueError("PDPC Next 数据不是完整 JSON。") from exc
+
+
+def _pdpc_next_links(decoded: str, source_hash: str) -> tuple[list[_Link], dict]:
+    collector = _FlightScripts()
+    collector.feed(decoded)
+    collector.close()
+    pieces = []
+    source_blocks = []
+    length = 0
+    for index, position, body in collector.scripts:
+        match = re.fullmatch(r"self\.__next_f\.push\((.*)\)\s*;?", body, re.S)
+        if match is None:
+            raise ValueError("PDPC Next 数据包含非字面脚本。")
+        value = _flight_json(match[1])
+        if not isinstance(value, list) or len(value) != 2 or value[0] != 1 or not isinstance(value[1], str):
+            raise ValueError("PDPC Next 数据块协议未核验。")
+        payload = value[1].encode("utf-8")
+        if len(payload) > _PDPC_FLIGHT_BYTES or length + len(payload) > _PDPC_FLIGHT_BYTES:
+            raise ValueError("PDPC Next 数据超过字节上限。")
+        source_blocks.append(
+            {
+                "script_index": index,
+                "html_line": position[0],
+                "html_column": position[1],
+                "literal_script_sha256": sha256(body.encode()).hexdigest(),
+                "decoded_payload_sha256": sha256(payload).hexdigest(),
+                "decoded_stream_start_byte": length,
+                "decoded_stream_end_byte": length + len(payload),
+            }
+        )
+        pieces.append(payload)
+        length += len(payload)
+    stream = b"".join(pieces)
+    links = []
+    position = count = nodes = 0
+    records = []
+
+    def append_fragment(fragment, locator):
+        page = _Page()
+        page.feed(fragment)
+        page.close()
+        if page.challenge or _ERROR_HEADING.search(" ".join(page.headings[:3])):
+            raise ValueError("PDPC Next 内容返回验证或错误页。")
+        for link in page.links:
+            link.source_locator = locator
+            links.append(link)
+        if page.truncated or len(links) > MAX_PAGE_LINKS:
+            raise ValueError("PDPC Next 链接超过扫描上限。")
+
+    while position < len(stream):
+        if stream[position : position + 1] == b"\n":
+            position += 1
+            continue
+        count += 1
+        if count > _PDPC_FLIGHT_RECORDS:
+            raise ValueError("PDPC Next 记录超过上限。")
+        start = position
+        header = re.match(rb"([0-9a-f]{0,8}):", stream[position:])
+        if not header:
+            raise ValueError("PDPC Next 记录头未核验。")
+        record_id = header[1].decode()
+        position += header.end()
+        locator = {
+            "source_page_sha256": source_hash,
+            "record_id": record_id,
+            "decoded_record_start_byte": start,
+        }
+        if stream[position : position + 1] == b"T":
+            text_header = re.match(rb"T([0-9a-f]{1,8}),", stream[position:])
+            if not text_header:
+                raise ValueError("PDPC Next 文本长度未核验。")
+            size = int(text_header[1], 16)
+            position += text_header.end()
+            end = position + size
+            if size > _PDPC_FLIGHT_RECORD_BYTES or end > len(stream):
+                raise ValueError("PDPC Next 文本截断或超过记录上限。")
+            fragment = stream[position:end].decode("utf-8", errors="strict")
+            position = end
+            locator.update(decoded_record_end_byte=end, fragment_sha256=sha256(fragment.encode()).hexdigest())
+            append_fragment(fragment, locator)
+            records.append(locator)
+            continue
+        end = stream.find(b"\n", position)
+        if end < 0 or end - position > _PDPC_FLIGHT_RECORD_BYTES:
+            raise ValueError("PDPC Next JSON 记录截断或超过上限。")
+        payload = stream[position:end].decode("utf-8", errors="strict")
+        position = end + 1
+        locator["decoded_record_end_byte"] = end
+        if payload.startswith(("I[", "HL[")):
+            # Module names and resource hints are never document links.
+            _flight_json(payload[1:] if payload.startswith("I[") else payload[2:])
+            continue
+        if payload in {"X", "C"}:
+            # Verified empty/control records carry no content or navigation.
+            continue
+        value = _flight_json(payload)
+        pending = [(value, "", 0)]
+        while pending:
+            value, pointer, depth = pending.pop()
+            nodes += 1
+            if nodes > _PDPC_FLIGHT_NODES or depth > _PDPC_FLIGHT_DEPTH:
+                raise ValueError("PDPC Next JSON 对象数或深度超过上限。")
+            if isinstance(value, dict):
+                data = value.get("data")
+                if isinstance(data, dict) and isinstance(data.get("content"), str):
+                    fragment = data["content"]
+                    if len(fragment.encode()) > _PDPC_FLIGHT_RECORD_BYTES:
+                        raise ValueError("PDPC Next 正文片段超过上限。")
+                    anchor = {
+                        **locator,
+                        "json_pointer": pointer + "/data/content",
+                        "fragment_sha256": sha256(fragment.encode()).hexdigest(),
+                    }
+                    append_fragment(fragment, anchor)
+                    records.append(anchor)
+                for key, child in value.items():
+                    escaped_key = key.replace("~", "~0").replace("/", "~1")
+                    pending.append((child, pointer + "/" + escaped_key, depth + 1))
+            elif isinstance(value, list):
+                # React's literal anchor props are a data record, never a
+                # component invocation. Ignore all script/image/src records.
+                if len(value) == 4 and value[:2] == ["$", "a"] and isinstance(value[3], dict):
+                    href = value[3].get("href")
+                    label = value[3].get("children")
+                    if isinstance(href, str):
+                        links.append(
+                            _Link(
+                                href,
+                                "a",
+                                text=[label[:500]] if isinstance(label, str) else [],
+                                source_locator={**locator, "json_pointer": pointer + "/3/href"},
+                            )
+                        )
+                pending.extend((child, pointer + f"/{index}", depth + 1) for index, child in enumerate(value))
+    if len(links) > MAX_PAGE_LINKS:
+        raise ValueError("PDPC Next 链接超过扫描上限。")
+    return links, {
+        "provider": "pdpc-next-flight-v1",
+        "source_page_sha256": source_hash,
+        "decoded_stream_sha256": sha256(stream).hexdigest(),
+        "decoded_bytes": len(stream),
+        "records": count,
+        "source_blocks": source_blocks,
+        "content_records": records,
+    }
 
 
 class _Page(HTMLParser):
@@ -515,6 +747,9 @@ class _Recipe:
         self.treaty_room = recipe.get("treaty_room", False)
         if not isinstance(self.treaty_room, bool):
             raise ValueError("TreatyRoom 公开目录配置无效。")
+        self.sg_official_2026 = recipe.get("sg_official_2026", False)
+        if not isinstance(self.sg_official_2026, bool):
+            raise ValueError("新加坡官方新站配置无效。")
         self.max_links = recipe.get("max_links", 200)
         if (
             isinstance(self.max_links, bool)
@@ -566,6 +801,20 @@ class _Recipe:
         parsed = urlsplit(url)
         if parsed.hostname not in self.hosts or self.matches(url, self.exclude_patterns):
             return None
+        if self.sg_official_2026 and parsed.hostname == "isomer-user-content.by.gov.sg":
+            # File hosts never inherit the origin's article/catalog patterns.
+            return (
+                "document"
+                if self.matches(url, self.document_patterns_by_host.get(parsed.hostname, []))
+                else None
+            )
+        if (
+            self.sg_official_2026
+            and parsed.hostname == "www.customs.gov.sg"
+            and parsed.path in _CUSTOMS_TEXT_PATHS
+            and not parsed.query
+        ):
+            return "document"
         if self.wto_public_catalog and parsed.hostname in {"docs.wto.org", "goods-schedules.wto.org"}:
             from .wto_discovery import purpose
 
@@ -881,6 +1130,13 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         )
     if not visible:
         return _result(reason="页面没有可见内容，可能需要脚本或人工复核。")
+    scope = None
+    if rules.sg_official_2026 and urlsplit(current).hostname == _PDPC_HOST:
+        try:
+            next_links, scope = _pdpc_next_links(_decode(content), sha256(content).hexdigest())
+        except (ValueError, AssertionError, UnicodeError):
+            return _result(reason="PDPC 公开 Next 数据无法有界核验，未确认原件链接。")
+        page.links.extend(next_links)
     if purpose == "document" and not rules.matches(current, rules.html_document_patterns):
         return _result(reason="文件地址返回 HTML，未取得配置要求的原件。")
     candidates = []
@@ -961,6 +1217,8 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
             warnings.append("单页候选达到上限，仍有链接未登记；不能据此认定目录完整。")
             break
         entry = {"url": candidate, "purpose": candidate_purpose, "title": label}
+        if link.source_locator:
+            entry["source_locator"] = link.source_locator
         identity = _identity(candidate)
         if identity:
             entry["identity_key"] = identity
@@ -969,7 +1227,18 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         warnings.append("页面链接超过扫描上限，需缩小范围或补充适配。")
     if not candidates and purpose != "document":
         warnings.append("未发现配置范围内的子页面或原件；请核对空目录、动态分页及访问限制。")
-    return _result(matched=True, purpose=purpose, links=candidates, warnings=warnings)
+    result = _result(matched=True, purpose=purpose, links=candidates, warnings=warnings)
+    if scope is not None:
+        # Persist only locators for the bounded selected links. Body strings and
+        # unrelated navigation/module records are not legal catalog evidence.
+        scope.pop("content_records")
+        scope["link_records"] = [
+            {"url": row["url"], "purpose": row["purpose"], "locator": row["source_locator"]}
+            for row in candidates
+            if row.get("source_locator")
+        ]
+        result["scope"] = scope
+    return result
 
 
 def _country(item: dict) -> str:
@@ -1186,6 +1455,31 @@ def recipe_for(item: dict) -> dict:
             r"(?:^|/)(?:privacy-policy|terms-of-use)(?:/|\?|$)",
         ]
         result = scope_recipe(item, result)
+        if item.get("id") in {"3.1", "3.6"} and item.get("limits", {}).get("sg_official_2026") is True:
+            result["sg_official_2026"] = True
+            for seed in seeds:
+                if seed["purpose"] in {"detail", "document"}:
+                    # Earlier generic SG recipes treated every seed as a
+                    # catalog. New explicit source roles keep their own type.
+                    catalog = rf"^{re.escape(urlsplit(seed['url']).path)}/?(?:\?|$)"
+                    if catalog in result["catalog_patterns"]:
+                        result["catalog_patterns"].remove(catalog)
+            if item["id"] == "3.6":
+                guide_paths = [_PDPC_GUIDANCE + "/" + slug for slug in _PDPC_GUIDES]
+                result["detail_patterns"] += [
+                    rf"^{re.escape(path)}/?$" for path in guide_paths + [_PDPC_INTERMEDIARIES]
+                ]
+                result["document_patterns_by_host"] = {
+                    _PDPC_HOST: result["document_patterns"] + [rf"^/assets/{_SG_UUID}$"],
+                }
+                result["catalog_patterns"] += [rf"^{re.escape(_PDPC_GUIDANCE)}/?$"]
+            else:
+                result["html_document_patterns"] += [rf"^{re.escape(path)}$" for path in _CUSTOMS_TEXT_PATHS]
+                for host in ("isomer-user-content.by.gov.sg",):
+                    if host in result["allowed_hosts"]:
+                        result.setdefault("document_patterns_by_host", {})[host] = [
+                            rf"^/174/{_SG_UUID}/[^/?]+\.pdf$"
+                        ]
         if item.get("id") == "5.2":
             result["wto_services"] = True
             result["wto_member"] = "SG"

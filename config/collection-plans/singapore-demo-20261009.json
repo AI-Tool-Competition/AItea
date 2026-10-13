@@ -1,6 +1,6 @@
 {
   "id": "singapore-demo-20261009",
-  "version": 3,
+  "version": 4,
   "country": "SG",
   "title": "六堡茶新加坡出海法律资料采集清单（比赛Demo版）",
   "source_document": {
@@ -404,9 +404,51 @@
           "url": "https://www.customs.gov.sg/doing-business/compliance/legal-framework-and-compliance-overview/",
           "purpose": "catalog",
           "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-operations-overview/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/types-of-import-permits/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/controlled-and-prohibited-goods-for-imports/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/retaining-your-trade-documents/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/valuation-duties-and-fees/goods-and-services-tax-gst/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/valuation-duties-and-fees/establishing-customs-value/establishing-customs-value-and-methods/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/business-resources/hs-classification-of-goods/application-for-customs-ruling-on-classification-of-goods/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
         }
       ],
-      "trusted_hosts": [],
+      "trusted_hosts": [
+        "isomer-user-content.by.gov.sg"
+      ],
       "tags": [
         "country:SG",
         "checklist:SG-3.1",
@@ -454,7 +496,8 @@
       "adapter": "html_links",
       "limits": {
         "max_original_bytes": 134217728,
-        "regulatory_group_limit": 45
+        "regulatory_group_limit": 45,
+        "sg_official_2026": true
       }
     },
     {
@@ -738,6 +781,31 @@
           "url": "https://www.pdpc.gov.sg/",
           "purpose": "catalog",
           "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-personal-data-protection-act-for-selected-topics",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-requiring-consent-for-marketing-purposes",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/resources/guidance-by-topic/guide-to-managing-data-intermediaries",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
         }
       ],
       "trusted_hosts": [
@@ -789,7 +857,8 @@
       "adapter": "html_links",
       "limits": {
         "max_original_bytes": 134217728,
-        "regulatory_group_limit": 45
+        "regulatory_group_limit": 45,
+        "sg_official_2026": true
       }
     },
     {

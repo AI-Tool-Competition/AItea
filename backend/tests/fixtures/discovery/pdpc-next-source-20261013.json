@@ -1,0 +1,97 @@
+[
+  {
+    "fixture": "pdpc-key-concepts-current-next-20261013.html",
+    "fixture_sha256": "4f0181b7a4bae1fad5b024d95fbbab7ce44b4a10136e3173300c00ff0f7feb38",
+    "derived_fixture": true,
+    "source_url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
+    "original_html_sha256": "c23d9313553bbbc7b31ac7aeedb92a1b48873053a6420257c29be36327fdb43f",
+    "original_html_bytes": 188225,
+    "original_script_index": 22,
+    "original_literal_script_sha256": "c114fdcf0f392169202cc207dbd562cf8fe5c62663177a839a2745e90c3572db",
+    "record_spans": [
+      {
+        "record_id": "27",
+        "decoded_stream_start_byte": 145937,
+        "decoded_stream_end_byte": 148102,
+        "raw_record_sha256": "3ed1fcc914737d0ac0a2d5b109b03bad105637401b1fb5e3553798f17a9aa4f3"
+      }
+    ],
+    "scope": "Literal source records unchanged; surrounding HTML and push block reduced for offline regression tests. Not an original legal document."
+  },
+  {
+    "fixture": "pdpc-selected-topics-current-next-20261013.html",
+    "fixture_sha256": "6ee3eec684cb89db57e9dc82edf88f9a0843d804ecad77f630066bf8a26dc485",
+    "derived_fixture": true,
+    "source_url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-personal-data-protection-act-for-selected-topics",
+    "original_html_sha256": "9b527081e527df8836452a1da4642a96987c356de694498e07434fd75874db37",
+    "original_html_bytes": 187753,
+    "original_script_index": 22,
+    "original_literal_script_sha256": "bd1c524242dc6b803db2bd38da0c68ac78b3e6a0fa4faa288b76979c682edcc1",
+    "record_spans": [
+      {
+        "record_id": "27",
+        "decoded_stream_start_byte": 145957,
+        "decoded_stream_end_byte": 148006,
+        "raw_record_sha256": "a14bdee32f0bd563f7818815746a22c25daea0a161eb34664fe7bf0554cc4cec"
+      }
+    ],
+    "scope": "Literal source records unchanged; surrounding HTML and push block reduced for offline regression tests. Not an original legal document."
+  },
+  {
+    "fixture": "pdpc-dnc-next-20261013.html",
+    "fixture_sha256": "8c95a039db7ffbcca9f692c18ddaf1610c583cce4d223a4c0f4f9ec9126855a1",
+    "derived_fixture": true,
+    "source_url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
+    "original_html_sha256": "9c85a98512f711bce259dfb67a429a4629b38eb4cea1cf968f37d64172162716",
+    "original_html_bytes": 186998,
+    "original_script_index": 22,
+    "original_literal_script_sha256": "5ad6f585b88932fd46e6c7e0c2b22edd94d509c3cbf4fdd709ecf44f1c0c352c",
+    "record_spans": [
+      {
+        "record_id": "27",
+        "decoded_stream_start_byte": 145827,
+        "decoded_stream_end_byte": 147545,
+        "raw_record_sha256": "171398012aa52d8d859f83f0adbbfd27f1c8aec7e2b992ad3f28c764b03eb24c"
+      }
+    ],
+    "scope": "Literal source records unchanged; surrounding HTML and push block reduced for offline regression tests. Not an original legal document."
+  },
+  {
+    "fixture": "pdpc-marketing-consent-next-20261013.html",
+    "fixture_sha256": "80b7a200501835c0f562a1968aeb72da9d6ae8bbc700d2912299c3f5be94dbaf",
+    "derived_fixture": true,
+    "source_url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-requiring-consent-for-marketing-purposes",
+    "original_html_sha256": "ee8aa75e642e92d7e9b6327f82c9e7c89ce0d330236f7ae9193f02d5f9504d6d",
+    "original_html_bytes": 185059,
+    "original_script_index": 22,
+    "original_literal_script_sha256": "8a7e406d7d84129dec45879e2ff6b1d0ac7e749c6e54c5661b427fb20706b00a",
+    "record_spans": [
+      {
+        "record_id": "24",
+        "decoded_stream_start_byte": 145897,
+        "decoded_stream_end_byte": 147579,
+        "raw_record_sha256": "8c7c563930e38a6e87fece1daa4e6dad5a5f9205d5c7c0722652645ee7b16d0b"
+      }
+    ],
+    "scope": "Literal source records unchanged; surrounding HTML and push block reduced for offline regression tests. Not an original legal document."
+  },
+  {
+    "fixture": "pdpc-data-intermediaries-next-20261013.html",
+    "fixture_sha256": "b4e406ab71b0fd94e3dd811d370664720a9c9f402b64b12d2dac544a673851ec",
+    "derived_fixture": true,
+    "source_url": "https://www.pdpc.gov.sg/organisations/resources/guidance-by-topic/guide-to-managing-data-intermediaries",
+    "original_html_sha256": "620582b5790895f62f5d4069cf53981e33191f6d8d24325c712725deef5ff72e",
+    "original_html_bytes": 190995,
+    "original_script_index": 22,
+    "original_literal_script_sha256": "46d3126ce88a99fef47d506138341c7d1715a00fb280d315d472caef78c96443",
+    "record_spans": [
+      {
+        "record_id": "24",
+        "decoded_stream_start_byte": 145725,
+        "decoded_stream_end_byte": 150215,
+        "raw_record_sha256": "49fe8d7175f3de32b766afa77322ba1061a895bc24272925adde7ea577837046"
+      }
+    ],
+    "scope": "Literal source records unchanged; surrounding HTML and push block reduced for offline regression tests. Not an original legal document."
+  }
+]

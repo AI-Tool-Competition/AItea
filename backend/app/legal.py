@@ -292,6 +292,7 @@ class LegalService:
             "date": datetime.now(timezone.utc).date().isoformat(),
             "provider": digest([os.getenv("LLM_MODEL"), os.getenv("LLM_BASE_URL"), os.getenv("LLM_API_KEY")]),
             "embedding": self.service.embedding_fingerprint(),
+            "rerank": self.service.rerank_fingerprint(),
             "runner": 1,
             "task_evidence": [
                 (task["id"], task["evidence_ids"]) for stage in case["stages"] for task in stage["tasks"]

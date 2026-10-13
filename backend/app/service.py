@@ -87,6 +87,10 @@ class Service:
         values = [os.getenv(key) for key in ("EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_API_KEY")]
         return hashlib.sha256(dump(values[:2]).encode()).hexdigest() if all(values) else None
 
+    def rerank_fingerprint(self):
+        values = [os.getenv(key) for key in ("RERANK_BASE_URL", "RERANK_MODEL", "RERANK_API_KEY")]
+        return hashlib.sha256(dump(values).encode()).hexdigest() if any(values) else None
+
     def template(self, owner, template_id, conn=None):
         if conn is None:
             with closing(self.db.connect()) as db:
@@ -1004,7 +1008,7 @@ class Service:
         historical=False,
     ):
         """Shared eligible-document search; callers resolve their allowed country scope first."""
-        from .ingestion import embed_texts, lexical_search
+        from .ingestion import embed_texts, lexical_search, rerank_chunks
 
         with closing(self.db.connect()) as conn:
             if case_id:
@@ -1032,7 +1036,9 @@ class Service:
                         **metadata[row["id"]],
                     }
                 )
-        hits = lexical_search(query, chunks, limit=limit)
+        rerank_enabled = self.rerank_fingerprint() is not None
+        candidate_limit = min(limit * 3, 60) if rerank_enabled else limit
+        hits = lexical_search(query, chunks, limit=candidate_limit)
         mode, warning = "lexical", None
         fingerprint = self.embedding_fingerprint()
         indexed = []
@@ -1066,12 +1072,23 @@ class Service:
                             key = (chunk["document_id"], chunk["id"])
                             current = combined.setdefault(key, {**chunk, "fusion_score": 0})
                             current["fusion_score"] += 1 / (60 + rank + 1)
-                    hits = sorted(combined.values(), key=lambda c: c["fusion_score"], reverse=True)[:limit]
+                    hits = sorted(combined.values(), key=lambda c: c["fusion_score"], reverse=True)[
+                        :candidate_limit
+                    ]
                     mode = "hybrid"
                 except Exception:
                     warning = "向量检索暂不可用，本次已回退到关键词检索。"
             elif chunks:
                 warning = "当前材料尚未使用此向量模型建立索引，本次使用关键词检索。"
+        reranked = False
+        if rerank_enabled and hits:
+            try:
+                ranked = rerank_chunks(query, hits, limit)
+                if ranked is not None:
+                    hits, reranked = ranked, True
+            except ValueError:
+                warning = "；".join(filter(None, [warning, "重排服务暂不可用，本次保留原检索顺序。"]))
+        hits = hits[:limit]
         if limited:
             warning = "；".join(
                 filter(
@@ -1093,6 +1110,7 @@ class Service:
                 for hit in hits
             ],
             "mode": mode,
+            "reranked": reranked,
         }
         if warning:
             result["warning"] = warning

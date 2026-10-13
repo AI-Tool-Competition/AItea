@@ -328,6 +328,13 @@ class Search(StrictModel):
     country: str | None = Field(default=None, pattern=r"^(?:[A-Z]{2}|unassigned)$")
 
 
+class SearchResult(StrictModel):
+    items: list[dict[str, JsonValue]]
+    mode: Literal["lexical", "hybrid"]
+    reranked: bool = False
+    warning: str | None = None
+
+
 Tag = Annotated[str, Field(min_length=1, max_length=80)]
 PublicURL = Annotated[str, Field(min_length=1, max_length=2000, pattern=r"^https://")]
 

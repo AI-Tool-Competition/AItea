@@ -235,6 +235,12 @@ export interface Capabilities {
   retrieval_mode: "lexical" | "hybrid";
   parser: string;
 }
+export interface SearchResult {
+  items: Citation[];
+  mode: Capabilities["retrieval_mode"];
+  reranked: boolean;
+  warning?: string;
+}
 export interface Bootstrap {
   user: User;
   templates: Template[];

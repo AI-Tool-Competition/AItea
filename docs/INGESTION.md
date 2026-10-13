@@ -37,6 +37,10 @@
 
 同时设置 `EMBEDDING_BASE_URL`（例如服务的 `/v1` 根地址）、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`。密钥仅来自服务环境。远程服务必须 HTTPS，本地开发只允许 localhost/回环地址使用 HTTP。不跟随重定向，不读取代理环境。每批最多 64 段，单次响应读取上限 16 MB，连接超时 10 秒、读写超时 30 秒。
 
+可选设置 `RERANK_BASE_URL`、`RERANK_API_KEY`、`RERANK_MODEL`，调用兼容的 `/rerank` 接口。先完成账号、业务、国家、版本与法规有效性过滤，再从词项／混合检索选出最多 `min(limit × 3, 60)` 个候选。仅发送查询和候选正文，服务返回的原始序号和有限分数必须通过数量、范围及重复检查；引用仍来自本地不可变版本，模型返回的正文或元数据不能替换证据。最多 4 个并发请求，连接超时 5 秒、读写超时 15 秒、读取预算 20 秒、响应上限 1 MB。未配置时不调用，失败时保留原排序并返回提示；更换重排配置会使分析与调试缓存失效。
+
+使用 [Aerisun 接口指南](https://aerisun.top/sub2api/api-guide.html) 时，三个根地址均填写 `https://aerisun.top/sub2api`，生成、向量和重排模型分别为 `gemini-3.8-flash`、`qwen3-embedding-4b`、`qwen3-reranker-4b`。密钥只写入被 Git 忽略的根目录 `.env`。该指南的模型名仍须用实际 `/models` 与小请求核对。
+
 单次 `/search` 响应中 `mode=hybrid` 的前提是当前文档已经具备与查询一致配置的实际向量，并且确实执行了向量与词项的融合检索。索引失败不能仅因为存在环境变量就将该次检索报告为 hybrid。`bootstrap` / `health` 的 `capabilities.retrieval_mode` 只表示接口配置具备的能力；具体检索是否成功使用向量，以 `/search` 的执行结果为准。
 
 ## 抓取约束

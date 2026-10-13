@@ -114,6 +114,7 @@ class AdminStudio:
                 "model": os.getenv("LLM_MODEL"),
                 "base": os.getenv("LLM_BASE_URL"),
                 "embedding": self.service.embedding_fingerprint(),
+                "rerank": self.service.rerank_fingerprint(),
                 "runner_version": 3,
             }
         )

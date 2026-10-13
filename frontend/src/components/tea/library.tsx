@@ -32,6 +32,7 @@ import {
   type Document,
   type DocumentDetail,
   type ListResult,
+  type SearchResult,
 } from "@/core/tea/types";
 
 import { DocumentMetadataEditor } from "./document-metadata";
@@ -468,7 +469,7 @@ export function Library({
     setSearching(true);
     setError("");
     try {
-      const data = await post<{ items: Citation[] }>(
+      const data = await post<SearchResult>(
         "/search",
         { query, limit: 8, ...(scope ? { case_id: scope } : { country }) },
         abort.signal,

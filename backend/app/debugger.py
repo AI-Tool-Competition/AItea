@@ -365,6 +365,7 @@ class WorkflowDebugger:
             "mode": self.service.capabilities["assistant_mode"],
             "provider": digest([os.getenv("LLM_MODEL"), os.getenv("LLM_BASE_URL"), os.getenv("LLM_API_KEY")]),
             "embedding": self.service.embedding_fingerprint(),
+            "rerank": self.service.rerank_fingerprint(),
             "embedding_provider": digest(
                 [
                     os.getenv("EMBEDDING_MODEL"),

@@ -602,7 +602,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     def add_document_relation(id: str, payload: models.LegalRelationInput, current=Depends(user)):
         return service.archive.add_relation(current["id"], id, payload.model_dump())
 
-    @app.post("/api/tea/search")
+    @app.post("/api/tea/search", response_model=models.SearchResult, response_model_exclude_none=True)
     def search(payload: models.Search, current=Depends(user)):
         return service.search(
             current["id"],

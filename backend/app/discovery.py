@@ -1206,6 +1206,9 @@ def recipe_for(item: dict) -> dict:
                 result["document_patterns_by_host"]["www.wto.org"].append(
                     r"^/english/docs_e/legal_e/[a-z0-9_-]+\.pdf(?:\?|$)"
                 )
+                result["document_patterns_by_host"]["www.wto.org"].append(
+                    r"^/english/docs_e/legal_e/(?:downloads_e/)?[a-z0-9_-]+\.(?:doc|docx)(?:\?|$)"
+                )
         return result
     for seed in seeds:
         path = urlsplit(seed["url"]).path
@@ -1319,6 +1322,9 @@ def recipe_for(item: dict) -> dict:
             if result.get("wto_public_catalog"):
                 result["document_patterns_by_host"]["www.wto.org"].append(
                     r"^/english/docs_e/legal_e/[a-z0-9_-]+\.pdf(?:\?|$)"
+                )
+                result["document_patterns_by_host"]["www.wto.org"].append(
+                    r"^/english/docs_e/legal_e/(?:downloads_e/)?[a-z0-9_-]+\.(?:doc|docx)(?:\?|$)"
                 )
     if "docs.wto.org" in hosts:
         result["document_patterns"].append(r"^/gattdocs/q/(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.pdf(?:\?|$)")

@@ -1370,10 +1370,13 @@ def _download(
                 if len(mime) > 255 or not re.fullmatch(r"[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+", mime):
                     raise DownloadError("抓取来源返回无效的文件类型。")
                 if compressed and not (
-                    (accept_compressed_html and mime in {"text/html", "application/xhtml+xml"})
+                    (
+                        accept_compressed_html
+                        and mime in {"text/html", "application/xhtml+xml", "text/xml", "application/xml"}
+                    )
                     or (accept_compressed_json and mime == "application/json")
                 ):
-                    raise DownloadError("仅清单目录或详情 HTML/JSON 允许受限压缩传输。")
+                    raise DownloadError("仅清单目录或详情 HTML/JSON/XML 允许受限压缩传输。")
                 name = Path(unquote(parsed.path)).name or "source"
                 disposition = _bounded_header(response.getheader("Content-Disposition"), 4096)
                 if disposition:

@@ -709,6 +709,28 @@ def inspect(url: str, content: bytes, mime: str, rules) -> dict | None:
     from .discovery import _result
 
     parsed, member = urlsplit(url), rules.wto_member
+    # Public generic legal texts also publish native Word representations.
+    # Keep the existing frozen recipe's URL scope; this is not a general
+    # binary-file detector or permission to follow unrelated office files.
+    if (
+        parsed.hostname == "www.wto.org"
+        and rules.purpose(url) == "document"
+        and re.fullmatch(r"/english/docs_e/legal_e/(?:downloads_e/)?[^/]+\.(?:doc|docx)", parsed.path, re.I)
+    ):
+        extension = parsed.path.rsplit(".", 1)[-1].lower()
+        signature = b"PK\x03\x04" if extension == "docx" else b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        if mime in {"text/html", "application/xhtml+xml"} or not content.startswith(signature):
+            return _result(reason="WTO 公共法律原件签名不符，不能用拒绝页替代。")
+        result = _result(matched=True, purpose="document")
+        result["scope"] = {
+            "provider": "wto-public-original",
+            "member": member,
+            "source_format": extension,
+            "header_signature_verified": True,
+            "text_complete_verified": False,
+            "legal_status_inferred": False,
+        }
+        return result
     kind = purpose(url, member)
     if parsed.hostname not in {GOODS, DOCS} or not kind:
         return None

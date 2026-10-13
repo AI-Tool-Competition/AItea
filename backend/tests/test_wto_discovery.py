@@ -333,6 +333,32 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
         assert source.exists()
 
 
+@pytest.mark.parametrize("member,item,version", [("ID", "5.4", 6), ("SG", "5.2", 3)])
+@pytest.mark.parametrize(
+    "extension,signature", [("doc", bytes.fromhex("d0cf11e0a1b11ae1")), ("docx", b"PK\x03\x04")]
+)
+def test_generic_office_originals_stay_inside_the_frozen_public_legal_directory(
+    member, item, version, extension, signature
+):
+    from app.checklists import load_blueprints
+    from app.discovery import recipe_for, discover_page
+
+    name = "indonesia-20261003" if member == "ID" else "singapore-demo-20261009"
+    plan = load_blueprints()[name]
+    assert plan["version"] == version
+    definition = next(value for value in plan["items"] if value["id"] == item)
+    recipe = recipe_for(definition)
+    url = f"https://www.wto.org/english/docs_e/legal_e/downloads_e/WTO_en.{extension}"
+    result = discover_page(url, signature + b"native bytes", "application/octet-stream", recipe)
+    assert result["matched"] and result["purpose"] == "document"
+    assert result["scope"]["member"] == member
+    assert result["scope"]["text_complete_verified"] is False
+    assert not discover_page(url, b"<html>Access denied</html>", "text/html", recipe)["matched"]
+    assert not discover_page(
+        url.replace("legal_e/downloads_e", "news_e"), signature, "application/octet-stream", recipe
+    )["matched"]
+
+
 def test_generic_direct_legal_pdfs_come_only_from_configured_official_directory_links():
     url = "https://www.wto.org/english/docs_e/legal_e/legal_e.htm"
     result = inspect(

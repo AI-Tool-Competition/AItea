@@ -59,11 +59,18 @@ describe("configuration compatibility and editing", () => {
       stages: [
         {
           ...value.stages[0],
-          tasks: [{ ...value.stages[0]!.tasks[0], fields: [selected] }],
+          tasks: [
+            {
+              ...value.stages[0]!.tasks[0],
+              blocks_next_stage: false,
+              fields: [selected],
+            },
+          ],
         },
       ],
     };
     const parsed = configurationSchema.parse(JSON.parse(JSON.stringify(input)));
+    expect(parsed.stages[0]?.tasks[0]?.blocks_next_stage).toBe(false);
     expect(parsed.stages[0]?.tasks[0]?.fields[0]?.accepted_values).toEqual([
       "已核验完成",
     ]);

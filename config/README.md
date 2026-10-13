@@ -8,6 +8,7 @@
 
 - `modes` 定义模式名称与说明，按线上或线下渠道命名。具体销售／进口分支通过路线卡和适用性核验确定。
 - `stages` 按顺序执行，每项以 `actor` 指定面向主体；`tasks` 可并行办理。
+- `tasks[].blocks_next_stage` 默认 `true`。设为 `false` 的必办任务允许与后续阶段并行，未完成时该阶段显示“待收尾”，整项业务仍不能结案。六堡茶线下的 E08 展品核销采用此设置；不是跳过核验或变为选办。
 - `fields` 定义资料字段，`required`、数值 `min`、`require_document` 与 `require_confirmation` 定义完成条件。
 - 单选字段 `type: "select"` 的 `options` 是可保存选项，`accepted_values` 是可通过核验的子集；设置通过值的字段必须必填。等待、待核验或异常状态不会因填入文本而通过。
 - 文稿 `output_template` 使用双花括号，例如 `{{product_name}}`，读取当前业务的字段值。

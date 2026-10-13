@@ -97,6 +97,27 @@ function Editor({
 }
 
 describe("workflow editor", () => {
+  it("keeps a required closeout task while allowing later stages to proceed", () => {
+    const changed = rs.fn();
+    render(<Editor onDraft={changed} />);
+    fireEvent.click(screen.getByRole("button", { name: "产品信息" }));
+    const inspector = within(
+      screen.getByRole("complementary", { name: "流程编辑栏" }),
+    );
+    fireEvent.click(inspector.getByLabelText("完成后才能进入下一阶段"));
+    const task = changed.mock.calls.at(-1)?.[0].stages[0].tasks[0];
+    expect(task.required).toBe(true);
+    expect(task.blocks_next_stage).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "收起流程编辑栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "产品信息" }));
+    expect(
+      inspector.getByLabelText<HTMLInputElement>("完成后才能进入下一阶段")
+        .checked,
+    ).toBe(false);
+    expect(
+      inspector.getByLabelText<HTMLInputElement>("业务结案前必须完成").checked,
+    ).toBe(true);
+  });
   it("edits select options and completion values without losing them on reopen", () => {
     const changed = rs.fn();
     render(<Editor onDraft={changed} />);

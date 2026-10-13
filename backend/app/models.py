@@ -55,6 +55,7 @@ class TaskDefinition(StrictModel):
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(max_length=2000)
     required: bool = True
+    blocks_next_stage: bool = True
     fields: list[FieldDefinition] = Field(max_length=30)
     require_document: bool = False
     require_confirmation: bool = True

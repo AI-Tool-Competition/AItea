@@ -138,7 +138,13 @@ export function TaskPanel({
         <span className={`tea-status ${task.status}`}>
           {task.needs_review ? "需要复核" : taskStatus[task.status]}
         </span>
-        <span>{task.required ? "必办任务" : "选办任务"}</span>
+        <span>
+          {task.required
+            ? task.blocks_next_stage === false
+              ? "结案前必办 · 可与后续阶段并行"
+              : "必办任务"
+            : "选办任务"}
+        </span>
       </div>
       <h3>{task.title}</h3>
       <p className="tea-muted">{task.description}</p>

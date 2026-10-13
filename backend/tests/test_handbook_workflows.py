@@ -128,8 +128,19 @@ def test_route_journey_requires_evidence_and_unlocks_in_order(client, route):
     assert (
         client.post(later_url + "/verify", json={"expected_revision": 1, "confirm": True}).status_code == 409
     )
+    closeout = next((t for t in tasks if t["id"] == "e08"), None)
+    if closeout:
+        assert (
+            client.post(
+                f"/api/tea/cases/{case['id']}/tasks/e08/verify",
+                json={"expected_revision": 1, "confirm": True},
+            ).status_code
+            == 409
+        )
     for index, stage in enumerate(case["stages"]):
         for task in stage["tasks"]:
+            if task.get("blocks_next_stage") is False:
+                continue
             url = f"/api/tea/cases/{case['id']}/tasks/{task['id']}"
             saved = client.patch(
                 url,
@@ -149,6 +160,43 @@ def test_route_journey_requires_evidence_and_unlocks_in_order(client, route):
             )
         if index + 1 < len(case["stages"]):
             assert current["stages"][index + 1]["status"] == "active"
+        if stage["id"] == "event_followup":
+            assert current["stages"][index]["status"] == "follow_up"
+            # Closeout starts after the event, independently of the sales order.
+            started = client.patch(
+                f"/api/tea/cases/{case['id']}/tasks/e08",
+                json={
+                    "values": values(closeout, "等待外部", include_optional=True),
+                    "expected_revision": 1,
+                },
+            )
+            assert started.status_code == 200, started.text
+            current = started.json()
+            assert current["stages"][index + 1]["status"] == "active"
+    if closeout:
+        assert current["completed_tasks"] == len(tasks) - 1
+        assert current["current_stage_id"] == "event_followup"
+        closeout_url = f"/api/tea/cases/{case['id']}/tasks/e08"
+        waiting = next(t for s in current["stages"] for t in s["tasks"] if t["id"] == "e08")
+        missing = client.post(
+            closeout_url + "/verify", json={"expected_revision": waiting["revision"], "confirm": True}
+        ).json()
+        pending = next(t for s in missing["stages"] for t in s["tasks"] if t["id"] == "e08")
+        assert pending["status"] == "needs_input"
+        assert missing["completed_tasks"] == len(tasks) - 1
+        saved = client.patch(
+            closeout_url,
+            json={
+                "values": values(closeout, include_optional=True),
+                "evidence_ids": [doc],
+                "expected_revision": pending["revision"],
+            },
+        ).json()
+        ready = next(t for s in saved["stages"] for t in s["tasks"] if t["id"] == "e08")
+        current = client.post(
+            closeout_url + "/verify", json={"expected_revision": ready["revision"], "confirm": True}
+        ).json()
+        assert all(s["status"] == "completed" for s in current["stages"])
     assert current["completed_tasks"] == current["total_tasks"] == len(tasks)
     # Full routes exceed the old 200-fact ceiling; late-stage analysis must still
     # include every entered field and must not silently discard business facts.
@@ -170,6 +218,18 @@ def test_route_journey_requires_evidence_and_unlocks_in_order(client, route):
     assert analysis.json()["status"] == "needs_input"
     assert analysis.json()["error"] is None
     assert set(keys) <= {fact["key"] for fact in analysis.json()["result"]["facts"]}
+    if closeout:
+        finished = next(t for s in current["stages"] for t in s["tasks"] if t["id"] == "e08")
+        reopened = client.patch(
+            closeout_url,
+            json={
+                "values": {"e08_exception": "仅展品核销补充，不改变另批正式订单"},
+                "expected_revision": finished["revision"],
+            },
+        ).json()
+        assert reopened["completed_tasks"] == len(tasks) - 1
+        assert next(s for s in reopened["stages"] if s["id"] == "event_followup")["status"] == "follow_up"
+        assert reopened["stages"][-1]["status"] == "completed"
     # A changed source record reopens completed dependent steps instead of erasing history.
     first = current["stages"][0]["tasks"][0]
     updated = client.patch(
@@ -258,15 +318,17 @@ def test_builtin_publish_is_account_scoped_revisioned_and_preserves_existing_cas
     changed["stages"][0]["name"] = "本账号定制准备"
     response = client.post("/api/tea/templates/publish", json={"template": changed})
     assert response.status_code == 200, response.text
-    assert response.json()["version"] == 2
+    assert response.json()["version"] == original["version"] + 1
     assert client.post("/api/tea/templates/publish", json={"template": changed}).status_code == 409
     with TestClient(create_app(data_dir=tmp_path)) as restarted:
         restarted.cookies.update(client.cookies)
         assert restarted.get(f"/api/tea/cases/{case['id']}").json()["template"] == original
-        assert restarted.get("/api/tea/templates/liubao-id-offline").json()["version"] == 2
+        assert (
+            restarted.get("/api/tea/templates/liubao-id-offline").json()["version"] == original["version"] + 1
+        )
     client.post("/api/tea/auth/logout")
     client.post("/api/tea/auth/demo", json={})
-    assert client.get("/api/tea/templates/liubao-id-offline").json()["version"] == 1
+    assert client.get("/api/tea/templates/liubao-id-offline").json()["version"] == original["version"]
     assert client.get(f"/api/tea/cases/{case['id']}").status_code == 404
 
 
@@ -289,7 +351,9 @@ def test_catalog_routes_keep_country_and_channel_requirements_separate():
         assert ("e08" in stages) == route.endswith("offline")
         assert ("o02" in stages) == route.endswith("online")
         if "e08" in stages:
-            assert stages["e08"] == stages["f12_settlement"]
+            assert stages["e06"] < stages["e08"] == stages["e07"] < stages["f01"]
+        else:
+            assert stages["p05"] < stages["p06"] < stages["o04"]
 
 
 @pytest.mark.parametrize("change", ["missing_reference", "duplicate_route", "unused_task"])

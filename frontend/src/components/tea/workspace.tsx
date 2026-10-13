@@ -111,7 +111,9 @@ function Flow({
                     ? "进行中"
                     : stage.status === "completed"
                       ? "已完成"
-                      : "待解锁"}
+                      : stage.status === "follow_up"
+                        ? "待收尾"
+                        : "待解锁"}
                 </span>
               </button>
               <div className="tea-flow-tasks">
@@ -134,7 +136,9 @@ function Flow({
               <p>
                 {stage.status === "locked"
                   ? "前一阶段完成后解锁"
-                  : stage.description}
+                  : stage.status === "follow_up"
+                    ? "后续阶段可继续；本阶段仍有必办收尾任务，完成后才能结案。"
+                    : stage.description}
               </p>
             </div>
           </section>

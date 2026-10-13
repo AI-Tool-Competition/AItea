@@ -25,6 +25,7 @@ export interface TaskDefinition {
   title: string;
   description: string;
   required: boolean;
+  blocks_next_stage?: boolean;
   fields: FieldDefinition[];
   require_document: boolean;
   require_confirmation: boolean;
@@ -107,7 +108,7 @@ export interface StageState {
   name: string;
   actor: string;
   description: string;
-  status: "locked" | "active" | "completed";
+  status: "locked" | "active" | "follow_up" | "completed";
   tasks: TaskState[];
 }
 export interface Fact {

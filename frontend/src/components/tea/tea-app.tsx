@@ -85,7 +85,7 @@ function Welcome({
       <header>
         <Brand />
         <span className="tea-welcome-tag">
-          中国 → 印度尼西亚 <span>DEMO</span>
+          中国 → 印尼 / 新加坡 <span>六堡茶</span>
         </span>
       </header>
       <main>

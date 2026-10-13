@@ -221,10 +221,17 @@ class Service:
                         "verification": json.loads(state["verification"]) if state["verification"] else None,
                     }
                 )
-            done = all(t["status"] == "completed" and not t["needs_review"] for t in tasks if t["required"])
-            status = ("completed" if done else "active") if predecessor_ok else "locked"
+            remaining = [
+                t for t in tasks if t["required"] and (t["status"] != "completed" or t["needs_review"])
+            ]
+            ready_for_next = not any(t.get("blocks_next_stage", True) for t in remaining)
+            status = (
+                ("completed" if not remaining else "follow_up" if ready_for_next else "active")
+                if predecessor_ok
+                else "locked"
+            )
             stages.append({**definition, "status": status, "tasks": tasks})
-            predecessor_ok = predecessor_ok and done
+            predecessor_ok = predecessor_ok and ready_for_next
         facts = [
             {
                 "key": r["key"],
@@ -279,7 +286,10 @@ class Service:
                 t["status"] == "completed" and not t["needs_review"] for s in stages for t in s["tasks"]
             ),
             "total_tasks": sum(len(s["tasks"]) for s in stages),
-            "current_stage_id": next((s["id"] for s in stages if s["status"] == "active"), stages[-1]["id"]),
+            "current_stage_id": next(
+                (s["id"] for s in stages if s["status"] == "active"),
+                next((s["id"] for s in stages if s["status"] == "follow_up"), stages[-1]["id"]),
+            ),
         }
 
     def cases(self, owner, limit=100, offset=0):
@@ -402,9 +412,12 @@ class Service:
                 for i, stage in enumerate(template["stages"])
                 if any(t["id"] == task_id for t in stage["tasks"])
             )
-            affected = [task_id] + [
-                t["id"] for stage in template["stages"][current_stage + 1 :] for t in stage["tasks"]
-            ]
+            changed = next(t for t in template["stages"][current_stage]["tasks"] if t["id"] == task_id)
+            affected = [task_id]
+            if changed.get("blocks_next_stage", True):
+                affected += [
+                    t["id"] for stage in template["stages"][current_stage + 1 :] for t in stage["tasks"]
+                ]
             for affected_id in affected:
                 if affected_id != task_id:
                     conn.execute(

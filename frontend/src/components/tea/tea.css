@@ -393,6 +393,9 @@
 .tea-tree-dot.active {
   background: var(--primary);
 }
+.tea-tree-dot.follow_up {
+  background: var(--tea-warning);
+}
 .tea-tree-dot.completed {
   background: color-mix(in oklch, var(--tea-success) 8%, var(--background));
 }
@@ -936,6 +939,10 @@
   background: var(--accent);
   border-color: var(--border);
   color: var(--foreground);
+}
+.tea-flow-stage.follow_up .tea-stage-title > span {
+  color: var(--tea-warning);
+  border-color: color-mix(in oklch, var(--tea-warning) 35%, var(--border));
 }
 .tea-flow-tasks {
   border-top: 1px solid var(--border);

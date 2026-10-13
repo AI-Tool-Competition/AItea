@@ -828,8 +828,20 @@ function TaskFields({
               onChange({ ...task, required: event.target.checked })
             }
           />
-          必须完成才能推进
+          业务结案前必须完成
         </label>
+        {task.required && (
+          <label className="tea-checkbox">
+            <input
+              type="checkbox"
+              checked={task.blocks_next_stage !== false}
+              onChange={(event) =>
+                onChange({ ...task, blocks_next_stage: event.target.checked })
+              }
+            />
+            完成后才能进入下一阶段
+          </label>
+        )}
         <label className="tea-checkbox">
           <input
             type="checkbox"

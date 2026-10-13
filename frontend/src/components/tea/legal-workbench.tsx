@@ -849,7 +849,7 @@ function ScopedLegalWorkbench({
           <h4>已记录的事实</h4>
           {legal.history.facts_truncated && (
             <p role="status" className="tea-legal-gaps">
-              当前最多显示 200 项事实；完整记录仍由服务端保留。
+              事实数量超过当前分析上限；完整记录仍由服务端保留，请先整理事实。
             </p>
           )}
           {currentFacts.map((fact) => renderFact(fact))}

@@ -13,10 +13,12 @@ export interface Mode {
 export interface FieldDefinition {
   key: string;
   label: string;
-  type: "text" | "number" | "textarea";
+  type: "text" | "number" | "textarea" | "select";
   required: boolean;
   min?: number;
   placeholder?: string;
+  options?: string[] | null;
+  accepted_values?: string[] | null;
 }
 export interface TaskDefinition {
   id: string;

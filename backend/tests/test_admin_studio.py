@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.service import Service
 
+pytestmark = pytest.mark.usefixtures("sample_workflow")
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):

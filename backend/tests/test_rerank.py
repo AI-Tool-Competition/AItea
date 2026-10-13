@@ -3,9 +3,12 @@ from contextlib import closing
 
 import httpx
 import pytest
+
 from fastapi.testclient import TestClient
 
 from app.ingestion import rerank_chunks
+
+pytestmark = pytest.mark.usefixtures("sample_workflow")
 
 
 def configure(monkeypatch):

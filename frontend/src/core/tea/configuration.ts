@@ -12,13 +12,15 @@ const fieldSchema = z
   .object({
     key: z.string(),
     label: z.string(),
-    type: z.enum(["text", "number", "textarea"]),
+    type: z.enum(["text", "number", "textarea", "select"]),
     required: z.boolean(),
     min: z
       .number()
       .nullish()
       .transform((value) => value ?? undefined),
     placeholder: optionalText,
+    options: z.array(z.string()).max(50).nullish(),
+    accepted_values: z.array(z.string()).max(50).nullish(),
   })
   .strict();
 const taskSchema = z
@@ -186,6 +188,8 @@ const fieldNames: Record<string, string> = {
   language: "输出语言",
   retrieval_limit: "引用数量",
   min: "最小值",
+  options: "可选值",
+  accepted_values: "核验通过值",
   origin: "出发国家",
   destination: "目的国家",
   agent: "默认分析流程",

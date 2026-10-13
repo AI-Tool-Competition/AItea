@@ -18,6 +18,12 @@ from pydantic import (
     model_validator,
 )
 
+# Full export routes contain up to 402 configured fields. Keep room for reviewed
+# facts added during handling, plus one bounded extraction pass in a result.
+MAX_CASE_FACTS = 600
+MAX_EXTRACTED_FACTS = 60
+MAX_ANALYSIS_FACTS = MAX_CASE_FACTS + MAX_EXTRACTED_FACTS
+
 
 class LegalModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
@@ -258,7 +264,7 @@ class LegalSection(LegalModel):
 class LegalResult(LegalModel):
     question: str = Field(max_length=20000)
     issues: list[LegalIssue] = Field(default_factory=list, max_length=8)
-    facts: list[LegalFact] = Field(default_factory=list, max_length=300)
+    facts: list[LegalFact] = Field(default_factory=list, max_length=MAX_ANALYSIS_FACTS)
     followups: list[FactRequirement] = Field(default_factory=list, max_length=5)
     sections: list[LegalSection] = Field(default_factory=list, max_length=40)
     trace: list[dict[str, JsonValue]] = Field(default_factory=list, max_length=6)
@@ -297,7 +303,7 @@ class IssueRequirements(LegalModel):
 
 
 class FactOutput(LegalModel):
-    facts: list[ExtractedFact] = Field(default_factory=list, max_length=60)
+    facts: list[ExtractedFact] = Field(default_factory=list, max_length=MAX_EXTRACTED_FACTS)
     requirements: list[IssueRequirements] = Field(default_factory=list, max_length=8)
 
 

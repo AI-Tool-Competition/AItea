@@ -175,7 +175,23 @@ export function TaskPanel({
               {field.label}
               {field.required && <b> *</b>}
             </span>
-            {field.type === "textarea" ? (
+            {field.type === "select" ? (
+              <select
+                value={values[field.key] ?? ""}
+                disabled={locked || !!busy}
+                onChange={(e) => {
+                  setValues({ ...values, [field.key]: e.target.value });
+                  setConfirmed(false);
+                }}
+              >
+                <option value="">请选择</option>
+                {field.options?.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            ) : field.type === "textarea" ? (
               <Textarea
                 value={values[field.key] ?? ""}
                 disabled={locked || !!busy}

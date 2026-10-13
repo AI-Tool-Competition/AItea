@@ -44,6 +44,7 @@ from .vendor.geo_parser.document_ingestion import (
 )
 
 MAX_BYTES = 20 * 1024 * 1024
+MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
 MAX_COMPRESSED_HTML_BYTES = 4 * 1024 * 1024
 MAX_TEXT = 4_000_000
 MAX_ELEMENTS = 20_000
@@ -281,6 +282,27 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
                     "source_hash": source_hash,
                 }
             )
+        table_pages = [page for page in pages if page["reasons"] == ["table_layout"]]
+        if table_pages:
+            import pypdfium2 as pdfium
+            from .pdf_tables import VERSION, extract_grid
+
+            with pdfium.PdfDocument(content) as document:
+                for page in table_pages:
+                    page["native_grid_attempt"] = VERSION
+                    pdfpage = document[page["page"] - 1]
+                    try:
+                        table = extract_grid(pdfpage, page["native_text"])
+                    finally:
+                        pdfpage.close()
+                    if table:
+                        page.update(
+                            text=table.pop("text"),
+                            status="native",
+                            ocr_required=False,
+                            reasons=[],
+                            native_table={**table, "source_hash": source_hash, "page": page["page"]},
+                        )
     except ValueError:
         raise
     except Exception as exc:
@@ -291,7 +313,7 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
     if any("large_raster" in page["reasons"] for page in pages):
         warnings.append("存在大型扫描图，文字层仍需 OCR 核对。")
     return ParsedDocument(
-        "pypdf", version("pypdf"), "pdf-pages-v3", _pdf_elements(pages), [], warnings, pages
+        "pypdf", version("pypdf"), "pdf-pages-v4", _pdf_elements(pages), [], warnings, pages
     )
 
 
@@ -369,6 +391,10 @@ def pdf_quality(pages: list[dict]) -> dict:
     deferred = [
         page["page"] for page in pages if page["status"] == "pending_ocr" and page.get("deferred_reason")
     ]
+    pending_parse = [page["page"] for page in pages if page["status"] == "pending_parse"]
+    retry_delay = max(
+        [5, *(page.get("ocr", {}).get("recovery", {}).get("retry_after_seconds", 0) for page in pages)]
+    )
     complete = bool(pages) and len(completed) == len(pages)
     return {
         "status": "complete" if complete else ("needs_ocr" if pending and not completed else "partial"),
@@ -376,11 +402,12 @@ def pdf_quality(pages: list[dict]) -> dict:
         "page_count": len(pages),
         "completed_pages": completed,
         "pending_pages": pending,
+        "pending_parse_pages": pending_parse,
         "failed_pages": failed,
         "review_pages": review,
         "review_required": bool(review),
         "deferred_pages": deferred,
-        "retry_after_seconds": 5 if deferred else 0,
+        "retry_after_seconds": retry_delay if deferred else 0,
     }
 
 
@@ -458,7 +485,7 @@ def _pdf_text_blocks(text: str, start: int, end: int):
 
 
 def rebuild_pdf_manifest(manifest: dict) -> dict:
-    from .ingestion_quality import validate_ocr_page
+    from .ingestion_quality import OCR_VALIDATION_VERSION, validate_ocr_page
 
     pages = manifest["pages"]
     if len(pages) > MAX_PAGES or sum(len(page["text"]) for page in pages) > MAX_TEXT:
@@ -468,7 +495,7 @@ def rebuild_pdf_manifest(manifest: dict) -> dict:
     document = ParsedDocument(
         manifest["parser"],
         manifest["parser_version"],
-        "pdf-pages-v3+vision-ocr-v2+legal-numbers-v1",
+        f"pdf-pages-v4+vision-ocr-v2+{OCR_VALIDATION_VERSION}",
         _pdf_elements(pages),
         [],
         manifest["warnings"],
@@ -761,6 +788,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, host: str, address: tuple, timeout: float):
         super().__init__(host, port=443, timeout=timeout, context=ssl.create_default_context())
         self.address = address
+        self.alternate_addresses: list[tuple] = []
         self.active_socket = None
         self.deadline: float | None = None
         self.deadline_expired = threading.Event()
@@ -773,28 +801,47 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         self._remaining_timeout()
-        family, socket_type, protocol, _, destination = self.address
-        raw = socket.socket(family, socket_type, protocol)
-        tls = None
-        try:
-            # Publish each socket before a blocking call. If the watchdog fired
-            # during socket creation or wrapping, the expired event prevents a
-            # newly attached socket from starting another network operation.
-            self.active_socket = raw
-            raw.settimeout(self._remaining_timeout())
-            raw.connect(destination)
-            raw.settimeout(self._remaining_timeout())
-            tls = self._context.wrap_socket(raw, server_hostname=self.host, do_handshake_on_connect=False)
-            self.sock = self.active_socket = tls
-            tls.settimeout(self._remaining_timeout())
-            tls.do_handshake()
-            tls.settimeout(self._remaining_timeout())
-        except BaseException:
-            if tls is not None:
-                tls.close()
-            raw.close()
-            self.sock = self.active_socket = None
-            raise
+        connect_deadline = time.monotonic() + self._remaining_timeout()
+        addresses = [self.address, *self.alternate_addresses]
+        failure = None
+        for family, socket_type, protocol, _, destination in addresses:
+            raw = tls = None
+            connected = False
+
+            def timeout():
+                remaining = min(self._remaining_timeout(), connect_deadline - time.monotonic(), 5.0)
+                if remaining <= 0:
+                    raise TimeoutError("Collection connection deadline expired")
+                return remaining
+
+            try:
+                timeout()
+                raw = socket.socket(family, socket_type, protocol)
+                # Only one physical socket is active at a time; every retry
+                # stays inside the same host lease and absolute watchdog.
+                self.active_socket = raw
+                raw.settimeout(timeout())
+                raw.connect(destination)
+                raw.settimeout(timeout())
+                tls = self._context.wrap_socket(raw, server_hostname=self.host, do_handshake_on_connect=False)
+                self.sock = self.active_socket = tls
+                tls.settimeout(timeout())
+                tls.do_handshake()
+                tls.settimeout(self._remaining_timeout())
+                connected = True
+                return
+            except OSError as exc:
+                failure = exc
+            finally:
+                if not connected:
+                    if tls is not None:
+                        tls.close()
+                    if raw is not None:
+                        raw.close()
+                    self.sock = self.active_socket = None
+        if failure is not None:
+            raise failure
+        raise TimeoutError("No validated address connected before deadline")
 
 
 def _bounded_header(value: str | None, limit: int = 1024) -> str | None:
@@ -833,6 +880,10 @@ def _download(
     accept_compressed_html: bool = False,
     accept_compressed_json: bool = False,
     json_body: dict | None = None,
+    max_bytes: int | None = None,
+    byte_range: tuple[int, int] | None = None,
+    range_validator: str | None = None,
+    on_headers: Callable[[dict], None] | None = None,
 ) -> dict:
     """Read a bounded HTTPS resource, optionally into an atomic blob consumer.
 
@@ -843,6 +894,25 @@ def _download(
     """
     current = url
     validators = validators or {}
+    max_bytes = MAX_BYTES if max_bytes is None else max_bytes
+    if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ORIGINAL_BYTES:
+        raise DownloadError("原件传输额度无效，最多 128 MB。")
+    if byte_range is not None:
+        if (
+            not isinstance(byte_range, tuple)
+            or len(byte_range) != 2
+            or any(type(value) is not int for value in byte_range)
+            or not 0 <= byte_range[0] <= byte_range[1] < max_bytes
+            or validators
+            or json_body is not None
+            or accept_compressed_html
+            or accept_compressed_json
+        ):
+            raise DownloadError("原件分段请求参数无效。")
+        if range_validator is not None and not re.fullmatch(r'"[\x21\x23-\x7e]{0,1020}"', range_validator):
+            raise DownloadError("分段原件需要有效的强版本标识。")
+    elif range_validator is not None:
+        raise DownloadError("原件分段校验参数缺少范围。")
     request_body = None
     if json_body is not None:
         if not isinstance(json_body, dict) or validators:
@@ -863,12 +933,17 @@ def _download(
         current, host = _validated_url(current)
         if required_host is not None and host != required_host:
             raise DownloadError("关联附件重定向到了不同来源，已拒绝抓取。")
-        addresses = _public_addresses(host, deadline=deadline)
+        # Some official domains advertise IPv6 without a reachable route from
+        # this host. All answers are validated before ordering or connecting.
+        addresses = sorted(
+            _public_addresses(host, deadline=deadline), key=lambda row: row[0] != socket.AF_INET
+        )
         with connection_slot(host) if connection_slot else nullcontext():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise DownloadError("抓取超过总时间限制。", retryable=True)
             connection = _PinnedHTTPSConnection(host, addresses[0], min(15.0, remaining))
+            connection.alternate_addresses = addresses[1:]
             connection.deadline = deadline
             expired = threading.Event()
             connection.deadline_expired = expired
@@ -891,6 +966,7 @@ def _download(
             expiry = threading.Timer(max(0, deadline - time.monotonic()), expire_connection)
             expiry.daemon = True
             expiry.start()
+            response = None
             try:
                 if expired.is_set() or deadline <= time.monotonic():
                     raise DownloadError("抓取超过总时间限制。", retryable=True)
@@ -903,6 +979,10 @@ def _download(
                     "Accept": "application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,*/*;q=0.5",
                 }
                 headers.update({key: value for key, value in conditionals.items() if value is not None})
+                if byte_range is not None:
+                    headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+                    if range_validator is not None:
+                        headers["If-Range"] = range_validator
                 request_path = parsed.path + ("?" + parsed.query if parsed.query else "")
                 if request_body is None:
                     connection.request("GET", request_path, headers=headers)
@@ -926,6 +1006,7 @@ def _download(
                     # Even on the same host, another path represents a different
                     # cached resource. Do not leak or reuse the original validators.
                     conditionals = {}
+                    range_validator = None
                     current = urljoin(current, location)
                     continue
                 response_validators = {
@@ -944,19 +1025,37 @@ def _download(
                         retry_after=_retry_after(response.getheader("Retry-After")) if retryable else None,
                         response_host=host,
                     )
-                if response.status == 206:
+                if response.status == 206 and byte_range is None:
                     raise DownloadError("抓取来源返回了不完整的分段响应。")
                 encoding = response.getheader("Content-Encoding", "identity").strip().lower()
                 compressed = (accept_compressed_html or accept_compressed_json) and encoding == "gzip"
                 if encoding not in {"identity", ""} and not compressed:
                     raise DownloadError("抓取来源返回压缩传输，无法安全校验大小。")
-                transfer_limit = min(MAX_BYTES, MAX_COMPRESSED_HTML_BYTES) if compressed else MAX_BYTES
+                transfer_limit = min(max_bytes, MAX_COMPRESSED_HTML_BYTES) if compressed else max_bytes
                 length = response.getheader("Content-Length")
                 if length is not None and (
                     not re.fullmatch(r"[0-9]{1,12}", length.strip()) or int(length) > transfer_limit
                 ):
-                    raise DownloadError("抓取文件大小无效或超过 20 MB。")
+                    raise DownloadError("抓取文件大小无效或超过配置的原件额度。")
                 expected_length = int(length) if length is not None else None
+                range_start = range_end = None
+                total_size = expected_length
+                if response.status == 206:
+                    match = re.fullmatch(
+                        r"bytes (\d{1,12})-(\d{1,12})/(\d{1,12})", response.getheader("Content-Range", "")
+                    )
+                    if match is None:
+                        raise DownloadError("分段响应缺少有效的完整文件范围。")
+                    range_start, range_end, total_size = map(int, match.groups())
+                    if (
+                        not 0 <= range_start <= range_end < total_size <= max_bytes
+                        or range_start != byte_range[0]
+                        or range_end != min(byte_range[1], total_size - 1)
+                        or (expected_length is not None and expected_length != range_end - range_start + 1)
+                    ):
+                        raise DownloadError("分段响应范围或总大小与请求不一致。")
+                    expected_length = range_end - range_start + 1
+                    transfer_limit = expected_length
                 mime = (
                     response.getheader("Content-Type", "application/octet-stream")
                     .split(";")[0]
@@ -990,6 +1089,21 @@ def _download(
                     name += _MIME_EXTENSIONS.get(mime, mimetypes.guess_extension(mime) or ".bin")
                 exhausted = False
                 transfer_bytes = 0
+                metadata = {
+                    "url": current,
+                    "filename": name,
+                    "mime_type": mime,
+                    "content_encoding": encoding or "identity",
+                    "request_method": "POST" if request_body is not None else "GET",
+                    "response_status": response.status,
+                    "total_size": total_size,
+                    "range_start": range_start,
+                    "range_end": range_end,
+                    "accept_ranges": response.getheader("Accept-Ranges", "").strip().lower() == "bytes",
+                    **response_validators,
+                }
+                if on_headers is not None:
+                    on_headers(metadata.copy())
 
                 def chunks() -> Iterable[bytes]:
                     nonlocal exhausted, transfer_bytes
@@ -1050,20 +1164,22 @@ def _download(
                 if not exhausted:
                     raise DownloadError("文件存储未完整消费抓取数据。")
                 return {
-                    "url": current,
-                    "filename": name,
-                    "mime_type": mime,
-                    "content_encoding": encoding or "identity",
-                    "request_method": "POST" if request_body is not None else "GET",
+                    **metadata,
                     "transfer_bytes": transfer_bytes,
                     "blob" if consume is not None else "content": payload,
-                    **response_validators,
                 }
             except (OSError, http.client.HTTPException) as exc:
                 raise DownloadError("抓取连接失败或超时，请检查来源后重试。", retryable=True) from exc
             finally:
                 expiry.cancel()
-                connection.close()
+                try:
+                    # For Connection: close, HTTPConnection hands the socket
+                    # to the response file. Close it before releasing this
+                    # host's physical connection slot, including early exits.
+                    if response is not None:
+                        response.close()
+                finally:
+                    connection.close()
     raise DownloadError("抓取重定向无法完成。")
 
 

@@ -275,7 +275,11 @@ class IngestionTests(unittest.TestCase):
             def getresponse(self):
                 from types import SimpleNamespace
 
-                return SimpleNamespace(status=302, getheader=lambda name: "https://127.0.0.1/secret")
+                return SimpleNamespace(
+                    status=302,
+                    getheader=lambda name: "https://127.0.0.1/secret",
+                    close=lambda: None,
+                )
 
             def close(self):
                 pass
@@ -305,6 +309,9 @@ class IngestionTests(unittest.TestCase):
 
             def read1(self, limit):
                 return self.body.read(limit)
+
+            def close(self):
+                self.body.close()
 
         class Connection:
             sock = None

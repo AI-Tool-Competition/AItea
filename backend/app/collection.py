@@ -42,6 +42,9 @@ class CollectionService:
                 )
                 conn.execute("CREATE INDEX network_leases_host ON collection_network_leases(host,expires_at)")
                 conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (6, now()))
+        from .transfers import CollectionTransfers
+
+        self.transfers = CollectionTransfers(self)
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -319,7 +322,12 @@ class CollectionService:
                 WHERE i.run_id=? ORDER BY i.created_at,i.id LIMIT ? OFFSET ?""",
                 (run_id, limit, offset),
             ).fetchall()
-            return {"run": run, "items": [dict(row) for row in rows], "total": run["total"]}
+            progress = self.transfers.progress(conn, [row["id"] for row in rows])
+            return {
+                "run": run,
+                "items": [dict(row) | progress.get(row["id"], {}) for row in rows],
+                "total": run["total"],
+            }
 
     def runs(self, owner, source_id, limit=20, offset=0):
         from .service import fail
@@ -608,7 +616,7 @@ class CollectionService:
 
     def fetch_item(self, claim):
         from .discovery import request_parameters
-        from .ingestion import _download, discover_attachments
+        from .ingestion import discover_attachments
 
         if claim is None:
             return
@@ -632,16 +640,27 @@ class CollectionService:
             validators = {key: cache[key] for key in ("etag", "last_modified")} if cache else None
             if request_options.get("json_body") is not None:
                 validators = None
-            deadline = time.monotonic() + 90
-            fetched = _download(
-                claim["url"],
-                deadline=deadline,
+            discovery = claim.get("purpose") in {"catalog", "detail"}
+            timeout_seconds = 90 if discovery else plan.get("download_timeout_seconds", 90)
+            if timeout_seconds > 90:
+                with self.db.transaction() as conn:
+                    if not self._valid_claim(conn, claim):
+                        return
+                    conn.execute(
+                        "UPDATE collection_items SET lease_until=? WHERE id=? AND lease_token=?",
+                        (time.time() + timeout_seconds + 30, claim["id"], claim["lease_token"]),
+                    )
+            fetched = self.transfers.download(
+                claim,
                 required_host=claim["host"] if claim["level"] == "attachment" else None,
-                consume=lambda chunks: self.service.archive.blobs.put(claim["owner_id"], chunks),
                 validators=validators,
-                connection_slot=lambda host: self.network_slot(host, deadline),
-                accept_compressed_html=claim.get("purpose") in {"catalog", "detail"},
-                **request_options,
+                discovery=discovery,
+                timeout_seconds=timeout_seconds,
+                options={
+                    "accept_compressed_html": claim.get("purpose") in {"catalog", "detail"},
+                    "max_bytes": plan.get("max_original_bytes", 20 * 1024 * 1024),
+                    **request_options,
+                },
             )
             fetched["request_evidence"] = {
                 "method": fetched.get("request_method", "GET"),
@@ -766,13 +785,51 @@ class CollectionService:
             batch, vectors = [], None
             if claim["phase"] == "parse":
                 content = None
-                if not manifest.get("elements") and not manifest.get("pages"):
+                is_pdf = (
+                    doc["mime_type"] == "application/pdf" or Path(doc["filename"]).suffix.lower() == ".pdf"
+                )
+                from .archive_parsing import needs_native
+
+                archive_mode = is_pdf and (
+                    doc["size"] > 20 * 1024 * 1024
+                    or manifest.get("archive_pdf")
+                    or len(manifest.get("pages", [])) > 300
+                    or any(needs_native(page) for page in manifest.get("pages", []))
+                )
+                if archive_mode:
+                    from .archive_parsing import parse_archive_pdf_bounded
+
+                    manifest = parse_archive_pdf_bounded(
+                        doc["storage_path"],
+                        source_hash=doc["content_hash"],
+                        size=doc["size"],
+                        filename=doc["filename"],
+                        manifest=manifest if manifest.get("pages") else None,
+                    )
+                elif not manifest.get("elements") and not manifest.get("pages"):
                     content = Path(doc["storage_path"]).read_bytes()
                     if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
                         raise ValueError("原件完整性校验失败")
-                    manifest = parse_bounded(
-                        doc["filename"], content, doc["mime_type"], parser=os.getenv("TEA_PARSER", "basic")
-                    )
+                    try:
+                        manifest = parse_bounded(
+                            doc["filename"],
+                            content,
+                            doc["mime_type"],
+                            parser=os.getenv("TEA_PARSER", "basic"),
+                        )
+                    except ValueError as exc:
+                        if not is_pdf or str(exc) != "PDF 不能超过 300 页。":
+                            raise
+                        from .archive_parsing import parse_archive_pdf_bounded
+
+                        content = None
+                        archive_mode = True
+                        manifest = parse_archive_pdf_bounded(
+                            doc["storage_path"],
+                            source_hash=doc["content_hash"],
+                            size=doc["size"],
+                            filename=doc["filename"],
+                        )
                     if not manifest.get("elements") and not manifest.get("pages"):
                         raise ValueError("文件没有可提取的正文；扫描件需要 OCR")
                 restore_pages = any(
@@ -783,14 +840,16 @@ class CollectionService:
                     )
                     for page in manifest.get("pages", [])
                 )
-                if restore_pages or (ocr_pending(manifest) and vision_ocr_configured()):
-                    if content is None:
+                if not manifest.get("quality", {}).get("pending_parse_pages") and (
+                    restore_pages or (ocr_pending(manifest) and vision_ocr_configured())
+                ):
+                    if content is None and not archive_mode:
                         content = Path(doc["storage_path"]).read_bytes()
                         if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
                             raise ValueError("原件完整性校验失败")
                     checkpoint_lock = Lock()
 
-                    def store_image(rendered):
+                    def persist_image(rendered):
                         import base64
 
                         if rendered.get("source_hash") != doc["content_hash"]:
@@ -807,6 +866,10 @@ class CollectionService:
                             "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
                             "mime_type": "image/png",
                         }
+                        return reference
+
+                    def store_image(rendered):
+                        reference = persist_image(rendered)
                         with checkpoint_lock, self.db.transaction() as conn:
                             if not self._valid_claim(conn, claim, True):
                                 raise ValueError("处理任务已更新，请等待当前任务完成")
@@ -817,6 +880,15 @@ class CollectionService:
                             conn.execute(
                                 "UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"])
                             )
+                        return reference
+
+                    def store_region(rendered):
+                        reference = persist_image(rendered)
+                        with checkpoint_lock, self.db.transaction() as conn:
+                            if not self._valid_claim(conn, claim, True):
+                                raise ValueError("处理任务已更新，请等待当前任务完成")
+                        # The parser checkpoints the returned reference and the
+                        # request attempt through on_page before any HTTP call.
                         return reference
 
                     def checkpoint(page):
@@ -841,6 +913,9 @@ class CollectionService:
                         manifest,
                         on_page=checkpoint,
                         on_image=store_image,
+                        on_region=store_region,
+                        archive_path=doc["storage_path"] if archive_mode else None,
+                        archive_size=doc["size"] if archive_mode else None,
                     )
             elif should_index and fingerprint and text_complete(manifest):
                 with self.db.transaction() as conn:
@@ -878,15 +953,17 @@ class CollectionService:
                 needs_index = (
                     indexable
                     and current_fingerprint
+                    and text_complete(manifest)
                     and self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
                 )
-                needs_ocr = bool(ocr_pending(manifest) and vision_ocr_configured())
+                needs_parse = bool(manifest.get("quality", {}).get("pending_parse_pages"))
+                needs_ocr = bool(not needs_parse and ocr_pending(manifest) and vision_ocr_configured())
                 deferred = needs_ocr and manifest.get("quality", {}).get("deferred_pages")
-                next_phase = "parse" if needs_ocr else ("embed" if needs_index else None)
+                next_phase = "parse" if needs_parse or needs_ocr else ("embed" if needs_index else None)
                 incomplete = not text_complete(manifest) and not next_phase
                 conn.execute(
                     "UPDATE documents SET status=?,error=? WHERE id=?",
-                    ("processing" if needs_ocr else "ready", warning, doc["id"]),
+                    ("processing" if needs_parse or needs_ocr else "ready", warning, doc["id"]),
                 )
                 if not needs_index and current_fingerprint and indexable and text_complete(manifest):
                     conn.execute(
@@ -900,7 +977,9 @@ class CollectionService:
                     (
                         next_phase or claim["phase"],
                         "queued" if next_phase else ("failed" if incomplete else "completed"),
-                        time.time() + 5 if deferred else 0,
+                        time.time() + manifest.get("quality", {}).get("retry_after_seconds", 5)
+                        if deferred
+                        else 0,
                         warning if incomplete else None,
                         now(),
                         doc["id"],
@@ -912,6 +991,7 @@ class CollectionService:
 
     def _failure(self, claim, error, *, processing):
         from .parsing import ProcessingDeferred
+        from .transfers import TransferPending
         from .service import AppError
 
         # Unexpected exceptions/paths/provider response bodies never become public error text.
@@ -925,23 +1005,29 @@ class CollectionService:
         if processing and claim["phase"] == "embed":
             retryable = True
             safe = "向量服务暂不可用，原件和正文已保留"
-        deferred = processing and isinstance(error, ProcessingDeferred)
+        transfer_progress = not processing and isinstance(error, TransferPending)
+        deferred = (processing and isinstance(error, ProcessingDeferred)) or transfer_progress
         exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
         delay = min(
             300, max(2 ** claim["attempts"] + random.random(), getattr(error, "retry_after", None) or 0)
         )
         if deferred:
-            delay = 5
+            delay = 0 if transfer_progress else 5
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):
                 return
             conn.execute(
                 f"UPDATE {table} SET status=?,available_at=?,error=?,lease_token=NULL,lease_until=NULL WHERE {key}=?",
-                ("failed" if exhausted else "queued", time.time() + delay, safe, claim[key]),
+                (
+                    "failed" if exhausted else "queued",
+                    time.time() + delay,
+                    None if transfer_progress else safe,
+                    claim[key],
+                ),
             )
             if deferred:
-                conn.execute("UPDATE processing_jobs SET attempts=0 WHERE document_id=?", (claim[key],))
+                conn.execute(f"UPDATE {table} SET attempts=0 WHERE {key}=?", (claim[key],))
             if processing:
                 conn.execute(
                     "UPDATE documents SET error=?,status=CASE WHEN ? AND status='processing' THEN 'failed' ELSE status END WHERE id=?",

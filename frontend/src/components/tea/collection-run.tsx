@@ -10,7 +10,11 @@ import {
   TeaApiError,
   teaRequest,
 } from "@/core/tea/api";
-import { type CollectionRun, type CollectionRunDetail } from "@/core/tea/types";
+import {
+  type CollectionItem,
+  type CollectionRun,
+  type CollectionRunDetail,
+} from "@/core/tea/types";
 
 import { ActionButton, ErrorNotice } from "./shared";
 
@@ -44,6 +48,24 @@ function currentProgress(next: CollectionRun, current: CollectionRun) {
     (next.revision === current.revision &&
       next.updated_at >= current.updated_at)
   );
+}
+
+function downloadProgress(item: CollectionItem) {
+  const total = item.download_total_bytes;
+  const downloaded = item.downloaded_bytes ?? 0;
+  if (
+    item.status === "stored" ||
+    total == null ||
+    !Number.isFinite(total) ||
+    total <= 0 ||
+    !Number.isFinite(downloaded)
+  )
+    return "";
+  const percent = Math.min(
+    100,
+    Math.max(0, Math.floor((downloaded / total) * 100)),
+  );
+  return ` · 已下载 ${percent}%`;
 }
 
 export function CollectionProgress({
@@ -234,6 +256,7 @@ export function CollectionProgress({
                         {
                           queued: "待抓取",
                           fetching: "抓取中",
+                          discovered: "已读取",
                           stored:
                             run.kind === "discovery" ? "已读取" : "已存原件",
                           failed: "失败",
@@ -252,6 +275,7 @@ export function CollectionProgress({
                           ? "二级法规"
                           : "一级资料"}
                     {item.attempts > 1 ? ` · 尝试 ${item.attempts} 次` : ""}
+                    {downloadProgress(item)}
                     {item.status === "stored" &&
                       item.processing_status &&
                       ` · ${item.processing_status === "completed" ? "已解析" : item.processing_status === "failed" ? "解析失败" : item.processing_status === "queued" ? "待解析" : "解析中"}`}

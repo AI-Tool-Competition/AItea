@@ -1,16 +1,113 @@
 """Shared completeness gate; old text-only manifests retain their semantics."""
 
+import hashlib
+import json
 import re
 
-OCR_VALIDATION_VERSION = "legal-numbers-v1"
+OCR_VALIDATION_VERSION = "legal-numbers-v3"
 _MONTH = "januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember"
 _NUMBER_FIELDS = {
     "law_number_year": r"\bnomor\s+(\d{1,5})\s+tahun\s+((?:18|19|20|21)\d{2})\b",
     "date": rf"\btanggal\s+(\d{{1,2}})\s+({_MONTH})\s+((?:18|19|20|21)\d{{2}})\b",
-    "publication": r"\btahun\s+((?:18|19|20|21)\d{2})\s+nomor\s+(\d{1,5})\b",
+    "publication": r"\btahun[ \t]+((?:18|19|20|21)\d{2})[ \t]+nomor[ \t]+(\d{1,5})\b",
     "article": r"\bpasal\s+(\d{1,4}[a-z]?)\b",
-    "amount": r"(?<![\d.,])(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?)(?![\d.,])",
+    # Broken PDF layers can insert spaces inside a grouping separator or its
+    # three digits. Ignore those spaces, never substitute any numeric digit.
+    "amount": r"(?<![\d.,])(\d{1,3}(?:[ \t]*\.[ \t]*\d(?:[ \t]*\d){2})+(?:[ \t]*,[ \t]*\d(?:[ \t]*\d)?)?)(?![\d.,])",
+    "year": r"\btahun\s+((?:18|19|20|21)\d{2})\b",
 }
+
+
+def number_anchors(text: str) -> list[dict]:
+    result = []
+    for field, pattern in _NUMBER_FIELDS.items():
+        for match in re.finditer(pattern, text, re.I):
+            if field == "year" and any(
+                anchor["span"][0] <= match.start() < anchor["span"][1]
+                for anchor in result
+                if anchor["field"] in {"law_number_year", "publication"}
+            ):
+                continue
+            result.append(
+                {
+                    "field": field,
+                    "value": tuple(re.sub(r"[ \t]", "", part.casefold()) for part in match.groups()),
+                    "span": [match.start(), match.end()],
+                    "text": match.group(),
+                }
+            )
+    return sorted(result, key=lambda item: item["span"][0])
+
+
+def _reading_intact(region: dict) -> bool:
+    reading = region.get("reading")
+    if not isinstance(reading, dict) or not isinstance(reading.get("text"), str):
+        return False
+
+    try:
+        return (
+            region.get("reading_hash")
+            == hashlib.sha256(
+                json.dumps(reading, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()
+            ).hexdigest()
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+def anchor_present(anchor: dict, candidates: list[dict]) -> bool:
+    """A year remains the same evidence when a damaged reference becomes readable."""
+    for candidate in candidates:
+        if candidate["field"] == anchor["field"] and candidate["value"] == anchor["value"]:
+            return True
+        if anchor["field"] == "year":
+            index = {"law_number_year": 1, "publication": 0}.get(candidate["field"])
+            if index is not None and candidate["value"][index] == anchor["value"][0]:
+                return True
+    return False
+
+
+def _number_verified(page: dict, anchor: dict, transcribed: list[dict]) -> bool:
+    recovery = (page.get("ocr") or {}).get("recovery") or {}
+    regions = recovery.get("regions", [])
+    for proof in recovery.get("verifications", []):
+        if proof.get("field") != anchor["field"] or tuple(proof.get("native_value", [])) != anchor["value"]:
+            continue
+        value = tuple(proof.get("verified_value", []))
+        if not any(item["field"] == anchor["field"] and item["value"] == value for item in transcribed):
+            continue
+        region_ids = proof.get("region_ids", [])
+        if (
+            not isinstance(region_ids, list)
+            or len(region_ids) != 2
+            or any(
+                not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in region_ids
+            )
+            or len(set(region_ids)) != 2
+        ):
+            continue
+        evidence = [item for item in regions if item.get("region_id") in region_ids]
+        if (
+            len(evidence) != 2
+            or {item.get("region_id") for item in evidence} != set(region_ids)
+            or len({item.get("image_sha256") for item in evidence}) != 2
+        ):
+            continue
+        if all(
+            item.get("source_hash") == page.get("source_hash")
+            and item.get("page") == page.get("page")
+            and isinstance(item.get("image_blob"), dict)
+            and item["image_blob"].get("content_hash") == item.get("image_sha256")
+            and _reading_intact(item)
+            and not (item.get("reading") or {}).get("uncertain_spans", ["missing"])
+            and any(
+                candidate["field"] == anchor["field"] and candidate["value"] == value
+                for candidate in number_anchors((item.get("reading") or {}).get("text", ""))
+            )
+            for item in evidence
+        ):
+            return True
+    return False
 
 
 def validate_ocr_page(page: dict) -> None:
@@ -24,20 +121,24 @@ def validate_ocr_page(page: dict) -> None:
         return
     native, transcribed = page.get("native_text", ""), page.get("text", "")
     warnings = []
-    for field, pattern in _NUMBER_FIELDS.items():
-        values = [
-            {tuple(part.casefold() for part in match.groups()) for match in re.finditer(pattern, text, re.I)}
-            for text in (native, transcribed)
-        ]
-        if values[0] - values[1]:
-            warnings.append("native_ocr_" + field + "_mismatch")
+    anchors = [number_anchors(text) for text in (native, transcribed)]
+    for anchor in anchors[0]:
+        if not anchor_present(anchor, anchors[1]):
+            if not _number_verified(page, anchor, anchors[1]):
+                warning = "native_ocr_" + anchor["field"] + "_mismatch"
+                if warning not in warnings:
+                    warnings.append(warning)
     metadata = page.setdefault("ocr", {})
     metadata["validation_version"] = OCR_VALIDATION_VERSION
     metadata["validation_warnings"] = warnings
-    if warnings:
-        uncertainties = metadata.setdefault("uncertain_spans", [])
-        uncertainties.extend(warning for warning in warnings if warning not in uncertainties)
-        page["status"] = "ocr_uncertain"
+    uncertainties = [
+        item
+        for item in metadata.get("uncertain_spans", [])
+        if not (item.startswith("native_ocr_") and item.endswith("_mismatch"))
+    ]
+    uncertainties.extend(warning for warning in warnings if warning not in uncertainties)
+    metadata["uncertain_spans"] = uncertainties
+    page["status"] = "ocr_uncertain" if uncertainties else "ocr_complete"
 
 
 def text_complete(manifest: dict) -> bool:

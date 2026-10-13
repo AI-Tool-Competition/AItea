@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–11 without opening originals.
+"""Export a private, read-only inventory of schema 7–12 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -24,8 +24,14 @@ from uuid import uuid4
 from .blob_store import _sync_directory
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11)
-FILES = ("documents.jsonl", "discovery-pages.jsonl", "relations.jsonl", "ocr-pages.jsonl")
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12)
+FILES = (
+    "documents.jsonl",
+    "discovery-pages.jsonl",
+    "relations.jsonl",
+    "ocr-pages.jsonl",
+    "ocr-regions.jsonl",
+)
 _COUNTRY = "COALESCE(dc.country,CASE WHEN d.role='secondary' THEN pc.country END)"
 _DOCUMENTS = """documents d
     LEFT JOIN document_countries dc ON dc.document_id=d.id
@@ -92,7 +98,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–11; use the matching application version"
+                "archive inventory requires schema 7–12; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -112,9 +118,16 @@ def _validate_schema(conn):
             conn.execute(query)
         if version >= 11:
             conn.execute("SELECT item_id,evidence FROM checklist_page_evidence LIMIT 0")
+        if version >= 12:
+            conn.execute(
+                "SELECT id,item_id,owner_id,status,content_hash,total_size FROM collection_transfers LIMIT 0"
+            )
+            conn.execute(
+                "SELECT transfer_id,start_byte,size,content_hash,storage_path FROM collection_transfer_parts LIMIT 0"
+            )
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–11 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–12 database") from exc
 
 
 class _Originals:
@@ -229,7 +242,15 @@ class _Partitions:
 def _count(summary, kind, country, anomalies):
     key = _country_key(country)
     counts = summary["countries"].setdefault(
-        key, {"documents": 0, "discovery_pages": 0, "relations": 0, "ocr_pages": 0, "anomalies": 0}
+        key,
+        {
+            "documents": 0,
+            "discovery_pages": 0,
+            "relations": 0,
+            "ocr_pages": 0,
+            "ocr_regions": 0,
+            "anomalies": 0,
+        },
     )
     summary[kind] += 1
     counts[kind] += 1
@@ -448,6 +469,72 @@ def _ocr_pages(conn, partitions, originals, summary, owner, country):
         _count(summary, "ocr_pages", row["country"], anomalies)
 
 
+def _ocr_regions(conn, partitions, originals, summary, owner, country):
+    """Keep each verification crop mapped to its immutable source; exclude readings."""
+    where, params = _where(owner, country)
+    page = "CASE WHEN p.type='object' THEN p.value ELSE '{}' END"
+    region = "CASE WHEN r.type='object' THEN r.value ELSE '{}' END"
+    cursor = conn.execute(
+        f"""SELECT d.id,d.owner_id,d.version,d.content_hash,{_COUNTRY} country,
+        json_extract({page},'$.page') page,json_extract({page},'$.ocr.model') model,
+        json_extract({page},'$.ocr.recovery.status') recovery_status,
+        json_extract({region},'$.source_hash') source_hash,
+        json_extract({region},'$.region_id') region_id,
+        json_extract({region},'$.region_bbox') region_bbox,
+        json_extract({region},'$.image_sha256') image_hash,
+        json_extract({region},'$.image_blob.content_hash') blob_hash,
+        json_extract({region},'$.image_blob.storage_path') storage_path,
+        json_extract({region},'$.image_blob.size') size,
+        json_extract({region},'$.pass_number') pass_number,
+        json_extract({region},'$.reading_hash') reading_hash,
+        json_extract({region},'$.render_version') render_version,
+        json_extract({region},'$.dpi') dpi
+        FROM {_DOCUMENTS},
+        json_each(CASE WHEN json_valid(d.manifest) THEN d.manifest ELSE '{{}}' END,'$.pages') p,
+        json_each({page},'$.ocr.recovery.regions') r
+        WHERE {where} AND r.type='object' AND json_type({region},'$.image_blob')='object'
+        ORDER BY d.owner_id,COALESCE({_COUNTRY},''),d.family_id,d.version,d.id,p.key,r.key""",
+        params,
+    )
+    for row in _rows(cursor):
+        original, anomalies = originals.inspect(row["storage_path"], row["size"])
+        if row["source_hash"] != row["content_hash"]:
+            anomalies.append("ocr_source_hash_mismatch")
+        if row["image_hash"] != row["blob_hash"]:
+            anomalies.append("ocr_image_hash_mismatch")
+        bbox = _json_value(row["region_bbox"], list, [], anomalies, "region_bbox")
+        if len(bbox) != 4 or any(type(value) not in {int, float} for value in bbox):
+            bbox = []
+            anomalies.append("invalid_region_bbox")
+        record = {
+            key: row[key]
+            for key in (
+                "country",
+                "source_hash",
+                "page",
+                "region_id",
+                "model",
+                "recovery_status",
+                "image_hash",
+                "size",
+                "pass_number",
+                "reading_hash",
+                "render_version",
+                "dpi",
+            )
+        }
+        record.update(
+            document_id=row["id"],
+            document_version=row["version"],
+            owner_sha256=_owner_hash(row["owner_id"]),
+            region_bbox=bbox,
+            original=original,
+            anomalies=sorted(set(anomalies)),
+        )
+        _write_jsonl(partitions.file(row["owner_id"], row["country"], "ocr-regions.jsonl"), record)
+        _count(summary, "ocr_regions", row["country"], anomalies)
+
+
 def _page_evidence(raw, anomalies):
     """Export the official adapter's bounded request fields, never arbitrary metadata."""
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > 16384:
@@ -598,7 +685,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 2,
+                "format_version": 3,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -608,6 +695,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
                 "discovery_pages": 0,
                 "relations": 0,
                 "ocr_pages": 0,
+                "ocr_regions": 0,
                 "anomalies": 0,
                 "anomaly_counts": Counter(),
                 "countries": {},
@@ -632,6 +720,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
             with closing(_Partitions(temporary)) as partitions, closing(_Originals(root)) as originals:
                 _documents(conn, partitions, originals, summary, owner, country)
                 _ocr_pages(conn, partitions, originals, summary, owner, country)
+                _ocr_regions(conn, partitions, originals, summary, owner, country)
                 _pages(conn, partitions, originals, summary, owner, country)
                 _relations(conn, partitions, summary, owner, country)
             conn.rollback()
@@ -664,7 +753,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–11)"
+        description="Export a read-only catalog of stored originals (schema 7–12)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")

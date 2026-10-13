@@ -121,6 +121,21 @@ def _auxiliary_worker(connection, operation: str, payload) -> None:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         if operation == "render":
             result = _render_pdf_page(*payload)
+        elif operation == "render_region":
+            result = _render_pdf_page(*payload)
+        elif operation == "plan_recovery":
+            from .ocr_recovery import plan_regions
+
+            result = plan_regions(*payload)
+        elif operation == "validate_archive":
+            from .archive_parsing import _open_original, _verify_hash, _verify_identity
+
+            path, source_hash, size = payload
+            stream, info = _open_original(path, size)
+            with stream:
+                _verify_hash(stream, source_hash, size)
+                _verify_identity(path, info, size)
+            result = {"source_hash": source_hash, "size": size}
         else:
             from .ingestion import rebuild_pdf_manifest
 
@@ -136,7 +151,7 @@ def _auxiliary_worker(connection, operation: str, payload) -> None:
         connection.close()
 
 
-def _render_pdf_page(content: bytes, page_number: int) -> dict:
+def _render_pdf_page(content: bytes, page_number: int, region_bbox: list | None = None) -> dict:
     from importlib.metadata import version
     import pypdfium2 as pdfium
 
@@ -147,8 +162,20 @@ def _render_pdf_page(content: bytes, page_number: int) -> dict:
         width, height = page.get_size()
         if not all(math.isfinite(value) and 0 < value <= 20000 for value in (width, height)):
             raise ValueError("PDF 页面尺寸无效。")
-        scale = min(200 / 72, 4000 / max(width, height), math.sqrt(5_990_000 / (width * height)))
-        bitmap = page.render(scale=scale, may_draw_forms=False)
+        crop = (0, 0, 0, 0)
+        canvas_width, canvas_height = width, height
+        if region_bbox is not None:
+            left, top, right, bottom = region_bbox
+            if not (0 <= left < right <= width and 0 <= top < bottom <= height):
+                raise ValueError("PDF 局部区域超出页面。")
+            canvas_width, canvas_height = right - left, bottom - top
+            crop = (left, height - bottom, width - right, top)
+        scale = min(
+            (400 if region_bbox is not None else 200) / 72,
+            4000 / max(canvas_width, canvas_height),
+            math.sqrt(5_990_000 / (canvas_width * canvas_height)),
+        )
+        bitmap = page.render(scale=scale, crop=crop, may_draw_forms=False)
         try:
             image = bitmap.to_pil()
             if image.width * image.height > 6_000_000:
@@ -158,7 +185,7 @@ def _render_pdf_page(content: bytes, page_number: int) -> dict:
             data = buffer.getvalue()
             if len(data) > _MAX_IMAGE_BYTES:
                 raise ValueError("PDF 单页图像超过 8 MB。")
-            return {
+            result = {
                 "source_hash": hashlib.sha256(content).hexdigest(),
                 "page": page_number,
                 "image_sha256": hashlib.sha256(data).hexdigest(),
@@ -170,8 +197,19 @@ def _render_pdf_page(content: bytes, page_number: int) -> dict:
                 "renderer": "pypdfium2",
                 "renderer_version": version("pypdfium2"),
                 "pdfium_version": str(pdfium.PDFIUM_INFO),
-                "render_version": "bounded-page-png-v1",
+                "render_version": "bounded-region-png-v1"
+                if region_bbox is not None
+                else "bounded-page-png-v1",
             }
+            if region_bbox is not None:
+                result["region_bbox"] = region_bbox
+                result["region_id"] = hashlib.sha256(
+                    json.dumps(
+                        [result["source_hash"], page_number, region_bbox, result["render_version"]],
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest()
+            return result
         finally:
             bitmap.close()
             page.close()
@@ -188,7 +226,68 @@ def render_pdf_page_bounded(content: bytes, page_number: int) -> dict:
     return _run_bounded(_auxiliary_worker, ("render", (content, page_number)), 45)
 
 
-def _ocr_one_page(content: bytes, page: dict, on_image: Callable[[dict], dict] | None = None) -> dict:
+def render_pdf_region_bounded(content: bytes, page_number: int, region_bbox: list) -> dict:
+    if (
+        not content
+        or len(content) > _MAX_BYTES
+        or type(page_number) is not int
+        or not 1 <= page_number <= 300
+        or not isinstance(region_bbox, (list, tuple))
+        or len(region_bbox) != 4
+        or any(
+            type(value) not in {int, float} or not math.isfinite(value) or not 0 <= value <= 20000
+            for value in region_bbox
+        )
+        or region_bbox[0] >= region_bbox[2]
+        or region_bbox[1] >= region_bbox[3]
+    ):
+        raise ValueError("PDF 局部区域、大小或页码无效。")
+    return _run_bounded(_auxiliary_worker, ("render_region", (content, page_number, list(region_bbox))), 45)
+
+
+def _archive_reference(path, source_hash: str, size: int) -> tuple[str, str, int]:
+    try:
+        file_path = os.fspath(path)
+    except TypeError as exc:
+        raise ValueError("采集原件路径无效。") from exc
+    if (
+        not isinstance(file_path, str)
+        or not file_path
+        or "\0" in file_path
+        or not isinstance(source_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", source_hash)
+        or type(size) is not int
+        or not 0 < size <= 128 * 1024 * 1024
+    ):
+        raise ValueError("采集原件路径、hash 或大小无效。")
+    return file_path, source_hash, size
+
+
+def plan_pdf_ocr_recovery_bounded(
+    content: bytes | None, page: dict, *, archive_path=None, archive_size: int | None = None
+) -> list[dict]:
+    if content is None:
+        file_path, _, size = _archive_reference(archive_path, page.get("source_hash"), archive_size)
+        return _run_bounded(_auxiliary_worker, ("plan_recovery", (None, page, file_path, size)), 45)
+    if (
+        archive_path is not None
+        or not content
+        or len(content) > _MAX_BYTES
+        or page.get("source_hash") != hashlib.sha256(content).hexdigest()
+    ):
+        raise ValueError("局部补救原件 hash 不匹配或大小超过限制。")
+    return _run_bounded(_auxiliary_worker, ("plan_recovery", (content, page)), 45)
+
+
+def _ocr_one_page(
+    content: bytes | None,
+    page: dict,
+    on_image: Callable[[dict], dict] | None = None,
+    on_region: Callable[[dict], dict] | None = None,
+    on_page: Callable[[dict], None] | None = None,
+    archive_path=None,
+    archive_size: int | None = None,
+) -> dict:
     from .ingestion_quality import validate_ocr_page
     from .vision import OCRResponseError, PROMPT_VERSION, transcribe_page
 
@@ -202,6 +301,24 @@ def _ocr_one_page(content: bytes, page: dict, on_image: Callable[[dict], dict] |
     if not _OCR_SLOTS.acquire(timeout=5):
         return defer("ocr_capacity")
     updated.pop("deferred_reason", None)
+    if on_region is not None and (
+        page.get("status") == "ocr_uncertain" or (page.get("ocr") or {}).get("phase") == "recovery"
+    ):
+        try:
+            from .ocr_recovery import recover_page_step
+
+            return recover_page_step(
+                content,
+                updated,
+                on_region=on_region,
+                on_page=on_page,
+                archive_path=archive_path,
+                archive_size=archive_size,
+            )
+        except ProcessingDeferred:
+            return defer("render_capacity")
+        finally:
+            _OCR_SLOTS.release()
     previous_attempts = (page.get("ocr") or {}).get("attempts", 0)
     metadata = {
         "prompt_version": PROMPT_VERSION,
@@ -228,7 +345,14 @@ def _ocr_one_page(content: bytes, page: dict, on_image: Callable[[dict], dict] |
 
     try:
         try:
-            rendered = render_pdf_page_bounded(content, page["page"])
+            if content is None:
+                from .archive_parsing import render_archive_page_bounded
+
+                rendered = render_archive_page_bounded(
+                    archive_path, source_hash=page["source_hash"], size=archive_size, page_number=page["page"]
+                )
+            else:
+                rendered = render_pdf_page_bounded(content, page["page"])
         except ProcessingDeferred:
             return defer("render_capacity")
         except (ValueError, OSError) as exc:
@@ -262,6 +386,11 @@ def _ocr_one_page(content: bytes, page: dict, on_image: Callable[[dict], dict] |
             status="ocr_uncertain" if transcript["uncertain_spans"] else "ocr_complete",
         )
         validate_ocr_page(updated)
+        if on_region is not None and updated["status"] == "ocr_uncertain":
+            # Checkpoint the original full transcription first. The following
+            # queue step initializes a separately audited recovery operation.
+            updated["ocr"]["phase"] = "recovery"
+            updated["status"] = "pending_ocr"
         updated.pop("error", None)
     finally:
         _OCR_SLOTS.release()
@@ -270,13 +399,16 @@ def _ocr_one_page(content: bytes, page: dict, on_image: Callable[[dict], dict] |
 
 def ocr_bounded(
     filename: str,
-    content: bytes,
+    content: bytes | None,
     mime_type: str,
     manifest: dict,
     *,
     on_page: Callable[[dict], None] | None = None,
     on_image: Callable[[dict], dict] | None = None,
+    on_region: Callable[[dict], dict] | None = None,
     max_pages: int = 4,
+    archive_path=None,
+    archive_size: int | None = None,
 ) -> dict:
     """One bounded batch. Checkpoint each terminal page; completed pages are reused.
 
@@ -287,7 +419,10 @@ def ocr_bounded(
 
     if type(max_pages) is not int or not 1 <= max_pages <= 20:
         raise ValueError("单批图片识别页数必须在 1 至 20 之间。")
-    if (
+    if content is None:
+        reference = _archive_reference(archive_path, manifest.get("source_hash"), archive_size)
+        _run_bounded(_auxiliary_worker, ("validate_archive", reference), 45)
+    elif archive_path is not None or (
         not content
         or len(content) > _MAX_BYTES
         or manifest.get("source_hash") != hashlib.sha256(content).hexdigest()
@@ -295,17 +430,37 @@ def ocr_bounded(
         raise ValueError("识别原件 hash 不匹配或大小超过限制。")
     result = deepcopy(manifest)
     pages = result.get("pages", [])
+    from .ocr_recovery import RECOVERY_VERSION
+
     if (
         not pages
-        or len(pages) > 300
+        or len(pages) > (5000 if content is None else 300)
         or [page.get("page") for page in pages] != list(range(1, len(pages) + 1))
         or any(page.get("source_hash") != result["source_hash"] for page in pages)
     ):
         raise ValueError("PDF 页映射不完整或原件 hash 不匹配。")
-    pending = [page for page in pages if page["status"] == "pending_ocr"][:max_pages]
+    pending = [
+        page
+        for page in pages
+        if page["status"] == "pending_ocr"
+        or (
+            on_region is not None
+            and page["status"] == "ocr_uncertain"
+            and (
+                (page.get("ocr") or {}).get("recovery", {}).get("version") != RECOVERY_VERSION
+                or (page.get("ocr") or {}).get("recovery", {}).get("status")
+                not in {"complete", "conflict", "failed"}
+            )
+        )
+    ][:max_pages]
     if pending and vision_ocr_configured():
         executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="page-ocr")
-        futures = [executor.submit(_ocr_one_page, content, page, on_image) for page in pending]
+        futures = [
+            executor.submit(
+                _ocr_one_page, content, page, on_image, on_region, on_page, archive_path, archive_size
+            )
+            for page in pending
+        ]
         try:
             for future in as_completed(futures):
                 page = future.result()
@@ -316,4 +471,8 @@ def ocr_bounded(
             executor.shutdown(wait=True, cancel_futures=True)
     # Also rebuild when resuming after the very last page checkpoint, or when
     # no pages are pending. Cached chunks may precede the checkpointed text.
+    if content is None:
+        from .archive_parsing import archive_rebuild_bounded
+
+        return archive_rebuild_bounded(result)
     return _run_bounded(_auxiliary_worker, ("assemble", result), 45)

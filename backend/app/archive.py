@@ -39,7 +39,7 @@ def _country_family(base, country):
 class LegalArchive:
     def __init__(self, service):
         self.service, self.db = service, service.db
-        self.blobs = BlobStore(self.db.files_dir)
+        self.blobs = BlobStore(self.db.files_dir, max_bytes=128 * 1024 * 1024)
         with self.db.transaction() as conn:
             if conn.execute("SELECT 1 FROM schema_migrations WHERE version=4").fetchone():
                 return

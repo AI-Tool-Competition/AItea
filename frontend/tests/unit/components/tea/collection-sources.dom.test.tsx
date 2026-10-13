@@ -66,6 +66,80 @@ afterEach(() => {
 });
 
 describe("collection source operations", () => {
+  it("shows saved download progress before the original is available", async () => {
+    const item = {
+      id: "download-1",
+      url: "https://example.com/large.pdf",
+      level: "primary",
+      status: "queued",
+      attempts: 1,
+      document_id: null,
+      error: null,
+      processing_status: null,
+      downloaded_bytes: 120,
+      download_total_bytes: 100,
+      resumable: true,
+    };
+    rs.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      response({
+        run,
+        items: [
+          item,
+          {
+            ...item,
+            id: "download-2",
+            url: "https://example.com/unknown.pdf",
+            download_total_bytes: 0,
+          },
+          {
+            ...item,
+            id: "download-3",
+            url: "https://example.com/stored.pdf",
+            status: "stored",
+            document_id: "original-3",
+            processing_status: "queued",
+          },
+        ],
+        total: 3,
+      }),
+    );
+    render(<CollectionProgress initial={run} />);
+    fireEvent.click(screen.getByRole("button", { name: "查看明细" }));
+    expect(await screen.findByText(/已下载 100%/)).toBeTruthy();
+    expect(screen.getAllByText(/已下载/)).toHaveLength(1);
+    expect(
+      screen.getByRole("link", { name: "原件" }).getAttribute("href"),
+    ).toBe("/api/tea/documents/original-3/download");
+    expect(screen.getByText(/已存原件 · 一级资料 · 待解析/)).toBeTruthy();
+  });
+
+  it("labels a saved discovery page without implying a legal original", async () => {
+    const discovery = { ...run, kind: "discovery", pages: 1 };
+    rs.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      response({
+        run: discovery,
+        items: [
+          {
+            id: "page-1",
+            url: "https://example.com/directory",
+            purpose: "catalog",
+            level: "primary",
+            status: "discovered",
+            attempts: 1,
+            document_id: null,
+            error: null,
+            processing_status: null,
+          },
+        ],
+        total: 1,
+      }),
+    );
+    render(<CollectionProgress initial={discovery as CollectionRun} />);
+    fireEvent.click(screen.getByRole("button", { name: "查看明细" }));
+    expect(await screen.findByText(/已读取 · 目录页/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "原件" })).toBeNull();
+  });
+
   it("polls stored counts and stops reading after the run finishes", async () => {
     const fetcher = rs
       .spyOn(globalThis, "fetch")

@@ -176,6 +176,68 @@ def test_export_filters_account_and_country_including_inherited_attachments(arch
     assert len(list(report["path"].glob("*/ID/documents.jsonl"))) == 1
 
 
+def test_region_catalog_preserves_source_page_and_crop_without_exporting_readings(archive):
+    original = document(archive, "main")
+    image = archive.archive.blobs.put_bytes("owner-a", b"region pixels")
+    with archive.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id='main'",
+            (
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page": 2,
+                                "source_hash": original.digest,
+                                "status": "ocr_complete",
+                                "ocr": {
+                                    "model": "vision-model",
+                                    "recovery": {
+                                        "status": "complete",
+                                        "regions": [
+                                            {
+                                                "region_id": "a" * 64,
+                                                "source_hash": original.digest,
+                                                "page": 2,
+                                                "region_bbox": [10, 20, 40, 60],
+                                                "image_sha256": image.digest,
+                                                "render_version": "bounded-region-png-v1",
+                                                "dpi": 400,
+                                                "image_blob": {
+                                                    "storage_path": str(image.path),
+                                                    "size": image.size,
+                                                    "content_hash": image.digest,
+                                                },
+                                                "pass_number": 1,
+                                                "reading_hash": "b" * 64,
+                                                "reading": {
+                                                    "text": "PRIVATE_REGION_READING",
+                                                    "api_key": "PRIVATE_REGION_KEY",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ),
+            ),
+        )
+    report = export(archive, owner="owner-a", country="ID")
+    rows = records(report, filename="ocr-regions.jsonl")
+    assert len(rows) == 1
+    region = rows[0]
+    assert region["document_id"] == "main" and region["document_version"] == 1
+    assert region["source_hash"] == original.digest and region["page"] == 2
+    assert region["region_bbox"] == [10, 20, 40, 60] and region["pass_number"] == 1
+    assert region["image_hash"] == image.digest and region["reading_hash"] == "b" * 64
+    assert region["original"]["exists"] and region["anomalies"] == []
+    assert report["summary"]["ocr_regions"] == 1
+    serialized = json.dumps(rows)
+    assert "PRIVATE_REGION_READING" not in serialized and "PRIVATE_REGION_KEY" not in serialized
+
+
 def test_relations_retain_exact_versions_and_country_level_wins(archive):
     document(archive, "main-v1", family="main", version=1)
     document(archive, "main-v2", family="main", version=2)
@@ -450,10 +512,14 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 10, 11])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12])
 def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
     document(archive, "law")
     with archive.db.transaction() as conn:
+        if version < 12:
+            conn.execute("DROP TABLE collection_transfer_parts")
+            conn.execute("DROP TABLE collection_transfers")
+            conn.execute("DELETE FROM schema_migrations WHERE version=12")
         if version < 11:
             conn.execute("DROP TABLE IF EXISTS checklist_page_evidence")
             conn.execute("DELETE FROM schema_migrations WHERE version=11")
@@ -499,7 +565,7 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
     assert archive.db.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [6, 12])
+@pytest.mark.parametrize("version", [6, 13])
 def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, version):
     from app.archive_inventory import InventoryError, export_inventory
 

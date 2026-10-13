@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 2,
+  "version": 3,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -32,7 +32,8 @@
     "证据和缺口：公布日、生效日、修订日、网页更新日分别识别，不因年代久、网页无标签或未检索到就判断失效或不存在。访问受限、缺附件、状态冲突和地域覆盖不足须记录；无法核实的结论标明待核，不补造内容。按类型、年份及机关核对分页和检索上限，表格旧数量只作历史对账依据。输出法律分析时，分别说明管辖依据、各争议事项的准据法、条约适用条件、具体条文及司法材料的作用，并对应事实给出结论。条件未明或证据不足时列明影响判断的缺口，避免强行给出唯一法院或唯一法律。",
     "访问说明依据：Cloudflare验证故障说明；403状态说明。法律规则核验日期为2026年10月3日；下列依据用于说明检索方法，未新增采集节点。",
     "涉外规则依据：中国涉外民事关系法律适用法；国际条约适用司法解释；涉外民商事案件管辖规定；外国法律查明司法解释。",
-    "印尼规则依据：UU 12/2011第7、8条及解释；UU 13/2022第9条修改；UU 1/2026第V条修改；宪法第24A、24C条；宪法法院规则7/2025。"
+    "印尼规则依据：UU 12/2011第7、8条及解释；UU 13/2022第9条修改；UU 1/2026第V条修改；宪法第24A、24C条；宪法法院规则7/2025。",
+    "v3技术补源：保留原采集清单和业务范围，用发布机关官方镜像及协定签署方公开原件补充受阻入口。网页更新或镜像发布年份不替代法规及条约原始签署、生效和适用版本；目录恢复不等同全量正文或法律审核通过。"
   ],
   "chapters": [
     {
@@ -702,6 +703,11 @@
           "url": "https://jdih.mahkamahagung.go.id/index.php/legal-product/perma-nomor-3-tahun-2026/detail",
           "purpose": "reference",
           "note": "PERMA 3/2026详情，仅示范下载和元数据；正文应由目录按类型发现。"
+        },
+        {
+          "url": "https://kepaniteraan.mahkamahagung.go.id/id/profil-kepaniteraan?id=16&view=category",
+          "purpose": "catalog",
+          "note": "最高法院中央书记处公开 PERMA 历史目录，2026-10-13 已验证完整目录及正式 PDF。只接受 category=16、同类文章和 PERMA 原件；为原 MA JDIH 的发布机关补源，所示历史条目不能当全部现行与历史规章覆盖。"
         }
       ],
       "tags": [
@@ -761,7 +767,9 @@
       "verbatim_requirements": "抓取内容标题 | Peraturan Mahkamah Agung（PERMA）｜最高法院规章\n网页链接 | 1. https://jdih.mahkamahagung.go.id/index.php/dokumen?jenis%5B%5D=peraturan-mahkamah-agung\n2. https://jdih.mahkamahagung.go.id/index.php/legal-product/perma-nomor-3-tahun-2026/detail\n截图示范 | \n\n抓取注意事项 | 链接1：按PERMA类型、年份及状态筛选，逐个点击文件标题进入详情页；保存列表文号和详情地址，再下载正式规章正文及必要附件。\n链接2：本页为截图中的详情页示范；在右侧File Peraturan红框处下载PDF，在左侧Detail Peraturan保存完整元数据。只用于示范操作，其他PERMA须逐件进入各自详情页。\n元数据：保存标题、编号、年份、Jenis、Singkatan Jenis、制定与公布日期、签署人、发起机关、Sumber、T.E.U.、制定地点、语言、领域、主题、状态及法规关系，并保存详情页与PDF地址和抓取时间。网页与正文不一致须复核，缺失值标为未提供。\n内容取舍：保留全部现行及历史PERMA；起诉、管辖、证据、审理、救济和执行规则及附件必须齐备。组织行政类正式PERMA保留但默认降低召回；SEMA单列，避免混同。\n检索适用：实体问题先查实体法及实施规范；涉及诉讼程序时再调用PERMA，随后查SEMA、Rumusan和精选判决。不能脱离所依据法律使用程序规定。\n冲突与更新：按第8条及司法权限核约束范围，PERMA不能修改UU实体规定。明确原文支持的关系与推断关系，持续检查修订；旧版供历史案件，失效版退出现行召回。",
       "execution": "discovery",
       "adapter": "ma_jdih",
-      "limits": {}
+      "limits": {
+        "download_timeout_seconds": 900
+      }
     },
     {
       "id": "1.10",
@@ -846,6 +854,11 @@
           "url": "https://jdih.mahkamahagung.go.id/dokumen?jenis%5B0%5D=surat-edaran-mahkamah-agung&page=1",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://kepaniteraan.mahkamahagung.go.id/id/profil-kepaniteraan?id=10&view=category",
+          "purpose": "catalog",
+          "note": "最高法院中央书记处公开 SEMA 历史目录；2026-10-13 完整目录与 SEMA 4/2014 原件已验证。category=10 与 PERMA、SK KMA 隔离；附件仍逐件核，不以慢流文件失败或汇编取代原通函。"
         }
       ],
       "tags": [
@@ -901,7 +914,9 @@
       "verbatim_requirements": "抓取内容标题 | Surat Edaran Mahkamah Agung（SEMA）及Rumusan Kamar｜最高法院通函与审判庭统一法律意见\n网页链接 | https://jdih.mahkamahagung.go.id/dokumen?jenis%5B0%5D=surat-edaran-mahkamah-agung&page=1\n截图示范 | \n\n抓取注意事项 | 采集步骤：从SEMA目录第一页开始遍历全部分页和年份，逐个点击截图红框中的文件进入详情，在右侧File Peraturan红框位置点击PDF文件名或下载图标，保存正式法律文件及全部相关附件。同步抓取旁边Detail Peraturan元数据：标题、文号、年份、类型、缩写、制定日期、公布日期、签署人、制定机关、来源、T.E.U.、制定地点、保存机构、语言、法律领域、主题及状态；另存详情与PDF地址、采集时间、原始字段和修订关系，缺失字段标记未提供，生效日期核正文。\nRumusan Kamar识别：全量SEMA入总库；标题或附件明确属于Pleno Kamar结果的文件再归入Rumusan Kamar子库。重点识别Pemberlakuan Rumusan Hasil Rapat Pleno Kamar及Pemberlakuan Hasil Rumusan Rapat Pleno Kamar等表述，结合附件确认，不能把所有SEMA都当作审判庭意见。按审判庭、Pleno年度、主题、问题、统一意见、适用条件、例外及对应SEMA条目切分独立规则，保存原文页码。\n历史与增量：首次扫描全部年份，补齐历年Pleno Kamar原件。SEMA发布年份与Rumusan对应会议年份分别保存，不能按年份相等自动匹配；同一年度可能存在针对不同年度会议的SEMA。首次完成后持续抓取新增SEMA；发现新意见修改、澄清或撤销旧意见时建立关系，保留旧版及适用期间。\n校验与去重：取消Rumusan Kamar独立抓取任务，统一从SEMA原件提取。2026官方汇编只保留作覆盖与条目校验资料，不进入正式抓取入口或持续采集任务；汇编与SEMA重复的意见不另存一套正文。通函、附件和其中各项意见建立父子关系。\n检索适用：核对正式法规后，按争点、审判庭、事项和时间调用SEMA及其中有效Rumusan Kamar。通函的审判规则、解释口径、人事及机关行政性质分别标识，不将全部SEMA赋予同等法律效力；人事或行政内容降低法律检索权重。\n冲突与更新：核对权限、后续修改、撤销和替代，不能用通函覆盖相冲突的上位法规。被替代意见退出默认现行检索，历史原件及正式SEMA引用继续保留。\n来源核验（2026年10月3日）：指定SEMA入口及第2页可读取，已读取SEMA 1/2025和4/2014详情与PDF。4/2014原件对应2013年Pleno Kamar，采集时按会议年度与发布年度分别记录；目录总量不代替全部分页与附件验收。",
       "execution": "discovery",
       "adapter": "ma_jdih",
-      "limits": {}
+      "limits": {
+        "download_timeout_seconds": 900
+      }
     },
     {
       "id": "2.2",
@@ -980,6 +995,11 @@
           "url": "https://jdih.mahkamahagung.go.id/dokumen?jenis%5B%5D=surat-keputusan-ketua-mahkamah-agung&nomor=&pengadilan=&search=",
           "purpose": "catalog",
           "note": "唯一SK KMA目录；全目录登记，正文按司法规则价值筛选，Buku附件随发布决定取得。"
+        },
+        {
+          "url": "https://kepaniteraan.mahkamahagung.go.id/id/profil-kepaniteraan?id=57&view=category",
+          "purpose": "catalog",
+          "note": "同一最高法院中央书记处 SK KMA 历史目录；2026-10-13 完整目录已验证。category=57 只补同类目录及详情，正文继续按司法规则价值筛选，不扩大至地方自行制定的指南。"
         }
       ],
       "tags": [
@@ -1035,7 +1055,9 @@
       "verbatim_requirements": "抓取内容标题 | SK KMA及Buku I／Buku II｜最高法院院长决定与审判指南\n网页链接 | https://jdih.mahkamahagung.go.id/dokumen?jenis%5B%5D=surat-keputusan-ketua-mahkamah-agung&nomor=&pengadilan=&search=\n截图示范 | \n\n抓取注意事项 | 采集步骤：以SK KMA官方目录为唯一入口，遍历全部目录和元数据，逐项进入详情判断内容；符合司法规则筛选条件的文件，在File Peraturan红框位置下载PDF正文及附件。保存Detail Peraturan全部可见元数据、详情与PDF地址、采集时间、筛选结论和理由。SK KMA 159/2026及178/2026等详情作为目录下自动发现的子页面，不另设独立抓取入口。\n筛选规则：保留涉及审判程序、案件处理、管辖、证据、执行、调解、电子诉讼、利益冲突，以及Buku I／Buku II发布或修改的决定。人事任免、组建工作组、培训、经费及纯内部行政事项过滤；混合文件按条款区分司法规则与行政安排，不只凭标题判断。目录元数据保留，未收录正文的理由可回查。\nBuku I／Buku II：发现发布、修改或替代指南的决定，必须继续下载全部相关附件。159/2026详情截图红框中的2026sk-kma159.pdf和普通、宗教、军事、行政四类Buku II 2026 PDF均完整保存，分别标记发布决定和适用审判领域，建立SK KMA → Buku II → 审判领域关系。同一原件只保存一次。网页签署人、制定机关若显示“2026”等异常值，保留原值并标注，以PDF核验，不直接认作姓名或机关。\n版本处理：Buku II 2026高优先级收录；以159/2026正文及附件核定2026年8月19日生效和替代Buku II 2006的安排。2006版保留历史资料，退出默认现行检索。Buku I保存当前有效文本及发布、历次修改和附件关系，包括178/2026对应的修改；新决定只调整其明确修改内容，不能据此推定其他PERMA、SEMA或SK KMA失效。\n检索适用：先查程序法、PERMA、SEMA及相关统一意见，再按问题和审判领域调用指南。普通、宗教、军事和行政审判规则分别判断适用范围；实体权利义务核相关正式法规。持续检查目录新决定和附件，保留旧版本及适用期间。\n文件去重核验（2026年10月3日）：SK KMA目录及第2页可读取，159/2026主PDF和四类Buku II附件均可读取。主PDF实际包含发布决定与合并指南，不能按详情“4 hlm.”认定整个PDF仅4页。合并版与分领域附件记录组成及重叠关系，原始文件可留存核验，但重复指南正文只提取、保存和向量化一次。",
       "execution": "discovery",
       "adapter": "ma_jdih",
-      "limits": {}
+      "limits": {
+        "download_timeout_seconds": 900
+      }
     },
     {
       "id": "2.4",
@@ -1537,7 +1559,9 @@
       "verbatim_requirements": "抓取内容标题 | 贸易｜Kemendag正式规范及法律适用补强\n网页链接 | https://jdih.kemendag.go.id/peraturan\n截图示范 | \n\n抓取注意事项 | 采集步骤：从Kemendag目录按相关规范筛选，点击列表截图红框内的法规条目进入详情页。详情截图红框中的数字是累计下载量，该统计位置没有文件链接；点击其左侧或页首的Peraturan [ID]按钮下载PDF法律文件，并保存正文及必要附录。同步保存Meta／Keterangan区域全部法规元数据：页面提供的文档类型、完整标题、制定机关／作者、编号、年份、法规形式及简称、制定与公布日期、生效日期、效力状态、主题、法律关系和审查记录；另存详情页链接、实际PDF下载地址及采集时间，与主库去重。缺失字段不推定补齐，下载量和浏览量不能用于判断法规效力；按商品、主体和适用期间核对文件，访问失败记录缺口。\n内容取舍：进出口法定条件、禁限措施、贸易救济及流通义务必收；商品清单或技术附件缺失会影响答案，不能省略。许可办理、平台操作、申请示范及新闻不收。\n检索适用：贸易问题先核UU、PP、Perpres及Permendag，再补一般适用的决定或通函；按商品、贸易行为、主体及时间匹配，不能仅凭标题相近召回。\n冲突与更新：部门决定、通函和正式法规分别判断权限与约束对象，冲突回查上位法规和明确变更。新版本保存旧清单与过渡条件；不能把访问失败记为当地无规则。",
       "execution": "discovery",
       "adapter": "html_links",
-      "limits": {}
+      "limits": {
+        "download_timeout_seconds": 900
+      }
     },
     {
       "id": "4.3",
@@ -1888,7 +1912,9 @@
       "verbatim_requirements": "抓取内容标题 | 政府采购｜LKPP正式规范及法律适用补强\n网页链接 | 1. https://jdih.lkpp.go.id/regulation/search\n2. https://jdih.lkpp.go.id/regulation/keputusan-deputi-ii/keputusan-deputi-ii-nomor-12-tahun-2026\n截图示范 | \n\n抓取注意事项 | 链接1：在法规目录筛选正式规范和对外实施文件，点击截图红框内标题进入详情；下载Naskah及必要Lampiran，保存文号、日期、状态、依据与适用范围。\n链接2：本页为截图中的详情页示范；点击红框内Unduh Naskah下载正文PDF，有必要附件时另点击Buka Lampiran并与正文关联。示范文件仍须通过既定内容筛选，不能因有截图而自动入法律库。\n内容取舍：供应商资格、采购方式、评标、合同、制裁、争议与救济规范会影响法律答案，必须保存法定附件。内部工作组、预算、人事及INAPROC操作说明不收。\n检索适用：政府采购问题先查上位Perpres，再核Peraturan LKPP及相关实施决定；按采购类型、金额或阶段匹配。法定条件、合同义务和救济可答，平台点击步骤不展开。\n冲突与更新：实施决定不得无授权改变上位要求，目录材料逐件判断性质。新规须核正在进行采购及旧合同的过渡规则；保存新旧版本、部分废止条款和完整附件。",
       "execution": "discovery",
       "adapter": "html_links",
-      "limits": {}
+      "limits": {
+        "download_timeout_seconds": 900
+      }
     },
     {
       "id": "5.1",
@@ -1982,6 +2008,11 @@
           "url": "https://asean.org/our-communities/economic-community/integration-with-global-economy/asean-china-economic-relation/key-documents/",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://fta.mofcom.gov.cn/channel/china_dongmeng_special.shtml",
+          "purpose": "catalog",
+          "note": "中国商务部签署方官方 ACFTA 1.0/2.0/3.0 文本和附件镜像；2026-10-13 完整目录及12份原件已验证。只收协定组成文件、印尼国别税表和承诺，排除其他成员单独承诺、新闻、国别指南。保留中文/英文语种和历史协议，不把3.0签署文本作已对印尼生效。"
         }
       ],
       "tags": [
@@ -2059,6 +2090,16 @@
           "url": "https://www.dfat.gov.au/trade/agreements/in-force/rcep/rcep-text",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://rcepsec.org/rcep-agreements/",
+          "purpose": "catalog",
+          "note": "RCEP 秘书处新版公开协定目录；旧 /legal-text/ 已404。本页固定按钮中有序言、20章、章节附件及国别表，2026-10-13完整目录与原件已验证。按公开URL字面值发现，不运行网页脚本；保留印尼对华税表、表首注、差别关税附录、印尼服务/投资及人员移动承诺，排除其他成员国别表。"
+        },
+        {
+          "url": "https://fta.mofcom.gov.cn/channel/rcep.shtml",
+          "purpose": "catalog",
+          "note": "中国商务部签署方官方英文 RCEP 文本及印尼承诺镜像；2026-10-13完整目录、20章与章节附件已验证。只取英文签署正文、总注释和清单规定的印尼对华及服务/投资/人员移动承诺；中文解读、其他成员国别表不进入本项。IPv6连接不可用时仅对同次DNS验证通过的公网地址做安全连接回退。"
         }
       ],
       "tags": [
@@ -2126,7 +2167,8 @@
       "limits": {
         "body_chapters": 20,
         "market_access_member": "Indonesia",
-        "tariff_partner": "China"
+        "tariff_partner": "China",
+        "max_original_bytes": 134217728
       }
     },
     {
@@ -2152,6 +2194,21 @@
           "url": "https://itip-services-worldbank.wto.org/SearchResultGats.aspx",
           "purpose": "catalog",
           "note": "I-TIP结果URL不代表已筛选国家；选择Indonesia、All Sectors、Group by Member并分别导出两表。"
+        },
+        {
+          "url": "https://www.wto.org/english/tratop_e/serv_e/telecom_e/telecom_commit_exempt_list_e.htm",
+          "purpose": "catalog",
+          "note": "WTO 官方服务承诺目录补源，2026-10-13完整页面与印尼 GATS/SC/43、Suppl.2 原件已验证。只接受印尼 SC43 与 EL43 系列文书；其他成员及普通新闻排除。该电信目录不等于全部部门服务承诺已核齐，I-TIP两类完整导出仍单独核验。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?filename=Q:/SCHD/GATS-SC/SC43.pdf&Open=True",
+          "purpose": "document",
+          "note": "WTO Docs Online 正式 GATS/SC/43 原生 PDF，2026-10-13完整原件已验证；比扫描镜像更适于原文整理。只读文档路径按印尼文号固定校验，后续补充、修订及勘误保留独立版本。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?filename=Q:/SCHD/GATS-EL/EL43.pdf&Open=True",
+          "purpose": "document",
+          "note": "WTO Docs Online 正式 GATS/EL/43 原生 PDF，2026-10-13完整原件已验证；比扫描镜像更适于原文整理。只读文档路径按印尼文号固定校验，后续补充、修订及勘误保留独立版本。"
         }
       ],
       "tags": [
@@ -2234,7 +2291,8 @@
         "service_exports": [
           "GATS Commitments",
           "MFN Exemptions"
-        ]
+        ],
+        "max_original_bytes": 134217728
       },
       "trusted_hosts": [
         "docs.wto.org"

@@ -19,6 +19,10 @@ class Response:
         self.headers = {key.lower(): value for key, value in (headers or {}).items()}
         self.chunks = iter(chunks)
         self.reads = 0
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def getheader(self, name, default=None):
         return self.headers.get(name.lower(), default)
@@ -90,6 +94,128 @@ def test_consumer_receives_chunks_before_later_network_reads(transport):
     assert result["etag"] == '"version-1"'
     assert result["filename"] == "law.pdf"
     assert all(connection.closed for connection in connections)
+
+
+def test_pinned_transport_falls_back_without_changing_tls_hostname(monkeypatch):
+    attempts, closed, names = [], [], []
+
+    class Socket:
+        def __init__(self, family):
+            self.family = family
+            self.handshake_finished = False
+
+        def settimeout(self, value):
+            assert 0 < value <= (15 if self.handshake_finished else 5)
+
+        def connect(self, destination):
+            attempts.append(destination)
+            if self.family == socket.AF_INET6:
+                raise OSError("IPv6 route unavailable")
+
+        def close(self):
+            closed.append(self.family)
+
+        def do_handshake(self):
+            self.handshake_finished = True
+
+    class Context:
+        def wrap_socket(self, raw, *, server_hostname, do_handshake_on_connect):
+            names.append(server_hostname)
+            assert do_handshake_on_connect is False
+            return raw
+
+    first = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700::6812:1c3a", 443, 0, 0))
+    second = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+    monkeypatch.setattr(ingestion.ssl, "create_default_context", lambda: Context())
+    monkeypatch.setattr(ingestion.socket, "socket", lambda family, *_: Socket(family))
+    connection = ingestion._PinnedHTTPSConnection("official.example", first, 15)
+    connection.alternate_addresses = [second]
+    connection.deadline = time.monotonic() + 20
+    connection.connect()
+    assert attempts == [first[4], second[4]]
+    assert names == ["official.example"]
+    assert socket.AF_INET6 in closed
+    assert connection.sock.family == socket.AF_INET
+
+
+def test_download_prefers_validated_ipv4_before_unreachable_ipv6(transport, monkeypatch):
+    responses, _, _ = transport
+    responses.append(Response([b"original"], headers={"Content-Length": "8"}))
+    ipv6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700::6812:1c3a", 443, 0, 0))
+    ipv4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+    selected = []
+    original = ingestion._PinnedHTTPSConnection
+
+    def connection(host, address, timeout):
+        selected.append(address)
+        return original(host, address, timeout)
+
+    monkeypatch.setattr(ingestion, "_public_addresses", lambda *a, **kw: [ipv6, ipv4])
+    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", connection)
+    assert download()["content"] == b"original"
+    assert selected == [ipv4]
+
+
+def test_explicit_range_binds_offsets_total_and_strong_validator(transport):
+    responses, requests, _ = transport
+    responses.append(
+        Response(
+            [b"efgh"],
+            status=206,
+            headers={
+                "Content-Length": "4",
+                "Content-Range": "bytes 4-7/12",
+                "ETag": '"v1"',
+                "Content-Type": "application/pdf",
+                "Accept-Ranges": "bytes",
+            },
+        )
+    )
+    headers = []
+    got = download(byte_range=(4, 7), range_validator='"v1"', on_headers=headers.append)
+    assert requests[0][2]["Range"] == "bytes=4-7"
+    assert requests[0][2]["If-Range"] == '"v1"'
+    assert got["content"] == b"efgh" and got["total_size"] == 12
+    assert got["range_start"] == 4 and got["range_end"] == 7
+    assert headers[0]["response_status"] == 206
+
+
+@pytest.mark.parametrize("header", ["bytes 3-6/12", "bytes 4-8/12", "bytes 4-7/*", "bytes 4-7/3"])
+def test_malformed_or_unrequested_ranges_are_not_consumed(transport, header):
+    responses, _, _ = transport
+    response = Response([b"bad!"], status=206, headers={"Content-Length": "4", "Content-Range": header})
+    responses.append(response)
+    with pytest.raises(ingestion.DownloadError):
+        download(byte_range=(4, 7), range_validator='"v1"')
+    assert response.reads == 0
+
+
+def test_header_callback_can_defer_large_file_before_body_is_read(transport):
+    responses, _, connections = transport
+    response = Response(
+        [b"original"], headers={"Content-Length": "8", "ETag": '"v1"', "Accept-Ranges": "bytes"}
+    )
+    responses.append(response)
+
+    def defer(meta):
+        assert meta["total_size"] == 8 and meta["accept_ranges"] is True
+        raise ingestion.DownloadError("defer before body", retryable=True)
+
+    with pytest.raises(ingestion.DownloadError, match="defer"):
+        download(on_headers=defer)
+    assert response.reads == 0 and all(c.closed for c in connections)
+
+
+def test_larger_original_limit_is_explicit_and_still_stream_bounded(transport, monkeypatch):
+    responses, _, _ = transport
+    monkeypatch.setattr(ingestion, "MAX_BYTES", 3)
+    responses.append(Response([b"abcdefgh"], headers={"Content-Length": "8"}))
+    with pytest.raises(ingestion.DownloadError, match="大小"):
+        download()
+    responses.append(Response([b"abcdefgh"], headers={"Content-Length": "8"}))
+    assert download(max_bytes=8)["content"] == b"abcdefgh"
+    with pytest.raises(ingestion.DownloadError):
+        download(max_bytes=128 * 1024 * 1024 + 1)
 
 
 def test_explicit_catalog_gzip_is_streamed_and_binds_uncompressed_original(transport):

@@ -502,6 +502,8 @@ class ChecklistService:
                 primary_document_ids=anchors,
                 discover_attachments=False,
                 max_items=PAGE_BATCH if kind == "discovery" else 200,
+                max_original_bytes=item.get("limits", {}).get("max_original_bytes", 20 * 1024 * 1024),
+                download_timeout_seconds=item.get("limits", {}).get("download_timeout_seconds", 90),
             ).model_dump()
             run_plan["checklist"] = {
                 "binding_id": binding["id"],

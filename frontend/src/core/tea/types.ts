@@ -270,6 +270,8 @@ export interface CollectionPlan {
   primary_document_ids: string[];
   discover_attachments: boolean;
   max_items: number;
+  max_original_bytes?: number;
+  download_timeout_seconds?: number;
 }
 export interface CollectionBlueprintSummary {
   id: string;
@@ -381,12 +383,21 @@ export interface CollectionItem {
   id: string;
   url: string;
   level: "primary" | "secondary" | "attachment";
-  status: "queued" | "fetching" | "stored" | "failed" | "cancelled";
+  status:
+    | "queued"
+    | "fetching"
+    | "discovered"
+    | "stored"
+    | "failed"
+    | "cancelled";
   attempts: number;
   document_id: string | null;
   error: string | null;
   processing_status: string | null;
   processing_error?: string | null;
+  downloaded_bytes?: number;
+  download_total_bytes?: number;
+  resumable?: boolean;
 }
 export interface CollectionRunDetail extends ListResult<CollectionItem> {
   run: CollectionRun;
@@ -544,11 +555,12 @@ export interface DocumentDetail {
   warnings: string[];
   parser?: string | null;
   quality?: {
-    status: "complete" | "needs_ocr" | "partial";
+    status: "complete" | "needs_parse" | "needs_ocr" | "partial";
     complete: boolean;
     page_count: number;
     completed_pages: number[];
     pending_pages: number[];
+    pending_parse_pages?: number[];
     failed_pages: number[];
     review_pages: number[];
     review_required: boolean;

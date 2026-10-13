@@ -29,16 +29,27 @@ _ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "manual"}
 _SETNEG_HOST = "jdih.setneg.go.id"
 _SETNEG_API = "https://jdih.setneg.go.id/api/hukumproduk/"
 _SETNEG_TYPES = {"1.3": "UU", "1.4": "PERPU", "1.5": "PP", "1.6": "PERPRES"}
+_COURT_HOST = "kepaniteraan.mahkamahagung.go.id"
+_COURT_CATEGORIES = {"1.9": "16", "2.1": "10", "2.3": "57"}
+_LKPP_HOST = "jdih.lkpp.go.id"
+_LKPP_FILES = "https://jdih.lkpp.go.id/admin/uploads/documents"
+_PDF_BUTTON = re.compile(
+    r"\s*(?:loadPdf|toggleSubMenu)\(this,\s*(['\"])(https://[^'\"<>\s]+\.pdf)\1\)\s*;?\s*",
+    re.I,
+)
+_WTO_SERVICE_FILE = re.compile(r"Q:/SCHD/(?:GATS-SC/SC43|GATS-EL/EL43)(?:(?:S|R|C)[1-9]\d{0,2})*\.pdf", re.I)
 _HIDDEN_TAGS = {"script", "style", "template", "noscript"}
 _ERROR_HEADING = re.compile(
     r"(?:^|\b)(?:just a moment|access denied|403\s+forbidden|404\s+(?:error|not found)|"
     r"page not found|service unavailable|internal server error|checking your browser|"
-    r"attention required|verify (?:that )?you are human|sign in|log in|login)(?:\b|$)",
+    r"attention required|verify (?:that )?you are human|akses\s+ditolak|request\s+rejected|"
+    r"sign in|log in|login)(?:\b|$)",
     re.I,
 )
 _ERROR_BODY = re.compile(
     r"checking your browser|verify (?:that )?you are human|enable javascript and cookies to continue|"
-    r"you (?:do not|don't) have permission to access|the page you requested could not be found",
+    r"you (?:do not|don't) have permission to access|the page you requested could not be found|"
+    r"the requested url was rejected|url yang anda minta ditolak",
     re.I,
 )
 
@@ -306,7 +317,7 @@ class _Link:
 
 
 class _Page(HTMLParser):
-    def __init__(self):
+    def __init__(self, *, literal_pdf_calls=False, lkpp_pdf_files=False):
         super().__init__(convert_charrefs=True)
         self.links: list[_Link] = []
         self.active: _Link | None = None
@@ -318,6 +329,8 @@ class _Page(HTMLParser):
         self.in_heading = False
         self.challenge = False
         self.truncated = False
+        self.literal_pdf_calls = literal_pdf_calls
+        self.lkpp_pdf_files = lkpp_pdf_files
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
@@ -338,6 +351,24 @@ class _Page(HTMLParser):
         if tag not in {"a", "iframe", "embed", "object"}:
             return
         target = values.get("href" if tag == "a" else "data" if tag == "object" else "src")
+        if tag == "iframe" and self.lkpp_pdf_files and values.get("id") == "file-frame":
+            # LKPP publishes its original as literal PDF-viewer attributes.
+            # Require the verified public file directory and one plain basename;
+            # do not execute the viewer or infer a path from arbitrary JS/data.
+            name = values.get("data-initial-file")
+            fields = ("id", "data-file-base-url", "data-initial-file")
+            if (
+                values.get("data-file-base-url") == _LKPP_FILES
+                and all(sum(key == field for key, _ in attrs) == 1 for field in fields)
+                and _pdf_basename(name)
+                and not re.search(r"[%?#]", name)
+            ):
+                target = _LKPP_FILES + "/" + quote(name, safe="")
+        if not target and tag == "a" and self.literal_pdf_calls:
+            # The verified RCEP Secretariat viewer publishes PDF URLs as fixed
+            # literal button arguments. Read only that grammar; never execute JS.
+            call = _PDF_BUTTON.fullmatch(values.get("onclick") or "")
+            target = call[2] if call else None
         if not target:
             return
         if len(self.links) >= MAX_PAGE_LINKS:
@@ -403,6 +434,28 @@ class _Recipe:
                 setattr(self, key, [re.compile(x, re.I) for x in patterns])
             except re.error as exc:
                 raise ValueError("目录路径规则不是有效正则。") from exc
+        scoped = recipe.get("document_patterns_by_host", {})
+        if not isinstance(scoped, dict) or len(scoped) > 30:
+            raise ValueError("分站原件路径规则配置无效。")
+        self.document_patterns_by_host = {}
+        for host, patterns in scoped.items():
+            if (
+                host not in self.hosts
+                or not isinstance(patterns, list)
+                or len(patterns) > 50
+                or any(not isinstance(x, str) or len(x) > 1024 for x in patterns)
+            ):
+                raise ValueError("分站原件路径规则配置无效。")
+            try:
+                self.document_patterns_by_host[host] = [re.compile(x, re.I) for x in patterns]
+            except re.error as exc:
+                raise ValueError("分站原件路径规则不是有效正则。") from exc
+        self.court_category = recipe.get("court_category")
+        if self.court_category is not None and self.court_category not in _COURT_CATEGORIES.values():
+            raise ValueError("法院目录类型配置无效。")
+        self.wto_services = recipe.get("wto_services", False)
+        if not isinstance(self.wto_services, bool):
+            raise ValueError("WTO 服务承诺配置无效。")
         self.max_links = recipe.get("max_links", 200)
         if (
             isinstance(self.max_links, bool)
@@ -451,8 +504,18 @@ class _Recipe:
         return any(pattern.search(target) for pattern in patterns)
 
     def purpose(self, url: str) -> str | None:
-        if urlsplit(url).hostname not in self.hosts or self.matches(url, self.exclude_patterns):
+        parsed = urlsplit(url)
+        if parsed.hostname not in self.hosts or self.matches(url, self.exclude_patterns):
             return None
+        if parsed.hostname == _COURT_HOST and parsed.path == "/id/profil-kepaniteraan":
+            return _court_purpose(url, self.court_category) if self.court_category else None
+        if parsed.hostname == "docs.wto.org" and parsed.path in {
+            "/dol2fe/Pages/SS/directdoc.aspx",
+            "/dol2fe/Pages/SS/directdoc2.aspx",
+        }:
+            if not self.wto_services or not _wto_service_file(url):
+                return None
+            return "document" if parsed.path.endswith("directdoc2.aspx") else "detail"
         if urlsplit(url).hostname == _SETNEG_HOST:
             if not self.setneg_type:
                 return None
@@ -463,7 +526,7 @@ class _Recipe:
         for purpose, patterns in (
             ("catalog", self.catalog_patterns),
             ("document", self.html_document_patterns),
-            ("document", self.document_patterns),
+            ("document", self.document_patterns_by_host.get(parsed.hostname, self.document_patterns)),
             ("detail", self.detail_patterns),
         ):
             if self.matches(url, patterns):
@@ -502,6 +565,65 @@ def _identity(url: str) -> str | None:
     return None
 
 
+def _court_purpose(url: str, category: str) -> str | None:
+    try:
+        values = parse_qsl(urlsplit(url).query, keep_blank_values=True, max_num_fields=10)
+    except ValueError:
+        return None
+    query = dict(values)
+    if len(query) != len(values) or not set(query) <= {"id", "view", "catid", "start", "limit", "limitstart"}:
+        return None
+    for key in ("start", "limit", "limitstart"):
+        if key in query and (not re.fullmatch(r"0|[1-9]\d{0,6}", query[key]) or int(query[key]) > 1_000_000):
+            return None
+    if query.get("view") == "category" and query.get("id") == category and "catid" not in query:
+        return "catalog"
+    if (
+        query.get("view") == "article"
+        and re.fullmatch(r"[1-9]\d{0,8}(?::[a-z0-9-]{1,400})?", query.get("id", ""), re.I)
+        and re.fullmatch(re.escape(category) + r"(?::[a-z0-9-]{1,100})?", query.get("catid", ""), re.I)
+    ):
+        return "detail"
+    return None
+
+
+def _wto_service_file(url: str) -> str | None:
+    try:
+        values = parse_qsl(urlsplit(url).query, keep_blank_values=True, max_num_fields=10)
+    except ValueError:
+        return None
+    query = dict(values)
+    filename = query.get("filename", "")
+    if (
+        len(query) != len(values)
+        or not set(query) <= {"filename", "Open"}
+        or ("Open" in query and query["Open"] != "True")
+        or not _WTO_SERVICE_FILE.fullmatch(filename)
+    ):
+        return None
+    return filename.upper().removesuffix(".PDF") + ".pdf"
+
+
+def _wto_legacy_document(url: str) -> str | None:
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.netloc.casefold() != "docsonline.wto.org"
+        or parsed.path != "/imrd/directdoc.asp"
+    ):
+        return None
+    match = re.fullmatch(
+        r"DDFDocuments/t/SCHD/((?:GATS-SC/SC43|GATS-EL/EL43)(?:(?:S|R|C)[1-9]\d{0,2})*)\.wpf",
+        unquote(parsed.query),
+        re.I,
+    )
+    if not match:
+        return None
+    return "https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?" + urlencode(
+        {"filename": "Q:/SCHD/" + match[1].upper() + ".pdf", "Open": "True"}
+    )
+
+
 def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dict:
     """Inspect one already downloaded page; never treat a match as scope review."""
     rules = _Recipe(recipe)
@@ -527,7 +649,10 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         return _result(reason="该格式不进入通用法规发现；数据集须单独审核。")
     if len(content) > MAX_HTML_BYTES:
         return _result(reason="HTML 页面超过 4 MiB 发现上限。")
-    page = _Page()
+    page = _Page(
+        literal_pdf_calls=urlsplit(current).hostname == "rcepsec.org",
+        lkpp_pdf_files=urlsplit(current).hostname == _LKPP_HOST,
+    )
     try:
         page.feed(_decode(content))
         page.close()
@@ -543,6 +668,27 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         or (len(visible) < 1500 and _ERROR_BODY.search(visible))
     ):
         return _result(reason="来源返回验证、登录或错误页面，未取得原文。")
+    if rules.wto_services and urlsplit(current).hostname == "docs.wto.org" and purpose == "detail":
+        # Docs Online's public viewer redirects using one literal location URL.
+        # Require the same official member/document, and do not run its scripts.
+        navigation = re.search(r"window\.location\.href\s*=\s*(['\"])([^'\"<>]{1,2048})\1", _decode(content))
+        try:
+            target, host = _canonical(navigation[2], current) if navigation else ("", "")
+        except ValueError:
+            target, host = "", ""
+        if (
+            host != "docs.wto.org"
+            or rules.purpose(target) != "document"
+            or _wto_service_file(target) != _wto_service_file(current)
+        ):
+            return _result(reason="WTO 文档跳转未指向同一印尼正式文书，未确认原件。")
+        return _result(
+            matched=True,
+            purpose=purpose,
+            links=[
+                {"url": target, "purpose": "document", "title": _wto_service_file(target).rsplit("/", 1)[-1]}
+            ],
+        )
     if not visible:
         return _result(reason="页面没有可见内容，可能需要脚本或人工复核。")
     if purpose == "document" and not rules.matches(current, rules.html_document_patterns):
@@ -554,7 +700,12 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         if not link.url or link.url.startswith("#"):
             continue
         try:
-            candidate, _ = _canonical(link.url, current)
+            target = (
+                _wto_legacy_document(link.url)
+                if rules.wto_services and urlsplit(current).hostname == "www.wto.org"
+                else None
+            )
+            candidate, _ = _canonical(target or link.url, current)
         except ValueError:
             continue
         if candidate in seen:
@@ -579,6 +730,15 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
                 if not same_type and not any(term in type_context for term in rules.bpk_types):
                     continue
         else:
+            if (
+                urlsplit(current).hostname == _COURT_HOST
+                and rules.court_category == "16"
+                and candidate_purpose == "detail"
+                and not re.match(r"(?:perma|peraturan mahkamah agung)\b", label, re.I)
+            ):
+                # The issuer's PERMA category also contains misplaced SK KMA
+                # and SEMA execution guidance. Do not relabel those as PERMA.
+                continue
             if (
                 urlsplit(current).hostname == "jdih.bandung.go.id"
                 and purpose == "catalog"
@@ -791,6 +951,19 @@ def recipe_for(item: dict) -> dict:
             for key, values in _query_values(seed["url"]).items():
                 if key == "jenis[]" and len(values) == 1:
                     result["required_query"][key] = values[0]
+        if _COURT_HOST in hosts and _country(item) == "ID" and item.get("id") in _COURT_CATEGORIES:
+            result["court_category"] = _COURT_CATEGORIES[item["id"]]
+            result["required_query_by_host"] = {
+                _COURT_HOST: {},
+            }
+            if "jdih.mahkamahagung.go.id" in hosts:
+                result["required_query_by_host"]["jdih.mahkamahagung.go.id"] = result["required_query"]
+            files = {
+                "1.9": [r"^/images/peraturan/(?:perma/[^/?]+|sema/perma[^/?]*)\.pdf$"],
+                "2.1": [r"^/images/peraturan/(?:sema/(?:sema|lampiran[^/?]*sema)[^/?]*|sema[^/?]*)\.pdf$"],
+                "2.3": [r"^/images/(?:peraturan|buku|artikel)/[^?]+\.pdf$"],
+            }
+            result["document_patterns_by_host"] = {_COURT_HOST: files[item["id"]]}
         return result
     if adapter == "sso":
         category = "SL" if any("/browse/sl/" in x["url"].casefold() for x in seeds) else "Act"
@@ -883,12 +1056,50 @@ def recipe_for(item: dict) -> dict:
         result["document_patterns"].append(r"^/attachments/article/\d+/[^/?]+\.pdf(?:\?|$)")
     if "jdih.lkpp.go.id" in hosts:
         result["document_patterns"].append(r"^/regulation/download/[a-z0-9-]+/\d+(?:\?|$)")
+        if _country(item) == "ID" and item.get("id") == "4.7":
+            result.setdefault("document_patterns_by_host", {})[_LKPP_HOST] = [
+                r"^/regulation/download/[a-z0-9-]+/\d+(?:\?|$)",
+                r"^/admin/uploads/documents/[^/?]+\.pdf$",
+            ]
     if "www.wto.org" in hosts:
         result["document_patterns"].append(r"^/english/docs_e/legal_e/downloads_e/[a-z0-9_-]+\.pdf(?:\?|$)")
+        if _country(item) == "ID" and item.get("id") == "5.4":
+            result["wto_services"] = True
+            result["document_patterns_by_host"] = {
+                "www.wto.org": result["document_patterns"]
+                + [r"^/english/tratop_e/serv_e/telecom_e/sc43\.pdf$"]
+            }
     if "docs.wto.org" in hosts:
         result["document_patterns"].append(r"^/gattdocs/q/(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.pdf(?:\?|$)")
     if "goods-schedules.wto.org" in hosts:
         result["document_patterns"].append(r"^/system/files/\d{4}-\d{2}/[a-z0-9_.-]+\.pdf(?:\?|$)")
+    if _country(item) == "ID" and item.get("id") in {"5.2", "5.3"}:
+        scoped = result.setdefault("document_patterns_by_host", {})
+        if "fta.mofcom.gov.cn" in hosts and item["id"] == "5.3":
+            scoped["fta.mofcom.gov.cn"] = [
+                r"^/upload/agreementFiles/rcep/rceppdf/(?:xy_en|d(?:[1-9]|1\d|20)z(?:_fj\d*)?_en|"
+                r"00 General Notes_en|26 Headnotes - ID|29 Schedules - ID for CN|33 Appendix - ID|"
+                r"08 ID's Annex III \(Services\)|09 ID's Annex III \(Investment\)|08 ID's Annex IV)\.pdf$"
+            ]
+        if "rcepsec.org" in hosts and item["id"] == "5.3":
+            scoped["rcepsec.org"] = [
+                r"^/wp-content/uploads/\d{4}/\d{2}/(?:00-Title-page-Table-of-Contents-and-Preamble|"
+                r"Chapter-(?:[1-9]|1\d|20)(?:-Annex-\d{1,2}[A-D])?|"
+                r"Anx-I-00-General-Notes-Schedules-of-Tariff-Commitments|"
+                r"Anx-I-05-Headnotes-to-Schedule-of-Indonesia|Anx-I-05c-Schedule-of-Indonesia-for-China|"
+                r"Anx-I-05g-Appendix-to-Schedule-of-Indonesia|"
+                r"Anx-III-05[ab]-Indonesias-Schedule-of-Reservations-and-NCM-for-(?:Services|Investment)|"
+                r"Anx-IV-05-Indonesias-Schedule-on-TMNP)\.pdf$"
+            ]
+        if "fta.mofcom.gov.cn" in hosts and item["id"] == "5.2":
+            scoped["fta.mofcom.gov.cn"] = [
+                r"^/upload/agreementFiles/china_dongmeng_upgrade/annex/(?:"
+                r"(?:xieyizw|xieyifj0[1-4]|xieyixiuding(?:0[1-3])?_yidingshu(?:-fj0[1-4])?|"
+                r"zhengduanjzxy|hwmyxieyi(?:-fj03(?:-flC)?|_yidingshu-02|02-FR[1-3])?|"
+                r"fwmyxieyi(?:_2crb-yidingshu)?|touzixieyi|yds(?:_fj1|_fl[AB])?|yds3(?:_fl(?:\d{1,2})?)?)_(?:cn|en)|"
+                r"hwmyxieyi-fj01_(?:China-Indonesiajsb_cn|Indonesia2009-2012_shuilv_en)|"
+                r"fwmyxieyi_fj-(?:2rb-)?Indonesiacrb_(?:cn|en))(?:\.pdf)?$"
+            ]
     result["exclude_patterns"] = [
         r"(?:^|/)(?:login|logout|sign-in|careers|contact-us|sitemap|news|news-events|press-releases|events)(?:/|\?|$)",
         r"(?:^|/)(?:privacy-policy|terms-of-use)(?:/|\?|$)",

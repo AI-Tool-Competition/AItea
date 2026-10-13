@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -316,6 +317,15 @@ def local_env(root: Path = ROOT) -> dict[str, str]:
     return env
 
 
+def node_option_names(value: str) -> set[str] | None:
+    try:
+        return {argument.split("=", 1)[0].replace("_", "-")
+                for argument in shlex.split(value) if argument.startswith("--")}
+    except ValueError:
+        # Let Node report malformed user options without rewriting them.
+        return None
+
+
 def dependency_fingerprint(component: str, root: Path = ROOT) -> str:
     names = ("backend/pyproject.toml", "backend/uv.lock") if component == "api" else (
         "frontend/package.json", "frontend/pnpm-lock.yaml", "frontend/pnpm-workspace.yaml", "frontend/.npmrc",
@@ -416,6 +426,56 @@ def health_ready(url: str, *, api: bool = False) -> bool:
         return False
 
 
+def readiness_diagnostics(api_ok: bool, web_ok: bool) -> str:
+    lines = [f"API 健康检查：{'已就绪' if api_ok else '未就绪'}；前端 /tea 及 API 转发：{'已就绪' if web_ok else '未就绪'}。"]
+    for name in ("api", "web"):
+        summary = log_tail(runtime() / f"{name}.log", limit=8)[-3500:]
+        lines.append(f"{name}.log（末尾摘要）：\n{summary or '暂无输出。'}")
+    return "\n".join(lines)
+
+
+class StartupWatcherLog:
+    """Scan bounded chunks without losing earlier errors or split keywords."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.offset = 0
+        self.tail = b""
+        self.line_enospc = self.line_watch = False
+        self.failed = self.complete = False
+
+    def scan(self) -> bool:
+        if self.failed:
+            return True
+        try:
+            with self.path.open("rb") as handle:
+                if handle.seek(0, os.SEEK_END) < self.offset:
+                    self.offset = 0
+                    self.tail = b""
+                    self.line_enospc = self.line_watch = False
+                handle.seek(self.offset)
+                chunk = handle.read(65536)
+                self.offset = handle.tell()
+                self.complete = self.offset >= os.fstat(handle.fileno()).st_size
+        except OSError:
+            self.complete = False
+            return False
+        parts = chunk.split(b"\n")
+        for index, part in enumerate(parts):
+            text = self.tail + part.lower()
+            self.line_enospc |= b"enospc" in text
+            self.line_watch |= b"watch" in text
+            if self.line_enospc and self.line_watch:
+                self.failed = True
+                return True
+            # Keep only enough bytes to match a keyword crossing the next chunk.
+            self.tail = text[-5:]
+            if index < len(parts) - 1:
+                self.tail = b""
+                self.line_enospc = self.line_watch = False
+        return False
+
+
 def state_path(root: Path = ROOT) -> Path:
     return root / ".dev" / STATE_NAME
 
@@ -430,6 +490,9 @@ def service_commands(args: argparse.Namespace, root: Path = ROOT) -> list[tuple[
            "--hostname", "127.0.0.1", "--port", str(args.web_port)]
     if not args.production:
         web += ["--webpack"]
+        options = node_option_names(os.environ.get("NODE_OPTIONS", ""))
+        if options is not None and "--enable-source-maps" not in options:
+            web += ["--disable-source-maps"]
     return [("api", root / "backend", api), ("web", root / "frontend", web)]
 
 
@@ -459,13 +522,25 @@ def serve(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     code = 0
+    api_ok = web_ok = False
+    web_log_check = StartupWatcherLog(runtime() / "web.log")
     try:
         for name, cwd, command in service_commands(args):
             if stopping:
                 break
             handle = (runtime() / f"{name}.log").open("wb", buffering=0)
             handles.append(handle)
-            process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            service_env = env
+            if name == "web" and not args.production:
+                # Next's config/directory watcher is separate from webpack's
+                # watcher. The process-local setting covers both instances.
+                service_env = {**env, "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000")}
+                node_options = env.get("NODE_OPTIONS", "")
+                names = node_option_names(node_options)
+                if (names is not None and not env.get("NEXT_DISABLE_MEM_OVERRIDE")
+                        and not names & {"--max-old-space-size", "--max-old-space-size-percentage"}):
+                    service_env["NODE_OPTIONS"] = node_options + (" " if node_options else "") + "--max-old-space-size=1536"
+            process = subprocess.Popen(command, cwd=cwd, env=service_env, stdin=subprocess.DEVNULL,
                                        stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
             processes.append((name, process))
             record = process_identity(process.pid)
@@ -477,11 +552,17 @@ def serve(args: argparse.Namespace) -> int:
         while not stopping:
             for name, process in processes:
                 if process.poll() is not None:
-                    raise DevError(f"{name} 服务退出，退出码 {process.returncode}。\n{log_tail(runtime() / (name + '.log'))}")
+                    api_ok = api_ok and name != "api"
+                    web_ok = web_ok and name != "web"
+                    raise DevError(f"{name} 服务退出，退出码 {process.returncode}。")
             if state["status"] == "starting":
                 api_ok = health_ready(f"http://127.0.0.1:{args.api_port}/api/tea/health", api=True)
-                web_ok = health_ready(f"http://127.0.0.1:{args.web_port}/tea")
-                if api_ok and web_ok:
+                web_ok = (health_ready(f"http://127.0.0.1:{args.web_port}/tea")
+                          and health_ready(f"http://127.0.0.1:{args.web_port}/api/tea/health", api=True))
+                if web_log_check.scan():
+                    raise DevError("前端文件监听资源不足（ENOSPC），无法可靠热更新；已停止本次启动。"
+                                   "请检查 WATCHPACK_POLLING 是否禁用了文件轮询。")
+                if api_ok and web_ok and web_log_check.complete:
                     # Record the stable executable identity after uv/node bootstrap.
                     records = [process_identity(process.pid) for _, process in processes]
                     if not all(records):
@@ -491,11 +572,11 @@ def serve(args: argparse.Namespace) -> int:
                     write_json(state_path(), state)
                     print("前后端已就绪。", flush=True)
                 elif time.monotonic() >= deadline:
-                    raise DevError("服务未在 120 秒内就绪。请查看 .dev/api.log 和 .dev/web.log。")
+                    raise DevError(f"服务未在 {START_TIMEOUT:g} 秒内就绪。请查看 .dev/api.log 和 .dev/web.log。")
             time.sleep(0.25)
     except (DevError, OSError) as exc:
-        state["error"] = str(exc)
-        print(str(exc), file=sys.stderr, flush=True)
+        state["error"] = f"{exc}\n{readiness_diagnostics(api_ok, web_ok)}"
+        print(state["error"], file=sys.stderr, flush=True)
         code = 1
     finally:
         # Child handles prove these processes were created here. Refresh identities
@@ -576,6 +657,13 @@ def launch(args: argparse.Namespace) -> subprocess.Popen:
         process = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
                                    stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
     supervisor = process_identity(process.pid)
+    if not args.production:
+        polling = env.get("WATCHPACK_POLLING")
+        mode = "文件轮询（每 1000 毫秒）" if polling is None else (
+            "系统文件监听（沿用 WATCHPACK_POLLING 设置）" if polling in {"", "false", "0"}
+            else "文件轮询（沿用 WATCHPACK_POLLING 设置）"
+        )
+        print(f"  前端监听：{mode}。", flush=True)
     print("  启动并检查前后端服务…", flush=True)
     try:
         deadline = time.monotonic() + START_TIMEOUT + 15
@@ -586,7 +674,8 @@ def launch(args: argparse.Namespace) -> subprocess.Popen:
                 print(f"日志：{ROOT / '.dev'}；停止：make dev-stop", flush=True)
                 return process
             if process.poll() is not None or (state.get("token") == token and state.get("status") == "failed"):
-                raise DevError(f"启动失败。\n{log_tail(runtime() / 'supervisor.log')}")
+                error = state.get("error") if state.get("token") == token else None
+                raise DevError(f"启动失败。\n{error or log_tail(runtime() / 'supervisor.log')}")
             time.sleep(0.2)
         raise DevError("启动超时；已回收本次启动的进程。")
     except BaseException:

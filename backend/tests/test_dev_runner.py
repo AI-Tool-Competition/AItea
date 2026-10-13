@@ -376,3 +376,295 @@ def test_dependency_progress_is_visible_before_install_finishes(tmp_path, capsys
     )
     assert result == 0
     assert "Downloaded 12/20 packages" in capsys.readouterr().out
+
+
+def fixture_runner(tmp_path: Path, overrides: str) -> Path:
+    """Keep lifecycle code real while replacing only this fixture's services."""
+    script = tmp_path / "scripts/dev.py"
+    script.parent.mkdir()
+    source = SCRIPT.read_text()
+    source = source[:source.rfind('if __name__ == "__main__":')]
+    source += "\ndef sync_dependencies(*args, **kwargs): pass\n"
+    source += "def available_port(*args, **kwargs): pass\n"
+    source += "def check_production_build(*args, **kwargs): pass\n"
+    script.write_text(source + overrides + '\nif __name__ == "__main__":\n    sys.exit(main())\n')
+    return script
+
+
+def stop_fixture(script: Path, root: Path) -> None:
+    subprocess.run([sys.executable, str(script), "stop"], cwd=root,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True)
+
+
+@pytest.mark.parametrize("production,polling,expected_web", [
+    (False, None, "1000"),
+    (False, "false", "false"),
+    (False, "750", "750"),
+    (True, None, None),
+    (True, "750", "750"),
+])
+def test_service_polling_is_development_web_only(tmp_path, production, polling, expected_web):
+    child = ("import json,os,time; from pathlib import Path; "
+             "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
+             "json.dumps(os.environ.get('WATCHPACK_POLLING'))); time.sleep(60)")
+    script = fixture_runner(tmp_path, f'''
+def health_ready(*args, **kwargs): return True
+def service_commands(args, root=ROOT):
+    return [(name, ROOT, [sys.executable, '-c', {child!r}.format(name=name)])
+            for name in ('api', 'web')]
+''')
+    env = os.environ.copy()
+    env.pop("WATCHPACK_POLLING", None)
+    if polling is not None:
+        env["WATCHPACK_POLLING"] = polling
+    command = [sys.executable, str(script), "start"]
+    if production:
+        command.append("--production")
+    try:
+        result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True,
+                                timeout=10, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert dev.read_json(tmp_path / ".dev/dev.json")["status"] == "ready"
+        import json
+        assert json.loads((tmp_path / "web.json").read_text()) == expected_web
+        assert json.loads((tmp_path / "api.json").read_text()) == polling
+        assert result.stdout.count("前端监听：") == (0 if production else 1)
+    finally:
+        stop_fixture(script, tmp_path)
+
+
+@pytest.mark.parametrize("api_ready", [False, True])
+def test_start_failure_reports_each_readiness_check_and_bounded_logs(tmp_path, api_ready):
+    script = fixture_runner(tmp_path, f'''
+START_TIMEOUT = 0.2
+def health_ready(url, *, api=False): return api and {api_ready!r}
+def service_commands(args, root=ROOT):
+    code = "import time; print('test diagnostic ' + '测' * 20000, flush=True); time.sleep(60)"
+    return [(name, ROOT, [sys.executable, '-c', code]) for name in ('api', 'web')]
+''')
+    try:
+        result = subprocess.run([sys.executable, str(script), "start"], cwd=tmp_path,
+                                capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 1
+        output = result.stdout + result.stderr
+        expected = "已就绪" if api_ready else "未就绪"
+        assert f"API 健康检查：{expected}" in output
+        assert "前端 /tea 及 API 转发：未就绪" in output
+        assert "api.log" in output and "web.log" in output
+        assert "测测测" in output
+        assert len(output) < 10000
+        state = dev.read_json(tmp_path / ".dev/dev.json")
+        assert state["status"] == "failed"
+        assert not dev.live_records(state, tmp_path)
+    finally:
+        stop_fixture(script, tmp_path)
+
+
+def test_watcher_exhaustion_fails_promptly_and_reaps_services(tmp_path):
+    error = "Watchpack Error (watcher): Error: ENOSPC: System limit for number of file watchers reached"
+    script = fixture_runner(tmp_path, f'''
+def health_ready(url, *, api=False): return api
+def service_commands(args, root=ROOT):
+    return [("api", ROOT, [sys.executable, "-c", "import time; time.sleep(60)"]),
+            ("web", ROOT, [sys.executable, "-c", "import time; print({error!r}, flush=True); time.sleep(60)"])]
+''')
+    started = time.monotonic()
+    process = subprocess.Popen([sys.executable, str(script), "start"], cwd=tmp_path,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        try:
+            stdout, stderr = process.communicate(timeout=6)
+        except subprocess.TimeoutExpired:
+            pytest.fail("watcher exhaustion waited instead of failing promptly")
+        assert process.returncode == 1
+        assert time.monotonic() - started < 6
+        output = stdout + stderr
+        assert "ENOSPC" in output and "文件监听" in output
+        assert "API 健康检查：已就绪" in output
+        assert "前端 /tea 及 API 转发：未就绪" in output
+        state = dev.read_json(tmp_path / ".dev/dev.json")
+        assert state["status"] == "failed"
+        assert not dev.live_records(state, tmp_path)
+    finally:
+        stop_fixture(script, tmp_path)
+        process.communicate(timeout=5)
+
+
+def test_background_services_serve_after_launcher_exits(tmp_path):
+    with socket.socket() as api_socket, socket.socket() as web_socket:
+        api_socket.bind(("127.0.0.1", 0))
+        web_socket.bind(("127.0.0.1", 0))
+        api_port = api_socket.getsockname()[1]
+        web_port = web_socket.getsockname()[1]
+    child = '''import http.server, sys
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{"status":"ok"}' if self.path == '/api/tea/health' else b'tea ready')
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+'''
+    script = fixture_runner(tmp_path, f'''
+def service_commands(args, root=ROOT):
+    return [(name, ROOT, [sys.executable, '-c', {child!r}, str(port)])
+            for name, port in [('api', args.api_port), ('web', args.web_port)]]
+''')
+    try:
+        result = subprocess.run([sys.executable, str(script), "start", "--api-port", str(api_port),
+                                 "--web-port", str(web_port)], cwd=tmp_path, capture_output=True,
+                                text=True, timeout=10, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert dev.status(tmp_path)["status"] == "running"
+        assert dev.health_ready(f"http://127.0.0.1:{api_port}/api/tea/health", api=True)
+        assert dev.health_ready(f"http://127.0.0.1:{web_port}/tea")
+    finally:
+        stop_fixture(script, tmp_path)
+
+
+@pytest.mark.parametrize("prefix_size,error", [
+    (0, "Watchpack Error: ENOSPC: file watchers exhausted"),
+    (65532, "ENOSPC: Watchpack file watchers exhausted"),
+    (65534, "Watchpack Error: ENOSPC: file watchers exhausted"),
+    (131072, "Watchpack Error: ENOSPC: file watchers exhausted"),
+])
+def test_buried_watcher_error_blocks_ready_across_log_chunks(tmp_path, prefix_size, error):
+    marker = tmp_path / "web-log-written"
+    child = ("import time; from pathlib import Path; "
+             f"print('x' * {prefix_size} + {error!r}, flush=True); "
+             "print('ordinary startup output\\n' * 30, flush=True); "
+             f"Path({str(marker)!r}).write_text('done'); time.sleep(60)")
+    script = fixture_runner(tmp_path, f'''
+def health_ready(url, *, api=False):
+    deadline = time.monotonic() + 3
+    while not (ROOT / 'web-log-written').exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return (ROOT / 'web-log-written').exists()
+def service_commands(args, root=ROOT):
+    return [("api", ROOT, [sys.executable, "-c", "import time; time.sleep(60)"]),
+            ("web", ROOT, [sys.executable, "-c", {child!r}])]
+''')
+    try:
+        result = subprocess.run([sys.executable, str(script), "start"], cwd=tmp_path,
+                                capture_output=True, text=True, timeout=10, check=False)
+        assert marker.exists(), "both health checks must observe the fully written log"
+        assert result.returncode == 1, "an earlier watcher failure must prevent reporting readiness"
+        assert "ENOSPC" in result.stderr and "文件监听" in result.stderr
+        state = dev.read_json(tmp_path / ".dev/dev.json")
+        assert state["status"] == "failed"
+        assert not dev.live_records(state, tmp_path)
+    finally:
+        stop_fixture(script, tmp_path)
+
+
+def test_watcher_log_scans_incrementally_and_retains_detected_failure(tmp_path):
+    log = tmp_path / "web.log"
+    log.write_bytes(b"ENOSPC: disk output\nordinary watcher message\n" + b"x" * 131072 + b"\n")
+    scanner = dev.StartupWatcherLog(log)
+    assert not scanner.scan(), "unrelated ENOSPC and watcher lines must not combine"
+    assert not scanner.complete, "one scan must not read the entire large log"
+    while not scanner.complete:
+        assert not scanner.scan()
+    with log.open("ab") as handle:
+        handle.write(b"Watchpack Error: ENO")
+    assert not scanner.scan()
+    with log.open("ab") as handle:
+        handle.write(b"SPC: file watchers exhausted\n" + b"ordinary output\n" * 30)
+    assert scanner.scan(), "appended fragments must complete the earlier error"
+    log.write_bytes(b"ordinary replacement log\n")
+    assert scanner.scan(), "an observed watcher failure must remain sticky"
+
+
+@pytest.mark.parametrize("production,node_options,disable_override,expected_web", [
+    (False, None, None, "--max-old-space-size=1536"),
+    (False, '--trace-warnings --require "/tmp/my preload.js"', None,
+     '--trace-warnings --require "/tmp/my preload.js" --max-old-space-size=1536'),
+    (False, "--max-old-space-size=2048 --trace-warnings", None, "--max-old-space-size=2048 --trace-warnings"),
+    (False, "--max-old-space-size 2048", None, "--max-old-space-size 2048"),
+    (False, "--max_old_space_size=2048", None, "--max_old_space_size=2048"),
+    (False, "--max_old_space_size 2048", None, "--max_old_space_size 2048"),
+    (False, '"--max-old-space-size=2048"', None, '"--max-old-space-size=2048"'),
+    (False, "--max-old-space-size-percentage=25", None, "--max-old-space-size-percentage=25"),
+    (False, "--max-old-space-size-percentage 25", None, "--max-old-space-size-percentage 25"),
+    (False, "--max_old_space_size_percentage=25", None, "--max_old_space_size_percentage=25"),
+    (False, "--require=/tmp/--max-old-space-size=2048.js", None,
+     "--require=/tmp/--max-old-space-size=2048.js --max-old-space-size=1536"),
+    (False, None, "1", None),
+    (False, None, "0", None),
+    (False, None, "false", None),
+    (False, None, "", "--max-old-space-size=1536"),
+    (False, '--require "unfinished', None, '--require "unfinished'),
+    (True, None, None, None),
+    (True, "--trace-warnings", None, "--trace-warnings"),
+])
+def test_web_memory_environment_preserves_user_node_options(
+    tmp_path, production, node_options, disable_override, expected_web,
+):
+    child = ("import json,os,time; from pathlib import Path; "
+             "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
+             "json.dumps([os.environ.get('NODE_OPTIONS'), os.environ.get('NEXT_DISABLE_MEM_OVERRIDE')])); "
+             "time.sleep(60)")
+    script = fixture_runner(tmp_path, f'''
+def health_ready(*args, **kwargs): return True
+def service_commands(args, root=ROOT):
+    return [(name, ROOT, [sys.executable, '-c', {child!r}.format(name=name)])
+            for name in ('api', 'web')]
+''')
+    env = os.environ.copy()
+    for key, value in (("NODE_OPTIONS", node_options), ("NEXT_DISABLE_MEM_OVERRIDE", disable_override)):
+        env.pop(key, None)
+        if value is not None:
+            env[key] = value
+    command = [sys.executable, str(script), "start"]
+    if production:
+        command.append("--production")
+    try:
+        result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True,
+                                timeout=10, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        import json
+        assert json.loads((tmp_path / "web.json").read_text()) == [expected_web, disable_override]
+        assert json.loads((tmp_path / "api.json").read_text()) == [node_options, disable_override]
+    finally:
+        stop_fixture(script, tmp_path)
+
+
+@pytest.mark.parametrize("production,node_options,disable_maps", [
+    (False, None, True),
+    (False, "--trace-warnings", True),
+    (False, "--enable-source-maps --trace-warnings", False),
+    (False, "--enable_source_maps", False),
+    (False, '--require "/tmp/--enable-source-maps.js"', True),
+    (True, None, False),
+    (True, "--enable-source-maps", False),
+])
+def test_node_source_maps_default_and_explicit_debugging_choice(monkeypatch, production, node_options, disable_maps):
+    monkeypatch.setattr(dev, "require_tools", lambda: ("uv", "node"))
+    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+    if node_options is not None:
+        monkeypatch.setenv("NODE_OPTIONS", node_options)
+    args = SimpleNamespace(production=production, api_port=8000, web_port=3000)
+    commands = dev.service_commands(args)
+    assert ("--disable-source-maps" in commands[1][2]) is disable_maps
+    assert "--disable-source-maps" not in commands[0][2]
+
+
+def test_tea_page_success_does_not_hide_failed_api_forwarding(tmp_path):
+    script = fixture_runner(tmp_path, '''
+START_TIMEOUT = 0.2
+def health_ready(url, *, api=False):
+    return url != 'http://127.0.0.1:3000/api/tea/health'
+def service_commands(args, root=ROOT):
+    return [(name, ROOT, [sys.executable, '-c', 'import time; time.sleep(60)'])
+            for name in ('api', 'web')]
+''')
+    try:
+        result = subprocess.run([sys.executable, str(script), "start", "--api-port", "8000", "--web-port", "3000"],
+                                cwd=tmp_path, capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 1, "readiness must include the frontend's real API forwarding path"
+        assert "API 健康检查：已就绪" in result.stderr
+        assert "前端 /tea 及 API 转发：未就绪" in result.stderr
+        state = dev.read_json(tmp_path / ".dev/dev.json")
+        assert state["status"] == "failed"
+        assert not dev.live_records(state, tmp_path)
+    finally:
+        stop_fixture(script, tmp_path)

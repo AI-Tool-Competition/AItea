@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–9 without opening originals.
+"""Export a private, read-only inventory of schema 7–11 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -24,8 +24,8 @@ from uuid import uuid4
 from .blob_store import _sync_directory
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9)
-FILES = ("documents.jsonl", "discovery-pages.jsonl", "relations.jsonl")
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11)
+FILES = ("documents.jsonl", "discovery-pages.jsonl", "relations.jsonl", "ocr-pages.jsonl")
 _COUNTRY = "COALESCE(dc.country,CASE WHEN d.role='secondary' THEN pc.country END)"
 _DOCUMENTS = """documents d
     LEFT JOIN document_countries dc ON dc.document_id=d.id
@@ -92,7 +92,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7, 8 or 9; use the matching application version"
+                "archive inventory requires schema 7–11; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -110,9 +110,11 @@ def _validate_schema(conn):
             "SELECT id,owner_id,source_id,plan FROM collection_runs LIMIT 0",
         ):
             conn.execute(query)
+        if version >= 11:
+            conn.execute("SELECT item_id,evidence FROM checklist_page_evidence LIMIT 0")
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7, 8 or 9 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–11 database") from exc
 
 
 class _Originals:
@@ -227,7 +229,7 @@ class _Partitions:
 def _count(summary, kind, country, anomalies):
     key = _country_key(country)
     counts = summary["countries"].setdefault(
-        key, {"documents": 0, "discovery_pages": 0, "relations": 0, "anomalies": 0}
+        key, {"documents": 0, "discovery_pages": 0, "relations": 0, "ocr_pages": 0, "anomalies": 0}
     )
     summary[kind] += 1
     counts[kind] += 1
@@ -305,6 +307,11 @@ def _documents(conn, partitions, originals, summary, owner, country):
         json_valid(d.manifest) manifest_valid,
         CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.elements') END element_count,
         CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.chunks') END chunk_count,
+        CASE WHEN json_valid(d.manifest) THEN json_extract(d.manifest,'$.quality.complete') END text_complete,
+        CASE WHEN json_valid(d.manifest) THEN json_extract(d.manifest,'$.quality.page_count') END page_count,
+        CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.quality.pending_pages') END pending_pages,
+        CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.quality.failed_pages') END failed_pages,
+        CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.quality.review_pages') END review_pages,
         CASE WHEN json_valid(d.manifest) THEN
             CASE WHEN json_type(d.manifest,'$.parser')='text' THEN json_extract(d.manifest,'$.parser') END END parser
         FROM {_DOCUMENTS} LEFT JOIN document_metadata m ON m.document_id=d.id
@@ -388,6 +395,11 @@ def _documents(conn, partitions, originals, summary, owner, country):
                     "chunk_count": row["chunk_count"],
                     "parser": row["parser"],
                     "has_error": bool(row["has_error"]),
+                    "complete": None if row["text_complete"] is None else row["text_complete"] == 1,
+                    "page_count": row["page_count"],
+                    "pending_pages": row["pending_pages"],
+                    "failed_pages": row["failed_pages"],
+                    "review_pages": row["review_pages"],
                 },
                 "anomalies": sorted(set(anomalies)),
             }
@@ -395,13 +407,111 @@ def _documents(conn, partitions, originals, summary, owner, country):
             _count(summary, "documents", row["country"], anomalies)
 
 
+def _ocr_pages(conn, partitions, originals, summary, owner, country):
+    """Only provenance scalars cross this boundary; page text and pixels stay private."""
+    where, params = _where(owner, country)
+    page = "CASE WHEN p.type='object' THEN p.value ELSE '{}' END"
+    cursor = conn.execute(
+        f"""SELECT d.id,d.owner_id,d.version,d.content_hash,{_COUNTRY} country,
+        json_extract({page},'$.page') page,json_extract({page},'$.printed_page') printed_page,
+        json_extract({page},'$.status') status,json_extract({page},'$.source_hash') source_hash,
+        json_extract({page},'$.ocr.model') model,json_extract({page},'$.ocr.prompt_version') prompt_version,
+        json_extract({page},'$.ocr.image_sha256') image_hash,
+        json_extract({page},'$.ocr.image_blob.storage_path') storage_path,
+        json_extract({page},'$.ocr.image_blob.size') size
+        FROM {_DOCUMENTS}, json_each(CASE WHEN json_valid(d.manifest) THEN d.manifest ELSE '{{}}' END,'$.pages') p
+        WHERE {where} AND json_type({page},'$.ocr.image_blob')='object'
+        ORDER BY d.owner_id,COALESCE({_COUNTRY},''),d.family_id,d.version,d.id,p.key""",
+        params,
+    )
+    for row in _rows(cursor):
+        original, anomalies = originals.inspect(row["storage_path"], row["size"])
+        if row["source_hash"] != row["content_hash"]:
+            anomalies.append("ocr_source_hash_mismatch")
+        record = {
+            "document_id": row["id"],
+            "document_version": row["version"],
+            "owner_sha256": _owner_hash(row["owner_id"]),
+            "country": row["country"],
+            "source_hash": row["source_hash"],
+            "page": row["page"],
+            "printed_page": row["printed_page"],
+            "status": row["status"],
+            "model": row["model"],
+            "prompt_version": row["prompt_version"],
+            "image_hash": row["image_hash"],
+            "size": row["size"],
+            "original": original,
+            "anomalies": sorted(set(anomalies)),
+        }
+        _write_jsonl(partitions.file(row["owner_id"], row["country"], "ocr-pages.jsonl"), record)
+        _count(summary, "ocr_pages", row["country"], anomalies)
+
+
+def _page_evidence(raw, anomalies):
+    """Export the official adapter's bounded request fields, never arbitrary metadata."""
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 16384:
+        anomalies.append("invalid_discovery_evidence")
+        return {}
+    value = _json_value(raw, dict, {}, anomalies, "discovery_evidence")
+    if not value:
+        return {}
+    request, scope = value.get("request", {}), value.get("scope", {})
+    if not isinstance(request, dict) or not isinstance(scope, dict):
+        anomalies.append("invalid_discovery_evidence")
+        return {}
+
+    def scalar(value):
+        return (
+            isinstance(value, str) and len(value) <= 2048 or type(value) is int and 0 <= value <= 1000000000
+        )
+
+    body = request.get("json_body", {})
+    selected = {}
+    if isinstance(body, dict):
+        for key in (
+            "tentang",
+            "p_lihan",
+            "jns",
+            "thn",
+            "status",
+            "terx",
+            "sortOrder",
+            "length",
+            "start",
+            "no",
+            "k",
+        ):
+            item = body.get(key)
+            if scalar(item) or isinstance(item, list) and len(item) <= 20 and all(scalar(v) for v in item):
+                selected[key] = item
+    result = {"request": {}, "scope": {}}
+    if request.get("method") in ("GET", "POST"):
+        result["request"]["method"] = request["method"]
+    if isinstance(request.get("url"), str) and len(request["url"]) <= 2048:
+        result["request"]["url"] = request["url"]
+    if selected:
+        result["request"]["json_body"] = selected
+    for key in ("provider", "jns", "total", "offset", "page_size", "returned"):
+        if scalar(scope.get(key)):
+            result["scope"][key] = scope[key]
+    return result
+
+
 def _pages(conn, partitions, originals, summary, owner, country):
     where, params = _where(owner, country, "b.owner_id", "b.country")
+    evidence = "COALESCE(e.evidence,'{}')" if summary["schema_version"] >= 11 else "'{}'"
+    evidence_join = (
+        "LEFT JOIN checklist_page_evidence e ON e.item_id=p.item_id"
+        if summary["schema_version"] >= 11
+        else ""
+    )
     cursor = conn.execute(
         f"""SELECT p.*,b.owner_id,b.country,b.plan_id,b.version plan_version,b.item_id checklist_item_id,
         b.source_id,i.run_id,i.status fetch_status,
-        CASE WHEN json_valid(p.warnings) THEN json_array_length(p.warnings) END warning_count
-        FROM {_PAGES} WHERE {where}
+        CASE WHEN json_valid(p.warnings) THEN json_array_length(p.warnings) END warning_count,
+        {evidence} evidence
+        FROM {_PAGES} {evidence_join} WHERE {where}
         ORDER BY b.owner_id,b.country,b.plan_id,b.version,b.item_id,p.created_at,p.item_id""",
         params,
     )
@@ -431,6 +541,7 @@ def _pages(conn, partitions, originals, summary, owner, country):
             binding_id=row["binding_id"],
             owner_sha256=_owner_hash(row["owner_id"]),
             original=original,
+            evidence=_page_evidence(row["evidence"], anomalies),
             anomalies=anomalies,
         )
         _write_jsonl(partitions.file(row["owner_id"], row["country"], "discovery-pages.jsonl"), record)
@@ -487,7 +598,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 1,
+                "format_version": 2,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -496,6 +607,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
                 "documents": 0,
                 "discovery_pages": 0,
                 "relations": 0,
+                "ocr_pages": 0,
                 "anomalies": 0,
                 "anomaly_counts": Counter(),
                 "countries": {},
@@ -519,6 +631,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
             temporary.chmod(0o700)
             with closing(_Partitions(temporary)) as partitions, closing(_Originals(root)) as originals:
                 _documents(conn, partitions, originals, summary, owner, country)
+                _ocr_pages(conn, partitions, originals, summary, owner, country)
                 _pages(conn, partitions, originals, summary, owner, country)
                 _relations(conn, partitions, summary, owner, country)
             conn.rollback()
@@ -551,7 +664,7 @@ def export_inventory(data_dir, *, country=None, owner=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7, 8 or 9)"
+        description="Export a read-only catalog of stored originals (schema 7–11)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")

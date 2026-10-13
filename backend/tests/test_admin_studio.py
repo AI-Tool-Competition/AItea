@@ -333,6 +333,65 @@ def test_failed_analysis_is_visible_and_only_explicit_retry_calls_provider(clien
     assert case(client)["revision"] == value["revision"]
 
 
+def test_analysis_cache_expires_when_same_model_finishes_document_vectors(client, monkeypatch):
+    from app import ingestion
+
+    for field, item in {
+        "BASE_URL": "https://embedding.invalid",
+        "API_KEY": "test",
+        "MODEL": "fixed-model",
+    }.items():
+        monkeypatch.setenv("EMBEDDING_" + field, item)
+
+    def unavailable(texts):
+        raise ValueError("provider temporarily unavailable")
+
+    monkeypatch.setattr(ingestion, "embed_texts", unavailable)
+    document = client.post(
+        "/api/tea/documents", files={"file": ("材料.txt", "企业茶叶资料".encode(), "text/plain")}
+    ).json()
+    value = case(client)
+    payload = {"expected_revision": value["revision"]}
+    first = client.post(analysis_url(value), json=payload).json()
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    monkeypatch.setattr(ingestion, "embed_texts", lambda texts: [[1.0, 0.5] for _ in texts])
+    with service.db.transaction() as conn:
+        service.collection.queue_processing(conn, document["id"], owner)
+    for _ in range(3):
+        if claim := service.collection.claim_processing():
+            service.collection.process_item(claim)
+    second = client.post(analysis_url(value), json=payload).json()
+    assert second["id"] != first["id"]
+    assert client.post(analysis_url(value), json=payload).json()["id"] == second["id"]
+
+
+def test_legal_and_stage_caches_expire_when_reranker_configuration_changes(client, monkeypatch):
+    value = case(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+
+    def fingerprints():
+        with service.db.transaction() as conn:
+            return (
+                service.legal.snapshot(conn, owner, value)["environment"],
+                service.studio.fingerprint(conn, owner, value),
+            )
+
+    initial = fingerprints()
+    monkeypatch.setenv("RERANK_BASE_URL", "https://rank.example/v1")
+    monkeypatch.setenv("RERANK_MODEL", "rank-1")
+    partial = fingerprints()
+    assert all(a != b for a, b in zip(initial, partial, strict=True))
+    monkeypatch.setenv("RERANK_API_KEY", "private-test-key")
+    enabled = fingerprints()
+    assert all(a != b for a, b in zip(partial, enabled, strict=True))
+    monkeypatch.setenv("RERANK_API_KEY", "rotated-private-test-key")
+    assert fingerprints() == enabled
+    monkeypatch.setenv("RERANK_MODEL", "rank-2")
+    assert all(a != b for a, b in zip(enabled, fingerprints(), strict=True))
+
+
 def test_analysis_claim_prevents_duplicate_provider_calls_without_holding_write_lock(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event

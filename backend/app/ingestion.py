@@ -7,6 +7,7 @@ Business ownership, version persistence and access control belong to the service
 from __future__ import annotations
 
 import hashlib
+import codecs
 import http.client
 import io
 import ipaddress
@@ -21,12 +22,14 @@ import ssl
 import threading
 import time
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
@@ -41,6 +44,7 @@ from .vendor.geo_parser.document_ingestion import (
 )
 
 MAX_BYTES = 20 * 1024 * 1024
+MAX_COMPRESSED_HTML_BYTES = 4 * 1024 * 1024
 MAX_TEXT = 4_000_000
 MAX_ELEMENTS = 20_000
 MAX_PAGES = 300
@@ -55,6 +59,19 @@ _MIME_EXTENSIONS = {
 
 
 def _decode(content: bytes) -> str:
+    # Honor a declared HTML charset before trying a Chinese legacy encoding:
+    # Latin-1 can otherwise decode successfully as mojibake under GB18030.
+    if not content.startswith(b"\xef\xbb\xbf"):
+        for tag in re.findall(rb"<meta\b[^>]{0,1024}>", content[:8192], re.I):
+            match = re.search(rb"charset\s*=\s*[\"']?\s*([A-Za-z0-9._-]{1,40})", tag, re.I)
+            if match:
+                try:
+                    encoding = codecs.lookup(match[1].decode("ascii")).name
+                    if encoding not in {"utf-8", "iso8859-1", "cp1252", "gb18030", "gbk", "gb2312", "big5"}:
+                        raise ValueError("HTML 声明了不支持的文本编码。")
+                    return content.decode(encoding)
+                except (LookupError, UnicodeDecodeError) as exc:
+                    raise ValueError("HTML 声明的文本编码无法读取。") from exc
     for encoding in ("utf-8-sig", "gb18030"):
         try:
             return content.decode(encoding)
@@ -233,9 +250,10 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
             raise ValueError("不支持加密 PDF，请先提供解密后的文档。")
         if len(reader.pages) > MAX_PAGES:
             raise ValueError(f"PDF 不能超过 {MAX_PAGES} 页。")
-        elements: list[ParsedElement] = []
+        pages: list[dict] = []
         empty_pages: list[int] = []
         characters = 0
+        source_hash = hashlib.sha256(content).hexdigest()
         for index, page in enumerate(reader.pages, start=1):
             stream = page.get_contents()
             if stream is not None and len(stream.get_data()) > 16 * 1024 * 1024:
@@ -246,22 +264,217 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
                 raise ValueError("PDF 提取文本超过处理限制。")
             if not text:
                 empty_pages.append(index)
-                continue
-            elements.append(
-                ParsedElement(
-                    f"page-{index:06}", "paragraph", index - 1, text, {"kind": "pdf", "page": index}, []
-                )
+            reasons = [] if text else ["empty_text"]
+            if _pdf_large_raster(page):
+                reasons.append("large_raster")
+            if _pdf_table_layout(stream):
+                reasons.append("table_layout")
+            pages.append(
+                {
+                    "page": index,
+                    "printed_page": None,
+                    "native_text": text,
+                    "text": text,
+                    "status": "pending_ocr" if reasons else "native",
+                    "ocr_required": bool(reasons),
+                    "reasons": reasons,
+                    "source_hash": source_hash,
+                }
             )
     except ValueError:
         raise
     except Exception as exc:
         raise ValueError("PDF 无法读取，请检查文件是否损坏。") from exc
-    if not elements:
-        raise ValueError("PDF 没有可读取文本，需要 OCR；原文件可以保留，但不能作为已解析证据。")
-    warnings = ["轻量 PDF 解析仅提取文字并保留页码，不识别扫描图片或复杂排版。"]
+    warnings = ["PDF 原生文本不保证扫描页或复杂表格准确；页状态保留待识别和待核对项。"]
     if empty_pages:
         warnings.append("以下页未提取到文本，需要核对或 OCR：" + ", ".join(map(str, empty_pages)))
-    return ParsedDocument("pypdf", version("pypdf"), "pdf-pages-v1", elements, [], warnings)
+    if any("large_raster" in page["reasons"] for page in pages):
+        warnings.append("存在大型扫描图，文字层仍需 OCR 核对。")
+    return ParsedDocument(
+        "pypdf", version("pypdf"), "pdf-pages-v3", _pdf_elements(pages), [], warnings, pages
+    )
+
+
+def _pdf_large_raster(page) -> bool:
+    """Inspect dimensions only; never decompress image bytes to detect scans."""
+    pending = [(page.get("/Resources", {}), 0)]
+    inspected = 0
+    while pending:
+        resources, depth = pending.pop()
+        objects = resources.get_object().get("/XObject", {})
+        for reference in (
+            objects.get_object().values() if hasattr(objects, "get_object") else objects.values()
+        ):
+            inspected += 1
+            if inspected > 1000:
+                return True  # Complex image trees require review, not an unbounded walk.
+            obj = reference.get_object()
+            if obj.get("/Subtype") == "/Image":
+                width, height = int(obj.get("/Width", 0)), int(obj.get("/Height", 0))
+                if width >= 600 and height >= 600 and width * height >= 1_000_000:
+                    return True
+            elif obj.get("/Subtype") == "/Form" and depth < 4 and obj.get("/Resources"):
+                pending.append((obj["/Resources"], depth + 1))
+    return False
+
+
+def _pdf_table_layout(stream) -> bool:
+    """Recognize a visible ruled grid as a layout risk, not an extracted table.
+
+    Borderless tables remain a review limitation. The native worker bounds
+    parsing/decompression; this walk is separately capped and never renders.
+    """
+    if stream is None:
+        return False
+    horizontal, vertical = set(), set()
+    path_horizontal, path_vertical = set(), set()
+    point = None
+    for index, (args, operator) in enumerate(stream.operations):
+        if index > 100_000:
+            return False  # A complexity limit cannot prove a visible table.
+        if operator == b"re" and len(args) == 4:
+            x, y, width, height = map(float, args)
+            if abs(width) > 20 and 0 < abs(height) < 2:
+                path_horizontal.add(round(y, 1))
+            if abs(height) > 20 and 0 < abs(width) < 2:
+                path_vertical.add(round(x, 1))
+        elif operator == b"m" and len(args) == 2:
+            point = tuple(map(float, args))
+        elif operator == b"l" and len(args) == 2 and point is not None:
+            x, y = map(float, args)
+            if abs(x - point[0]) > 20 and abs(y - point[1]) < 1:
+                path_horizontal.add(round(y, 1))
+            if abs(y - point[1]) > 20 and abs(x - point[0]) < 1:
+                path_vertical.add(round(x, 1))
+            point = (x, y)
+        elif operator in {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*", b"n"}:
+            # W/W* only change clipping. A following n discards its path;
+            # scanned PDFs use these invisible outlines around text regions.
+            if operator != b"n":
+                horizontal.update(path_horizontal)
+                vertical.update(path_vertical)
+            path_horizontal.clear()
+            path_vertical.clear()
+            point = None
+            if len(horizontal) >= 3 and len(vertical) >= 3:
+                return True
+    return False
+
+
+def pdf_quality(pages: list[dict]) -> dict:
+    completed = [page["page"] for page in pages if page["status"] in {"native", "ocr_complete"}]
+    pending = [page["page"] for page in pages if page["status"] == "pending_ocr"]
+    failed = [page["page"] for page in pages if page["status"] == "ocr_failed"]
+    review = [page["page"] for page in pages if page["status"] == "ocr_uncertain"]
+    deferred = [
+        page["page"] for page in pages if page["status"] == "pending_ocr" and page.get("deferred_reason")
+    ]
+    complete = bool(pages) and len(completed) == len(pages)
+    return {
+        "status": "complete" if complete else ("needs_ocr" if pending and not completed else "partial"),
+        "complete": complete,
+        "page_count": len(pages),
+        "completed_pages": completed,
+        "pending_pages": pending,
+        "failed_pages": failed,
+        "review_pages": review,
+        "review_required": bool(review),
+        "deferred_pages": deferred,
+        "retry_after_seconds": 5 if deferred else 0,
+    }
+
+
+def _pdf_elements(pages: list[dict]) -> list[ParsedElement]:
+    elements = []
+    is_case = bool(pages and re.search(r"(?mi)^\s*PUTUSAN\s*$", pages[0]["text"][:1200]))
+    legal = not is_case and any(
+        re.search(r"(?mi)^\s*Pasal\s+\d+[A-Za-z]?\s*\.?\s*$", page["text"]) for page in pages
+    )
+    section = "正文" if legal else ""
+    article = ""
+    for page in pages:
+        text = page["text"]
+        boundaries = (
+            []
+            if is_case
+            else list(
+                re.finditer(
+                    r"(?mi)^[ \t]*(PENJELASAN(?:[ \t]+ATAS)?|Pasal[ \t]+\d+[A-Za-z]?[ \t]*\.?)[ \t]*$", text
+                )
+            )
+        )
+        starts = sorted({0, *(match.start() for match in boundaries), len(text)})
+        markers = {match.start(): match.group(1).strip() for match in boundaries}
+        for start, end in zip(starts, starts[1:]):
+            marker = markers.get(start, "")
+            if marker.upper().startswith("PENJELASAN"):
+                section, article = "PENJELASAN", ""
+            elif marker.lower().startswith("pasal"):
+                article = re.sub(r"\s+", " ", marker.rstrip(". "))
+            path = [value for value in (section, article) if value]
+            for kind, block_start, block_end in _pdf_text_blocks(text, start, end):
+                body = text[block_start:block_end].strip()
+                if not body:
+                    continue
+                locator = {"kind": "pdf", "page": page["page"]}
+                if path or kind == "table":
+                    locator.update(
+                        {
+                            "section": section or None,
+                            "article": article or None,
+                            "char_start": block_start,
+                            "char_end": block_end,
+                        }
+                    )
+                if page.get("printed_page") is not None:
+                    locator["printed_page"] = page["printed_page"]
+                elements.append(
+                    ParsedElement(
+                        f"page-{page['page']:06}-part-{block_start:06}",
+                        kind,
+                        len(elements),
+                        body,
+                        locator,
+                        path,
+                        metadata_json={"page_status": page["status"], "source_hash": page["source_hash"]},
+                    )
+                )
+    return elements
+
+
+def _pdf_text_blocks(text: str, start: int, end: int):
+    offset = start
+    for match in re.finditer(r"(?m)(?:^[ \t]*\|[^\n]*\|[ \t]*\r?\n?){2,}", text[start:end]):
+        lines = match[0].splitlines()
+        if len(lines) < 2 or not re.fullmatch(r"\s*\|(?:\s*:?-{2,}:?\s*\|)+\s*", lines[1]):
+            continue
+        table_start, table_end = start + match.start(), start + match.end()
+        if table_start > offset:
+            yield "paragraph", offset, table_start
+        yield "table", table_start, table_end
+        offset = table_end
+    if offset < end:
+        yield "paragraph", offset, end
+
+
+def rebuild_pdf_manifest(manifest: dict) -> dict:
+    from .ingestion_quality import validate_ocr_page
+
+    pages = manifest["pages"]
+    if len(pages) > MAX_PAGES or sum(len(page["text"]) for page in pages) > MAX_TEXT:
+        raise ValueError("PDF 识别结果超过处理限制。")
+    for page in pages:
+        validate_ocr_page(page)
+    document = ParsedDocument(
+        manifest["parser"],
+        manifest["parser_version"],
+        "pdf-pages-v3+vision-ocr-v2+legal-numbers-v1",
+        _pdf_elements(pages),
+        [],
+        manifest["warnings"],
+        pages,
+    )
+    return _parsed_result(document, manifest["source_hash"], manifest["title"])
 
 
 def parse_file(
@@ -304,12 +517,16 @@ def parse_file(
         document = _parse_docx(content)
     else:
         document = _parse_pdf(content)
-    if not document.elements or sum(len(x.content_text) for x in document.elements) > MAX_TEXT:
+    if (not document.elements and not document.pages) or sum(
+        len(x.content_text) for x in document.elements
+    ) > MAX_TEXT:
         raise ValueError("文档没有可解析的正文，或正文超过处理限制。")
-    manifest, _ = build_manifest(
-        document, source_hash=hashlib.sha256(content).hexdigest(), document_title=Path(filename).stem
-    )
-    if not manifest["chunks"]:
+    return _parsed_result(document, hashlib.sha256(content).hexdigest(), Path(filename).stem)
+
+
+def _parsed_result(document: ParsedDocument, source_hash: str, title: str) -> dict:
+    manifest, _ = build_manifest(document, source_hash=source_hash, document_title=title)
+    if not manifest["chunks"] and not document.pages:
         raise ValueError("文档仅含标题或图片，没有可供检索的正文。")
     by_key = {element.element_key: element for element in document.elements}
     chunks = []
@@ -330,13 +547,12 @@ def parse_file(
         "parser_version": document.parser_version,
         "pipeline_version": manifest["pipeline_version"],
         "source_hash": manifest["source_hash"],
-        "title": next(
-            (e.content_text for e in document.elements if e.kind in {"title", "heading"}), Path(filename).stem
-        ),
+        "title": next((e.content_text for e in document.elements if e.kind in {"title", "heading"}), title),
         "elements": manifest["elements"],
         "chunks": chunks,
         "warnings": document.warnings,
         "retrieval_mode": "lexical",
+        **({"pages": document.pages, "quality": pdf_quality(document.pages)} if document.pages else {}),
     }
 
 
@@ -375,6 +591,14 @@ def lexical_search(query: str, chunks: list[dict], limit: int = 5) -> list[dict]
     return sorted(hits, key=lambda item: item["score"], reverse=True)[:limit]
 
 
+def embedding_batch_size() -> int:
+    """Tune provider throughput without changing chunk contents or vector identity."""
+    value = os.getenv("EMBEDDING_BATCH_SIZE", "64").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 64:
+        raise ValueError("EMBEDDING_BATCH_SIZE 必须为 1 至 64 的整数。")
+    return int(value)
+
+
 def embed_texts(texts: list[str]) -> list[list[float]] | None:
     base = os.environ.get("EMBEDDING_BASE_URL", "").strip()
     key = os.environ.get("EMBEDDING_API_KEY", "").strip()
@@ -403,11 +627,12 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
 
     vectors: list[list[float]] = []
     dimension = None
+    batch_size = embedding_batch_size()
     with httpx.Client(
         timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=False
     ) as client:
-        for start in range(0, len(texts), 64):
-            batch = texts[start : start + 64]
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
             try:
                 with client.stream(
                     "POST",
@@ -605,6 +830,9 @@ def _download(
     consume: Callable[[Iterable[bytes]], object] | None = None,
     validators: dict[str, str] | None = None,
     connection_slot: Callable[[str], AbstractContextManager] | None = None,
+    accept_compressed_html: bool = False,
+    accept_compressed_json: bool = False,
+    json_body: dict | None = None,
 ) -> dict:
     """Read a bounded HTTPS resource, optionally into an atomic blob consumer.
 
@@ -615,6 +843,16 @@ def _download(
     """
     current = url
     validators = validators or {}
+    request_body = None
+    if json_body is not None:
+        if not isinstance(json_body, dict) or validators:
+            raise DownloadError("目录 JSON 请求参数无效。")
+        try:
+            request_body = json.dumps(json_body, ensure_ascii=False, allow_nan=False).encode()
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise DownloadError("目录 JSON 请求参数无效。") from exc
+        if len(request_body) > 16384:
+            raise DownloadError("目录 JSON 请求超过 16 KB。")
     conditionals = {
         "If-None-Match": _bounded_header(validators.get("etag") or validators.get("ETag")),
         "If-Modified-Since": _bounded_header(
@@ -659,15 +897,18 @@ def _download(
                 parsed = urlsplit(current)
                 headers = {
                     "User-Agent": "AItea/0.1 SourceCollector",
-                    "Accept-Encoding": "identity",
+                    "Accept-Encoding": "gzip, identity"
+                    if accept_compressed_html or accept_compressed_json
+                    else "identity",
                     "Accept": "application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,*/*;q=0.5",
                 }
                 headers.update({key: value for key, value in conditionals.items() if value is not None})
-                connection.request(
-                    "GET",
-                    parsed.path + ("?" + parsed.query if parsed.query else ""),
-                    headers=headers,
-                )
+                request_path = parsed.path + ("?" + parsed.query if parsed.query else "")
+                if request_body is None:
+                    connection.request("GET", request_path, headers=headers)
+                else:
+                    headers["Content-Type"] = "application/json"
+                    connection.request("POST", request_path, headers=headers, body=request_body)
                 remaining = deadline - time.monotonic()
                 if expired.is_set() or remaining <= 0:
                     raise DownloadError("抓取超过总时间限制。", retryable=True)
@@ -677,6 +918,8 @@ def _download(
                 if expired.is_set() or deadline <= time.monotonic():
                     raise DownloadError("抓取超过总时间限制。", retryable=True)
                 if response.status in {301, 302, 303, 307, 308}:
+                    if request_body is not None:
+                        raise DownloadError("目录 JSON 请求不允许重定向。")
                     location = response.getheader("Location")
                     if not location or redirect == 3:
                         raise DownloadError("抓取来源重定向过多或地址缺失。")
@@ -703,11 +946,14 @@ def _download(
                     )
                 if response.status == 206:
                     raise DownloadError("抓取来源返回了不完整的分段响应。")
-                if response.getheader("Content-Encoding", "identity").lower() not in {"identity", ""}:
+                encoding = response.getheader("Content-Encoding", "identity").strip().lower()
+                compressed = (accept_compressed_html or accept_compressed_json) and encoding == "gzip"
+                if encoding not in {"identity", ""} and not compressed:
                     raise DownloadError("抓取来源返回压缩传输，无法安全校验大小。")
+                transfer_limit = min(MAX_BYTES, MAX_COMPRESSED_HTML_BYTES) if compressed else MAX_BYTES
                 length = response.getheader("Content-Length")
                 if length is not None and (
-                    not re.fullmatch(r"[0-9]{1,12}", length.strip()) or int(length) > MAX_BYTES
+                    not re.fullmatch(r"[0-9]{1,12}", length.strip()) or int(length) > transfer_limit
                 ):
                     raise DownloadError("抓取文件大小无效或超过 20 MB。")
                 expected_length = int(length) if length is not None else None
@@ -719,7 +965,22 @@ def _download(
                 )
                 if len(mime) > 255 or not re.fullmatch(r"[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+", mime):
                     raise DownloadError("抓取来源返回无效的文件类型。")
+                if compressed and not (
+                    (accept_compressed_html and mime in {"text/html", "application/xhtml+xml"})
+                    or (accept_compressed_json and mime == "application/json")
+                ):
+                    raise DownloadError("仅清单目录或详情 HTML/JSON 允许受限压缩传输。")
                 name = Path(unquote(parsed.path)).name or "source"
+                disposition = _bounded_header(response.getheader("Content-Disposition"), 4096)
+                if disposition:
+                    try:
+                        message = EmailMessage()
+                        message["Content-Disposition"] = disposition
+                        declared_name = message.get_filename()
+                        if isinstance(declared_name, str) and declared_name.strip():
+                            name = Path(declared_name.replace("\\", "/")).name or name
+                    except (ValueError, LookupError):
+                        pass  # A malformed display header cannot change stored bytes.
                 name = re.sub(r"[\x00-\x1f\x7f/\\]", "_", name)[:180]
                 if not Path(name).suffix or (
                     mime in _MIME_EXTENSIONS
@@ -728,32 +989,61 @@ def _download(
                 ):
                     name += _MIME_EXTENSIONS.get(mime, mimetypes.guess_extension(mime) or ".bin")
                 exhausted = False
+                transfer_bytes = 0
 
                 def chunks() -> Iterable[bytes]:
-                    nonlocal exhausted
-                    size = 0
+                    nonlocal exhausted, transfer_bytes
+                    size = decoded_size = 0
+                    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if compressed else None
                     while True:
                         remaining = deadline - time.monotonic()
                         if expired.is_set() or remaining <= 0:
                             raise DownloadError("抓取超过总时间限制。", retryable=True)
                         if connection.sock:
                             connection.sock.settimeout(min(15.0, remaining))
-                        block = response.read1(min(65536, MAX_BYTES + 1 - size))
+                        block = response.read1(min(65536, transfer_limit + 1 - size))
                         if expired.is_set() or deadline <= time.monotonic():
                             raise DownloadError("抓取超过总时间限制。", retryable=True)
                         if not block:
                             break
                         size += len(block)
-                        if size > MAX_BYTES:
-                            raise DownloadError("抓取文件超过 20 MB。")
+                        if size > transfer_limit:
+                            raise DownloadError("抓取文件超过传输大小限制。")
                         if expected_length is not None and size > expected_length:
                             raise DownloadError("抓取文件长度与响应头不一致。", retryable=True)
-                        yield block
+                        if decoder is None:
+                            yield block
+                        else:
+                            # Bound each allocation and total decoded bytes; never call
+                            # flush(), whose length is an initial buffer, not a limit.
+                            pending = block
+                            while True:
+                                if expired.is_set() or time.monotonic() >= deadline:
+                                    raise DownloadError("抓取超过总时间限制。", retryable=True)
+                                try:
+                                    decoded = decoder.decompress(
+                                        pending, min(65536, transfer_limit + 1 - decoded_size)
+                                    )
+                                except zlib.error as exc:
+                                    raise DownloadError("压缩目录内容损坏。", retryable=True) from exc
+                                decoded_size += len(decoded)
+                                if decoded_size > transfer_limit:
+                                    raise DownloadError("目录解压后超过 4 MB。")
+                                if decoder.unused_data:
+                                    raise DownloadError("压缩目录存在尾随或多段内容。")
+                                if decoded:
+                                    yield decoded
+                                pending = decoder.unconsumed_tail
+                                if not pending and (not decoded or decoder.eof):
+                                    break
                     # These checks run before the consumer can atomically publish.
                     if expected_length is not None and size != expected_length:
                         raise DownloadError("抓取文件传输不完整。", retryable=True)
                     if not size:
                         raise DownloadError("抓取文件为空。")
+                    if decoder is not None and (not decoder.eof or not decoded_size):
+                        raise DownloadError("压缩目录传输不完整或正文为空。", retryable=True)
+                    transfer_bytes = size
                     exhausted = True
 
                 payload = consume(chunks()) if consume is not None else b"".join(chunks())
@@ -763,6 +1053,9 @@ def _download(
                     "url": current,
                     "filename": name,
                     "mime_type": mime,
+                    "content_encoding": encoding or "identity",
+                    "request_method": "POST" if request_body is not None else "GET",
+                    "transfer_bytes": transfer_bytes,
                     "blob" if consume is not None else "content": payload,
                     **response_validators,
                 }

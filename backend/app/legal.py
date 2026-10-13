@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from .countries import resolve_country
 from .db import dump, now, uid
+from .reranking import configuration as rerank_configuration
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,8 @@ class LegalService:
             if result.get("warning"):
                 warnings.append(result["warning"])
             for citation in result["items"]:
-                citation_id = f"{citation['document_id']}:{citation['document_version']}:{digest(citation['locator'])[:16]}"
+                chunk = citation.get("chunk_id") or citation["locator"]
+                citation_id = f"{citation['document_id']}:{citation['document_version']}:{digest(chunk)[:16]}"
                 found[citation_id] = {**citation, "id": citation_id}
         with closing(self.db.connect()) as conn:
             for citation in found.values():
@@ -292,6 +294,7 @@ class LegalService:
             "date": datetime.now(timezone.utc).date().isoformat(),
             "provider": digest([os.getenv("LLM_MODEL"), os.getenv("LLM_BASE_URL"), os.getenv("LLM_API_KEY")]),
             "embedding": self.service.embedding_fingerprint(),
+            "rerank": rerank_configuration(),
             "runner": 1,
             "task_evidence": [
                 (task["id"], task["evidence_ids"]) for stage in case["stages"] for task in stage["tasks"]
@@ -305,9 +308,10 @@ class LegalService:
         for row in conn.execute(
             """SELECT d.id,d.version,d.content_hash,d.status,d.source_url,dc.country,
                 COALESCE(m.revision,0) metadata_revision,
-                json_extract(d.manifest,'$.embedding_fingerprint') embedding
+                COALESCE(r.revision,0) index_revision
                 FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
                 LEFT JOIN document_countries dc ON dc.document_id=d.id
+                LEFT JOIN retrieval_documents r ON r.document_id=d.id
                 WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary' ORDER BY d.id""",
             (owner, case["id"]),
         ):
@@ -578,6 +582,32 @@ class LegalService:
         from .legal_models import LegalResult
 
         request_hash = digest({"analysis_id": analysis_id, "payload": payload})
+        with closing(self.db.connect()) as conn:
+            case = self.service.case_detail(owner, case_id, conn)
+            existing = conn.execute(
+                "SELECT * FROM legal_requests WHERE owner_id=? AND case_id=? AND client_id=?",
+                (owner, case_id, payload["client_request_id"]),
+            ).fetchone()
+            if existing:
+                if existing["payload_hash"] != request_hash:
+                    fail(409, "idempotency_conflict", "同一请求编号不能提交不同内容")
+                if existing["state"] == "completed":
+                    return {"response": json.loads(existing["response"])}
+                if existing["state"] == "running" and existing["expires_at"] > now():
+                    fail(409, "analysis_in_progress", "本次分析正在进行，请等待结果")
+            current_id = existing["analysis_id"] if existing else analysis_id
+            stage_id = (
+                self.own(conn, owner, case_id, current_id)["stage_id"] if current_id else payload["stage_id"]
+            )
+            stage = self.stage(case, stage_id)
+        progress = self.service.index.prepare_scopes(
+            owner,
+            self.allowed_countries(case["template"], stage),
+            case_id=case_id,
+            historical=True,
+        )
+        if progress["remaining"]:
+            fail(409, "index_preparing", "本次范围仍有资料待索引，已完成一批准备；请重试后再分析。")
         with self.db.transaction() as conn:
             case = self.service.case_detail(owner, case_id, conn)
             self.expire_requests(conn)

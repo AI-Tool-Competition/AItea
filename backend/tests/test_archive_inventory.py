@@ -233,6 +233,99 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
         assert secret not in text
 
 
+def test_ocr_images_are_cataloged_by_source_version_and_physical_page_without_transcripts(archive):
+    original = document(archive, "scan-v1")
+    image = archive.archive.blobs.put_bytes("owner-a", b"rendered page bytes")
+    with archive.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id='scan-v1'",
+            (
+                json.dumps(
+                    {
+                        "elements": [],
+                        "chunks": [],
+                        "quality": {
+                            "status": "partial",
+                            "complete": False,
+                            "page_count": 2,
+                            "pending_pages": [],
+                            "failed_pages": [2],
+                            "review_pages": [],
+                        },
+                        "pages": [
+                            {
+                                "page": 1,
+                                "source_hash": original.digest,
+                                "printed_page": "iii",
+                                "status": "ocr_complete",
+                                "text": "PRIVATE_TRANSCRIPT",
+                                "ocr": {
+                                    "model": "test-vision",
+                                    "prompt_version": "v1",
+                                    "image_sha256": image.digest,
+                                    "image_blob": {
+                                        "storage_path": str(image.path.relative_to(archive.db.data_dir)),
+                                        "size": image.size,
+                                        "content_hash": image.digest,
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ),
+            ),
+        )
+    report = export(archive)
+    assert report["summary"]["ocr_pages"] == 1
+    row = records(report, filename="ocr-pages.jsonl")[0]
+    assert row["document_id"] == "scan-v1" and row["document_version"] == 1
+    assert row["source_hash"] == original.digest and row["image_hash"] == image.digest
+    assert row["page"] == 1 and row["printed_page"] == "iii"
+    assert row["original"]["exists"] is True
+    quality = records(report)[0]["parsing"]
+    assert quality["complete"] is False and quality["failed_pages"] == 1
+    exported = "".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
+    assert "PRIVATE_TRANSCRIPT" not in exported and "rendered page bytes" not in exported
+
+
+def test_official_api_request_evidence_retains_pagination_without_arbitrary_secrets(archive):
+    page(archive)
+    with archive.db.transaction() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS checklist_page_evidence(
+            item_id TEXT PRIMARY KEY REFERENCES checklist_pages(item_id), evidence TEXT NOT NULL)""")
+        conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES(11,?)", (AT,))
+        conn.execute(
+            "INSERT INTO checklist_page_evidence VALUES('page-item',?)",
+            (
+                json.dumps(
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum",
+                            "json_body": {"jns": ["UU"], "length": 5, "start": 900, "api_key": "PRIVATE_KEY"},
+                            "headers": {"Authorization": "PRIVATE_TOKEN"},
+                        },
+                        "scope": {
+                            "provider": "setneg",
+                            "jns": "UU",
+                            "total": 901,
+                            "offset": 900,
+                            "page_size": 5,
+                            "returned": 1,
+                            "raw": "PRIVATE_BODY",
+                        },
+                    }
+                ),
+            ),
+        )
+    report = export(archive)
+    row = records(report, filename="discovery-pages.jsonl")[0]
+    assert row["evidence"]["request"]["json_body"] == {"jns": ["UU"], "length": 5, "start": 900}
+    assert row["evidence"]["scope"]["total"] == 901
+    assert row["evidence"]["scope"]["returned"] == 1
+    assert "PRIVATE_" not in json.dumps(row)
+
+
 def test_missing_and_unsafe_originals_are_counted_without_accessing_outside_data(archive, tmp_path):
     original = document(archive, "missing", body=b"missing original")
     original.path.unlink()
@@ -357,9 +450,32 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-@pytest.mark.parametrize("version", [7, 8, 9])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 11])
 def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
     document(archive, "law")
+    with archive.db.transaction() as conn:
+        if version < 11:
+            conn.execute("DROP TABLE IF EXISTS checklist_page_evidence")
+            conn.execute("DELETE FROM schema_migrations WHERE version=11")
+        else:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checklist_page_evidence(item_id TEXT PRIMARY KEY,evidence TEXT NOT NULL)"
+            )
+            conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES(11,?)", (AT,))
+    if version < 10:
+        with archive.db.transaction() as conn:
+            for trigger in ("retrieval_document_insert", "retrieval_document_update"):
+                conn.execute("DROP TRIGGER " + trigger)
+            for table in (
+                "retrieval_fts",
+                "retrieval_vectors",
+                "retrieval_models",
+                "retrieval_chunks",
+                "retrieval_dirty",
+                "retrieval_documents",
+            ):
+                conn.execute("DROP TABLE " + table)
+            conn.execute("DELETE FROM schema_migrations WHERE version=10")
     if version < 9:
         with archive.db.transaction() as conn:
             for table in (
@@ -383,7 +499,7 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
     assert archive.db.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [6, 10])
+@pytest.mark.parametrize("version", [6, 12])
 def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, version):
     from app.archive_inventory import InventoryError, export_inventory
 

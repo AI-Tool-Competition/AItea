@@ -107,6 +107,7 @@ class ParsedDocument:
     elements: list[ParsedElement]
     assets: list[ParsedAsset]
     warnings: list[str]
+    pages: list[dict[str, Any]] = field(default_factory=list)
 
 
 def validate_document_manifest_capacity(document: ParsedDocument) -> None:
@@ -830,8 +831,8 @@ def _split_text_for_budget(
                 max_tokens=max_tokens,
                 max_chars=max_chars,
             )
-            units.append(remainder[:prefix_length].strip())
-            remainder = remainder[prefix_length:].strip()
+            units.append(remainder[:prefix_length])
+            remainder = remainder[prefix_length:]
         if remainder:
             units.append(remainder)
     if not units:
@@ -916,11 +917,14 @@ def _largest_fitting_prefix(
 
 
 def _semantic_units(text: str) -> list[str]:
-    return [
-        unit.strip()
-        for unit in re.split(r"(?<=[。！？.!?])|\n{2,}", text)
-        if unit.strip()
+    # Keep separators with the following span. Stripping individual units and
+    # then joining them fused words/paragraphs and invalidated verbatim citations.
+    boundaries = [
+        0,
+        *(match.end() for match in re.finditer(r"[。！？.!?](?=\s)|(?=\n{2,})", text)),
+        len(text),
     ]
+    return [text[start:end] for start, end in zip(boundaries, boundaries[1:]) if end > start]
 
 
 def _joined_element_text(elements: list[ParsedElement]) -> str:

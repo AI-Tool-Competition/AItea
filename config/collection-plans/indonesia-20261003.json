@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 1,
+  "version": 2,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -112,6 +112,11 @@
           "url": "https://www.mkri.id/peraturan/peraturan-uud",
           "purpose": "catalog",
           "note": "宪法法院宪法目录；其官方文件链接使用s.mkri.id，静态允许该文件域，仍须核原件身份、版本及完整性。目录页面不作为法律正文。"
+        },
+        {
+          "url": "https://s.mkri.id/public/content/infoumum/regulation/pdf/UUD%20NRI%2045%20.pdf",
+          "purpose": "document",
+          "note": "MK 官方目录指向的宪法合集 PDF，2026-10-13 已实测完整下载。包含原文、修正案及非正式合并阅读本，需保留各部分版本与效力区分；此文件不能整体视为单一现行正式文本。"
         }
       ],
       "tags": [
@@ -260,6 +265,11 @@
           "url": "https://peraturan.bpk.go.id/Search?jenis=8",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0",
+          "purpose": "catalog",
+          "note": "官方 Setneg JDIH 公开只读检索接口；请求方法为 POST，筛选体由可信适配器生成并留证。已验证类型分页及正式 PDF 链；站内总数仅作该来源分母，不代表全国完整法律集合。"
         }
       ],
       "tags": [
@@ -324,6 +334,11 @@
           "url": "https://peraturan.bpk.go.id/Search?jenis=9",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0",
+          "purpose": "catalog",
+          "note": "官方 Setneg JDIH 公开只读检索接口；请求方法为 POST，筛选体由可信适配器生成并留证。已验证类型分页及正式 PDF 链；站内总数仅作该来源分母，不代表全国完整法律集合。"
         }
       ],
       "tags": [
@@ -388,6 +403,11 @@
           "url": "https://peraturan.bpk.go.id/Search?jenis=10",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PP&length=50&start=0",
+          "purpose": "catalog",
+          "note": "官方 Setneg JDIH 公开只读检索接口；请求方法为 POST，筛选体由可信适配器生成并留证。已验证类型分页及正式 PDF 链；站内总数仅作该来源分母，不代表全国完整法律集合。"
         }
       ],
       "tags": [
@@ -452,6 +472,11 @@
           "url": "https://peraturan.bpk.go.id/Search?jenis=11",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPRES&length=50&start=0",
+          "purpose": "catalog",
+          "note": "官方 Setneg JDIH 公开只读检索接口；请求方法为 POST，筛选体由可信适配器生成并留证。已验证类型分页及正式 PDF 链；站内总数仅作该来源分母，不代表全国完整法律集合。"
         }
       ],
       "tags": [
@@ -527,6 +552,11 @@
           "url": "https://peraturan.bpk.go.id/Details/351927/perda-prov-gorontalo-no-7-tahun-tahun-2025",
           "purpose": "reference",
           "note": "Gorontalo省条例详情，仅示范下载按钮与元数据，不限制或自动加入采集范围。"
+        },
+        {
+          "url": "https://jdih.bandung.go.id/home/produk-hukum/peraturan-perundang-undangan-daerah",
+          "purpose": "catalog",
+          "note": "经2026-10-13实测的Bandung市发布机关补源；混合目录按Perda或Perwali类型分流，排除Keputusan。仅覆盖该市，不能替代全国目录或推定全国覆盖；首页、第2页、末页390及PDF入口均独立核验。"
         }
       ],
       "tags": [
@@ -746,6 +776,11 @@
           "url": "https://peraturan.bpk.go.id/Jenis/3",
           "purpose": "catalog",
           "note": "地方类型导航；只进入Pergub、Perbup、Perwali，Perda交由1.7。"
+        },
+        {
+          "url": "https://jdih.bandung.go.id/home/produk-hukum/peraturan-perundang-undangan-daerah",
+          "purpose": "catalog",
+          "note": "经2026-10-13实测的Bandung市发布机关补源；混合目录按Perda或Perwali类型分流，排除Keputusan。仅覆盖该市，不能替代全国目录或推定全国覆盖；首页、第2页、末页390及PDF入口均独立核验。"
         }
       ],
       "tags": [
@@ -1082,6 +1117,11 @@
           "url": "https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU",
           "purpose": "catalog",
           "note": "唯一正式PUU入口；旧截图MK主站仅供对照，不增加第二来源。"
+        },
+        {
+          "url": "https://www.mkri.id/perkara/persidangan/putusan?jenis=PUU",
+          "purpose": "catalog",
+          "note": "同一宪法法院官方判决目录；固定PUU类型并保留分页筛选。2026-10-13本地目录受验证拦截，官方静态原件可访问；不得以可下载样本推定目录已遍历。"
         }
       ],
       "tags": [
@@ -1140,7 +1180,10 @@
       "verbatim_requirements": "抓取内容标题 | 宪法法院法律审查判决｜PUU\n网页链接 | https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU\n截图示范 | \n抓取注意事项 | 采集步骤：以MK JDIH的PUU目录为唯一入口，保持PUU筛选，遍历全部分页，逐案进入详情或判决附件取得完整PDF。保存案号、申请人、被审查法律及条款、裁判及公开宣判日期、Amar Putusan、主文类型、争点、必要裁判理由、关键词和全文；另存详情与PDF地址、上传日期、采集时间和原始字段。未直接提供的争点、条款及理由从判决原文提取，不从列表摘要补造。\n截图说明：现有截图展示MK主站PUU页面的File Pendukung／Klik Disini下载位置，用于识别判决附件；正式入口调整为JDIH后，应核对对应详情或附件控件，不将旧页面截图当作JDIH界面。核验PDF案号、页数和完整性，建立判决 → 被审查法规 → 具体条款关系。\n内容处理：全部PUU保留元数据和判决全文，过滤选举结果争议等非PUU案件。改变法规效力、形成条件性合宪或违宪解释、明确条款含义的判决提高召回权重；驳回、不予受理和撤回等案件降低默认权重，但保留全文及理由。部分准许、部分驳回逐项治理，不按主文类型直接删除案件。\n效力处理：结合Amar Putusan及必要理由核定全部或部分失效、条件性合宪、条件性违宪及过渡安排。公开宣判日期与上传日期分别保存；存在延期或具体适用安排时另记，不能按一项条款受影响就删除整部法律。程序性不予受理不得标作条款已确认合宪。\n检索与更新：涉及UU条款时同步检索对应PUU，返回法规正文、受影响条款、当前适用规则和判决出处。持续增量抓取新判决并将效力变化关联回条款；保留旧法规及历史判决。同案号原件只保存一次；取消Landmark名单及合集的独立采集和标签匹配任务。\n来源核验（2026年10月3日）：JDIH首屏及第2页元数据已读取，后续分页曾返回ERROR，附件下载待浏览器复核。验收需全部分页可遍历且正式判决PDF可下载；验证页或错误页不得入正文库。截图对应的MK主站仅用于本次对照核验，不另设第二个采集入口。\n字段核验：同案主文类型在JDIH与主站可能出现标签差异，保留各来源原始标签，法律效果以正式PDF主文及必要理由提取。公开宣判日期与议决日期分别记录，不能把上传或议决时间作为公开宣判时间。",
       "execution": "discovery",
       "adapter": "html_links",
-      "limits": {}
+      "limits": {},
+      "trusted_hosts": [
+        "s.mkri.id"
+      ]
     },
     {
       "id": "3.2",
@@ -2098,7 +2141,7 @@
         {
           "url": "https://www.wto.org/english/docs_e/legal_e/legal_e.htm",
           "purpose": "catalog",
-          "note": "WTO通用法律文本文件族；各协议成员接受及效力分别核。"
+          "note": "WTO通用法律文本文件族；各协议成员接受及效力分别核。 官网 Legal Texts 及 Marrakesh 页直接引用 docs.wto.org/gattdocs/q/ 官方原件；2026-10-13 核验，仅开放明确 PDF 路径。"
         },
         {
           "url": "https://goods-schedules.wto.org/member/indonesia",
@@ -2192,7 +2235,10 @@
           "GATS Commitments",
           "MFN Exemptions"
         ]
-      }
+      },
+      "trusted_hosts": [
+        "docs.wto.org"
+      ]
     }
   ]
 }

@@ -1,10 +1,184 @@
 """Discovery only returns bounded, reviewable candidates; it never approves laws."""
 
+from pathlib import Path
+import json
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from app.discovery import discover_page, normalized_seeds_for, recipe_for
+
+FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
+
+SETNEG = "https://jdih.setneg.go.id/api/hukumproduk/"
+
+
+def setneg_item():
+    return item("ID", "1.3", "bpk", (SETNEG + "produkhukum?jns=UU&length=5&start=0", "catalog"))
+
+
+def test_setneg_catalog_uses_verified_type_total_and_replayable_next_page():
+    definition = setneg_item()
+    result = discover_page(
+        definition["entries"][0]["url"],
+        (FIXTURES / "setneg-catalog.json").read_bytes(),
+        "application/json",
+        recipe_for(definition),
+    )
+    assert result["matched"] and result["purpose"] == "catalog"
+    assert len(result["links"]) == 6
+    assert all(link["purpose"] == "detail" for link in result["links"][:5])
+    assert result["links"][-1]["purpose"] == "catalog"
+    assert parse_qs(urlsplit(result["links"][-1]["url"]).query) == {
+        "jns": ["UU"],
+        "length": ["5"],
+        "start": ["5"],
+    }
+    assert result["scope"] == {
+        "provider": "setneg",
+        "jns": "UU",
+        "total": 901,
+        "offset": 0,
+        "page_size": 5,
+        "returned": 5,
+    }
+    last = discover_page(
+        SETNEG + "produkhukum?jns=UU&length=5&start=900",
+        (FIXTURES / "setneg-last-page.json").read_bytes(),
+        "application/json",
+        recipe_for(definition),
+    )
+    assert last["matched"] and len(last["links"]) == 1
+    assert last["links"][0]["purpose"] == "detail"
+    assert last["scope"]["returned"] == 1
+
+
+def test_setneg_request_body_is_derived_only_from_trusted_item_and_fixed_api():
+    from app.discovery import request_parameters
+
+    definition = {"country": "ID", "item": setneg_item()}
+    params = request_parameters(SETNEG + "produkhukum?jns=UU&length=5&start=5", definition)
+    assert params == {
+        "json_body": {
+            "tentang": "",
+            "p_lihan": "semua",
+            "jns": ["UU"],
+            "thn": [],
+            "status": "",
+            "terx": "All",
+            "sortOrder": "desc",
+            "length": 5,
+            "start": 5,
+        },
+        "accept_compressed_json": True,
+    }
+    assert request_parameters(SETNEG + "detaildata?jns=UU&no=2&thn=2026", definition)["json_body"] == {
+        "jns": "UU",
+        "no": "2",
+        "thn": "2026",
+        "k": "",
+    }
+    assert request_parameters("https://peraturan.bpk.go.id/Search?jenis=8", definition) == {}
+    for url in (
+        SETNEG + "produkhukum?jns=PP&length=5&start=0",
+        SETNEG + "produkhukum?jns=UU&length=500&start=0",
+        SETNEG + "produkhukum?jns=UU&length=5&start=-1",
+        SETNEG + "produkhukum?jns=UU&length=5&start=0&start=5",
+        SETNEG + "delete?jns=UU",
+    ):
+        with pytest.raises(ValueError):
+            request_parameters(url, definition)
+    with pytest.raises(ValueError):
+        request_parameters(
+            SETNEG + "produkhukum?jns=UU&length=5&start=0", {"country": "SG", "item": setneg_item()}
+        )
+
+
+def test_setneg_detail_discovers_originals_without_abstracts_or_fulltext_claims():
+    recipe = recipe_for(setneg_item())
+    result = discover_page(
+        SETNEG + "detaildata?jns=UU&no=2&thn=2026",
+        (FIXTURES / "setneg-detail.json").read_bytes(),
+        "application/json",
+        recipe,
+    )
+    assert result["matched"] and result["purpose"] == "detail"
+    assert len(result["links"]) == 1
+    link = result["links"][0]
+    assert link["purpose"] == "document" and link["identity_key"].startswith("setneg:P20560:")
+    assert parse_qs(urlsplit(link["url"]).query) == {
+        "f": ["Salinan UU Nomor 2 Tahun 2026.pdf"],
+        "fl": ["P20560"],
+        "l": ["uploads"],
+    }
+    assert discover_page(link["url"], b"%PDF-1.4\n%%EOF", "application/pdf", recipe)["matched"]
+    assert not discover_page(
+        link["url"].replace("l=uploads", "l=Abstrak"), b"%PDF-1.4\n%%EOF", "application/pdf", recipe
+    )["matched"]
+    multi = discover_page(
+        SETNEG + "detaildata?jns=UU&no=19&thn=2025",
+        (FIXTURES / "setneg-files.json").read_bytes(),
+        "application/json",
+        recipe,
+    )
+    assert len(multi["links"]) == 2
+    assert len({x["identity_key"] for x in multi["links"]}) == 2
+
+
+@pytest.mark.parametrize(
+    "change", ["wrong_type", "missing_rows", "duplicate_ids", "bool_total", "error", "malformed"]
+)
+def test_setneg_invalid_or_incomplete_json_is_not_a_matched_catalog(change):
+    body = json.loads((FIXTURES / "setneg-catalog.json").read_bytes())
+    if change == "wrong_type":
+        body["data"][0]["jns"] = "PP"
+    elif change == "missing_rows":
+        body["data"].pop()
+    elif change == "duplicate_ids":
+        body["data"][1]["idperaturan"] = body["data"][0]["idperaturan"]
+    elif change == "bool_total":
+        body["jml"] = True
+    elif change == "error":
+        body = {"error": "login required"}
+    content = b"{bad json" if change == "malformed" else json.dumps(body).encode()
+    result = discover_page(
+        SETNEG + "produkhukum?jns=UU&length=5&start=0", content, "application/json", recipe_for(setneg_item())
+    )
+    assert not result["matched"] and result["links"] == []
+
+
+def test_setneg_rejects_filename_paths_wrong_detail_and_json_size():
+    recipe = recipe_for(setneg_item())
+    body = json.loads((FIXTURES / "setneg-detail.json").read_bytes())
+    body["file"][0]["realName"] = "../../secret.pdf"
+    result = discover_page(
+        SETNEG + "detaildata?jns=UU&no=2&thn=2026", json.dumps(body).encode(), "application/json", recipe
+    )
+    assert not result["links"] and result["warnings"]
+    wrong = discover_page(
+        SETNEG + "detaildata?jns=UU&no=3&thn=2026",
+        (FIXTURES / "setneg-detail.json").read_bytes(),
+        "application/json",
+        recipe,
+    )
+    assert not wrong["matched"]
+    oversized = discover_page(
+        SETNEG + "produkhukum?jns=UU&length=5&start=0",
+        b" " * (4 * 1024 * 1024 + 1),
+        "application/json",
+        recipe,
+    )
+    assert not oversized["matched"]
+
+
+def test_explicit_official_document_seed_remains_a_document_not_a_catalog():
+    url = "https://s.mkri.id/public/content/infoumum/regulation/pdf/UUD%20NRI%2045%20.pdf"
+    definition = item(
+        "ID", "1.1", "html_links", ("https://www.mkri.id/peraturan/uud", "catalog"), (url, "document")
+    )
+    result = discover_page(url, b"%PDF-1.4\n%%EOF", "application/pdf", recipe_for(definition))
+    assert result["matched"] and result["purpose"] == "document"
+    assert not discover_page(url, html("Official menu only"), "text/html", recipe_for(definition))["matched"]
 
 
 def html(body, title="Official documents"):
@@ -434,3 +608,204 @@ def test_unverified_generic_html_requires_detail_review_instead_of_body_candidat
     )
     assert detail["purpose"] == "detail" and detail["warnings"]
     assert r["html_document_patterns"] == []
+
+
+def test_badilum_real_attachment_links_encode_filename_spaces_and_deduplicate():
+    source = item(
+        "ID",
+        "2.4",
+        "html_links",
+        ("https://badilum.mahkamahagung.go.id/publik/peraturan/kebijakan-dirjen-badilum.html", "catalog"),
+    )
+    rules = recipe_for(source)
+    result = discover_page(
+        "https://badilum.mahkamahagung.go.id/publik/peraturan/kebijakan-dirjen-badilum/5143-decision.html",
+        (FIXTURES / "badilum-detail.html").read_bytes(),
+        "text/html",
+        rules,
+    )
+    assert result["purpose"] == "detail"
+    assert len(result["links"]) == 1
+    document = result["links"][0]
+    assert document["url"] == (
+        "https://badilum.mahkamahagung.go.id/attachments/article/5143/"
+        "SK%20Pembaharuan%20Juknis%20Perma%201%20Tahun%202016.pdf"
+    )
+    assert document["purpose"] == "document"
+    assert discover_page(document["url"], b"%PDF-1.7\n", "application/pdf", rules)["matched"]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://laws.example.org /files/Act 1.pdf",
+        "https://user name@laws.example.org/files/Act 1.pdf",
+        "https://laws.example.org/files/Act\n1.pdf",
+        "https://laws.example.org/files/Act\t1.pdf",
+        "/files/%2e%2e/Act 1.pdf",
+        "/files/%252e%252e/Act 1.pdf",
+        "/files/Act%00 1.pdf",
+    ],
+)
+def test_html_filename_encoding_does_not_sanitize_unsafe_links(target):
+    result = discover_page(
+        "https://laws.example.org/catalog", html(f'<a href="{target}">Act</a>'), "text/html", recipe()
+    )
+    assert result["links"] == []
+
+
+def test_raw_page_url_still_requires_valid_encoding():
+    result = discover_page(
+        "https://laws.example.org/files/Act 1.pdf", b"%PDF-1.7\n", "application/pdf", recipe()
+    )
+    assert not result["matched"]
+
+
+def test_lkpp_real_extensionless_download_is_document_but_index_is_catalog():
+    source = item("ID", "4.7", "html_links", ("https://jdih.lkpp.go.id/regulation/search", "catalog"))
+    rules = recipe_for(source)
+    result = discover_page(
+        "https://jdih.lkpp.go.id/regulation/peraturan-lkpp/peraturan-lkpp-nomor-3-tahun-2026",
+        (FIXTURES / "lkpp-detail.html").read_bytes(),
+        "text/html",
+        rules,
+    )
+    assert [(link["url"], link["purpose"]) for link in result["links"]] == [
+        ("https://jdih.lkpp.go.id/regulation/index", "catalog"),
+        ("https://jdih.lkpp.go.id/regulation/download/peraturan-lkpp-nomor-3-tahun-2026/1", "document"),
+    ]
+    download = result["links"][1]["url"]
+    assert discover_page(download, b"%PDF-1.7\n", "application/pdf", rules)["matched"]
+    assert not discover_page(download, html("Download error"), "text/html", rules)["matched"]
+
+
+def wto_item():
+    source = item(
+        "ID",
+        "5.4",
+        "html_links",
+        ("https://www.wto.org/english/docs_e/legal_e/legal_e.htm", "catalog"),
+        ("https://goods-schedules.wto.org/member/indonesia", "catalog"),
+    )
+    source["trusted_hosts"] = ["docs.wto.org"]
+    return source
+
+
+def test_wto_real_legal_detail_discovers_official_pdf_not_word_or_restricted_books():
+    rules = recipe_for(wto_item())
+    result = discover_page(
+        "https://www.wto.org/english/docs_e/legal_e/marag_e.htm",
+        (FIXTURES / "wto-legal-detail.html").read_bytes(),
+        "text/html",
+        rules,
+    )
+    documents = [x["url"] for x in result["links"] if x["purpose"] == "document"]
+    assert documents == [
+        "https://docs.wto.org/gattdocs/q/G/TMB/R116.PDF",
+        "https://www.wto.org/english/docs_e/legal_e/downloads_e/WTO_en.pdf",
+    ]
+    assert all(not x["url"].endswith(".docx") for x in result["links"])
+    assert result["purpose"] == "detail"
+    assert discover_page(documents[1], b"%PDF-1.7\n", "application/pdf", rules)["matched"]
+
+
+def test_wto_goods_follows_member_pagination_and_file_list_without_other_members_or_bundles():
+    rules = recipe_for(wto_item())
+    result = discover_page(
+        "https://goods-schedules.wto.org/member/indonesia",
+        (FIXTURES / "wto-goods-member.html").read_bytes(),
+        "text/html",
+        rules,
+    )
+    assert any(
+        x["url"].endswith("/browse/43339/file_browser") and x["purpose"] == "catalog" for x in result["links"]
+    )
+    assert any("page=1" in x["url"] and x["purpose"] == "catalog" for x in result["links"])
+    files = discover_page(
+        "https://goods-schedules.wto.org/browse/43339/file_browser",
+        (FIXTURES / "wto-goods-files.html").read_bytes(),
+        "text/html",
+        rules,
+    )
+    assert files["purpose"] == "catalog"
+    assert len(files["links"]) == 7 and all(x["purpose"] == "document" for x in files["links"])
+    assert all("/system/files/" in x["url"] and x["url"].lower().endswith(".pdf") for x in files["links"])
+    excluded = discover_page(
+        "https://goods-schedules.wto.org/member/indonesia",
+        html("""
+        <a href="/member/singapore">Singapore</a><a href="/member">All Members</a>
+        <a href="/member/download/36658">ZIP bundle</a><a href="/download_all/43339">ZIP</a>
+        <a href="/system/files/2020-10/RS619.docx">Word</a>
+        <a href="https://www.wto.org/english/res_e/booksp_e/xbooksp_e/wtoagreement_e.pdf">Restricted</a>
+        """),
+        "text/html",
+        rules,
+    )
+    assert excluded["links"] == []
+
+
+def test_bandung_official_alternative_separates_perda_perwali_and_upgrades_only_same_host_pagination():
+    catalog = "https://jdih.bandung.go.id/home/produk-hukum/peraturan-perundang-undangan-daerah"
+    for item_id, count, type_term in [("1.7", 1, "Peraturan Daerah"), ("1.10", 3, "Peraturan Wali Kota")]:
+        source = item(
+            "ID", item_id, "bpk", ("https://peraturan.bpk.go.id/Jenis/3", "catalog"), (catalog, "catalog")
+        )
+        rules = recipe_for(source)
+        result = discover_page(catalog, (FIXTURES / "bandung-catalog.html").read_bytes(), "text/html", rules)
+        assert result["purpose"] == "catalog"
+        details = [x for x in result["links"] if x["purpose"] == "detail"]
+        assert len(details) == count and all(type_term in x["title"] for x in details)
+        pagination = [x["url"] for x in result["links"] if x["purpose"] == "catalog"]
+        assert catalog + "?page=2" in pagination and catalog + "?page=390" in pagination
+        assert all(x["url"].startswith("https://") for x in result["links"])
+        unsafe = discover_page(
+            catalog,
+            html("""
+            <a href="http://evil.test/home/produk-hukum/peraturan-perundang-undangan-daerah?page=2">2</a>
+            <a href="http://jdih.bandung.go.id:444/home/produk-hukum/peraturan-perundang-undangan-daerah?page=2">2</a>
+            <a href="http://user@jdih.bandung.go.id/home/produk-hukum/peraturan-perundang-undangan-daerah?page=2">2</a>
+            <a href="http://jdih.bandung.go.id/home/produk-hukum/berita">News</a>
+            """),
+            "text/html",
+            rules,
+        )
+        assert unsafe["links"] == []
+    detail = discover_page(
+        catalog + "/30394",
+        (FIXTURES / "bandung-detail.html").read_bytes(),
+        "text/html",
+        recipe_for(item("ID", "1.7", "bpk", (catalog, "catalog"))),
+    )
+    assert detail["purpose"] == "detail"
+    assert [(x["url"], x["purpose"]) for x in detail["links"]] == [
+        ("https://jdih.bandung.go.id/media/22055?download=true", "document"),
+    ]
+
+
+def test_mk_official_puu_alternative_keeps_type_filter_and_scopes_judgment_files():
+    catalog = "https://www.mkri.id/perkara/persidangan/putusan?jenis=PUU"
+    source = item(
+        "ID",
+        "3.1",
+        "html_links",
+        ("https://jdih.mkri.id/produk-hukum/putusan", "catalog"),
+        (catalog, "catalog"),
+    )
+    source["trusted_hosts"] = ["s.mkri.id"]
+    rules = recipe_for(source)
+    pdf = "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf"
+    result = discover_page(
+        catalog,
+        html(f'''
+        <a href="?jenis=PUU&page=2">2</a><a href="?jenis=PHPU">Other type</a><a href="?page=2">Lost filter</a>
+        <a href="{pdf}">Putusan</a><a href="/peraturan/peraturan-uud">Constitution</a>
+        <a href="https://s.mkri.id/public/content/persidangan/sinopsis/summary.pdf">Summary</a>
+        '''),
+        "text/html",
+        rules,
+    )
+    assert [(x["url"], x["purpose"]) for x in result["links"]] == [
+        (catalog + "&page=2", "catalog"),
+        (pdf, "document"),
+    ]
+    assert discover_page(pdf, b"%PDF-1.7\n", "application/pdf", rules)["matched"]

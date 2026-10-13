@@ -1,0 +1,51 @@
+{
+  "row": [
+    {
+      "idperaturan": "P20466",
+      "no_peraturan": "19",
+      "tahun": "2025",
+      "tgl_di": "2025-10-29T00:00:00.000Z",
+      "diundangkan": "2025-10-29T00:00:00.000Z",
+      "tentang": "PENGESAHAN PERJANJIAN ANTARA REPUBLIK INDONESIA DAN FEDERASI RUSIA TENTANG EKSTRADISI (TREATY BETWEEN TE REPUBLIC OF INDONESIA AND THE RUSSIAN FEDERATION ON EXTRADITION)",
+      "ln": 181,
+      "tln": 7146,
+      "keterangan": "",
+      "idjenis": "JNS.01",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "teu": "",
+      "tempat": "",
+      "subjek": "",
+      "bahasa": "",
+      "lokasi": "",
+      "bidang_hukum": "",
+      "status": "Disahkan",
+      "terkait": "P01111",
+      "mengubah": "",
+      "mencabut": "",
+      "diubah": "",
+      "dicabut": "",
+      "diubah_sebagian": "",
+      "dicabut_sebagian": "",
+      "mngbh_s": "",
+      "mcbt_s": "",
+      "mencabutsebagian": "",
+      "mengubahsebagian": ""
+    }
+  ],
+  "file": [
+    {
+      "name": "1. Salinan UU Nomor 19 Tahun 2025.pdf",
+      "size": 449887,
+      "ext": ".pdf",
+      "realName": "1. Salinan UU Nomor 19 Tahun 2025.pdf"
+    },
+    {
+      "name": "2. Salinan Naskah Resmi Ri-rusia Mengenai Ekstradisi.pdf",
+      "size": 14661845,
+      "ext": ".pdf",
+      "realName": "2. Salinan Naskah Resmi RI-Rusia Mengenai Ekstradisi.pdf"
+    }
+  ],
+  "v": []
+}

@@ -501,6 +501,29 @@ class WorkflowDebugger:
         raw_request = payload.model_dump()
         request_hash = digest(raw_request)
         client_id = payload.client_id or uid()
+        with closing(self.db.connect()) as conn:
+            existing = conn.execute(
+                "SELECT * FROM debug_runs WHERE owner_id=? AND client_id=?", (owner, client_id)
+            ).fetchone()
+            if existing:
+                if existing["request_hash"] != request_hash:
+                    fail(409, "idempotency_conflict", "此次运行标识已用于其他输入，请重新发起试运行")
+                if existing["status"] != "running":
+                    return json.loads(existing["payload"])
+        template, stage, _ = self.inputs(payload)
+        countries = self.legal_countries(template, stage)
+        agent = stage.get("analysis") or template["agent"]
+        if countries is not None or any(
+            step["enabled"] and step["type"] == "retrieve" for step in agent["steps"]
+        ):
+            progress = self.service.index.prepare_scopes(
+                owner,
+                countries if countries is not None else [resolve_country(template["destination"])],
+                historical=countries is not None,
+                document_ids=payload.document_ids,
+            )
+            if progress["remaining"]:
+                fail(409, "index_preparing", "本次范围仍有资料待索引，已完成一批准备；请重试后再分析。")
         with self.db.transaction() as conn:
             self.expire_runs(conn, owner)
             existing = conn.execute(

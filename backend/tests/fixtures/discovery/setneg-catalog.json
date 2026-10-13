@@ -1,0 +1,73 @@
+{
+  "data": [
+    {
+      "idperaturan": "P20584",
+      "no_peraturan": "5",
+      "tahun": "2026",
+      "tentang": "PERUBAHAN KETIGA ATAS UNDANG-UNDANG NOMOR 2 TAHUN 2002 TENTANG KEPOLISIAN NEGARA REPUBLIK INDONESIA",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 5 Tahun 2026.pdf",
+      "tgl_di": "2026-06-17T00:00:00.000Z",
+      "diundangkan": "2026-06-17T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    },
+    {
+      "idperaturan": "P20589",
+      "no_peraturan": "4",
+      "tahun": "2026",
+      "tentang": "PERUBAHAN ATAS UNDANG-UNDANG NOMOR 4 TAHUN 2023 TENTANG PENGEMBANGAN DAN PENGUATAN SEKTOR KEUANGAN",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 4 Tahun 2026.pdf",
+      "tgl_di": "2026-06-17T00:00:00.000Z",
+      "diundangkan": "2026-06-17T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    },
+    {
+      "idperaturan": "P20580",
+      "no_peraturan": "3",
+      "tahun": "2026",
+      "tentang": "PELINDUNGAN SAKSI DAN KORBAN",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan Undang-Undang Nomor 3 Tahun 2026.pdf",
+      "tgl_di": "2026-05-20T00:00:00.000Z",
+      "diundangkan": "2026-05-20T00:00:00.000Z",
+      "status_hukum": "sebagian"
+    },
+    {
+      "idperaturan": "P20560",
+      "no_peraturan": "2",
+      "tahun": "2026",
+      "tentang": "PELINDUNGAN PEKERJA RUMAH TANGGA",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 2 Tahun 2026.pdf",
+      "tgl_di": "2026-04-30T00:00:00.000Z",
+      "diundangkan": "2026-04-30T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    },
+    {
+      "idperaturan": "P20495",
+      "no_peraturan": "1",
+      "tahun": "2026",
+      "tentang": "PENYESUAIAN PIDANA",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 1 Tahun 2026.pdf",
+      "tgl_di": "2026-01-02T00:00:00.000Z",
+      "diundangkan": "2026-01-02T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    }
+  ],
+  "jml": 901,
+  "jn": [
+    "UU"
+  ]
+}

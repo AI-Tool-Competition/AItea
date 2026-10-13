@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .db import dump, now, uid
-from .discovery import discover_page, normalized_seeds_for, recipe_for
+from .discovery import MAX_HTML_BYTES, discover_page, normalized_seeds_for, recipe_for
 
 PAGE_BATCH = 40
 FRONTIER_LIMIT = 20000
@@ -112,6 +112,7 @@ class ChecklistService:
         self.service, self.db = service, service.db
         self.plans = load_blueprints()
         self._migrate()
+        self._migrate_page_evidence()
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -156,6 +157,24 @@ class ChecklistService:
                 size INTEGER NOT NULL,purpose TEXT NOT NULL,warnings TEXT NOT NULL,created_at TEXT NOT NULL)""")
             conn.execute("CREATE INDEX pages_binding ON checklist_pages(binding_id,url)")
             conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (7, now()))
+
+    def _migrate_page_evidence(self):
+        with self.db.transaction() as conn:
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE version=11").fetchone():
+                return
+            # Keep the deployed ten-column page table intact for existing
+            # snapshots and read-only inventories. Evidence records a request,
+            # not a claim that the source's legal coverage is complete.
+            conn.execute("""CREATE TABLE checklist_page_evidence(
+                item_id TEXT PRIMARY KEY REFERENCES checklist_pages(item_id),
+                evidence TEXT NOT NULL CHECK(json_valid(evidence)))""")
+            conn.execute("""CREATE TRIGGER page_evidence_immutable_update
+                BEFORE UPDATE ON checklist_page_evidence
+                BEGIN SELECT RAISE(ABORT,'page evidence is immutable'); END""")
+            conn.execute("""CREATE TRIGGER page_evidence_immutable_delete
+                BEFORE DELETE ON checklist_page_evidence
+                BEGIN SELECT RAISE(ABORT,'page evidence is immutable'); END""")
+            conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (11, now()))
 
     def definition(self, plan_id, item_id=None):
         from .service import fail
@@ -571,13 +590,14 @@ class ChecklistService:
 
     @staticmethod
     def inspect(plan, fetched):
-        # The full blob is already streamed/hashed with the global size bound. HTML
-        # discovery is capped independently; PDF identification only needs a header.
+        # The full blob is already streamed/hashed with the global size bound.
+        # Catalog JSON/HTML have their own bound; neither becomes legal text.
         blob = fetched["blob"]
-        if fetched["mime_type"].startswith("text/html") and blob.size > 4_000_000:
-            raise ValueError("目录或详情页超过 4 MB 解析上限")
+        mime = fetched["mime_type"].split(";", 1)[0].strip().lower()
+        if mime in {"text/html", "application/xhtml+xml", "application/json"} and blob.size > MAX_HTML_BYTES:
+            raise ValueError("目录或详情页超过 4 MiB 解析上限")
         with blob.path.open("rb") as stream:
-            body = stream.read(4_000_000)
+            body = stream.read(MAX_HTML_BYTES)
         result = discover_page(fetched["url"], body, fetched["mime_type"], plan["checklist"]["recipe"])
         if not result["matched"]:
             raise ValueError(result.get("reason") or "页面不符合当前清单范围")
@@ -602,6 +622,16 @@ class ChecklistService:
                 dump(result["warnings"]),
                 now(),
             ),
+        )
+        evidence = {
+            "request": fetched.get("request_evidence")
+            or {"method": fetched.get("request_method", "GET"), "url": fetched["url"]}
+        }
+        if result.get("scope"):
+            evidence["scope"] = result["scope"]
+        conn.execute(
+            "INSERT INTO checklist_page_evidence(item_id,evidence) VALUES(?,?)",
+            (claim["id"], dump(evidence)),
         )
         conn.execute(
             "UPDATE collection_items SET status='discovered',final_url=?,fetched_at=?,error=NULL,lease_token=NULL,lease_until=NULL WHERE id=?",

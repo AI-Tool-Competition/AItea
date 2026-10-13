@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
 
 from .db import dump, now, uid
@@ -409,11 +409,12 @@ class CollectionService:
                     "UPDATE collection_items SET status='queued',attempts=0,available_at=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE run_id=? AND status IN ('failed','cancelled')",
                     (run_id,),
                 )
-                conn.execute(
-                    """UPDATE processing_jobs SET status='queued',attempts=0,available_at=0,error=NULL,updated_at=?
-                    WHERE status='failed' AND document_id IN (SELECT document_id FROM collection_items WHERE run_id=?)""",
-                    (now(), run_id),
-                )
+                for job in conn.execute(
+                    """SELECT document_id FROM processing_jobs WHERE status='failed' AND owner_id=?
+                    AND document_id IN (SELECT document_id FROM collection_items WHERE run_id=?)""",
+                    (owner, run_id),
+                ).fetchall():
+                    self.queue_processing(conn, job["document_id"], owner, retry_ocr=True)
                 status = "queued"
             conn.execute(
                 "UPDATE collection_runs SET status=?,revision=revision+1,updated_at=? WHERE id=?",
@@ -422,7 +423,24 @@ class CollectionService:
             self._update_source(conn, run_id)
             return self.run_dict(conn, self.own_run(conn, owner, run_id))
 
-    def queue_processing(self, conn, document_id, owner):
+    def queue_processing(self, conn, document_id, owner, *, retry_ocr=False):
+        if retry_ocr:
+            from .ingestion import pdf_quality
+
+            row = conn.execute(
+                "SELECT d.manifest FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND p.status='failed'",
+                (document_id, owner),
+            ).fetchone()
+            manifest = json.loads(row["manifest"]) if row else {}
+            pages = manifest.get("pages", [])
+            if any(page.get("status") == "ocr_failed" for page in pages):
+                for page in pages:
+                    if page.get("status") == "ocr_failed":
+                        page["status"] = "pending_ocr"
+                        page.setdefault("ocr", {})["attempts"] = 0
+                manifest["quality"] = pdf_quality(pages)
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document_id))
+                conn.execute("UPDATE processing_jobs SET phase='parse' WHERE document_id=?", (document_id,))
         conn.execute(
             """INSERT INTO processing_jobs(document_id,owner_id,phase,status,updated_at) VALUES(?,?,'parse','queued',?)
             ON CONFLICT(document_id) DO UPDATE SET status='queued',attempts=0,available_at=0,error=NULL,updated_at=excluded.updated_at
@@ -589,6 +607,7 @@ class CollectionService:
                     conn.execute("DELETE FROM collection_network_leases WHERE id=?", (token,))
 
     def fetch_item(self, claim):
+        from .discovery import request_parameters
         from .ingestion import _download, discover_attachments
 
         if claim is None:
@@ -604,7 +623,15 @@ class CollectionService:
                 ).fetchone()
             if cache and not Path(cache["storage_path"]).is_file():
                 cache = None
+            plan = json.loads(claim["plan"])
+            request_options = (
+                request_parameters(claim["url"], plan["checklist"]["definition"])
+                if plan.get("checklist")
+                else {}
+            )
             validators = {key: cache[key] for key in ("etag", "last_modified")} if cache else None
+            if request_options.get("json_body") is not None:
+                validators = None
             deadline = time.monotonic() + 90
             fetched = _download(
                 claim["url"],
@@ -613,7 +640,15 @@ class CollectionService:
                 consume=lambda chunks: self.service.archive.blobs.put(claim["owner_id"], chunks),
                 validators=validators,
                 connection_slot=lambda host: self.network_slot(host, deadline),
+                accept_compressed_html=claim.get("purpose") in {"catalog", "detail"},
+                **request_options,
             )
+            fetched["request_evidence"] = {
+                "method": fetched.get("request_method", "GET"),
+                "url": fetched["url"],
+            }
+            if "json_body" in request_options:
+                fetched["request_evidence"]["json_body"] = request_options["json_body"]
             if fetched.get("not_modified"):
                 if not cache:
                     raise ValueError("来源返回 304，但本地没有可复用原件")
@@ -626,7 +661,6 @@ class CollectionService:
                 if blob.digest != cache["content_hash"]:
                     raise ValueError("本地原件校验失败，请重新抓取")
                 fetched = dict(cache) | fetched | {"blob": blob}
-            plan = json.loads(claim["plan"])
             attachments = []
             blob = fetched["blob"]
             checklist_result = (
@@ -714,8 +748,10 @@ class CollectionService:
             self._failure(claim, error, processing=False)
 
     def process_item(self, claim):
-        from .ingestion import embed_texts
-        from .parsing import parse_bounded
+        from .ingestion import embed_texts, embedding_batch_size
+        from .parsing import ocr_bounded, parse_bounded
+        from .ingestion_quality import OCR_VALIDATION_VERSION, ocr_pending, quality_warning, text_complete
+        from .vision import vision_ocr_configured
 
         if claim is None:
             return
@@ -727,58 +763,155 @@ class CollectionService:
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
             fingerprint = self.service.embedding_fingerprint()
+            batch, vectors = [], None
             if claim["phase"] == "parse":
-                if not manifest.get("elements"):
+                content = None
+                if not manifest.get("elements") and not manifest.get("pages"):
                     content = Path(doc["storage_path"]).read_bytes()
                     if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
                         raise ValueError("原件完整性校验失败")
                     manifest = parse_bounded(
                         doc["filename"], content, doc["mime_type"], parser=os.getenv("TEA_PARSER", "basic")
                     )
-                    if not manifest.get("elements"):
+                    if not manifest.get("elements") and not manifest.get("pages"):
                         raise ValueError("文件没有可提取的正文；扫描件需要 OCR")
-            elif should_index and fingerprint:
-                if manifest.get("embedding_fingerprint") != fingerprint:
-                    for chunk in manifest.get("chunks", []):
-                        chunk.pop("embedding", None)
-                    manifest["embedding_fingerprint"] = fingerprint
-                batch = [chunk for chunk in manifest.get("chunks", []) if not chunk.get("embedding")][:64]
+                restore_pages = any(
+                    page.get("status", "").startswith("ocr_")
+                    and (
+                        not text_complete(manifest)
+                        or page.get("ocr", {}).get("validation_version") != OCR_VALIDATION_VERSION
+                    )
+                    for page in manifest.get("pages", [])
+                )
+                if restore_pages or (ocr_pending(manifest) and vision_ocr_configured()):
+                    if content is None:
+                        content = Path(doc["storage_path"]).read_bytes()
+                        if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
+                            raise ValueError("原件完整性校验失败")
+                    checkpoint_lock = Lock()
+
+                    def store_image(rendered):
+                        import base64
+
+                        if rendered.get("source_hash") != doc["content_hash"]:
+                            raise ValueError("识别图像与原件版本不一致")
+                        image = base64.b64decode(rendered["image_base64"], validate=True)
+                        if len(image) > 8 * 1024 * 1024:
+                            raise ValueError("识别图像超过存储限制")
+                        if hashlib.sha256(image).hexdigest() != rendered.get("image_sha256"):
+                            raise ValueError("识别图像完整性校验失败")
+                        blob = self.service.archive.blobs.put_bytes(doc["owner_id"], image)
+                        reference = {
+                            "content_hash": blob.digest,
+                            "size": blob.size,
+                            "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
+                            "mime_type": "image/png",
+                        }
+                        with checkpoint_lock, self.db.transaction() as conn:
+                            if not self._valid_claim(conn, claim, True):
+                                raise ValueError("处理任务已更新，请等待当前任务完成")
+                            page = next(
+                                page for page in manifest["pages"] if page["page"] == rendered["page"]
+                            )
+                            page.setdefault("ocr", {})["image_blob"] = reference
+                            conn.execute(
+                                "UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"])
+                            )
+                        return reference
+
+                    def checkpoint(page):
+                        # Each completed physical page is durable before another batch.
+                        # The lease check prevents a stale worker from replacing new work.
+                        with checkpoint_lock, self.db.transaction() as conn:
+                            if not self._valid_claim(conn, claim, True):
+                                raise ValueError("处理任务已更新，请等待当前任务完成")
+                            manifest["pages"] = [
+                                page if previous["page"] == page["page"] else previous
+                                for previous in manifest["pages"]
+                            ]
+                            conn.execute(
+                                "UPDATE documents SET manifest=? WHERE id=?",
+                                (dump(manifest), doc["id"]),
+                            )
+
+                    manifest = ocr_bounded(
+                        doc["filename"],
+                        content,
+                        doc["mime_type"],
+                        manifest,
+                        on_page=checkpoint,
+                        on_image=store_image,
+                    )
+            elif should_index and fingerprint and text_complete(manifest):
+                with self.db.transaction() as conn:
+                    if not self._valid_claim(conn, claim, True):
+                        return
+                    if conn.execute(
+                        "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
+                    ).fetchone():
+                        self.service.index.sync_document(conn, doc["id"])
+                    batch = self.service.index.pending(
+                        conn, doc["id"], fingerprint, limit=embedding_batch_size()
+                    )
                 if batch:
-                    vectors = embed_texts([chunk["text"] for chunk in batch])
+                    vectors = embed_texts([chunk["retrieval_text"] for chunk in batch])
                     if vectors is None:
                         raise ValueError("向量配置已变更，请重试处理")
-                    for chunk, vector in zip(batch, vectors, strict=True):
-                        chunk["embedding"] = vector
             warning = "；".join(str(item) for item in manifest.get("warnings", []))[:500] or None
+            warning = quality_warning(manifest) or warning
             with self.db.transaction() as conn:
                 if not self._valid_claim(conn, claim, True):
                     return
                 # Classification may change while parsing or calling the provider. Decide
                 # follow-up work from current state in the same transaction as completion.
                 current_fingerprint = self.service.embedding_fingerprint()
+                if claim["phase"] == "parse":
+                    conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+                    self.service.index.sync_document(conn, doc["id"], manifest)
+                elif conn.execute(
+                    "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
+                ).fetchone():
+                    self.service.index.sync_document(conn, doc["id"])
+                indexable = self.service.archive.can_index(conn, doc["id"])
+                if vectors is not None and fingerprint == current_fingerprint and indexable:
+                    self.service.index.store_vectors(conn, doc["id"], fingerprint, batch, vectors)
                 needs_index = (
-                    self.service.archive.can_index(conn, doc["id"])
+                    indexable
                     and current_fingerprint
-                    and manifest.get("chunks")
-                    and (
-                        manifest.get("embedding_fingerprint") != current_fingerprint
-                        or any(not chunk.get("embedding") for chunk in manifest["chunks"])
+                    and self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
+                )
+                needs_ocr = bool(ocr_pending(manifest) and vision_ocr_configured())
+                deferred = needs_ocr and manifest.get("quality", {}).get("deferred_pages")
+                next_phase = "parse" if needs_ocr else ("embed" if needs_index else None)
+                incomplete = not text_complete(manifest) and not next_phase
+                conn.execute(
+                    "UPDATE documents SET status=?,error=? WHERE id=?",
+                    ("processing" if needs_ocr else "ready", warning, doc["id"]),
+                )
+                if not needs_index and current_fingerprint and indexable and text_complete(manifest):
+                    conn.execute(
+                        "UPDATE documents SET manifest=json_set(manifest,'$.embedding_fingerprint',?) WHERE id=?",
+                        (current_fingerprint, doc["id"]),
                     )
-                )
-                next_phase = "embed" if needs_index else None
+                    # Only the model marker changed; the text checkpoint is already current.
+                    conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (doc["id"],))
                 conn.execute(
-                    "UPDATE documents SET manifest=?,status='ready',error=? WHERE id=?",
-                    (dump(manifest), warning, doc["id"]),
-                )
-                conn.execute(
-                    "UPDATE processing_jobs SET phase=?,status=?,attempts=0,available_at=0,lease_token=NULL,lease_until=NULL,error=NULL,updated_at=? WHERE document_id=?",
-                    (next_phase or claim["phase"], "queued" if next_phase else "completed", now(), doc["id"]),
+                    "UPDATE processing_jobs SET phase=?,status=?,attempts=0,available_at=?,lease_token=NULL,lease_until=NULL,error=?,updated_at=? WHERE document_id=?",
+                    (
+                        next_phase or claim["phase"],
+                        "queued" if next_phase else ("failed" if incomplete else "completed"),
+                        time.time() + 5 if deferred else 0,
+                        warning if incomplete else None,
+                        now(),
+                        doc["id"],
+                    ),
                 )
                 self._refresh_document(conn, doc["id"])
         except Exception as error:
             self._failure(claim, error, processing=True)
 
     def _failure(self, claim, error, *, processing):
+        from .parsing import ProcessingDeferred
         from .service import AppError
 
         # Unexpected exceptions/paths/provider response bodies never become public error text.
@@ -792,10 +925,13 @@ class CollectionService:
         if processing and claim["phase"] == "embed":
             retryable = True
             safe = "向量服务暂不可用，原件和正文已保留"
-        exhausted = claim["attempts"] >= MAX_ATTEMPTS or not retryable
+        deferred = processing and isinstance(error, ProcessingDeferred)
+        exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
         delay = min(
             300, max(2 ** claim["attempts"] + random.random(), getattr(error, "retry_after", None) or 0)
         )
+        if deferred:
+            delay = 5
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):
@@ -804,6 +940,8 @@ class CollectionService:
                 f"UPDATE {table} SET status=?,available_at=?,error=?,lease_token=NULL,lease_until=NULL WHERE {key}=?",
                 ("failed" if exhausted else "queued", time.time() + delay, safe, claim[key]),
             )
+            if deferred:
+                conn.execute("UPDATE processing_jobs SET attempts=0 WHERE document_id=?", (claim[key],))
             if processing:
                 conn.execute(
                     "UPDATE documents SET error=?,status=CASE WHEN ? AND status='processing' THEN 'failed' ELSE status END WHERE id=?",
@@ -820,7 +958,7 @@ class CollectionService:
                     )
                 self._refresh(conn, claim["run_id"])
         logger.info(
-            "collection_item_failed",
+            "collection_item_deferred" if deferred else "collection_item_failed",
             extra={"queue": table, "item_id": claim[key], "error_type": type(error).__name__},
         )
 

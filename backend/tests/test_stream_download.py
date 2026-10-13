@@ -46,8 +46,9 @@ def transport(monkeypatch):
             self.closed = False
             connections.append(self)
 
-        def request(self, method, path, *, headers):
+        def request(self, method, path, *, headers, body=None):
             requests.append((self.host, path, headers.copy()))
+            self.method, self.body = method, body
 
         def getresponse(self):
             return responses.pop(0)
@@ -89,6 +90,116 @@ def test_consumer_receives_chunks_before_later_network_reads(transport):
     assert result["etag"] == '"version-1"'
     assert result["filename"] == "law.pdf"
     assert all(connection.closed for connection in connections)
+
+
+def test_explicit_catalog_gzip_is_streamed_and_binds_uncompressed_original(transport):
+    import gzip
+
+    responses, requests, _ = transport
+    raw = b"<html><p>Official legal catalog</p></html>" * 1000
+    compressed = gzip.compress(raw)
+    responses.append(
+        Response(
+            [compressed[:20], compressed[20:]],
+            headers={
+                "Content-Length": str(len(compressed)),
+                "Content-Encoding": "gzip",
+                "Content-Type": "text/html",
+            },
+        )
+    )
+    result = download(accept_compressed_html=True)
+    assert requests[0][2]["Accept-Encoding"] == "gzip, identity"
+    assert result["content"] == raw
+    assert result["transfer_bytes"] == len(compressed)
+    assert result["content_encoding"] == "gzip"
+
+
+@pytest.mark.parametrize("variant", ["truncated", "checksum", "trailing", "bomb", "pdf", "not_opted_in"])
+def test_compressed_responses_cannot_publish_invalid_or_unbounded_content(transport, monkeypatch, variant):
+    import gzip
+
+    responses, _, _ = transport
+    body = gzip.compress(b"<html>" + b"A" * 4096 + b"</html>")
+    if variant == "truncated":
+        body = body[:-5]
+    elif variant == "checksum":
+        body = body[:-8] + bytes([body[-8] ^ 255]) + body[-7:]
+    elif variant == "trailing":
+        body += gzip.compress(b"extra")
+    elif variant == "bomb":
+        monkeypatch.setattr(ingestion, "MAX_COMPRESSED_HTML_BYTES", 512)
+    responses.append(
+        Response(
+            [body],
+            headers={
+                "Content-Encoding": "gzip",
+                "Content-Type": "application/pdf" if variant == "pdf" else "text/html",
+                "Content-Length": str(len(body)),
+            },
+        )
+    )
+    published = []
+
+    def consume(blocks):
+        result = b"".join(blocks)
+        published.append(result)
+        return result
+
+    with pytest.raises(ingestion.DownloadError):
+        download(accept_compressed_html=variant != "not_opted_in", consume=consume)
+    assert not published
+
+
+def test_official_catalog_json_request_and_response_are_bounded(transport):
+    import gzip
+    import json
+
+    responses, _, connections = transport
+    payload = {"jns": ["UU"], "start": 0, "length": 5}
+    body = gzip.compress(b'{"jml":1,"data":[{"idperaturan":"P1"}]}')
+    responses.append(
+        Response([body], headers={"Content-Encoding": "gzip", "Content-Type": "application/json"})
+    )
+    result = download(json_body=payload, accept_compressed_json=True)
+    assert connections[0].method == "POST"
+    assert json.loads(connections[0].body) == payload
+    assert json.loads(result["content"])["jml"] == 1
+    assert result["request_method"] == "POST"
+
+
+def test_catalog_post_never_replays_body_on_redirect(transport):
+    responses, requests, _ = transport
+    responses.append(Response(status=307, headers={"Location": "https://another.example/list"}))
+    with pytest.raises(ingestion.DownloadError):
+        download(json_body={"jns": ["UU"]})
+    assert len(requests) == 1
+
+
+def test_oversized_catalog_request_is_rejected_before_connecting(transport):
+    with pytest.raises(ingestion.DownloadError):
+        download(json_body={"filter": "x" * 16385})
+    assert not transport[2]
+
+
+@pytest.mark.parametrize(
+    ("header", "name"),
+    [
+        ('attachment; filename="UU Nomor 2 Tahun 2026.pdf"', "UU Nomor 2 Tahun 2026.pdf"),
+        ("attachment; filename*=UTF-8''%E6%B3%95%E8%A7%84%20UU.pdf", "法规 UU.pdf"),
+        ('attachment; filename="../../law.pdf"', "law.pdf"),
+        ('attachment; filename="misleading.html"', "misleading.html.pdf"),
+        ('attachment; filename="bad\r\nheader.pdf"', "law.pdf"),
+    ],
+)
+def test_download_display_name_uses_bounded_disposition_without_affecting_storage(transport, header, name):
+    responses, _, _ = transport
+    responses.append(
+        Response(
+            [b"pdf contents"], headers={"Content-Type": "application/pdf", "Content-Disposition": header}
+        )
+    )
+    assert download()["filename"] == name
 
 
 @pytest.mark.parametrize(

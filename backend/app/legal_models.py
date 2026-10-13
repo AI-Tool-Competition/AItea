@@ -176,6 +176,8 @@ class LegalCitation(LegalModel):
     metadata: dict[str, JsonValue] = Field(default_factory=dict, max_length=30)
     metadata_revision: int = Field(default=0, ge=0)
     country: Country | None = None
+    chunk_id: str | None = Field(default=None, max_length=200)
+    chunk_hash: str | None = Field(default=None, max_length=64)
 
 
 class LegalCondition(LegalModel):

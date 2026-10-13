@@ -229,8 +229,10 @@ class IngestionTests(unittest.TestCase):
         writer.add_blank_page(width=100, height=100)
         output = io.BytesIO()
         writer.write(output)
-        with self.assertRaisesRegex(ValueError, "OCR"):
-            self.ingestion.parse_file("scan.pdf", output.getvalue())
+        result = self.ingestion.parse_file("scan.pdf", output.getvalue())
+        self.assertEqual(result["chunks"], [])
+        self.assertFalse(result["quality"]["complete"])
+        self.assertEqual(result["quality"]["pending_pages"], [1])
 
     def test_only_same_origin_direct_attachments_are_fetched(self):
         fetched = []

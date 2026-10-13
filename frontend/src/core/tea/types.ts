@@ -520,6 +520,9 @@ export interface TemplateDraftSummary {
 }
 export interface StageAnalysis extends DebugResult {
   id: string;
+  case_id: string;
+  legal_analysis_id: string;
+  legal_revision: number;
   case_revision: number;
   status: "completed" | "failed";
   created_at: string;

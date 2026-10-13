@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, RefreshCw, Scale, Square } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -248,12 +248,35 @@ function FactEditor({
   );
 }
 
-export function LegalWorkbench(props: {
+type WorkbenchProps = {
   accountId: string;
   record: CaseDetail;
   stageId: string;
   onUpdate?: (record: CaseDetail) => void;
+  embedded?: boolean;
+  analysisId?: string;
+  analysisRevision?: number;
+  readOnly?: boolean;
+};
+function InlineEditor({
+  embedded,
+  title,
+  children,
+}: {
+  embedded: boolean;
+  title: string;
+  children: ReactNode;
 }) {
+  return embedded ? (
+    <details className="tea-node-editor">
+      <summary>{title}</summary>
+      {children}
+    </details>
+  ) : (
+    <>{children}</>
+  );
+}
+export function LegalWorkbench(props: WorkbenchProps) {
   return (
     <ScopedLegalWorkbench
       key={JSON.stringify([props.accountId, props.record.id, props.stageId])}
@@ -266,18 +289,19 @@ function ScopedLegalWorkbench({
   record,
   stageId,
   onUpdate,
-}: {
-  accountId: string;
-  record: CaseDetail;
-  stageId: string;
-  onUpdate?: (record: CaseDetail) => void;
-}) {
+  embedded = false,
+  analysisId,
+  analysisRevision,
+  readOnly = false,
+}: WorkbenchProps) {
   const legal = useLegalWorkbench(
     accountId,
     record.id,
     stageId,
     record.revision,
     onUpdate,
+    analysisId,
+    analysisRevision,
   );
   const [followupPage, setFollowupPage] = useState(0);
   const [newLabel, setNewLabel] = useState("");
@@ -313,7 +337,7 @@ function ScopedLegalWorkbench({
   );
   const locked =
     record.stages.find((stage) => stage.id === stageId)?.status === "locked";
-  const editable = !legal.busy && !locked;
+  const editable = !legal.busy && !locked && !readOnly;
   function renderFact(fact: LegalFact, purpose?: string) {
     return (
       <FactEditor
@@ -329,60 +353,70 @@ function ScopedLegalWorkbench({
     );
   }
   return (
-    <section className="tea-legal-workbench" aria-label="法律分析工作台">
-      <header className="tea-legal-heading">
-        <Scale size={18} />
-        <div>
-          <h3>法律分析</h3>
-          <p>围绕问题补充事实，逐项查看结论与依据。</p>
-        </div>
-      </header>
+    <section
+      className={`tea-legal-workbench${embedded ? "tea-legal-embedded" : ""}`}
+      aria-label={embedded ? "本节点分析与编辑" : "法律分析工作台"}
+    >
+      {!embedded && (
+        <header className="tea-legal-heading">
+          <Scale size={18} />
+          <div>
+            <h3>法律分析</h3>
+            <p>围绕问题补充事实，逐项查看结论与依据。</p>
+          </div>
+        </header>
+      )}
       {locked && (
         <p className="tea-legal-note">当前节点尚未解锁，可查看已有记录。</p>
       )}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void legal.run();
-        }}
-      >
-        <label className="tea-field">
-          <span>法律分析问题</span>
-          <Textarea
-            rows={3}
-            maxLength={10000}
-            value={legal.draft.question}
-            onChange={(e) => legal.editQuestion(e.target.value)}
-            placeholder="例如：这笔出口交易的付款条款有哪些风险？"
-          />
-        </label>
-        <div className="tea-legal-toolbar">
-          <ActionButton
-            size="sm"
-            type="submit"
-            busy={legal.busy === "run"}
-            disabled={
-              !editable ||
-              legal.loading ||
-              !!legal.historyError ||
-              !legal.draft.question.trim()
-            }
-          >
-            开始分析
-          </ActionButton>
-          {legal.busy === "run" && (
-            <Button
-              type="button"
+      <InlineEditor embedded={embedded} title="补充分析问题">
+        {embedded && analysis && (
+          <p className="tea-legal-note">本次范围：{analysis.question}</p>
+        )}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void legal.run();
+          }}
+        >
+          <label className="tea-field">
+            <span>法律分析问题</span>
+            <Textarea
+              rows={3}
+              maxLength={10000}
+              value={legal.draft.question}
+              onChange={(e) => legal.editQuestion(e.target.value)}
+              placeholder="例如：这笔出口交易的付款条款有哪些风险？"
+            />
+          </label>
+          <div className="tea-legal-toolbar">
+            <ActionButton
               size="sm"
-              variant="ghost"
-              onClick={legal.stop}
+              type="submit"
+              busy={legal.busy === "run"}
+              disabled={
+                !editable ||
+                legal.loading ||
+                !!legal.historyError ||
+                !legal.draft.question.trim()
+              }
             >
-              <Square size={13} />
-              停止分析
-            </Button>
-          )}
-        </div>
-      </form>
+              开始分析
+            </ActionButton>
+            {legal.busy === "run" && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={legal.stop}
+              >
+                <Square size={13} />
+                停止分析
+              </Button>
+            )}
+          </div>
+        </form>
+      </InlineEditor>
       {legal.label && (
         <p role="status" className="tea-legal-note">
           {legal.label}
@@ -402,80 +436,83 @@ function ScopedLegalWorkbench({
           </Button>
         </>
       )}
-      <div className="tea-legal-history">
-        <h4>本节点的分析记录</h4>
-        {legal.loading ? (
-          <Busy label="读取分析记录…" />
-        ) : legal.historyError ? (
-          <ErrorNotice message={legal.historyError} onRetry={legal.reload} />
-        ) : (
-          <>
-            {legal.history.analyses.length > 0 ? (
-              <label className="tea-field">
-                <span className="sr-only">选择分析记录</span>
-                <select
-                  value={
-                    legal.history.analyses.some(
-                      (item) => item.id === legal.draft.selectedId,
-                    )
-                      ? legal.draft.selectedId
-                      : ""
-                  }
-                  disabled={!!legal.busy}
-                  onChange={(e) => {
-                    setFollowupPage(0);
-                    legal.choose(e.target.value);
-                  }}
-                >
-                  <option value="" disabled>
-                    选择分析记录
-                  </option>
-                  {legal.history.analyses.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.question} · {legalStatusLabel[item.status]} ·{" "}
-                      {dateLabel(item.created_at)}
+      <InlineEditor embedded={embedded} title="本节点的分析记录">
+        <div className="tea-legal-history">
+          <h4>本节点的分析记录</h4>
+          {legal.loading ? (
+            <Busy label="读取分析记录…" />
+          ) : legal.historyError ? (
+            <ErrorNotice message={legal.historyError} onRetry={legal.reload} />
+          ) : (
+            <>
+              {legal.history.analyses.length > 0 ? (
+                <label className="tea-field">
+                  <span className="sr-only">选择分析记录</span>
+                  <select
+                    value={
+                      legal.history.analyses.some(
+                        (item) => item.id === legal.draft.selectedId,
+                      )
+                        ? legal.draft.selectedId
+                        : ""
+                    }
+                    disabled={!!legal.busy}
+                    onChange={(e) => {
+                      setFollowupPage(0);
+                      legal.choose(e.target.value);
+                    }}
+                  >
+                    <option value="" disabled>
+                      选择分析记录
                     </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <p className="tea-legal-note">
-                还没有分析记录。写下具体问题即可开始。
-              </p>
-            )}
-            {legal.history.total > 20 && (
-              <nav className="tea-legal-pagination" aria-label="分析历史分页">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={legal.page === 0 || !!legal.busy}
-                  onClick={() => legal.setPage(legal.page - 1)}
-                >
-                  上一页
-                </Button>
-                <span>
-                  第 {legal.page + 1} 页 · 共 {legal.history.total} 条
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={
-                    (legal.page + 1) * 20 >= legal.history.total || !!legal.busy
-                  }
-                  onClick={() => legal.setPage(legal.page + 1)}
-                >
-                  下一页
-                </Button>
-              </nav>
-            )}
-          </>
-        )}
-      </div>
+                    {legal.history.analyses.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.question} · {legalStatusLabel[item.status]} ·{" "}
+                        {dateLabel(item.created_at)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <p className="tea-legal-note">
+                  还没有分析记录。写下具体问题即可开始。
+                </p>
+              )}
+              {legal.history.total > 20 && (
+                <nav className="tea-legal-pagination" aria-label="分析历史分页">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={legal.page === 0 || !!legal.busy}
+                    onClick={() => legal.setPage(legal.page - 1)}
+                  >
+                    上一页
+                  </Button>
+                  <span>
+                    第 {legal.page + 1} 页 · 共 {legal.history.total} 条
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={
+                      (legal.page + 1) * 20 >= legal.history.total ||
+                      !!legal.busy
+                    }
+                    onClick={() => legal.setPage(legal.page + 1)}
+                  >
+                    下一页
+                  </Button>
+                </nav>
+              )}
+            </>
+          )}
+        </div>
+      </InlineEditor>
       {legal.detailLoading && <Busy label="读取分析详情…" />}
       {analysis && (
         <div className="tea-legal-analysis">
           <header>
-            <h4>{analysis.question}</h4>
+            <h4>{embedded ? "分析结论与下一步" : analysis.question}</h4>
             <span className="ta-badge">
               {legalStatusLabel[analysis.status]}
             </span>
@@ -491,142 +528,157 @@ function ScopedLegalWorkbench({
             <RefreshCw size={13} />
             重新分析受影响问题
           </Button>
+          {embedded && <LegalResultView result={analysis.result} compact />}
           {requirements.length > 0 && (
-            <section
-              className="tea-legal-followups"
-              aria-label="需要补充的事实"
+            <InlineEditor
+              embedded={embedded}
+              title={`补充信息 · ${requirements.length} 项待核对`}
             >
-              <h4>先补充这些信息</h4>
-              <p className="tea-legal-note">
-                每组最多 {maxQuestions} 项；保存事实后，可重新分析相关问题。
-              </p>
-              {requirements
-                .slice(
-                  questionPage * maxQuestions,
-                  (questionPage + 1) * maxQuestions,
-                )
-                .map((requirement) =>
-                  renderFact(
-                    facts.get(requirement.key) ?? emptyFact(requirement),
-                    requirement.purpose,
-                  ),
-                )}
-              {requirements.length > maxQuestions && (
-                <nav className="tea-legal-pagination" aria-label="补充事实分组">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={questionPage === 0}
-                    onClick={() => setFollowupPage(questionPage - 1)}
+              <section
+                className="tea-legal-followups"
+                aria-label="需要补充的事实"
+              >
+                <h4>先补充这些信息</h4>
+                <p className="tea-legal-note">
+                  每组最多 {maxQuestions} 项；保存事实后，可重新分析相关问题。
+                </p>
+                {requirements
+                  .slice(
+                    questionPage * maxQuestions,
+                    (questionPage + 1) * maxQuestions,
+                  )
+                  .map((requirement) =>
+                    renderFact(
+                      facts.get(requirement.key) ?? emptyFact(requirement),
+                      requirement.purpose,
+                    ),
+                  )}
+                {requirements.length > maxQuestions && (
+                  <nav
+                    className="tea-legal-pagination"
+                    aria-label="补充事实分组"
                   >
-                    上一组问题
-                  </Button>
-                  <span>
-                    {questionPage + 1} /{" "}
-                    {Math.ceil(requirements.length / maxQuestions)}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={
-                      (questionPage + 1) * maxQuestions >= requirements.length
-                    }
-                    onClick={() => setFollowupPage(questionPage + 1)}
-                  >
-                    下一组问题
-                  </Button>
-                </nav>
-              )}
-            </section>
-          )}
-          <LegalResultView result={analysis.result} />
-          {analysis.sections.length > 0 && (
-            <section className="tea-legal-sections" aria-label="法律分析报告">
-              <h4>分析报告</h4>
-              <p className="tea-legal-note">
-                人工编辑的段落会保留。重新分析生成的建议需逐段确认。
-              </p>
-              {analysis.sections.map((section) => {
-                const edit = legal.sectionDraft(section);
-                const stale =
-                  !!edit && edit.expected_revision !== analysis.revision;
-                return (
-                  <div className="tea-legal-section" key={section.id}>
-                    <label className="tea-field">
-                      <span>
-                        {section.title}
-                        {section.edited ? " · 已人工编辑" : ""}
-                        {section.needs_review ? " · 待复核" : ""}
-                      </span>
-                      <Textarea
-                        aria-label={`报告段落：${section.title}`}
-                        rows={6}
-                        maxLength={30000}
-                        value={edit?.content ?? section.content}
-                        disabled={!editable}
-                        onChange={(e) =>
-                          legal.editSection(section, e.target.value)
-                        }
-                      />
-                    </label>
-                    {stale && (
-                      <div className="tea-legal-conflict">
-                        <strong>已有新修订，你的输入已保留</strong>
-                        <p className="tea-legal-prose">
-                          最新保存内容：{section.content}
-                        </p>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={!editable}
-                          onClick={() => legal.rebaseSection(section)}
-                        >
-                          核对后采用最新修订号
-                        </Button>
-                      </div>
-                    )}
                     <Button
                       size="sm"
-                      variant="outline"
-                      aria-label={`保存段落：${section.title}`}
-                      disabled={!editable || !edit || stale}
-                      onClick={() => void legal.saveSection(section)}
+                      variant="ghost"
+                      disabled={questionPage === 0}
+                      onClick={() => setFollowupPage(questionPage - 1)}
                     >
-                      保存段落
+                      上一组问题
                     </Button>
-                    {section.suggested_content !== null && (
-                      <details className="tea-legal-suggestion" open>
-                        <summary>待确认的修改建议</summary>
-                        <div className="tea-legal-diff">
-                          <div>
-                            <strong>当前保存内容</strong>
-                            <del>{section.content}</del>
-                          </div>
-                          <div>
-                            <strong>分析建议</strong>
-                            <ins>{section.suggested_content}</ins>
-                          </div>
-                        </div>
-                        {edit && (
-                          <p className="tea-legal-note">
-                            先保存并核对当前输入，再接受建议。
+                    <span>
+                      {questionPage + 1} /{" "}
+                      {Math.ceil(requirements.length / maxQuestions)}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={
+                        (questionPage + 1) * maxQuestions >= requirements.length
+                      }
+                      onClick={() => setFollowupPage(questionPage + 1)}
+                    >
+                      下一组问题
+                    </Button>
+                  </nav>
+                )}
+              </section>
+            </InlineEditor>
+          )}
+          <InlineEditor embedded={embedded} title="查看详细结论与原文依据">
+            <LegalResultView result={analysis.result} />
+          </InlineEditor>
+          {analysis.sections.length > 0 && (
+            <InlineEditor embedded={embedded} title="编辑分析报告">
+              <section className="tea-legal-sections" aria-label="法律分析报告">
+                <h4>分析报告</h4>
+                <p className="tea-legal-note">
+                  人工编辑的段落会保留。重新分析生成的建议需逐段确认。
+                </p>
+                {analysis.sections.map((section) => {
+                  const edit = legal.sectionDraft(section);
+                  const stale =
+                    !!edit && edit.expected_revision !== analysis.revision;
+                  return (
+                    <div className="tea-legal-section" key={section.id}>
+                      <label className="tea-field">
+                        <span>
+                          {section.title}
+                          {section.edited ? " · 已人工编辑" : ""}
+                          {section.needs_review ? " · 待复核" : ""}
+                        </span>
+                        <Textarea
+                          aria-label={`报告段落：${section.title}`}
+                          rows={6}
+                          maxLength={30000}
+                          value={edit?.content ?? section.content}
+                          disabled={!editable}
+                          onChange={(e) =>
+                            legal.editSection(section, e.target.value)
+                          }
+                        />
+                      </label>
+                      {stale && (
+                        <div className="tea-legal-conflict">
+                          <strong>已有新修订，你的输入已保留</strong>
+                          <p className="tea-legal-prose">
+                            最新保存内容：{section.content}
                           </p>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          aria-label={`接受建议：${section.title}`}
-                          disabled={!editable || !!edit}
-                          onClick={() => void legal.saveSection(section, true)}
-                        >
-                          接受此段建议
-                        </Button>
-                      </details>
-                    )}
-                  </div>
-                );
-              })}
-            </section>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!editable}
+                            onClick={() => legal.rebaseSection(section)}
+                          >
+                            核对后采用最新修订号
+                          </Button>
+                        </div>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        aria-label={`保存段落：${section.title}`}
+                        disabled={!editable || !edit || stale}
+                        onClick={() => void legal.saveSection(section)}
+                      >
+                        保存段落
+                      </Button>
+                      {section.suggested_content !== null && (
+                        <details className="tea-legal-suggestion" open>
+                          <summary>待确认的修改建议</summary>
+                          <div className="tea-legal-diff">
+                            <div>
+                              <strong>当前保存内容</strong>
+                              <del>{section.content}</del>
+                            </div>
+                            <div>
+                              <strong>分析建议</strong>
+                              <ins>{section.suggested_content}</ins>
+                            </div>
+                          </div>
+                          {edit && (
+                            <p className="tea-legal-note">
+                              先保存并核对当前输入，再接受建议。
+                            </p>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label={`接受建议：${section.title}`}
+                            disabled={!editable || !!edit}
+                            onClick={() =>
+                              void legal.saveSection(section, true)
+                            }
+                          >
+                            接受此段建议
+                          </Button>
+                        </details>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
+            </InlineEditor>
           )}
           {legal.retainedSections.length > 0 && (
             <section
@@ -717,51 +769,56 @@ function ScopedLegalWorkbench({
           </details>
         </div>
       )}
-      <section className="tea-legal-facts" aria-label="业务法律事实">
-        <h4>已记录的事实</h4>
-        {legal.history.facts_truncated && (
-          <p role="status" className="tea-legal-gaps">
-            当前最多显示 200 项事实；完整记录仍由服务端保留。
-          </p>
-        )}
-        {currentFacts.map((fact) => renderFact(fact))}
-        {!currentFacts.length && !requirements.length && (
-          <Empty title="尚未记录法律事实">
-            先提出问题，分析会提示需要补充的信息。
-          </Empty>
-        )}
-        <details>
-          <summary>
-            <Plus size={13} />
-            补充其他事实
-          </summary>
-          <label className="tea-field">
-            <span>事实名称</span>
-            <Input
-              value={newLabel}
-              maxLength={200}
-              onChange={(e) => setNewLabel(e.target.value)}
-            />
-          </label>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!editable || !newLabel.trim()}
-            onClick={() => {
-              const fact = emptyFact({
-                key: makeConfigId("fact"),
-                label: newLabel.trim(),
-                purpose: "",
-                decisive: false,
-              });
-              legal.editFact(fact, {});
-              setNewLabel("");
-            }}
-          >
-            添加事实
-          </Button>
-        </details>
-      </section>
+      <InlineEditor
+        embedded={embedded}
+        title={`核对已记录的事实 · ${currentFacts.length} 项`}
+      >
+        <section className="tea-legal-facts" aria-label="业务法律事实">
+          <h4>已记录的事实</h4>
+          {legal.history.facts_truncated && (
+            <p role="status" className="tea-legal-gaps">
+              当前最多显示 200 项事实；完整记录仍由服务端保留。
+            </p>
+          )}
+          {currentFacts.map((fact) => renderFact(fact))}
+          {!currentFacts.length && !requirements.length && (
+            <Empty title="尚未记录法律事实">
+              先提出问题，分析会提示需要补充的信息。
+            </Empty>
+          )}
+          <details>
+            <summary>
+              <Plus size={13} />
+              补充其他事实
+            </summary>
+            <label className="tea-field">
+              <span>事实名称</span>
+              <Input
+                value={newLabel}
+                maxLength={200}
+                onChange={(e) => setNewLabel(e.target.value)}
+              />
+            </label>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!editable || !newLabel.trim()}
+              onClick={() => {
+                const fact = emptyFact({
+                  key: makeConfigId("fact"),
+                  label: newLabel.trim(),
+                  purpose: "",
+                  decisive: false,
+                });
+                legal.editFact(fact, {});
+                setNewLabel("");
+              }}
+            >
+              添加事实
+            </Button>
+          </details>
+        </section>
+      </InlineEditor>
     </section>
   );
 }

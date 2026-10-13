@@ -1,55 +1,45 @@
 "use client";
 
-import { BookOpen, RefreshCw, Sparkles } from "lucide-react";
+import { RefreshCw, Sparkles, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
-import { errorMessage, post, TeaApiError, teaRequest } from "@/core/tea/api";
-import {
-  type CaseDetail,
-  type StageAnalysis,
-  type StageState,
+import { errorMessage, TeaApiError, teaRequest } from "@/core/tea/api";
+import { legalModules } from "@/core/tea/configuration";
+import { subscribeNodeAnalysis } from "@/core/tea/node-analysis";
+import type {
+  CaseDetail,
+  StageAnalysis,
+  StageState,
+  TraceStep,
 } from "@/core/tea/types";
 
-import { CitationCard } from "./library";
-import { Busy, ErrorNotice, Trace } from "./shared";
+import { LegalWorkbench } from "./legal-workbench";
+import { Busy, ErrorNotice } from "./shared";
 
-// Only in-flight requests are shared. A remount reads the persisted server
-// result; an obsolete component never applies its response to the new stage.
-const requests = new Map<string, Promise<StageAnalysis>>();
-function analyze(
-  caseId: string,
-  stageId: string,
-  revision: number,
-  retry: boolean,
-) {
-  const key = `${caseId}:${stageId}:${revision}:${retry}`;
-  const existing = requests.get(key);
-  if (existing) return existing;
-  const request = post<StageAnalysis>(
-    `/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/analysis`,
-    { expected_revision: revision, retry },
-  ).finally(() => {
-    if (requests.get(key) === request) requests.delete(key);
-  });
-  requests.set(key, request);
-  return request;
-}
-export function StageAnalysisPanel({
-  record,
-  stage,
-  onUpdate,
-}: {
+type Props = {
+  accountId: string;
   record: CaseDetail;
   stage: StageState;
   onUpdate: (record: CaseDetail) => void;
-}) {
+};
+export function StageAnalysisPanel(props: Props) {
+  return (
+    <NodeAnalysis
+      key={JSON.stringify([props.accountId, props.record.id, props.stage.id])}
+      {...props}
+    />
+  );
+}
+function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
   const [analysis, setAnalysis] = useState<StageAnalysis>();
   const [loading, setLoading] = useState(false);
+  const [steps, setSteps] = useState<TraceStep[]>([]);
+  const [label, setLabel] = useState("");
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [refreshBusy, setRefreshBusy] = useState(false);
+  const stop = useRef<() => void>(() => undefined);
   const alive = useRef(false);
   const onUpdateRef = useRef(onUpdate);
   onUpdateRef.current = onUpdate;
@@ -60,25 +50,44 @@ export function StageAnalysisPanel({
     };
   }, []);
   useEffect(() => {
-    if (stage.status === "locked") {
-      setAnalysis(undefined);
-      setLoading(false);
-      return;
-    }
+    if (stage.status === "locked") return;
     let current = true;
     setLoading(true);
     setError("");
-    setAnalysis(undefined);
-    analyze(record.id, stage.id, record.revision, attempt > 0)
+    setSteps([]);
+    setLabel("正在读取本节点的资料与分析记录…");
+    const request = subscribeNodeAnalysis(
+      accountId,
+      record.id,
+      stage.id,
+      record.revision,
+      attempt > 0,
+      (event) => {
+        if (!current) return;
+        if (event.event === "status") setLabel(event.data.label);
+        else if (event.event === "step")
+          setSteps((prior) => [
+            ...prior.filter((step) => step.id !== event.data.id),
+            event.data,
+          ]);
+      },
+    );
+    stop.current = request.stop;
+    void request.promise
       .then((result) => {
-        if (current) setAnalysis(result);
+        if (current) {
+          setAnalysis(result);
+          setSteps(result.trace);
+        }
       })
       .catch((e) => {
         if (current)
           setError(
-            e instanceof TeaApiError && e.code === "analysis_in_progress"
-              ? "这个节点正在另一处分析。稍后点击重试即可读取结果。"
-              : errorMessage(e),
+            e instanceof Error && e.name === "AbortError"
+              ? "分析已停止，已保存的内容仍然保留。可重试继续。"
+              : e instanceof TeaApiError && e.code === "analysis_in_progress"
+                ? "本业务正在分析，稍后重试即可读取结果。"
+                : errorMessage(e),
           );
       })
       .finally(() => {
@@ -86,18 +95,19 @@ export function StageAnalysisPanel({
       });
     return () => {
       current = false;
+      request.unsubscribe();
     };
-  }, [record.id, record.revision, stage.id, stage.status, attempt]);
+  }, [accountId, record.id, record.revision, stage.id, stage.status, attempt]);
   async function retry() {
-    if (refreshBusy) return;
+    if (refreshBusy || loading) return;
     setRefreshBusy(true);
     setError("");
     try {
-      const current = await teaRequest<CaseDetail>(
+      const latest = await teaRequest<CaseDetail>(
         `/cases/${encodeURIComponent(record.id)}`,
       );
       if (!alive.current) return;
-      if (current.revision !== record.revision) onUpdateRef.current(current);
+      if (latest.revision !== record.revision) onUpdateRef.current(latest);
       setAttempt((value) => value + 1);
     } catch (e) {
       if (alive.current) setError(errorMessage(e));
@@ -112,63 +122,103 @@ export function StageAnalysisPanel({
         节点解锁后，将自动分析当前资料并给出办理建议。
       </div>
     );
+  const finished = steps.filter((step) =>
+    ["completed", "cached", "skipped"].includes(step.status),
+  ).length;
   return (
-    <section className="tea-proactive" aria-label="节点开始分析">
+    <section
+      className="tea-proactive tea-node-analysis"
+      aria-label="节点开始分析"
+      aria-busy={loading}
+    >
       <header>
         <Sparkles size={16} />
-        <strong>节点分析</strong>
+        <strong>{stage.name} · 节点分析</strong>
         <span>
-          {analysis?.assistant_mode === "live" ? "模型分析" : "规则分析"}
+          {analysis
+            ? analysis.assistant_mode === "live"
+              ? "模型辅助分析"
+              : "演示模式"
+            : "进入节点后自动分析"}
         </span>
       </header>
-      {loading ? (
-        <Busy label="正在分析本节点资料与待办事项…" />
-      ) : error ? (
-        <ErrorNotice message={error} onRetry={() => void retry()} />
-      ) : analysis ? (
+      <details className="tea-node-progress" open={loading || undefined}>
+        <summary>
+          {loading
+            ? "正在分析本节点"
+            : error || analysis?.status === "failed"
+              ? "分析未完成"
+              : "查看六步分析过程"}{" "}
+          · {finished}/6
+        </summary>
+        <ol>
+          {legalModules.map((module, index) => {
+            const step = steps.find((item) => item.id === module.id);
+            const state = step?.status ?? "pending";
+            const statuses = {
+              pending: loading ? "等待中" : "未执行",
+              running: loading ? "分析中" : "已中断",
+              completed: "已完成",
+              cached: "沿用结果",
+              skipped: "无需执行",
+              failed: "未完成",
+              cancelled: "已停止",
+            };
+            return (
+              <li key={module.id} data-state={state}>
+                <span className="tea-node-step-number">{index + 1}</span>
+                <div>
+                  <strong>{module.title}</strong>
+                  {step?.detail && <p>{step.detail}</p>}
+                </div>
+                <small>{statuses[state]}</small>
+              </li>
+            );
+          })}
+        </ol>
+      </details>
+      {loading && (
+        <div className="tea-node-running">
+          <Busy label={label} />
+          <Button size="sm" variant="ghost" onClick={() => stop.current()}>
+            <Square size={12} />
+            停止
+          </Button>
+        </div>
+      )}
+      {error && <ErrorNotice message={error} onRetry={() => void retry()} />}
+      {analysis && (
         <>
-          <div className="tea-proactive-result">
-            <MessageResponse>{analysis.output}</MessageResponse>
-          </div>
-          {analysis.status === "failed" && (
+          {analysis.status === "failed" && !error && (
             <ErrorNotice
-              message="部分分析步骤未完成，可以重试。"
+              message="部分分析步骤未完成，已保存的编辑仍然保留。"
               onRetry={() => void retry()}
             />
           )}
-          <Trace steps={analysis.trace} />
-          {analysis.citations.length > 0 && (
-            <details className="tea-message-citations">
-              <summary>
-                <BookOpen size={13} />
-                查看 {analysis.citations.length} 项依据
-              </summary>
-              {analysis.citations.map((citation, index) => (
-                <CitationCard
-                  citation={citation}
-                  key={`${citation.document_id}:${index}`}
-                />
-              ))}
-            </details>
-          )}
-          <footer>
-            <span>
-              {analysis.assistant_mode === "demo"
-                ? "演示模式 · 未调用大模型"
-                : "建议与依据已保留"}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={refreshBusy}
-              onClick={() => void retry()}
-            >
-              <RefreshCw size={12} />
-              {refreshBusy ? "读取中…" : "检查最新资料"}
-            </Button>
-          </footer>
+          <LegalWorkbench
+            accountId={accountId}
+            record={record}
+            stageId={stage.id}
+            onUpdate={onUpdate}
+            embedded
+            analysisId={analysis.legal_analysis_id}
+            analysisRevision={analysis.legal_revision}
+            readOnly={loading || !!error}
+          />
         </>
-      ) : null}
+      )}
+      <footer>
+        <span>补充信息、核对依据和修改报告都可以在这里完成。</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={loading || refreshBusy}
+          onClick={() => void retry()}
+        >
+          <RefreshCw size={12} />
+          {refreshBusy ? "读取中…" : "检查最新资料"}
+        </Button>
+      </footer>
     </section>
   );
 }

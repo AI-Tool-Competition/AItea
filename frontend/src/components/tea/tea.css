@@ -356,8 +356,25 @@
   font-size: 13px;
   min-height: 36px;
 }
-.tea-subconversations > button > span:nth-child(2) {
+.tea-subconversations > button > span:not(.tea-tree-dot) {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tea-subconversations > button > svg {
+  flex-shrink: 0;
+}
+.tea-subconversations > .tea-business-library {
+  margin-top: 4px;
+  color: var(--muted-foreground);
+}
+.tea-business-loading {
+  display: block;
+  padding: 10px 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 .tea-subconversations > button.active {
   background: var(--accent);
@@ -439,6 +456,7 @@
 }
 /* Workspace, chat, and original DeerFlow conversation container */
 .tea-workspace {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -709,25 +727,6 @@
   height: 40px !important;
   bottom: 9px !important;
 }
-.tea-chat-analysis > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  font-size: 13px;
-  list-style: none;
-}
-.tea-chat-analysis > summary::-webkit-details-marker {
-  display: none;
-}
-.tea-chat-analysis > summary > span {
-  flex: 1;
-}
-.tea-chat-analysis[open] > summary > svg:last-child {
-  transform: rotate(180deg);
-}
 .tea-chat-welcome {
   padding-block: 24px 48px;
 }
@@ -844,7 +843,6 @@
 }
 .tea-sidepanel-header > button {
   color: var(--foreground);
-  padding: 5px;
   margin-right: -6px;
 }
 .tea-sidepanel-scroll {
@@ -2385,8 +2383,7 @@
 .tea-navigation [data-slot="sidebar-menu-button"]:hover {
   color: var(--sidebar-accent-foreground);
 }
-.tea-topbar,
-.tea-workspace-toolbar {
+.tea-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2397,41 +2394,21 @@
   border-bottom: 1px solid var(--border);
   background: var(--background);
 }
-.tea-workspace-heading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.tea-workspace-title {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-weight: 500;
-}
-.tea-workspace-stage {
-  flex-shrink: 0;
+.tea-workspace-panel-actions,
+.tea-workspace-navigation {
+  position: absolute;
+  top: 6px;
+  z-index: 10;
   color: var(--muted-foreground);
-  font-size: 12px;
 }
-.tea-workspace-actions {
+.tea-workspace-panel-actions {
+  right: 10px;
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex-shrink: 0;
+  gap: 4px;
 }
-.tea-workspace-actions > button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  border-radius: var(--radius-md);
-}
-.tea-workspace-actions > button:hover {
-  color: var(--foreground);
-  background: var(--accent);
+.tea-workspace-navigation {
+  left: 10px;
 }
 .tea-details-content {
   height: 100%;
@@ -2511,19 +2488,22 @@
   color: var(--muted-foreground);
 }
 @media (max-width: 767px) {
-  .tea-topbar,
-  .tea-workspace-toolbar {
+  .tea-topbar {
     gap: 8px;
     padding-inline: 8px;
   }
-  .tea-workspace-heading {
-    gap: 8px;
-  }
-  .tea-workspace-stage {
-    display: none;
+  .tea-workspace-panel-toggle,
+  .tea-workspace-legal-toggle,
+  .tea-workspace-navigation,
+  .tea-mobile-panel .tea-sidepanel-header > button {
+    width: 44px;
+    height: 44px;
   }
   .tea-conversation-content {
     padding: 24px 20px;
+  }
+  .tea-workspace .tea-conversation-content {
+    padding-top: 64px;
   }
   .tea-composer-area {
     padding: 8px 12px max(12px, env(safe-area-inset-bottom));
@@ -2572,11 +2552,7 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
-.tea-proactive-result {
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--foreground);
-}
+
 .tea-proactive > footer {
   display: flex;
   align-items: center;
@@ -3535,5 +3511,125 @@
   }
   .tea-legal-workbench .tea-checkbox {
     min-height: 30px;
+  }
+}
+
+/* Node analysis is the opening assistant turn; editing stays beside its result. */
+.tea-node-analysis {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 0 20px;
+  min-width: 0;
+}
+.tea-node-analysis > header {
+  flex-wrap: wrap;
+}
+.tea-node-progress,
+.tea-node-editor {
+  font-size: 13px;
+}
+.tea-node-progress > summary,
+.tea-node-editor > summary {
+  cursor: pointer;
+  color: var(--muted-foreground);
+  padding: 8px 0;
+}
+.tea-node-progress > summary:focus-visible,
+.tea-node-editor > summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.tea-node-progress ol {
+  list-style: none;
+  margin: 4px 0 12px;
+  padding: 0;
+}
+.tea-node-progress li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+}
+.tea-node-step-number {
+  flex: 0 0 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--muted);
+  text-align: center;
+  font-size: 12px;
+  line-height: 22px;
+}
+.tea-node-progress li > div {
+  flex: 1;
+  min-width: 0;
+}
+.tea-node-progress strong {
+  font-weight: 500;
+}
+.tea-node-progress p {
+  margin: 3px 0 0;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.tea-node-progress small {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.tea-node-progress [data-state="running"] .tea-node-step-number {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.tea-node-progress [data-state="failed"] small {
+  color: var(--destructive);
+}
+.tea-node-running {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tea-legal-workbench.tea-legal-embedded {
+  padding: 0;
+  gap: 4px;
+}
+.tea-legal-embedded .tea-legal-analysis {
+  gap: 10px;
+}
+.tea-legal-embedded .tea-legal-analysis > header {
+  flex-wrap: wrap;
+}
+.tea-node-editor[open] > summary {
+  color: var(--foreground);
+  margin-bottom: 8px;
+}
+.tea-node-summary {
+  line-height: 1.75;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.tea-node-summary p {
+  margin: 4px 0 8px;
+}
+.tea-node-summary ul {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+.tea-node-summary li > span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-node-analysis > footer {
+  flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .tea-node-analysis > header > span {
+    margin-left: 24px;
+    flex-basis: 100%;
+  }
+  .tea-node-progress li {
+    gap: 8px;
   }
 }

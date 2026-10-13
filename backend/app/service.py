@@ -1300,7 +1300,7 @@ class Service:
                 if prior["status"] == "needs_input":
                     question = prior["question"] + "\n\n用户补充说明：" + question
             if len(question) > 20000:
-                fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在法律分析面板整理事实后继续")
+                fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在本节点分析中整理事实后继续")
 
             def legal_emit(event, data):
                 if emit and event in ("status", "delta"):
@@ -1336,6 +1336,7 @@ class Service:
                         (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
                     ),
                     "recent_messages": prepared["history"],
+                    "node_analysis": self.studio.node_context(owner, case, stage["id"]),
                 },
             )
         if emit and any(step["status"] == "failed" for step in result["trace"]):

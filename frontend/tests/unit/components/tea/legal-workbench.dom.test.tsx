@@ -509,3 +509,62 @@ it("keeps an unsaved section accessible when the refreshed report contains no se
     expect(screen.queryByLabelText("原争点草稿：交付建议")).toBeNull(),
   );
 });
+
+it("opens the node's saved report inline and retains a draft across refreshed revisions", async () => {
+  let current = structuredClone(analysis);
+  const fetcher = rs
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (path) =>
+      (typeof path === "string"
+        ? path
+        : path instanceof URL
+          ? path.href
+          : path.url
+      ).includes("/analyses/")
+        ? response(current)
+        : response({
+            ...history,
+            analyses: [{ ...analysis, id: "another-report" }, current],
+          }),
+    );
+  const view = render(
+    <LegalWorkbench
+      accountId="owner-inline"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByLabelText("报告段落：交付建议")).toBeTruthy(),
+  );
+  expect(screen.getByRole("region", { name: "本节点分析与编辑" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "法律分析" })).toBeNull();
+  const editor = screen.getByLabelText("报告段落：交付建议");
+  fireEvent.click(screen.getByText("编辑分析报告"));
+  fireEvent.change(editor, { target: { value: "正在输入的节点修订" } });
+  current = { ...current, revision: 2 };
+  view.rerender(
+    <LegalWorkbench
+      accountId="owner-inline"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={2}
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByText("已有新修订，你的输入已保留")).toBeTruthy(),
+  );
+  expect(
+    screen.getByLabelText<HTMLTextAreaElement>("报告段落：交付建议").value,
+  ).toBe("正在输入的节点修订");
+  expect(
+    fetcher.mock.calls.every(
+      ([, options]) => !options?.method || options.method === "GET",
+    ),
+  ).toBe(true);
+});

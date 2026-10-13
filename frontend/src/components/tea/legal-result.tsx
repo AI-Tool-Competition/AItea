@@ -33,7 +33,53 @@ const conditionLabels = {
   not_applicable: "不适用",
 };
 
-export function LegalResultView({ result }: { result: LegalResult }) {
+export function LegalResultView({
+  result,
+  compact = false,
+}: {
+  result: LegalResult;
+  compact?: boolean;
+}) {
+  if (compact)
+    return (
+      <div className="tea-node-summary">
+        {result.issues.slice(0, 3).map((issue) => (
+          <div key={issue.id}>
+            <p>
+              <span className="ta-badge">{conclusionLabels[issue.status]}</span>{" "}
+              {issue.conclusion}
+            </p>
+            {issue.actions.length > 0 && (
+              <ul>
+                {issue.actions.slice(0, 3).map((action) => (
+                  <li key={action.id}>
+                    <span>{actionLabels[action.nature]}</span> · {action.title}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+        {result.issues.length > 3 && (
+          <p className="tea-legal-note">
+            另有 {result.issues.length - 3} 项问题，可展开详细结论查看。
+          </p>
+        )}
+        {result.followups.length > 0 && (
+          <p className="tea-legal-note">
+            还需核对：
+            {result.followups
+              .slice(0, 3)
+              .map((item) => item.label)
+              .join("、")}
+            {result.followups.length > 3 ? "等" : ""}。下方可直接补充。
+          </p>
+        )}
+        {!result.issues.length && result.output && (
+          <p className="tea-legal-prose">{result.output}</p>
+        )}
+      </div>
+    );
   return (
     <div className="tea-legal-result">
       <p className="tea-legal-note">

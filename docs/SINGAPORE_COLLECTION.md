@@ -8,6 +8,8 @@ PDPC 当前公开站点在 HTML 内保存 Next Flight 数据。直接搜索到�
 
 适配只解码完整字面 `self.__next_f.push([1, "…"])`，不执行脚本、动态表达式或组件。JSON 正文中的 `data.content` 与已验证的 UTF-8 字节长度文本记录用于提取链接；模块导入、资源预加载、普通字符串和图像地址不能冒充正式 PDF。网页、数据流、单记录、块数、记录数、JSON 深度、对象数与链接数分别有上限。截断、未知协议、异常长度、验证或错误页均保留失败。定位包含原 HTML SHA、脚本位置及哈希、解码数据流哈希、记录字节范围和必要 JSON pointer；解码范围不冒充原始 HTML 字节范围。
 
+原理核对采用 [Next.js 官方 Server/Client Components 说明](https://nextjs.org/docs/app/getting-started/server-and-client-components)与 [React 官方 `emitTextChunk` 源码](https://raw.githubusercontent.com/react/react/main/packages/react-server/src/ReactFlightServer.js)：客户端渲染的数据载荷与预渲染 HTML 分开，文本记录带十六进制字节长度。该实现仅识别实际保存的 PDPC 公共载荷格式，遇到新增协议先留下适配缺口。
+
 Customs 新入口采用 `/doing-business/import-operations/`、`/doing-business/valuation-duties-and-fees/` 等路径。仅八个确切文章路径被登记为 HTML 正文候选，涵盖进口主体、许可、控制货物、GST、估价、留档及归类裁定；目录和其他商品或行业文章不因此变成正文。实际转介文件仅来自 `isomer-user-content.by.gov.sg` 的 `174/<UUID>/<文件名>.pdf`。该文件域不继承 Customs 文章或目录路径，其他 bucket、错误 UUID、额外查询参数均拒绝。
 
 所有下载继续经过现有 HTTPS、公网地址、TLS、重定向、字节数、截止时间及并发限制。新链接、原生文本和标题均不证明法律效力或业务适用性；正文仍须检查图片、表格及解析完整性。

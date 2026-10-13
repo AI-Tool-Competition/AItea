@@ -18,6 +18,33 @@ _NUMBER_FIELDS = {
 }
 
 
+def pdf_page_status(page: dict) -> str:
+    """Judge the accepted text, preserving damaged native text as evidence."""
+    status = page["status"]
+    replacement = "\ufffd" in page.get("text", "")
+    if status == "native" and replacement:
+        return "pending_ocr"
+    if status == "ocr_complete":
+        metadata = page.get("ocr") or {}
+        if (
+            replacement
+            or metadata.get("complete") is False
+            or metadata.get("uncertain_spans")
+            or metadata.get("validation_warnings")
+        ):
+            return "ocr_uncertain"
+    return status
+
+
+def validate_pdf_page_decode(page: dict) -> None:
+    """Revalidate saved native pages without guessing missing characters."""
+    if page["status"] in {"native", "pending_ocr"} and "\ufffd" in page.get("text", ""):
+        page.update(status="pending_ocr", ocr_required=True)
+        reasons = page.setdefault("reasons", [])
+        if "native_decode_replacement" not in reasons:
+            reasons.append("native_decode_replacement")
+
+
 def number_anchors(text: str) -> list[dict]:
     result = []
     for field, pattern in _NUMBER_FIELDS.items():
@@ -117,10 +144,21 @@ def validate_ocr_page(page: dict) -> None:
     native layer are compared; this is not proof that either layer is correct.
     Keep both layers and reuse this gate when reassembling saved checkpoints.
     """
+    validate_pdf_page_decode(page)
     if page.get("status") not in {"ocr_complete", "ocr_uncertain"}:
         return
     native, transcribed = page.get("native_text", ""), page.get("text", "")
-    warnings = []
+    metadata = page.setdefault("ocr", {})
+    warnings = [
+        warning
+        for warning in metadata.get("validation_warnings", [])
+        if not (warning.startswith("native_ocr_") and warning.endswith("_mismatch"))
+        and warning != "ocr_decode_replacement"
+    ]
+    if "\ufffd" in transcribed:
+        warnings.append("ocr_decode_replacement")
+    if metadata.get("complete") is False and "model_reported_incomplete" not in warnings:
+        warnings.append("model_reported_incomplete")
     anchors = [number_anchors(text) for text in (native, transcribed)]
     for anchor in anchors[0]:
         if not anchor_present(anchor, anchors[1]):
@@ -128,26 +166,32 @@ def validate_ocr_page(page: dict) -> None:
                 warning = "native_ocr_" + anchor["field"] + "_mismatch"
                 if warning not in warnings:
                     warnings.append(warning)
-    metadata = page.setdefault("ocr", {})
     metadata["validation_version"] = OCR_VALIDATION_VERSION
     metadata["validation_warnings"] = warnings
     uncertainties = [
         item
         for item in metadata.get("uncertain_spans", [])
         if not (item.startswith("native_ocr_") and item.endswith("_mismatch"))
+        and item != "ocr_decode_replacement"
     ]
     uncertainties.extend(warning for warning in warnings if warning not in uncertainties)
     metadata["uncertain_spans"] = uncertainties
     page["status"] = "ocr_uncertain" if uncertainties else "ocr_complete"
+    if page["status"] == "ocr_complete":
+        page["reasons"] = [
+            reason for reason in page.get("reasons", []) if reason != "native_decode_replacement"
+        ]
 
 
 def text_complete(manifest: dict) -> bool:
     quality = manifest.get("quality")
-    return quality is None or (isinstance(quality, dict) and quality.get("complete") is True)
+    return (quality is None or (isinstance(quality, dict) and quality.get("complete") is True)) and all(
+        pdf_page_status(page) in {"native", "ocr_complete"} for page in manifest.get("pages", [])
+    )
 
 
 def ocr_pending(manifest: dict) -> list[int]:
-    return [page["page"] for page in manifest.get("pages", []) if page.get("status") == "pending_ocr"]
+    return [page["page"] for page in manifest.get("pages", []) if pdf_page_status(page) == "pending_ocr"]
 
 
 def quality_warning(manifest: dict) -> str | None:

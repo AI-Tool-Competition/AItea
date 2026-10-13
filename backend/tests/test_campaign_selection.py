@@ -387,6 +387,101 @@ def test_selected_levels_parse_both_vectorize_only_primary_and_map_fixed_version
     assert text_path.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("gate", ["draft", "published", "active_worker", "frozen_version", "clean_ocr"])
+def test_pdf_decode_revalidation_preserves_evidence_and_requeues_only_owned_drafts(
+    tmp_path, monkeypatch, gate
+):
+    from app.catalog import MetadataPatch
+
+    service, campaign = run_selected(tmp_path, monkeypatch)
+    owner = campaign.state["owner_id"]
+    with service.db.transaction() as conn:
+        row = conn.execute(
+            "SELECT d.* FROM documents d JOIN legal_classifications l ON l.document_id=d.id WHERE l.level='primary'"
+        ).fetchone()
+        manifest = json.loads(row["manifest"])
+        page = manifest["pages"][0]
+        page["native_text"] += " \ufffd"
+        if gate != "clean_ocr":
+            page["text"] = page["native_text"]
+        else:
+            page.update(status="ocr_complete", ocr={"complete": True, "uncertain_spans": []})
+        before = deepcopy(page)
+        encoded = json.dumps(manifest)
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (encoded, row["id"]))
+        if gate == "active_worker":
+            conn.execute(
+                "UPDATE processing_jobs SET status='processing',lease_until=? WHERE document_id=?",
+                (time.time() + 300, row["id"]),
+            )
+        elif gate == "frozen_version":
+            conn.execute("UPDATE checklist_bindings SET version=version+1")
+    if gate == "published":
+        metadata = service.catalog.metadata_for(row["id"])
+        service.catalog.patch_document(
+            owner,
+            row["id"],
+            MetadataPatch(expected_revision=metadata["metadata_revision"], review_status="published"),
+            on_changed=service.metadata_changed,
+        )
+    results = campaign.revalidate_pdf_decode()
+    with closing(service.db.connect()) as conn:
+        current = service.own_document(conn, owner, row["id"])
+        job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (row["id"],)).fetchone()
+        index = conn.execute("SELECT * FROM retrieval_documents WHERE document_id=?", (row["id"],)).fetchone()
+        updated = json.loads(current["manifest"])
+        assert (current["content_hash"], current["version"], current["storage_path"]) == (
+            row["content_hash"],
+            row["version"],
+            row["storage_path"],
+        )
+        if gate == "draft":
+            assert results == [{"document_id": row["id"], "source_hash": row["content_hash"], "pages": [1]}]
+            assert updated["pages"][0]["status"] == "pending_ocr"
+            assert updated["pages"][0]["decode_revalidation"]["previous_page"] == before
+            assert updated["pages"][0]["native_text"] == before["native_text"]
+            assert updated["quality"]["complete"] is False and index["complete"] == 0
+            assert (job["phase"], job["status"]) == ("parse", "queued")
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
+                    (row["id"],),
+                ).fetchone()[0]
+                == 0
+            )
+            assert campaign.state["pdf_decode_revalidations"][-1]["documents"] == results
+        else:
+            assert not results and current["manifest"] == encoded
+    assert not campaign.revalidate_pdf_decode()  # No duplicate audit evidence or retries on a second pass.
+
+
+def test_pdf_decode_revalidation_detects_changes_before_committing_a_checkpoint(tmp_path, monkeypatch):
+    from app import parsing
+
+    service, campaign = run_selected(tmp_path, monkeypatch)
+    with service.db.transaction() as conn:
+        row = conn.execute(
+            "SELECT d.* FROM documents d JOIN legal_classifications l ON l.document_id=d.id WHERE l.level='primary'"
+        ).fetchone()
+        manifest = json.loads(row["manifest"])
+        manifest["pages"][0]["text"] += " \ufffd"
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (json.dumps(manifest), row["id"]))
+    original = parsing.rebuild_pdf_bounded
+
+    def concurrent_change(manifest):
+        result = original(manifest)
+        with service.db.transaction() as conn:
+            conn.execute("UPDATE processing_jobs SET status='processing' WHERE document_id=?", (row["id"],))
+        return result
+
+    monkeypatch.setattr(parsing, "rebuild_pdf_bounded", concurrent_change)
+    with pytest.raises(ValueError, match="changed during revalidation"):
+        campaign.revalidate_pdf_decode()
+    with closing(service.db.connect()) as conn:
+        current = service.own_document(conn, campaign.state["owner_id"], row["id"])
+        assert json.loads(current["manifest"])["pages"][0].get("decode_revalidation") is None
+
+
 def test_missing_mapping_evidence_keeps_both_originals_without_inventing_a_relation(tmp_path, monkeypatch):
     service, campaign = run_selected(tmp_path, monkeypatch, shared=False)
     assert campaign.report()["summary"]["originals"] == 2

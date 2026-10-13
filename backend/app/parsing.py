@@ -397,6 +397,15 @@ def _ocr_one_page(
     return updated
 
 
+def rebuild_pdf_bounded(manifest: dict) -> dict:
+    """Revalidate saved page text and rebuild derived content in a bounded worker."""
+    if manifest.get("archive_pdf"):
+        from .archive_parsing import archive_rebuild_bounded
+
+        return archive_rebuild_bounded(manifest)
+    return _run_bounded(_auxiliary_worker, ("assemble", manifest), 45)
+
+
 def ocr_bounded(
     filename: str,
     content: bytes | None,
@@ -471,8 +480,4 @@ def ocr_bounded(
             executor.shutdown(wait=True, cancel_futures=True)
     # Also rebuild when resuming after the very last page checkpoint, or when
     # no pages are pending. Cached chunks may precede the checkpointed text.
-    if content is None:
-        from .archive_parsing import archive_rebuild_bounded
-
-        return archive_rebuild_bounded(result)
-    return _run_bounded(_auxiliary_worker, ("assemble", result), 45)
+    return rebuild_pdf_bounded(result)

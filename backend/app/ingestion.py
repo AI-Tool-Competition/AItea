@@ -286,6 +286,8 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
             if not text:
                 empty_pages.append(index)
             reasons = [] if text else ["empty_text"]
+            if "\ufffd" in text:
+                reasons.append("native_decode_replacement")
             if _pdf_large_raster(page):
                 reasons.append("large_raster")
             if _pdf_table_layout(stream):
@@ -446,12 +448,17 @@ def _pdf_table_layout(stream) -> bool:
 
 
 def pdf_quality(pages: list[dict]) -> dict:
-    completed = [page["page"] for page in pages if page["status"] in {"native", "ocr_complete"}]
-    pending = [page["page"] for page in pages if page["status"] == "pending_ocr"]
-    failed = [page["page"] for page in pages if page["status"] == "ocr_failed"]
-    review = [page["page"] for page in pages if page["status"] == "ocr_uncertain"]
+    from .ingestion_quality import pdf_page_status
+
+    statuses = {page["page"]: pdf_page_status(page) for page in pages}
+    completed = [page["page"] for page in pages if statuses[page["page"]] in {"native", "ocr_complete"}]
+    pending = [page["page"] for page in pages if statuses[page["page"]] == "pending_ocr"]
+    failed = [page["page"] for page in pages if statuses[page["page"]] == "ocr_failed"]
+    review = [page["page"] for page in pages if statuses[page["page"]] == "ocr_uncertain"]
     deferred = [
-        page["page"] for page in pages if page["status"] == "pending_ocr" and page.get("deferred_reason")
+        page["page"]
+        for page in pages
+        if statuses[page["page"]] == "pending_ocr" and page.get("deferred_reason")
     ]
     pending_parse = [page["page"] for page in pages if page["status"] == "pending_parse"]
     retry_delay = max(

@@ -37,10 +37,7 @@ def validate_extension(previous, current):
             raise ValueError("Extend may only append materials while preserving every existing selection")
         added_materials = sorted(new.keys() - old.keys())
     if (
-        any(
-            previous.get(key) != current.get(key)
-            for key in ("items", "confirm_items", "live_models")
-        )
+        any(previous.get(key) != current.get(key) for key in ("items", "confirm_items", "live_models"))
         or any(current[key] < previous[key] for key in ("discovery_batches", "originals_per_item"))
         or (
             not added_materials
@@ -107,12 +104,18 @@ class ResourceCampaign:
             self.state = state
             if extend:
                 added = validate_extension(state["options"], self.options)
-                state.setdefault("extensions", []).append({
-                    "at": now(),
-                    "previous_limits": {key: state["options"][key] for key in ("discovery_batches", "originals_per_item")},
-                    "current_limits": {key: self.options[key] for key in ("discovery_batches", "originals_per_item")},
-                    "added_material_keys": added,
-                })
+                state.setdefault("extensions", []).append(
+                    {
+                        "at": now(),
+                        "previous_limits": {
+                            key: state["options"][key] for key in ("discovery_batches", "originals_per_item")
+                        },
+                        "current_limits": {
+                            key: self.options[key] for key in ("discovery_batches", "originals_per_item")
+                        },
+                        "added_material_keys": added,
+                    }
+                )
                 state["options"] = self.options
                 state["status"] = "running"
                 for record in state["items"].values():
@@ -604,6 +607,111 @@ class ResourceCampaign:
                 self.state["items"][row["item_id"]].update(phase="waiting", error=None)
             results.append({"document_id": row["id"], "pages": changed, "source_hash": digest})
         self.state.setdefault("native_table_revalidations", []).append({"at": now(), "documents": results})
+        self.save()
+        return results
+
+    def revalidate_pdf_decode(self):
+        """Explicitly quarantine damaged accepted text in owned draft checkpoints."""
+        from copy import deepcopy
+
+        from .blob_store import _verify_existing
+        from .ingestion_quality import pdf_page_status, validate_ocr_page
+        from .parsing import rebuild_pdf_bounded
+
+        owner, cursor, results = self.state["owner_id"], "", []
+        audit = {"at": now(), "documents": results}
+        self.state.setdefault("pdf_decode_revalidations", []).append(audit)
+        self.save()
+        while True:
+            with closing(self.service.db.connect()) as conn:
+                rows = conn.execute(
+                    """SELECT d.*,GROUP_CONCAT(DISTINCT b.item_id) item_ids,
+                    p.status job_status,m.payload metadata_payload
+                    FROM documents d JOIN checklist_candidates c ON c.document_id=d.id
+                    JOIN checklist_bindings b ON b.id=c.binding_id
+                    JOIN document_metadata m ON m.document_id=d.id
+                    LEFT JOIN processing_jobs p ON p.document_id=d.id
+                    WHERE d.owner_id=? AND b.owner_id=? AND b.plan_id=? AND b.version=?
+                    AND d.id>? AND d.role='primary' AND d.mime_type='application/pdf'
+                    AND (p.status IS NULL OR p.status IN ('queued','failed','completed'))
+                    AND json_extract(m.payload,'$.review_status')='draft'
+                    GROUP BY d.id ORDER BY d.id LIMIT 10""",
+                    (owner, owner, self.plan["id"], self.plan["version"], cursor),
+                ).fetchall()
+            if not rows:
+                break
+            cursor = rows[-1]["id"]
+            for row in rows:
+                item_ids = set(row["item_ids"].split(",")) & self.definitions.keys()
+                if not item_ids:
+                    continue
+                manifest = json.loads(row["manifest"])
+                changed = [
+                    page for page in manifest.get("pages", []) if pdf_page_status(page) != page["status"]
+                ]
+                if not changed:
+                    continue
+                digest = row["content_hash"]
+                if manifest.get("source_hash") != digest or any(
+                    page.get("source_hash") != digest for page in manifest["pages"]
+                ):
+                    raise ValueError("PDF decode checkpoint does not match its immutable source")
+                path = (
+                    self.service.archive.blobs.blobs_dir
+                    / hashlib.sha256(owner.encode()).hexdigest()
+                    / digest[:2]
+                    / digest[2:4]
+                    / digest
+                )
+                if Path(row["storage_path"]) != path:
+                    raise ValueError("PDF decode original is outside its account content store")
+                _verify_existing(path, digest, row["size"])
+                for page in changed:
+                    previous = deepcopy(page)
+                    validate_ocr_page(page)
+                    page["decode_revalidation"] = {
+                        "at": now(),
+                        "version": "accepted-pdf-text-v1",
+                        "source_hash": digest,
+                        "previous_page_hash": hashlib.sha256(dump(previous).encode()).hexdigest(),
+                        "previous_page": previous,
+                    }
+                rebuilt = rebuild_pdf_bounded(manifest)
+                with self.service.db.transaction() as conn:
+                    current = self.service.own_document(conn, owner, row["id"])
+                    job = conn.execute(
+                        "SELECT status FROM processing_jobs WHERE document_id=?", (row["id"],)
+                    ).fetchone()
+                    metadata = conn.execute(
+                        "SELECT payload FROM document_metadata WHERE document_id=?", (row["id"],)
+                    ).fetchone()
+                    if (
+                        current["manifest"] != row["manifest"]
+                        or current["version"] != row["version"]
+                        or current["content_hash"] != digest
+                        or (job[0] if job else None) != row["job_status"]
+                        or not metadata
+                        or metadata[0] != row["metadata_payload"]
+                    ):
+                        raise ValueError("PDF decode checkpoint changed during revalidation")
+                    conn.execute(
+                        "UPDATE documents SET manifest=?,status='processing',error=NULL WHERE id=?",
+                        (dump(rebuilt), row["id"]),
+                    )
+                    self.service.index.sync_document(conn, row["id"], rebuilt)
+                    self.service.collection.queue_processing(conn, row["id"], owner)
+                    conn.execute(
+                        "UPDATE processing_jobs SET phase='parse' WHERE document_id=? AND status='queued'",
+                        (row["id"],),
+                    )
+                    self.service.collection._refresh_document(conn, row["id"])
+                    for item_id in item_ids:
+                        self.state["items"][item_id].update(phase="waiting", error=None)
+                results.append(
+                    {"document_id": row["id"], "source_hash": digest, "pages": [p["page"] for p in changed]}
+                )
+                self.save()
+        audit["completed_at"] = now()
         self.save()
         return results
 

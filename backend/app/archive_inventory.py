@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–12 without opening originals.
+"""Export a private, read-only inventory of schema 7–13 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -25,7 +25,7 @@ from uuid import uuid4
 from .blob_store import _sync_directory
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12)
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13)
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
@@ -100,7 +100,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–12; use the matching application version"
+                "archive inventory requires schema 7–13; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -130,7 +130,7 @@ def _validate_schema(conn):
             )
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–12 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–13 database") from exc
 
 
 class _Originals:
@@ -1151,7 +1151,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–12)"
+        description="Export a read-only catalog of stored originals (schema 7–13)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")

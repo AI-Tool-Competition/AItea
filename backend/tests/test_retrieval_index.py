@@ -89,6 +89,28 @@ def search(service, query, **kwargs):
     return service.search("owner", query, country="ID", **kwargs)
 
 
+def test_sync_rejects_a_cached_complete_pdf_with_a_missing_native_glyph(workspace):
+    manifest = body("permit clause")
+    manifest.update(
+        quality={"complete": True},
+        pages=[{"page": 1, "status": "native", "text": "permit clause", "native_text": "permit clause"}],
+    )
+    with workspace.db.transaction() as conn:
+        seed(conn, "missing-glyph", manifest)
+    assert search(workspace, "permit")["items"]
+    manifest["pages"][0]["text"] = manifest["pages"][0]["native_text"] = "permit \ufffd clause"
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=? WHERE id='missing-glyph'", (dump(manifest),))
+        workspace.index.sync_document(conn, "missing-glyph")
+        assert (
+            conn.execute(
+                "SELECT complete FROM retrieval_documents WHERE document_id='missing-glyph'"
+            ).fetchone()[0]
+            == 0
+        )
+    assert search(workspace, "permit")["items"] == []
+
+
 def test_search_matches_documents_beyond_old_500_family_cap(workspace):
     with workspace.db.transaction() as conn:
         seed(conn, "old-target", body("uniqueoldanswer"), order=0)
@@ -135,6 +157,66 @@ def test_persistent_text_index_survives_restart_without_reading_manifests(worksp
     assert not any("manifest" in sql for sql in reads)
     with closing(reopened.db.connect()) as conn:
         assert conn.execute("SELECT 1 FROM schema_migrations WHERE version=10").fetchone()
+
+
+def test_pdf_quality_upgrade_quarantines_old_published_flags_once_without_editing_text(workspace):
+    broken = body("damaged clause")
+    broken.update(
+        quality={"complete": True}, pages=[{"page": 1, "status": "native", "text": "damaged \ufffd clause"}]
+    )
+    with workspace.db.transaction() as conn:
+        seed(conn, "good-upgrade", body("soundupgradeclause"))
+        seed(conn, "broken-upgrade", broken)
+        seed(conn, "foreign-upgrade", body("otherclause"), owner="other")
+        for identifier in ("good-upgrade", "broken-upgrade", "foreign-upgrade"):
+            workspace.index.sync_document(conn, identifier)
+        # Simulate the accepted complete flag from the older quality recipe.
+        conn.execute("UPDATE retrieval_documents SET complete=1 WHERE document_id='broken-upgrade'")
+        conn.execute("DELETE FROM retrieval_dirty")
+        conn.execute("DELETE FROM schema_migrations WHERE version=13")
+        originals = [
+            tuple(row)
+            for row in conn.execute("SELECT id,manifest,content_hash,version FROM documents ORDER BY id")
+        ]
+        reviews = [tuple(row) for row in conn.execute("SELECT * FROM document_metadata ORDER BY document_id")]
+    upgraded = Service(workspace.db.data_dir)
+    with closing(upgraded.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_dirty").fetchone()[0] == 3
+        assert conn.execute("SELECT 1 FROM schema_migrations WHERE version=13").fetchone()
+        assert [
+            tuple(row)
+            for row in conn.execute("SELECT id,manifest,content_hash,version FROM documents ORDER BY id")
+        ] == originals
+        assert [
+            tuple(row) for row in conn.execute("SELECT * FROM document_metadata ORDER BY document_id")
+        ] == reviews
+    assert not search(upgraded, "damaged")["items"]
+    assert [item["document_id"] for item in search(upgraded, "soundupgradeclause")["items"]] == [
+        "good-upgrade"
+    ]
+    restarted = Service(workspace.db.data_dir)
+    with closing(restarted.db.connect()) as conn:
+        assert [row[0] for row in conn.execute("SELECT document_id FROM retrieval_dirty")] == [
+            "foreign-upgrade"
+        ]
+        assert (
+            conn.execute(
+                "SELECT complete FROM retrieval_documents WHERE document_id='broken-upgrade'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert [
+            tuple(row)
+            for row in conn.execute("SELECT id,manifest,content_hash,version FROM documents ORDER BY id")
+        ] == originals
+
+
+def test_empty_database_records_pdf_quality_upgrade_idempotently(tmp_path):
+    service = Service(tmp_path)
+    Service(tmp_path)
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=13").fetchone()[0] == 1
+        assert not conn.execute("SELECT 1 FROM retrieval_dirty").fetchone()
 
 
 def test_rebuild_is_idempotent_and_removes_stale_chunk_text(workspace):

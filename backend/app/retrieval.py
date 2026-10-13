@@ -91,13 +91,18 @@ class RetrievalIndex:
     def __init__(self, service):
         self.service, self.db = service, service.db
         with self.db.transaction() as conn:
-            if conn.execute("SELECT 1 FROM schema_migrations WHERE version=10").fetchone():
-                return
-            for statement in _SCHEMA:
-                conn.execute(statement)
-            # Upgrade is metadata-only. Each old document is backfilled once, on demand.
-            conn.execute("INSERT INTO retrieval_dirty SELECT id FROM documents")
-            conn.execute("INSERT INTO schema_migrations VALUES(10,?)", (now(),))
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=10").fetchone():
+                for statement in _SCHEMA:
+                    conn.execute(statement)
+                # Upgrade is metadata-only. Each old document is backfilled once, on demand.
+                conn.execute("INSERT INTO retrieval_dirty SELECT id FROM documents")
+                conn.execute("INSERT INTO schema_migrations VALUES(10,?)", (now(),))
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=13").fetchone():
+                # Eligibility was tightened for damaged decoded PDF characters.
+                # Recheck old derived flags once, including published versions,
+                # without editing their text, review history or model vectors.
+                conn.execute("INSERT OR IGNORE INTO retrieval_dirty SELECT id FROM documents")
+                conn.execute("INSERT INTO schema_migrations VALUES(13,?)", (now(),))
 
     def ensure_current(
         self,

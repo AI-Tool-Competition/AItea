@@ -75,6 +75,27 @@ def cff_pdf():
     return output.getvalue()
 
 
+def missing_character_pdf(copies=1):
+    """A visible digit has an undecodable ToUnicode value; never infer it."""
+    reader = PdfReader(io.BytesIO(cff_pdf()))
+    writer = PdfWriter()
+    for _ in range(copies):
+        page = writer.add_page(reader.pages[0])
+        mapping = DecodedStreamObject()
+        mapping.set_data(
+            b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+            b"/CMapName /MissingDigit def /CMapType 2 def\n"
+            b"1 begincodespacerange <00> <ff> endcodespacerange\n"
+            b"7 beginbfchar\n<01> <0054>\n<02> <0065>\n<03> <0061>\n<04> <0020>\n"
+            b"<05> <fffd>\n<06> <0032>\n<07> <0033>\nendbfchar\n"
+            b"endcmap CMapName currentdict /CMap defineresource pop end end"
+        )
+        page["/Resources"]["/Font"]["/F1"][NameObject("/ToUnicode")] = writer._add_object(mapping)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def test_font_extra_recovers_custom_cff_letters_and_digits_in_isolated_parser(monkeypatch):
     from pypdf.generic import _font
 
@@ -86,3 +107,17 @@ def test_font_extra_recovers_custom_cff_letters_and_digits_in_isolated_parser(mo
     assert parsed["source_hash"] == hashlib.sha256(content).hexdigest()
     assert "Tea 123" in parsed["chunks"][0]["text"]
     assert parsed["chunks"][0]["locator"]["page"] == 1
+
+
+def test_missing_unicode_digit_stays_in_evidence_and_needs_bounded_ocr():
+    content = missing_character_pdf()
+    assert PdfReader(io.BytesIO(content)).pages[0].extract_text().strip() == "Tea \ufffd23"
+    parsed = parse_bounded("missing-digit.pdf", content, "application/pdf")
+    page = parsed["pages"][0]
+    assert page["native_text"] == page["text"] == "Tea \ufffd23"
+    assert page["source_hash"] == parsed["source_hash"] == hashlib.sha256(content).hexdigest()
+    assert page["page"] == 1
+    assert page["status"] == "pending_ocr" and page["ocr_required"] is True
+    assert page["reasons"] == ["native_decode_replacement"]
+    assert parsed["quality"]["complete"] is False
+    assert parsed["quality"]["pending_pages"] == [1]

@@ -12,6 +12,8 @@ uv run --project backend --locked python -m app.archive_inventory \
 
 `scripts/collect_resources.py` 同样接受 `--include-source-mapping`，在本次采集结束后的盘点阶段显式输出版本 5 映射。它是导出选项，默认关闭，不改变采集任务冻结的范围、资料层级或模型设置；已有运行进程不会因该选项的新增而自动改变。
 
+本次服务器已将 DOC/WPF/MDB 的可信工具路径保存为当前工作树私有 `.dev/native-parsers-20261013.env`，不含模型凭据，不提交 Git。后续采集命令可使用 `uv run --project backend --locked --env-file .dev/native-parsers-20261013.env …` 载入；它只对已验证工具所在的工作树有效。模型继续通过独立的 `--models-env` 配置，解析器配置不会启用外部模型。文件与运行资料需按各工具说明重新校验，不能把私有路径当作随仓库分发的依赖。
+
 每个映射记录包含资料标识、不可变资料版本、数据库原件 SHA-256、国别、保存的法律层级、精确 manifest UTF-8 SHA-256 和 JSON 指针。普通关联附件（`role=secondary`）仅导出原件状态，不读取或输出其 manifest。作为独立法规资料保存的二级法律资料（`role=primary`、法律层级为 `secondary`）可以导出已有文本和映射，既有二级资料检索门禁继续由服务判断。
 
 ## 定位含义

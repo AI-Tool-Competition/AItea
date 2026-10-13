@@ -213,6 +213,36 @@ def test_state_file_private(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_new_child_identity_waits_for_launch_environment(tmp_path, monkeypatch):
+    environment = {**os.environ, "TEA_DEV_ROOT": str(tmp_path), "TEA_DEV_TOKEN": "delayed-identity"}
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                               cwd=tmp_path, env=environment, start_new_session=True)
+    read_bytes = Path.read_bytes
+    attempts = 0
+
+    def transitional_read(path):
+        nonlocal attempts
+        if path == Path("/proc") / str(process.pid) / "environ":
+            attempts += 1
+            if attempts <= 2:
+                return b""
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", transitional_read)
+    try:
+        record = dev.process_identity(process.pid)
+        assert record["owner"] == str(tmp_path) and record["token"] == "delayed-identity"
+        assert attempts >= 3
+        assert dev.owns_process(record, tmp_path)
+        dev.terminate([record], tmp_path)
+        process.wait(timeout=3)
+        assert not dev.process_identity(process.pid)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+
+
 def test_orphaned_group_is_still_owned_and_stopped(tmp_path):
     child_file = tmp_path / "child.pid"
     child_code = "import os,time; from pathlib import Path; Path(" + repr(str(child_file)) + ").write_text(str(os.getpid())); time.sleep(60)"

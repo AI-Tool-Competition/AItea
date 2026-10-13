@@ -70,6 +70,9 @@ class Service:
         from .checklists import ChecklistService
 
         self.checklists = ChecklistService(self)
+        from .legal import LegalService
+
+        self.legal = LegalService(self)
 
     @property
     def capabilities(self):
@@ -967,8 +970,6 @@ class Service:
         country=None,
         document_ids=None,
     ):
-        from .ingestion import embed_texts, lexical_search
-
         historical = as_of is not None
         as_of = as_of or datetime.now(timezone.utc).date()
         with closing(self.db.connect()) as conn:
@@ -985,6 +986,29 @@ class Service:
                     if country and country != destination:
                         fail(422, "country_mismatch", "业务只能检索目标国家的法规")
                     country = destination
+        return self.search_eligible(
+            owner, query, case_id, limit, as_of, collection, country, document_ids, historical=historical
+        )
+
+    def search_eligible(
+        self,
+        owner,
+        query,
+        case_id,
+        limit,
+        as_of,
+        collection=None,
+        country=None,
+        document_ids=None,
+        *,
+        historical=False,
+    ):
+        """Shared eligible-document search; callers resolve their allowed country scope first."""
+        from .ingestion import embed_texts, lexical_search
+
+        with closing(self.db.connect()) as conn:
+            if case_id:
+                self.own_case(conn, owner, case_id)
             rows, metadata, limited = self.archive.retrieval_rows(
                 conn,
                 owner,
@@ -1135,6 +1159,60 @@ class Service:
     def run_workflow(self, owner, template, stage, content, tasks, **options):
         from .assistant import run_workflow
 
+        agent = stage.get("analysis") or template["agent"]
+        if (agent.get("legal") or {}).get("enabled"):
+            from .legal_models import LegalFact
+
+            case_id = options.get("case_id")
+            if case_id:
+                with self.db.transaction() as conn:
+                    self.own_case(conn, owner, case_id)
+                    self.legal.sync_facts(conn, owner, case_id)
+                    facts = self.legal.facts(conn, case_id)
+            else:
+                values = {}
+                counts = {}
+                for task in tasks:
+                    for key in task.get("values", {}):
+                        counts[key] = counts.get(key, 0) + 1
+                for task in tasks:
+                    labels = {field["key"]: field["label"] for field in task.get("fields", [])}
+                    for key, value in task.get("values", {}).items():
+                        fact_key = f"{task['id']}:{key}" if counts[key] > 1 else key
+                        values[fact_key] = LegalFact(
+                            key=fact_key,
+                            label=labels.get(key, key),
+                            value=value,
+                            source="测试样例 · " + task["title"],
+                        ).model_dump(mode="json")
+                facts = list(values.values())
+            checkpoint = options.get("on_checkpoint")
+
+            def adapt(result):
+                outputs = [step.get("output_data") or {} for step in result.get("trace", [])]
+                hybrid = any(
+                    output.get("retrieval_mode") == "hybrid"
+                    or any(item.get("mode") == "hybrid" for item in output.get("coverage", []))
+                    for output in outputs
+                )
+                return {
+                    **result,
+                    "checks": [],
+                    "stage_id": stage["id"],
+                    "retrieval_mode": "hybrid" if hybrid else "lexical",
+                }
+
+            legal_options = {
+                key: value
+                for key, value in options.items()
+                if key
+                in ("case_id", "emit", "check_cancelled", "document_ids", "stop_after_step_id", "resume")
+            }
+            if checkpoint:
+                legal_options["on_checkpoint"] = lambda step_id, result, state: checkpoint(
+                    step_id, adapt(result), state
+                )
+            return adapt(self.legal.execute_engine(owner, template, stage, content, facts, **legal_options))
         return run_workflow(self, owner, template, stage, content, tasks, **options)
 
     def prepare_message(self, owner, case_id, payload):
@@ -1201,22 +1279,65 @@ class Service:
         task_id, payload_hash = prepared["task_id"], prepared["payload_hash"]
         if check_cancelled:
             check_cancelled()
-        result = self.run_workflow(
-            owner,
-            case["template"],
-            stage,
-            payload["content"],
-            [prepared["selected"]],
-            case_id=case_id,
-            **({"emit": emit, "check_cancelled": check_cancelled} if emit else {}),
-            context={
-                "facts": case["facts"],
-                "mode": next(
-                    (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
-                ),
-                "recent_messages": prepared["history"],
-            },
-        )
+        agent = stage.get("analysis") or case["template"]["agent"]
+        legal_enabled = bool((agent.get("legal") or {}).get("enabled"))
+        if legal_enabled:
+            question = payload["content"]
+            with closing(self.db.connect()) as conn:
+                retry = conn.execute(
+                    """SELECT a.payload FROM legal_requests r JOIN legal_analyses a ON a.id=r.analysis_id
+                    WHERE r.owner_id=? AND r.case_id=? AND r.client_id=?""",
+                    (owner, case_id, "chat:" + payload["client_message_id"]),
+                ).fetchone()
+                prior = conn.execute(
+                    "SELECT payload FROM legal_analyses WHERE owner_id=? AND case_id=? AND stage_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+                    (owner, case_id, stage["id"]),
+                ).fetchone()
+            if retry:
+                question = json.loads(retry["payload"])["question"]
+            elif prior:
+                prior = json.loads(prior["payload"])
+                if prior["status"] == "needs_input":
+                    question = prior["question"] + "\n\n用户补充说明：" + question
+            if len(question) > 20000:
+                fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在法律分析面板整理事实后继续")
+
+            def legal_emit(event, data):
+                if emit and event in ("status", "delta"):
+                    emit(event, data)
+
+            analysis = self.legal.analyze(
+                owner,
+                case_id,
+                {
+                    "stage_id": stage["id"],
+                    "question": question,
+                    "client_request_id": "chat:" + payload["client_message_id"],
+                    "_chat_content": payload["content"],
+                },
+                emit=legal_emit if emit else None,
+                check_cancelled=check_cancelled,
+            )
+            result = analysis["result"]
+            if emit:
+                emit("delta", {"text": result["output"]})
+        else:
+            result = self.run_workflow(
+                owner,
+                case["template"],
+                stage,
+                payload["content"],
+                [prepared["selected"]],
+                case_id=case_id,
+                **({"emit": emit, "check_cancelled": check_cancelled} if emit else {}),
+                context={
+                    "facts": case["facts"],
+                    "mode": next(
+                        (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
+                    ),
+                    "recent_messages": prepared["history"],
+                },
+            )
         if emit and any(step["status"] == "failed" for step in result["trace"]):
             fail(502, "assistant_failed", "回复未能完成，已收到的内容仅供参考。请重试。")
         output, trace, citations = result["output"], result["trace"], result["citations"]
@@ -1224,6 +1345,10 @@ class Service:
             if check_cancelled:
                 check_cancelled()
             current = self.case_detail(owner, case_id, conn)
+            if legal_enabled:
+                legal_record = self.legal.own(conn, owner, case_id, analysis["id"])
+                if legal_record.get("_snapshot") != self.legal.snapshot(conn, owner, current):
+                    fail(409, "analysis_context_changed", "事实或资料已变化，请重新分析后再使用本次答复")
             existing = conn.execute(
                 "SELECT * FROM message_requests WHERE case_id=? AND client_id=?",
                 (case_id, payload["client_message_id"]),

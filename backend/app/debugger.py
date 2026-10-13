@@ -18,13 +18,31 @@ MAX_SAMPLES = 100
 MAX_RUNS = 100
 MAX_RUN_BYTES = 16 * 1024 * 1024
 MAX_OWNER_BYTES = 64 * 1024 * 1024
-RUNNER_VERSION = 3
+RUNNER_VERSION = 4
 
 
 def digest(value):
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()
     ).hexdigest()
+
+
+def execution_steps(agent):
+    """Legal policy replaces generic steps only for an explicitly enabled agent."""
+    if not (agent.get("legal") or {}).get("enabled"):
+        return agent["steps"]
+    from .legal_models import LEGAL_MODULES
+
+    return [
+        {
+            "id": item["id"],
+            "label": item["title"],
+            "type": "retrieve" if item["id"] == "qa04" else "guide",
+            "enabled": True,
+            "instructions": "",
+        }
+        for item in LEGAL_MODULES
+    ]
 
 
 class WorkflowDebugger:
@@ -109,7 +127,7 @@ class WorkflowDebugger:
             owner, role="primary", country=country or "unassigned", limit=limit, offset=offset
         ) | {"country": country}
 
-    def document_scope(self, conn, owner, document_ids, country=None):
+    def document_scope(self, conn, owner, document_ids, country=None, *, countries=None):
         """Bind selection, immutable versions and mutable eligibility without loading file bodies."""
         from .service import fail
 
@@ -120,11 +138,19 @@ class WorkflowDebugger:
             LEFT JOIN document_countries dc ON dc.document_id=d.id
             WHERE d.owner_id=? AND d.case_id IS NULL AND d.role='primary' """
         parameters = [owner]
+        scope = {"country": country} if countries is None else {"countries": sorted(set(countries))}
         if document_ids is None:
-            sql += " AND d.status='ready' AND dc.country IS ?"
-            parameters.append(country)
+            sql += " AND d.status='ready'"
+            if countries is None:
+                sql += " AND dc.country IS ?"
+                parameters.append(country)
+            elif countries:
+                sql += " AND (dc.country IS NULL OR dc.country IN (" + ",".join("?" for _ in countries) + "))"
+                parameters.extend(countries)
+            else:
+                sql += " AND dc.country IS NULL"
         elif not document_ids:
-            return [], [], digest({"country": country, "documents": []})
+            return [], [], digest(scope | {"documents": []})
         else:
             document_ids = sorted(set(document_ids))
             sql += " AND d.id IN (" + ",".join("?" for _ in document_ids) + ")"
@@ -134,7 +160,9 @@ class WorkflowDebugger:
             fail(422, "document_scope_too_large", "测试最多使用 200 份资料，请选择较小的资料范围")
         if document_ids is not None and len(rows) != len(document_ids):
             fail(404, "not_found", "未找到部分测试资料，请确认资料属于当前账号的资料库")
-        if any(row["country"] != country for row in rows):
+        if countries is not None and any(row["country"] and row["country"] not in countries for row in rows):
+            fail(422, "country_mismatch", "测试资料超出了法律分析允许的国家范围")
+        if countries is None and any(row["country"] != country for row in rows):
             fail(422, "country_mismatch", "测试资料必须属于配置的目的国；目的地未确认时仅可选择未分国资料")
         if any(row["status"] != "ready" for row in rows):
             fail(409, "document_not_ready", "测试资料尚未准备好，请等待解析完成或重新选择")
@@ -181,7 +209,15 @@ class WorkflowDebugger:
             item["classifications"] = classifications.get(row["id"], [])
             item["manifest_hash"] = manifests[row["id"]]
             details.append(item)
-        return [row["id"] for row in rows], versions, digest({"country": country, "documents": details})
+        return [row["id"] for row in rows], versions, digest(scope | {"documents": details})
+
+    def legal_countries(self, template, stage):
+        agent = stage.get("analysis") or template["agent"]
+        return (
+            self.service.legal.allowed_countries(template, stage)
+            if (agent.get("legal") or {}).get("enabled")
+            else None
+        )
 
     def sample(self, owner, template_id, sample_id, conn=None, *, private=False):
         from .service import fail
@@ -235,7 +271,7 @@ class WorkflowDebugger:
             ):
                 fail(409, "sample_limit", "最多保存 100 个测试样例，请删除不再使用的样例")
             document_ids, versions, scope_hash = self.document_scope(
-                conn, owner, payload.document_ids, country
+                conn, owner, payload.document_ids, country, countries=self.legal_countries(template, stage)
             )
             at = now()
             result = payload.model_dump(exclude={"expected_revision"}) | {
@@ -339,7 +375,11 @@ class WorkflowDebugger:
             "runner": RUNNER_VERSION,
         }
         signatures, previous = {}, digest(prefix)
-        for step in agent["steps"]:
+        if (agent.get("legal") or {}).get("enabled"):
+            # All legal rules can affect fact selection, source candidates or report
+            # gates. A changed policy invalidates the prefix conservatively.
+            previous = digest([previous, agent])
+        for step in execution_steps(agent):
             config = {"step": step}
             if step["type"] == "retrieve":
                 config["retrieval_limit"] = agent["retrieval_limit"]
@@ -384,7 +424,7 @@ class WorkflowDebugger:
             elif kind == "check":
                 checks = [
                     check
-                    for check in result["checks"]
+                    for check in result.get("checks", [])
                     if check["id"] == item["check_id"]
                     and (not item.get("task_id") or check.get("task_id") == item["task_id"])
                 ]
@@ -477,7 +517,7 @@ class WorkflowDebugger:
             template, stage, tasks = self.inputs(payload)
             country = resolve_country(template["destination"])
             agent = stage.get("analysis") or template["agent"]
-            step_ids = [step["id"] for step in agent["steps"]]
+            step_ids = [step["id"] for step in execution_steps(agent)]
             for selected in (payload.start_step_id, payload.stop_after_step_id):
                 if selected and selected not in step_ids:
                     fail(422, "invalid_step", "调试步骤不存在，请重新选择")
@@ -485,7 +525,7 @@ class WorkflowDebugger:
             if payload.stop_after_step_id and step_ids.index(payload.stop_after_step_id) < start_index:
                 fail(422, "invalid_step_range", "结束步骤不能位于起始步骤之前")
             document_ids, versions, scope_hash = self.document_scope(
-                conn, owner, payload.document_ids, country
+                conn, owner, payload.document_ids, country, countries=self.legal_countries(template, stage)
             )
             request = raw_request | {"stage_id": stage["id"], "document_ids": document_ids}
             if payload.sample_id:
@@ -553,7 +593,7 @@ class WorkflowDebugger:
             }
             if resume:
                 result.update(copy.deepcopy(resume["state"]["result"]))
-                if resume["state"]["guidance_citations"] is not None:
+                if resume["state"].get("guidance_citations") is not None:
                     result["citations"] = copy.deepcopy(resume["state"]["guidance_citations"])
                 result["trace"] = [reuse_trace(step) for step in resume["trace"]]
             metadata = {
@@ -594,7 +634,7 @@ class WorkflowDebugger:
             # Persist finished steps before emitting completion, so stop retains them.
             public_progress = copy.deepcopy(progress)
             current_state = state or next(reversed(candidate.values()), None)
-            if current_state and current_state["guidance_citations"] is not None:
+            if current_state and current_state.get("guidance_citations") is not None:
                 public_progress["citations"] = copy.deepcopy(current_state["guidance_citations"])
             snapshot = public_progress | metadata | {"status": "cancelled", "evaluations": []}
             encoded, saved_checkpoints = dump(snapshot), dump(candidate)
@@ -644,7 +684,9 @@ class WorkflowDebugger:
             ):
                 status = "paused"
             with closing(self.db.connect()) as conn:
-                _, current_versions, current_scope = self.document_scope(conn, owner, document_ids, country)
+                _, current_versions, current_scope = self.document_scope(
+                    conn, owner, document_ids, country, countries=self.legal_countries(template, stage)
+                )
                 if current_scope != scope_hash or current_versions != versions:
                     status, error = (
                         "failed",

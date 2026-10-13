@@ -1,12 +1,17 @@
 "use client";
 
-import { Copy, Plus, Settings2 } from "lucide-react";
+import { Copy, Plus, Scale, Settings2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { makeConfigId, moveItem, stepTypes } from "@/core/tea/configuration";
+import {
+  analysisSteps,
+  makeConfigId,
+  moveItem,
+  stepTypes,
+} from "@/core/tea/configuration";
 import {
   type AgentConfig,
   type AgentStep,
@@ -16,6 +21,7 @@ import {
 
 import { ConfirmAction, EditorInspector, OrderActions } from "./admin-shared";
 import { ConfigurationCanvas } from "./configuration-canvas";
+import { LegalPolicyEditor } from "./legal-policy-editor";
 
 export function AnalysisEditor({
   draft,
@@ -47,20 +53,28 @@ export function AnalysisEditor({
   editRequest?: number;
 }) {
   const [newType, setNewType] = useState<AgentStep["type"]>("guide");
-  const [tab, setTab] = useState<"step" | "settings">("step");
+  const [tab, setTab] = useState<"step" | "settings" | "legal">("step");
   const [editing, setEditing] = useState(false);
   useEffect(() => {
     if (editRequest) {
       setEditing(true);
-      setTab("step");
+      setTab(
+        (editingDefault
+          ? draft.agent
+          : (draft.stages.find((item) => item.id === stageId)?.analysis ??
+            draft.agent)
+        ).legal?.enabled
+          ? "legal"
+          : "step",
+      );
     }
-  }, [editRequest]);
+  }, [editRequest]); // eslint-disable-line react-hooks/exhaustive-deps
   const stage = draft.stages.find((s) => s.id === stageId) ?? draft.stages[0]!;
   const agent = editingDefault ? draft.agent : (stage.analysis ?? draft.agent);
   const inherited = !editingDefault && !stage.analysis;
-  const selected =
-    agent.steps.find((step) => step.id === stepId) ?? agent.steps[0];
-  const index = selected ? agent.steps.indexOf(selected) : 0;
+  const steps = analysisSteps(agent);
+  const selected = steps.find((step) => step.id === stepId) ?? steps[0];
+  const index = selected ? steps.indexOf(selected) : 0;
   function changeAgent(next: AgentConfig) {
     if (editingDefault) onChange({ ...draft, agent: next });
     else
@@ -79,7 +93,7 @@ export function AnalysisEditor({
   }
   function selectStep(id: string) {
     onStep(id);
-    setTab("step");
+    setTab(agent.legal?.enabled ? "legal" : "step");
     if (!debugOpen) setEditing(true);
   }
   return (
@@ -123,16 +137,31 @@ export function AnalysisEditor({
             <Settings2 size={15} />
             流程设置
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-inspector-trigger
+            onClick={() => {
+              onDebugClose?.();
+              setTab("legal");
+              setEditing(true);
+            }}
+          >
+            <Scale size={15} />
+            法律规则
+          </Button>
         </div>
         <ConfigurationCanvas
           label="主动分析工作流"
           selected={selected?.id ?? ""}
           onSelect={selectStep}
           trace={trace}
-          items={agent.steps.map((step) => ({
+          items={steps.map((step) => ({
             id: step.id,
             label: step.label,
-            subtitle: stepTypes[step.type].label,
+            subtitle: agent.legal?.enabled
+              ? `${step.id.toUpperCase()} · 固定阶段`
+              : stepTypes[step.type].label,
             kind: step.type,
             enabled: step.enabled,
           }))}
@@ -145,45 +174,49 @@ export function AnalysisEditor({
             value={selected?.id ?? ""}
             onChange={(e) => selectStep(e.target.value)}
           >
-            {agent.steps.map((step, i) => (
+            {steps.map((step, i) => (
               <option key={step.id} value={step.id}>
                 {i + 1}. {step.label}
               </option>
             ))}
           </select>
-          <div className="ta-add-step">
-            <select
-              aria-label="新增步骤类型"
-              value={newType}
-              onChange={(e) => setNewType(e.target.value as AgentStep["type"])}
-            >
-              {Object.entries(stepTypes).map(([id, value]) => (
-                <option value={id} key={id}>
-                  {value.label}
-                </option>
-              ))}
-            </select>
-            <Button
-              variant="outline"
-              size="sm"
-              data-inspector-trigger
-              disabled={inherited || agent.steps.length >= 20}
-              onClick={() => {
-                const step = {
-                  id: makeConfigId("step"),
-                  type: newType,
-                  label: stepTypes[newType].label,
-                  enabled: true,
-                  instructions: "",
-                };
-                changeAgent({ ...agent, steps: [...agent.steps, step] });
-                selectStep(step.id);
-              }}
-            >
-              <Plus size={14} />
-              添加步骤
-            </Button>
-          </div>
+          {!agent.legal?.enabled && (
+            <div className="ta-add-step">
+              <select
+                aria-label="新增步骤类型"
+                value={newType}
+                onChange={(e) =>
+                  setNewType(e.target.value as AgentStep["type"])
+                }
+              >
+                {Object.entries(stepTypes).map(([id, value]) => (
+                  <option value={id} key={id}>
+                    {value.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                size="sm"
+                data-inspector-trigger
+                disabled={inherited || agent.steps.length >= 20}
+                onClick={() => {
+                  const step = {
+                    id: makeConfigId("step"),
+                    type: newType,
+                    label: stepTypes[newType].label,
+                    enabled: true,
+                    instructions: "",
+                  };
+                  changeAgent({ ...agent, steps: [...agent.steps, step] });
+                  selectStep(step.id);
+                }}
+              >
+                <Plus size={14} />
+                添加步骤
+              </Button>
+            </div>
+          )}
         </div>
       </div>
       <EditorInspector
@@ -203,19 +236,28 @@ export function AnalysisEditor({
               role="tablist"
               aria-label="分析编辑内容"
             >
-              <button
-                role="tab"
-                aria-selected={tab === "step"}
-                onClick={() => setTab("step")}
-              >
-                步骤设置
-              </button>
+              {!agent.legal?.enabled && (
+                <button
+                  role="tab"
+                  aria-selected={tab === "step"}
+                  onClick={() => setTab("step")}
+                >
+                  步骤设置
+                </button>
+              )}
               <button
                 role="tab"
                 aria-selected={tab === "settings"}
                 onClick={() => setTab("settings")}
               >
                 流程设置
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === "legal"}
+                onClick={() => setTab("legal")}
+              >
+                法律规则
               </button>
             </div>
             <div className="ta-inspector-body">
@@ -257,7 +299,17 @@ export function AnalysisEditor({
                   </Button>
                 </div>
               )}
-              {tab === "settings" ? (
+              {tab === "legal" ? (
+                <LegalPolicyEditor
+                  key={`${stage.id}:${editingDefault}`}
+                  value={agent.legal}
+                  onChange={(legal) => changeAgent({ ...agent, legal })}
+                  disabled={inherited}
+                  template={draft}
+                  stageId={stage.id}
+                  moduleId={agent.legal?.enabled ? selected?.id : undefined}
+                />
+              ) : tab === "settings" ? (
                 <>
                   <div className="ta-inspector-header">
                     <h3>{editingDefault ? "默认分析流程" : "分析流程设置"}</h3>

@@ -4,6 +4,7 @@ import { FlaskConical, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { analysisSteps } from "@/core/tea/configuration";
 import type { Template } from "@/core/tea/types";
 import type {
   DebugRunMode,
@@ -40,7 +41,17 @@ export function ConfigurationDebugger({
   );
   const [choice, setChoice] = useState("");
   const stage = draft.stages.find((item) => item.id === stageId)!;
-  const steps = (stage.analysis ?? draft.agent).steps;
+  const agent = stage.analysis ?? draft.agent;
+  const steps = analysisSteps(agent);
+  const legalCountries = agent.legal?.enabled
+    ? [
+        ...new Set([
+          draft.destination,
+          draft.origin,
+          ...agent.legal.jurisdictions,
+        ]),
+      ]
+    : undefined;
   const selectedTrace = stepId
     ? debug.trace.find((item) => item.id === stepId)
     : (debug.trace.find((item) => item.status === "failed") ??
@@ -177,10 +188,11 @@ export function ConfigurationDebugger({
         )}
         {tab === "sample" && (
           <DebugSampleEditor
-            key={draft.destination}
+            key={JSON.stringify(legalCountries ?? draft.destination)}
             debug={debug}
             stage={stage}
             destination={draft.destination}
+            countries={legalCountries}
           />
         )}
         {tab === "result" && (

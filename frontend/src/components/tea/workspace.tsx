@@ -8,6 +8,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   ShieldCheck,
+  Scale,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
@@ -35,11 +36,12 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 
 import { ArtifactPanel } from "./artifact-panel";
+import { LegalWorkbench } from "./legal-workbench";
 import { dateLabel, ErrorNotice } from "./shared";
 import { StageChat } from "./stage-chat";
 export { clearChatDrafts } from "@/core/tea/use-stage-chat";
 import { TaskPanel } from "./task-panel";
-type PanelTab = "flow" | "task" | "document" | "facts";
+type PanelTab = "flow" | "task" | "document" | "facts" | "legal";
 
 function Flow({
   record,
@@ -172,6 +174,7 @@ export function Workspace({
   const [panelOpen, setPanelOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [tab, setTab] = useState<PanelTab>("flow");
+  const [legalOpened, setLegalOpened] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [artifactId, setArtifactId] = useState("");
   const isMobile = useIsMobile();
@@ -188,6 +191,7 @@ export function Workspace({
     else panelRef.current?.collapse();
   }, [panelOpen, isMobile, panelRef]);
   function openPanel(next: PanelTab) {
+    if (next === "legal") setLegalOpened(true);
     setTab(next);
     setPanelOpen(true);
     if (isMobile) setMobileOpen(true);
@@ -219,12 +223,16 @@ export function Workspace({
               ["task", "当前任务"],
               ["document", "文稿"],
               ["facts", "档案"],
+              ["legal", "法律分析"],
             ] as const
           ).map(([id, label]) => (
             <button
               className={tab === id ? "active" : ""}
               key={id}
-              onClick={() => setTab(id)}
+              onClick={() => {
+                if (id === "legal") setLegalOpened(true);
+                setTab(id);
+              }}
             >
               {label}
             </button>
@@ -241,6 +249,16 @@ export function Workspace({
         </button>
       </div>
       <div className="tea-sidepanel-scroll">
+        <div hidden={tab !== "legal"}>
+          {legalOpened && (
+            <LegalWorkbench
+              accountId={accountId}
+              record={record}
+              stageId={stage.id}
+              onUpdate={onUpdate}
+            />
+          )}
+        </div>
         <div hidden={tab !== "flow"}>
           <Flow
             record={record}
@@ -354,6 +372,15 @@ export function Workspace({
         </div>
         <div className="tea-workspace-actions">
           <button
+            onClick={() => openPanel("legal")}
+            aria-expanded={
+              tab === "legal" && (isMobile ? mobileOpen : panelOpen)
+            }
+          >
+            <Scale size={16} />
+            法律分析
+          </button>
+          <button
             aria-expanded={isMobile ? mobileOpen : panelOpen}
             onClick={() => {
               if (isMobile) setMobileOpen(true);
@@ -422,7 +449,7 @@ export function Workspace({
             <SheetHeader className="sr-only">
               <SheetTitle>办理流程与资料</SheetTitle>
               <SheetDescription>
-                查看任务、核验进度和编辑文稿。
+                查看任务、核验进度、编辑文稿和法律分析。
               </SheetDescription>
             </SheetHeader>
             {panel}

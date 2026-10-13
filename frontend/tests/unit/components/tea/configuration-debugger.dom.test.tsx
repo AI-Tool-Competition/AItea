@@ -35,6 +35,7 @@ rs.mock("@/components/tea/analysis-editor", () => ({
     <div>
       <button onClick={() => onStep("b")}>选择画布步骤 B</button>
       <button onClick={() => onStep("c")}>选择画布步骤 C</button>
+      <button onClick={() => onStep("qa03")}>选择法域分析</button>
       <output data-testid="canvas-step">{stepId}</output>
       <output data-testid="edit-request">{editRequest}</output>
       {debugOpen && debugContent}
@@ -277,4 +278,28 @@ describe("historical debugger step selection", () => {
     expect(screen.queryByRole("button", { name: "只试这一步" })).toBeNull();
     expect(sent).toHaveLength(0);
   });
+});
+
+it("uses legal stage IDs for debugger run-to actions while preserving the saved legacy steps", async () => {
+  const currentTemplate: Template = {
+    ...template,
+    agent: {
+      ...template.agent,
+      legal: {
+        enabled: true,
+        jurisdictions: ["SG"],
+        question_limit: 3,
+        max_rounds: 2,
+        retrieval_limit: 5,
+        rules: [],
+      },
+    },
+  };
+  const sent = setupHistory(historical, currentTemplate);
+  await openHistoricalResult();
+  fireEvent.click(screen.getByRole("button", { name: "选择法域分析" }));
+  fireEvent.click(screen.getByRole("button", { name: "运行到这里" }));
+  await waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0]?.stop_after_step_id).toBe("qa03");
+  expect(sent[0]?.template.agent.steps).toEqual(template.agent.steps);
 });

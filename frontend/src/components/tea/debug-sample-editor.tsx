@@ -23,10 +23,12 @@ export function DebugSampleEditor({
   debug,
   stage,
   destination,
+  countries,
 }: {
   debug: WorkflowDebugger;
   stage: StageDefinition;
   destination: string;
+  countries?: string[];
 }) {
   const { sample, editSample } = debug;
   const locked = debug.running || debug.working;
@@ -55,6 +57,7 @@ export function DebugSampleEditor({
             .filter(([key]) => !Object.hasOwn(currentValues[id] ?? {}, key))
             .map(([, value]) => value),
   );
+  const [sourceCountry, setSourceCountry] = useState(destination);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [country, setCountry] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
@@ -67,7 +70,7 @@ export function DebugSampleEditor({
     setLoading(true);
     setError("");
     teaRequest<ListResult<Document> & { country: string | null }>(
-      `/templates/debug/documents?destination=${encodeURIComponent(destination)}&limit=50&offset=${offset}`,
+      `/templates/debug/documents?destination=${encodeURIComponent(sourceCountry)}&limit=50&offset=${offset}`,
       { signal: abort.signal },
     )
       .then((page) => {
@@ -87,7 +90,7 @@ export function DebugSampleEditor({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [destination, offset, retry]);
+  }, [sourceCountry, offset, retry]);
   function updateExpectation(value: DebugExpectation) {
     editSample({
       expectations: sample.expectations.map((item) =>
@@ -193,7 +196,9 @@ export function DebugSampleEditor({
           <summary>
             检索资料 ·{" "}
             {sample.document_ids === null
-              ? "目的地资料库"
+              ? countries
+                ? "允许法域资料库"
+                : "目的地资料库"
               : `${sample.document_ids.length} 份`}
           </summary>
           <label className="tea-field">
@@ -206,10 +211,31 @@ export function DebugSampleEditor({
                 })
               }
             >
-              <option value="library">目的地共有资料库</option>
+              <option value="library">
+                {countries ? "允许法域共有资料库" : "目的地共有资料库"}
+              </option>
               <option value="selected">指定资料（可留空）</option>
             </select>
           </label>
+          {countries && countries.length > 1 && (
+            <label className="tea-field">
+              <span>查看资料国家</span>
+              <select
+                value={sourceCountry}
+                onChange={(event) => {
+                  setSourceCountry(event.target.value);
+                  setOffset(0);
+                  setDocuments([]);
+                }}
+              >
+                {countries.map((item) => (
+                  <option key={item} value={item}>
+                    {countryLabel(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <p className="ta-hint">
             {loading
               ? "正在读取资料…"

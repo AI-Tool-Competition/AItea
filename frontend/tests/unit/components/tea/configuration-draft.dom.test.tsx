@@ -109,3 +109,62 @@ describe("configuration drafts", () => {
     expect(other.result.current.draft.title).toBe("原模板");
   });
 });
+
+it("saves legal rule cards with the template and restores their exact instructions", async () => {
+  const legalTemplate: Template = {
+    ...template,
+    agent: {
+      ...template.agent,
+      legal: {
+        enabled: true,
+        jurisdictions: ["SG"],
+        question_limit: 3,
+        max_rounds: 2,
+        retrieval_limit: 5,
+        rules: [
+          {
+            id: "exceptions",
+            title: "例外审查",
+            module: "qa05",
+            enabled: true,
+            execution: "manual",
+            domains: ["contract"],
+            jurisdictions: ["CN"],
+            condition: "涉及违约",
+            instructions: "区分例外与抗辩",
+            required_facts: [],
+            output_requirements: "附原文引用",
+            review_required: true,
+            source_reference: "法务规则第二章",
+          },
+        ],
+      },
+    },
+  };
+  let saved: Template | null = null;
+  rs.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+    if (options?.method === "PUT") {
+      saved = (JSON.parse(options.body as string) as { template: Template })
+        .template;
+      return reply({ template: saved, revision: 1, updated_at: null });
+    }
+    return reply({
+      template: saved,
+      revision: saved ? 1 : 0,
+      updated_at: null,
+    });
+  });
+  const first = renderHook(() => useConfigurationDraft("lawyer", template));
+  await waitFor(() => expect(first.result.current.loading).toBe(false));
+  act(() => first.result.current.update(legalTemplate));
+  await act(async () => {
+    await first.result.current.save();
+  });
+  first.unmount();
+  clearConfigurationDrafts();
+  const next = renderHook(() => useConfigurationDraft("lawyer", template));
+  await waitFor(() => expect(next.result.current.loading).toBe(false));
+  expect(next.result.current.draft.agent.legal).toEqual(
+    legalTemplate.agent.legal,
+  );
+});

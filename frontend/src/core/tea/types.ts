@@ -44,6 +44,7 @@ export interface AgentStep {
   instructions?: string;
 }
 export interface AgentConfig {
+  legal?: LegalPolicy | null;
   language: string;
   instructions: string;
   retrieval_limit: number;
@@ -177,6 +178,7 @@ export interface CaseDetail extends CaseSummary {
   events: AuditEvent[];
 }
 export interface Citation {
+  id?: string;
   metadata?: DocumentMetadata;
   metadata_revision?: number;
   document_id: string;
@@ -540,3 +542,171 @@ export interface DocumentDetail {
   warnings: string[];
   parser?: string | null;
 }
+
+export interface LegalFactRequirement {
+  key: string;
+  label: string;
+  purpose: string;
+  decisive: boolean;
+}
+export interface LegalRule {
+  id: string;
+  title: string;
+  module: "qa01" | "qa02" | "qa03" | "qa04" | "qa05" | "qa06";
+  enabled: boolean;
+  execution: "model" | "manual";
+  domains: string[];
+  jurisdictions: string[];
+  condition: string;
+  instructions: string;
+  required_facts: LegalFactRequirement[];
+  output_requirements: string;
+  review_required: boolean;
+  source_reference: string;
+}
+export interface LegalPolicy {
+  enabled: boolean;
+  jurisdictions: string[];
+  question_limit: number;
+  max_rounds: number;
+  retrieval_limit: number;
+  rules: LegalRule[];
+}
+export interface LegalPolicyDefaults {
+  policy: LegalPolicy;
+  program_checks: { id: string; title: string; description: string }[];
+  modules: { id: LegalRule["module"]; title: string }[];
+}
+export interface LegalFact {
+  key: string;
+  label: string;
+  value: string | number | null;
+  source: string;
+  confirmed: boolean;
+  extraction_confidence: "unknown" | "low" | "medium" | "high";
+  evidence_status: "unverified" | "verified" | "conflict";
+  evidence_refs: string[];
+  conflicts: {
+    value: string | number | null;
+    source: string;
+    evidence_refs: string[];
+  }[];
+  resolved_conflicts?: {
+    value: string | number | null;
+    source: string;
+    evidence_refs: string[];
+  }[];
+  revision: number;
+  review_note?: string | null;
+}
+export interface LegalDeadline {
+  id: string;
+  label: string;
+  status: "calculated" | "conditional" | "unavailable";
+  date: string | null;
+  timezone: string | null;
+  as_of?: string;
+  remaining_days?: number | null;
+  risk?: "overdue" | "imminent" | "upcoming" | "unknown";
+  assumptions: string[];
+  missing_prerequisites: string[];
+  citation_ids: string[];
+  inputs: Record<string, unknown>;
+}
+export interface LegalIssue {
+  id: string;
+  question: string;
+  kind: "information" | "legal";
+  domains: string[];
+  jurisdictions: string[];
+  fact_keys: string[];
+  depends_on?: string[];
+  missing_facts: LegalFactRequirement[];
+  conditions: {
+    label: string;
+    state: "met" | "not_met" | "unknown" | "not_applicable";
+    fact_keys: string[];
+    citation_ids: string[];
+    reason: string;
+  }[];
+  status: "supported" | "unsupported" | "conditional" | "undetermined";
+  conclusion: string;
+  explanation: string;
+  citations: Citation[];
+  deadlines: LegalDeadline[];
+  actions: {
+    id: string;
+    title: string;
+    nature:
+      | "mandatory"
+      | "conditional"
+      | "recommended"
+      | "commercial"
+      | "unverified";
+    details: string;
+  }[];
+  gaps: string[];
+  needs_review: boolean;
+}
+export interface LegalResult {
+  question: string;
+  issues: LegalIssue[];
+  facts: LegalFact[];
+  followups: LegalFactRequirement[];
+  sections: { id: string; issue_id: string; title: string; content: string }[];
+  trace: TraceStep[];
+  gaps: string[];
+  assistant_mode: "demo" | "live";
+  output: string;
+  citations: Citation[];
+}
+export interface LegalAnalysisSummary {
+  id: string;
+  case_id: string;
+  stage_id: string;
+  question: string;
+  revision: number;
+  status:
+    | "running"
+    | "completed"
+    | "needs_input"
+    | "needs_review"
+    | "failed"
+    | "cancelled";
+  created_at: string;
+  updated_at: string;
+  affected_issue_ids: string[];
+  error: string | null;
+}
+export interface LegalSection {
+  id: string;
+  issue_id: string;
+  title: string;
+  content: string;
+  generated_content: string;
+  suggested_content: string | null;
+  edited: boolean;
+  needs_review: boolean;
+}
+export interface LegalAnalysis extends LegalAnalysisSummary {
+  result: LegalResult;
+  sections: LegalSection[];
+}
+export interface LegalHistory {
+  facts_truncated?: boolean;
+  facts: LegalFact[];
+  analyses: LegalAnalysisSummary[];
+  total: number;
+}
+export interface LegalFactInput {
+  expected_revision: number;
+  label: string;
+  value: string | number | null;
+  confirmed: boolean;
+  evidence_status: LegalFact["evidence_status"];
+  evidence_refs: string[];
+  review_note: string;
+}
+export type LegalStreamEvent =
+  | { event: "status"; data: { label: string } }
+  | { event: "step"; data: TraceStep };

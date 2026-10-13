@@ -32,6 +32,8 @@ _OFFSETS = {
     "artifact_byte_offset",
     "char_start",
     "char_end",
+    "decoded_record_start_byte",
+    "decoded_record_end_byte",
 }
 
 
@@ -51,7 +53,11 @@ def validate_mapping(value, source_hash, depth=0):
             if key in _OFFSETS and (type(item) is not int or item < 0):
                 raise ValueError("invalid native mapping byte or character offset")
             validate_mapping(item, source_hash, depth + 1)
-        for first, last in (("cp_start", "cp_end"), ("char_start", "char_end")):
+        for first, last in (
+            ("cp_start", "cp_end"),
+            ("char_start", "char_end"),
+            ("decoded_record_start_byte", "decoded_record_end_byte"),
+        ):
             if first in value and last in value and value[first] > value[last]:
                 raise ValueError("reversed native mapping character range")
     elif isinstance(value, list):
@@ -287,6 +293,15 @@ def mappings(manifest, manifest_hash):
                 "external_resources_fetched scripts_executed",
             ),
         )
+        if "rsc_video_scan" in html:
+            yield emit(
+                "html_script_video_scan",
+                "/html_source/rsc_video_scan",
+                _select(
+                    html["rsc_video_scan"],
+                    "protocol script_execution scripts records video_objects scan_errors scope",
+                ),
+            )
         for index, value in _items(html.get("objects", [])):
             base = _pointer("/html_source/objects", index)
             record = _select(
@@ -297,6 +312,29 @@ def mappings(manifest, manifest_hash):
             record["locator"] = locator(value["locator"])
             if "metadata" in value:
                 record["metadata"] = _select(value["metadata"], "alt title type width height media sizes")
+            if "rsc_source" in value:
+                proof = value["rsc_source"]
+                record["rsc_source"] = _select(
+                    proof,
+                    "protocol record_id json_pointer decoded_record_sha256 decoded_record_start_byte "
+                    "decoded_record_end_byte decoded_stream_sha256 video_src_sha256 visible_thumbnail_id",
+                )
+                url = proof.get("video_src")
+                if not isinstance(url, str) or hashlib.sha256(url.encode()).hexdigest() != proof.get(
+                    "video_src_sha256"
+                ):
+                    raise ValueError("HTML script video source hash mismatch")
+                record["rsc_source"]["video_url"] = _reference_url(url)
+                record["rsc_source"]["literal_reference"] = {
+                    "storage": "documents.manifest",
+                    "manifest_sha256": manifest_hash,
+                    "json_pointer": base + "/rsc_source/video_src",
+                    "sha256": proof["video_src_sha256"],
+                }
+                record["rsc_source"]["script_ranges"] = [
+                    _select(part, "char_start char_end sha256")
+                    for _, part in _items(proof.get("script_ranges"))
+                ]
             yield emit("html_visual_object", base, record)
             for offset, attr in _items(value.get("url_attributes", [])):
                 pointer = _pointer(base + "/url_attributes", offset)
@@ -305,13 +343,20 @@ def mappings(manifest, manifest_hash):
                     "attribute raw_value_sha256 char_start char_end offset_basis resource_fetched",
                 )
                 raw, decoded = attr.get("raw_value"), attr.get("decoded_value")
+                expected = (
+                    raw
+                    if attr.get("attribute") == "rsc-video-src"
+                    else unescape(raw)
+                    if isinstance(raw, str)
+                    else None
+                )
                 if (
                     not isinstance(raw, str)
                     or not isinstance(decoded, str)
                     or len(raw) > MAX_STRING
                     or len(decoded) > MAX_STRING
                     or hashlib.sha256(raw.encode()).hexdigest() != attr.get("raw_value_sha256")
-                    or unescape(raw) != decoded
+                    or expected != decoded
                 ):
                     raise ValueError("HTML image reference literal hash mismatch")
                 attribute.update(_reference_url(decoded))
@@ -334,6 +379,16 @@ def mappings(manifest, manifest_hash):
             record["original_image_blob"] = _select(
                 value["original_image_blob"], "content_hash size storage_path mime_type"
             )
+            if "download_receipt_blob" in value:
+                record["download_receipt_blob"] = _select(
+                    value["download_receipt_blob"], "content_hash size storage_path mime_type"
+                )
+            if "pixel_verification" in value:
+                record["pixel_verification"] = _select(
+                    value["pixel_verification"],
+                    "original_image_sha256 original_image_size width height original_width "
+                    "original_height frame_count frame_basis pixel_transform image_sha256 image_size",
+                )
             record["original_url_attribute"] = {
                 "attribute": value["url_attribute"]["attribute"],
                 "raw_value_sha256": value["url_attribute"]["raw_value_sha256"],

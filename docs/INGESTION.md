@@ -88,9 +88,15 @@ PDF 的 `quality.complete` 仅表示所有物理页已完成原生提取或模�
 
 HTML 使用 `html-basic` 版本 3／`html-source-mapping-v3`。正文图像、picture/source、SVG 引用、canvas、object/embed 和正文 PDF iframe 保存到 `html_source.objects`，包括原件 SHA、DOM 路径、解码后 HTML 字符范围、原始引用属性及其 UTF-8 SHA；字符偏移和片段 SHA 不冒充原件字节偏移。导航与隐藏对象按正文范围过滤，alt 只作元数据，不代替识别文字。无图正文仍可通过原生门禁；图像或对象未核验、边界不完整、错误页面及空脚本壳不能放行全文。只有图像的页面可以保存映射和原件，正文及切片为空。
 
+Next/Flight 中明确关联正文缩略图或正文组件层级的视频来源，以 `html-next-flight-video-source-v1` 保存原始 script 字符范围／SHA、解码记录及流 SHA、JSON 指针和视频网址证明，不执行脚本。脚本网址按 JSON 字符串解码，保留 `&amp;` 等字面量，不再次当作 HTML 属性实体解码。可唯一定位的原始网址另保留精确字符范围；转义或跨脚本内容只记录真实解码链，不编造视频 DOM 或字节位置。缩略图识别不能完成视频转录，正文视频继续阻止全文完整。普通旧 HTMLv3 映射保持兼容；存在新增视频对象或来源完整性变化的旧映射会被新图片预校验拒绝，须从真实原件重新受限解析。历史缓存尚未进行全库脚本扫描或迁移，不能据此宣称其视频内容完整。参考 [HTML 嵌入内容标准](https://html.spec.whatwg.org/multipage/embedded-content.html)。
+
 已经显式采集并存入当前账号 CAS 的独立正文 `img/src`，可经 `bind_linked_image_bounded` 绑定至 `html_source.linked_images`，复核父 HTML、DOM、字符范围、原始 URL 属性与图片原字节 SHA。此入口只验证 URL 语法、不下载外链或解析 DNS；新增采集必须使用现有 HTTPS 公网、重定向、体积与时间限制。处理服务要求绑定父网址等于文档来源或该账号、该文档已保存的采集最终网址；含 `base/href` 的 HTML 继续待核验。受限工作进程验证全部图片帧及像素，HTML 图最多 12 MP，Word/WPF 仍为 6 MP，原图与请求 PNG 各最多 8 MiB；不缩放或丢弃帧，进程仍限制 768 MiB、35 秒 CPU 与 45 秒墙钟。原件 CAS、送模型的 PNG、尝试及结果检查点分别保留；已有处理服务负责租约及恢复。`picture/srcset`、SVG、canvas、未知边界和脚本图片继续待核验，不把某个候选图的成功识别当作完整页面。只有所有正文对象均通过图片识别且原生解析门禁完整，才恢复正文完整性；法规审核、一级索引条件与普通附件原件保存边界继续适用。格式 5 清单同时导出链接图片原件 CAS、原文引用、PNG 及转写文本定位。图片候选与替代文字的语义以 [HTML 图片标准](https://html.spec.whatwg.org/multipage/images.html) 为参考；完整光栅解码以项目锁定的 Pillow 版本和 [官方接口说明](https://pillow.readthedocs.io/en/stable/reference/Image.html) 为准。
 
 全部已知对象核验完成后，当前提示只解除解析器自身的“尚未视觉核验”一条，移至 `quality.resolved_warnings` 保留记录；其他独立来源、版本或边界提示继续存在。检查点恢复按同一门禁重组派生状态，不重复调用图片模型，也不改变法规原件、版本、审核或有效向量。
+
+网页图片的显式采集命令见[服务器采集](RESOURCE_COLLECTION.md)。它在下载前复核父原件，成功的原图、HTTP 元数据收据及像素验证结果加入来源映射；受限解析和识别仍通过既有处理链执行。每轮只读取最多四个待识别原图，32 MiB 是批次限制，已经完成的图片不累计占用后续批次。指定资料的处理作业有独立账号与草稿资格门禁，全局处理沿用既有权限规则。总处理名额保持原有限制；已有名额仅运行扫描或仅运行向量时，空闲名额优先推进另一阶段，以免长扫描持续挡住已完成文本。
+
+PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制的直线和细矩形，应用 `cm`、`q/Q` 以及 Form XObject 自有 Matrix／Resources；仅填充的曲线图标不作为表格边线。非法、循环、缺资源或超界几何继续要求布局复核。该分类只决定是否需要表格核验，不证明扫描文字或法源完整；已经保存的原件、OCR 与历史疑点仍保留。实现参考 [Adobe PDF 标准的图形状态及 Form XObject 定义](https://developer.adobe.com/document-services/docs/assets/35e4369068f86065372c18787171a17e/PDF_ISO_32000-1.pdf)。
 
 两份清单附件是范围和示范截图资料，不能因正文或图片识别完成而自动成为法规库资料。2026-10-13 的受限回放在原始印尼附件上保留了 48 个图片位置／47 个图片哈希；首两张真实截图的模型返回均不完整，保留待核对，未入业务数据库或向量库。普通 `role=secondary` 上传附件继续只存原件；独立二级法律资料仍可文本化，但不建立向量。
 

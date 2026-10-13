@@ -510,10 +510,65 @@ class CollectionService:
             )
             return dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
 
-    def claim_processing(self):
+    @staticmethod
+    def _processing_scope(owner_id, document_ids):
+        if owner_id is None and document_ids is None:
+            return "", ()
+        if (
+            not isinstance(owner_id, str)
+            or not owner_id
+            or len(owner_id) > 100
+            or not isinstance(document_ids, (list, tuple))
+            or not 1 <= len(document_ids) <= 20
+            or any(not isinstance(item, str) or not item or len(item) > 100 for item in document_ids)
+            or len(set(document_ids)) != len(document_ids)
+        ):
+            raise ValueError("处理范围需要账号和一至二十个不重复的文档标识。")
+        return " AND owner_id=? AND document_id IN (" + ",".join("?" for _ in document_ids) + ")", (
+            owner_id,
+            *document_ids,
+        )
+
+    @staticmethod
+    def _processing_policy_clause(policy):
+        if policy is None:
+            return ""
+        if policy != "draft_html_v3":
+            raise ValueError("正文处理授权策略无效。")
+        # Metadata and parser markers come from the current stored document,
+        # never from a prepare result or the worker's earlier document copy.
+        manifest = "CASE WHEN json_valid(d.manifest) THEN d.manifest ELSE '{}' END"
+        metadata = "CASE WHEN json_valid(m.payload) THEN m.payload ELSE '{}' END"
+        return f""" AND EXISTS (
+            SELECT 1 FROM documents d JOIN document_metadata m ON m.document_id=d.id
+            WHERE d.id=processing_jobs.document_id AND d.owner_id=processing_jobs.owner_id
+                AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
+                AND json_extract({metadata},'$.review_status')='draft'
+                AND json_extract({manifest},'$.parser')='html-basic'
+                AND json_extract({manifest},'$.parser_version')='3'
+                AND (json_extract({manifest},'$.pipeline_version')='html-source-mapping-v3'
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23)='html-source-mapping-v3+')
+                AND json_extract({manifest},'$.html_source.mapping_version')='html-source-mapping-v3'
+                AND json_extract({manifest},'$.source_hash')=d.content_hash
+                AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
+        )"""
+
+    def claim_processing(self, *, owner_id=None, document_ids=None, processing_policy=None):
+        scope, arguments = self._processing_scope(owner_id, document_ids)
+        policy = self._processing_policy_clause(processing_policy)
+        if policy and not scope:
+            raise ValueError("正文处理授权策略必须限定账号和文档范围。")
         timestamp = time.time()
         with self.db.transaction() as conn:
-            self._expire(conn, "processing_jobs", "processing", timestamp)
+            self._expire(
+                conn,
+                "processing_jobs",
+                "processing",
+                timestamp,
+                owner_id=owner_id,
+                document_ids=document_ids,
+                processing_policy=processing_policy,
+            )
             if (
                 conn.execute(
                     "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND lease_until>?",
@@ -522,9 +577,31 @@ class CollectionService:
                 >= self.processing_workers
             ):
                 return None
+            # Long OCR should not occupy every slot while complete text waits
+            # for embeddings (or the reverse). Prefer the missing phase only
+            # when another phase is already active; preserve FIFO otherwise.
+            preferred = None
+            if self.processing_workers > 1:
+                active_phases = {
+                    item["phase"]
+                    for item in conn.execute(
+                        "SELECT DISTINCT phase FROM processing_jobs WHERE status='processing' AND lease_until>?",
+                        (timestamp,),
+                    )
+                }
+                if active_phases == {"parse"}:
+                    preferred = "embed"
+                elif active_phases == {"embed"}:
+                    preferred = "parse"
+            order = "CASE WHEN phase=? THEN 0 ELSE 1 END," if preferred else ""
             row = conn.execute(
-                "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=? ORDER BY updated_at,document_id LIMIT 1",
-                (timestamp,),
+                "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
+                + scope
+                + policy
+                + " ORDER BY "
+                + order
+                + "updated_at,document_id LIMIT 1",
+                (timestamp, *arguments, *((preferred,) if preferred else ())),
             ).fetchone()
             if not row:
                 return None
@@ -533,12 +610,27 @@ class CollectionService:
                 "UPDATE processing_jobs SET status='processing',attempts=attempts+1,lease_token=?,lease_until=? WHERE document_id=?",
                 (token, timestamp + LEASE_SECONDS, row["document_id"]),
             )
-            return dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
+            claim = dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
+            if processing_policy is not None:
+                claim.update(
+                    _processing_policy=processing_policy,
+                    _processing_document_ids=tuple(document_ids),
+                )
+            return claim
 
-    def _expire(self, conn, table, status, timestamp):
+    def _expire(
+        self, conn, table, status, timestamp, *, owner_id=None, document_ids=None, processing_policy=None
+    ):
         # Table names come exclusively from the two internal queue implementations.
+        scope, arguments = self._processing_scope(owner_id, document_ids)
+        if scope and table != "processing_jobs":
+            raise ValueError("限定范围只适用于正文处理任务。")
+        policy = self._processing_policy_clause(processing_policy)
+        if policy and (not scope or table != "processing_jobs"):
+            raise ValueError("正文处理授权策略必须限定账号和文档范围。")
         rows = conn.execute(
-            f"SELECT * FROM {table} WHERE status=? AND lease_until<=? LIMIT 32", (status, timestamp)
+            f"SELECT * FROM {table} WHERE status=? AND lease_until<=?" + scope + policy + " LIMIT 32",
+            (status, timestamp, *arguments),
         ).fetchall()
         key = "id" if table == "collection_items" else "document_id"
         for row in rows:
@@ -568,18 +660,55 @@ class CollectionService:
             if processing
             else ("collection_items", "id", "fetching")
         )
+        policy = self._processing_policy_clause(claim.get("_processing_policy")) if processing else ""
+        if policy and claim["document_id"] not in claim.get("_processing_document_ids", ()):
+            return False
         return (
             conn.execute(
-                f"SELECT 1 FROM {table} WHERE {key}=? AND status=? AND lease_token=? AND lease_until>?",
-                (claim[key], state, claim["lease_token"], time.time()),
+                f"SELECT 1 FROM {table} WHERE {key}=? AND status=? AND lease_token=? AND lease_until>?"
+                + (" AND owner_id=?" if policy else "")
+                + policy,
+                (
+                    claim[key],
+                    state,
+                    claim["lease_token"],
+                    time.time(),
+                    *((claim["owner_id"],) if policy else ()),
+                ),
             ).fetchone()
             is not None
+        )
+
+    def _release_disallowed_policy_claim(self, conn, claim):
+        """Release only our live lease; do not modify the now-ineligible document."""
+        policy = self._processing_policy_clause(claim.get("_processing_policy"))
+        if not policy:
+            return
+        row = conn.execute(
+            """SELECT 1 FROM processing_jobs WHERE document_id=? AND owner_id=?
+            AND status='processing' AND lease_token=? AND lease_until>?
+            AND EXISTS(SELECT 1 FROM documents d
+                WHERE d.id=processing_jobs.document_id AND d.owner_id=processing_jobs.owner_id)""",
+            (claim["document_id"], claim["owner_id"], claim["lease_token"], time.time()),
+        ).fetchone()
+        if row is None or self._valid_claim(conn, claim, True):
+            return
+        conn.execute(
+            """UPDATE processing_jobs SET status='queued',attempts=MAX(attempts-1,0),
+            lease_token=NULL,lease_until=NULL,updated_at=? WHERE document_id=? AND lease_token=?""",
+            (now(), claim["document_id"], claim["lease_token"]),
         )
 
     def heartbeat(self, claims):
         with self.db.transaction() as conn:
             timestamp = time.time()
             for processing, claim in claims:
+                if (
+                    processing
+                    and claim.get("_processing_policy")
+                    and not self._valid_claim(conn, claim, True)
+                ):
+                    continue
                 table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
                 conn.execute(
                     f"UPDATE {table} SET lease_until=? WHERE {key}=? AND lease_token=? AND lease_until>?",
@@ -823,6 +952,8 @@ class CollectionService:
             manifest,
             source_url=doc["source_url"],
             allowed_source_urls=source_urls,
+            pending_only=True,
+            max_assets=4,
         )
 
         def checkpoint(asset):
@@ -833,6 +964,9 @@ class CollectionService:
                 conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
 
         def store_image(rendered):
+            with closing(self.db.connect()) as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise ValueError("处理任务授权或资料已更新，请等待当前任务完成")
             reference = self._persist_ocr_image(doc, rendered)
             with checkpoint_lock, self.db.transaction() as conn:
                 if not self._valid_claim(conn, claim, True):
@@ -841,6 +975,9 @@ class CollectionService:
             # invoking the provider; no physical PDF page identity is invented.
             return reference
 
+        with closing(self.db.connect()) as conn:
+            if not self._valid_claim(conn, claim, True):
+                raise ValueError("处理任务授权或资料已更新，请等待当前任务完成")
         return ocr_native_assets_bounded(
             content,
             manifest,
@@ -919,6 +1056,8 @@ class CollectionService:
         try:
             with closing(self.db.connect()) as conn:
                 if not self._valid_claim(conn, claim, True):
+                    with self.db.transaction() as write:
+                        self._release_disallowed_policy_claim(write, claim)
                     return
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
@@ -1024,6 +1163,7 @@ class CollectionService:
             elif should_index and fingerprint and text_complete(manifest):
                 with self.db.transaction() as conn:
                     if not self._valid_claim(conn, claim, True):
+                        self._release_disallowed_policy_claim(conn, claim)
                         return
                     if conn.execute(
                         "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
@@ -1033,6 +1173,11 @@ class CollectionService:
                         conn, doc["id"], fingerprint, limit=embedding_claim_size()
                     )
                 if batch:
+                    with closing(self.db.connect()) as conn:
+                        if not self._valid_claim(conn, claim, True):
+                            with self.db.transaction() as write:
+                                self._release_disallowed_policy_claim(write, claim)
+                            return
                     vectors = embed_texts([chunk["retrieval_text"] for chunk in batch])
                     if vectors is None:
                         raise ValueError("向量配置已变更，请重试处理")
@@ -1040,6 +1185,7 @@ class CollectionService:
             warning = quality_warning(manifest) or warning
             with self.db.transaction() as conn:
                 if not self._valid_claim(conn, claim, True):
+                    self._release_disallowed_policy_claim(conn, claim)
                     return
                 # Classification may change while parsing or calling the provider. Decide
                 # follow-up work from current state in the same transaction as completion.
@@ -1134,6 +1280,8 @@ class CollectionService:
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):
+                if processing:
+                    self._release_disallowed_policy_claim(conn, claim)
                 return
             conn.execute(
                 f"UPDATE {table} SET status=?,available_at=?,error=?,lease_token=NULL,lease_until=NULL WHERE {key}=?",
@@ -1217,8 +1365,19 @@ class CollectionService:
 class CollectionWorkers:
     """Fixed-size executors with at most one claimed future per available worker."""
 
-    def __init__(self, collection):
+    def __init__(self, collection, *, processing_scope=None, processing_policy=None, fetch_enabled=True):
         self.collection = collection
+        if processing_scope is not None:
+            if not isinstance(processing_scope, (tuple, list)) or len(processing_scope) != 2:
+                raise ValueError("处理范围需要账号与文档列表。")
+            collection._processing_scope(*processing_scope)
+            processing_scope = (processing_scope[0], tuple(processing_scope[1]))
+        collection._processing_policy_clause(processing_policy)
+        if processing_policy is not None and processing_scope is None:
+            raise ValueError("正文处理授权策略必须限定账号和文档范围。")
+        self.processing_scope = processing_scope
+        self.processing_policy = processing_policy
+        self.fetch_enabled = fetch_enabled
         self.stop_event = Event()
         self.thread = None
 
@@ -1249,13 +1408,23 @@ class CollectionWorkers:
                                 logger.exception("Collection worker failed; its durable lease will expire")
                     if not self.stop_event.is_set():
                         for is_processing, executor, maximum in (
-                            (False, downloads, self.collection.download_workers),
+                            (False, downloads, self.collection.download_workers if self.fetch_enabled else 0),
                             (True, processing, self.collection.processing_workers),
                         ):
                             free = maximum - sum(kind == is_processing for kind, _ in active.values())
                             for _ in range(free):
                                 claim = (
-                                    self.collection.claim_processing()
+                                    self.collection.claim_processing(
+                                        **(
+                                            {
+                                                "owner_id": self.processing_scope[0],
+                                                "document_ids": self.processing_scope[1],
+                                                "processing_policy": self.processing_policy,
+                                            }
+                                            if self.processing_scope is not None
+                                            else {}
+                                        )
+                                    )
                                     if is_processing
                                     else self.collection.claim_fetch()
                                 )

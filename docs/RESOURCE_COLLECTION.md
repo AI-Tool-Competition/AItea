@@ -40,6 +40,21 @@ TEA_COLLECT_WORKERS=16 TEA_COLLECT_PER_HOST=2 make collect-resources \
 
 ## 模型与结果
 
+已有 HTML 原件的正文图片使用独立、有界入口采集。指定已有资料库、账号和 1–20 个文档 ID；默认只下载并绑定原图，不请求模型：
+
+```bash
+uv run --project backend --locked python scripts/collect_html_images.py \
+  --data-dir data/campaigns/已有资料库 --owner 已有账号ID \
+  --document-ids 文档ID1,文档ID2 --output data/verification/网页图片任务 \
+  --images-per-document 4 --max-downloads 20 --time-budget 300
+```
+
+同目录续跑加 `--resume`，账号、文档、下载范围及模型模式必须一致。真实识别与一级向量化需同时指定 `--live-models --models-env /绝对路径/私有模型配置.env`。处理只领取所选账号的当前 HTML v3 草稿，普通附件、已审核资料、其他格式及其他账号任务不参与；下载队列保持关闭。事务领取、模型处理和检查点保存均重验资格。已有合法排队任务可以恢复，不因绑定阶段正在处理而重新下载原图。
+
+图片选择须先从真实父原件复核正文 DOM、原文字符位置和唯一 `img/src`；导航图、响应式候选、脚本对象、视频及未知边界继续报告缺口。HTTPS、公网 DNS 固定、重定向、体积、实际主机连接租约与限流等待沿用已有下载器。每次最多 100 次受保护下载尝试，单图 8 MiB、每批原图 32 MiB、两个下载线程；90 秒单次截止仍受整个任务预算约束。通用二进制 MIME 还须通过受限子进程的完整单帧 PNG/JPEG/GIF 解码，不能凭扩展名或 MIME 放行。
+
+下载意图、结果和原件 CAS 先保存，再绑定、排队和调用模型。意图及完成收据还通过账号隔离的不可变链接保存在 `files/html-image-transfer-receipts/`，独立于任务的可变 `images.json`；主检查点写入失败后，新进程可核验收据和原图，避免重复成功下载。中断意图没有可验证完成收据时保留 `HtmlTransferUnconfirmed`，停止自动重复请求，先核对原下载状态。成功绑定将实际 HTTP 元数据收据加入原文映射，此后可移除匹配的活动检查点；失败或未绑定项继续保留，避免有限检查点数量挡住长网页续跑。收据记录响应属性，不冒充完整原始 HTTP 响应或模型原始响应。文本完整与当前输入／模型指纹一致的向量数量分别验收；范围内仍有源、解析或向量缺口时返回 2，预算耗尽返回 3。
+
 真实 OCR／向量需显式启用，并提供后端模型配置：
 
 ```bash

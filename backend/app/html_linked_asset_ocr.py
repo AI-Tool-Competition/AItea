@@ -123,10 +123,21 @@ def validate_binding(manifest, value):
     if _validated_url(value.get("fetched_url"))[0] != value["fetched_url"]:
         raise ValueError("HTML 图片最终来源网址无效。")
     _reference(value.get("original_image_blob"), digest, size)
+    receipt = value.get("download_receipt_blob")
+    if receipt is not None:
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(receipt.get("content_hash"), str)
+            or not _HASH.fullmatch(receipt["content_hash"])
+            or type(receipt.get("size")) is not int
+            or not 0 < receipt["size"] <= 2 * 1024 * 1024
+        ):
+            raise ValueError("HTML 图片下载收据 CAS 引用无效。")
+        _reference(receipt, receipt["content_hash"], receipt["size"])
     return row
 
 
-def _fresh(content, manifest, object_key):
+def _parent_objects(content, manifest):
     from .ingestion import _decode, _parse_html
 
     if not isinstance(content, bytes) or not content or len(content) > 20 * 1024 * 1024:
@@ -143,13 +154,36 @@ def _fresh(content, manifest, object_key):
         "source_hash": _hash(content),
         "html_source": document.html_source,
     }
-    row = _object(manifest, object_key)
-    if row != _object(fresh, object_key):
+    if not isinstance(manifest.get("html_source"), dict) or (
+        manifest["html_source"].get("objects") != fresh["html_source"]["objects"]
+    ):
         raise ValueError("HTML 图片 DOM、字符范围或 URL 原文与原件不一致。")
-    return row
+    quality = manifest.get("quality") or {}
+    if not isinstance(quality, dict) or any(
+        quality.get(key) != document.quality.get(key)
+        for key in ("source_mapping_complete", "body_text_present", "error_page_detected")
+    ):
+        raise ValueError("HTML 原件完整性证据已变化，需要重新进行受限解析。")
+    return fresh["html_source"]["objects"]
 
 
-def _bind(content, manifest, object_key, source_url, image, reference, fetched_url):
+def _fresh(content, manifest, object_key):
+    _parent_objects(content, manifest)
+    return _object(manifest, object_key)
+
+
+def _candidates(content, manifest):
+    rows = _parent_objects(content, manifest)
+    eligible, unresolved = [], []
+    for row in rows:
+        try:
+            eligible.append(deepcopy(_object(manifest, row["object_key"])))
+        except ValueError:
+            unresolved.append({"object_key": row["object_key"], "tag": row["tag"]})
+    return {"eligible": eligible, "unresolved": unresolved}
+
+
+def _bind(content, manifest, object_key, source_url, image, reference, fetched_url, verify_pixels=False):
     from .ingestion import _validated_url
 
     row = _fresh(content, manifest, object_key)
@@ -181,17 +215,39 @@ def _bind(content, manifest, object_key, source_url, image, reference, fetched_u
             "asset_status": "pending_vision",
         }
     )
+    if verify_pixels:
+        from .native_asset_ocr import _render, assets
+
+        # Use the same full-frame decoder and pixel limits as OCR, in this
+        # bounded child. Acquisition never accepts an octet-stream by MIME alone.
+        rendered = _render(content, result, assets(result)[-1], image_content=image)
+        rows[-1]["pixel_verification"] = {
+            key: rendered[key]
+            for key in (
+                "original_image_sha256",
+                "original_image_size",
+                "width",
+                "height",
+                "original_width",
+                "original_height",
+                "frame_count",
+                "frame_basis",
+                "pixel_transform",
+                "image_sha256",
+                "image_size",
+            )
+        }
     return result
 
 
-def _worker(connection, *args):
+def _worker(connection, operation, args):
     try:
         import resource
 
         resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        result = _bind(*args)
+        result = _bind(*args) if operation == "bind" else _candidates(*args)
         encoded = json.dumps({"result": result}, ensure_ascii=False, allow_nan=False).encode()
         if len(encoded) > 40 * 1024 * 1024:
             raise ValueError("HTML 图片 manifest 超过限制。")
@@ -204,14 +260,31 @@ def _worker(connection, *args):
 
 
 def bind_linked_image_bounded(
-    content, manifest, *, object_key, source_url, image, image_blob, fetched_url=None
+    content,
+    manifest,
+    *,
+    object_key,
+    source_url,
+    image,
+    image_blob,
+    fetched_url=None,
+    verify_pixels=False,
 ):
     """Bind explicitly acquired bytes, preserving the raw src literal and CAS."""
     from .parsing import _run_bounded
 
     return _run_bounded(
-        _worker, (content, manifest, object_key, source_url, image, image_blob, fetched_url), 45
+        _worker,
+        ("bind", (content, manifest, object_key, source_url, image, image_blob, fetched_url, verify_pixels)),
+        45,
     )
+
+
+def image_candidates_bounded(content, manifest):
+    """Verify actual source before choosing any remote img/src downloads."""
+    from .parsing import _run_bounded
+
+    return _run_bounded(_worker, ("candidates", (content, manifest)), 45)
 
 
 def extract_image(content, manifest, value, image):
@@ -222,15 +295,52 @@ def extract_image(content, manifest, value, image):
     return image
 
 
-def read_linked_images(data_dir, owner, manifest, *, source_url=None, allowed_source_urls=None):
-    """Read only this account's exact CAS objects, without following symlinks."""
+def read_image_blob(data_dir, owner, reference):
+    """Read bounded original image CAS bytes for a verified account."""
+    if not isinstance(reference, dict):
+        raise ValueError("HTML 图片 CAS 引用无效。")
+    digest, size = reference.get("content_hash"), reference.get("size")
+    if (
+        not isinstance(digest, str)
+        or not _HASH.fullmatch(digest)
+        or type(size) is not int
+        or not 0 < size <= MAX_IMAGE_BYTES
+    ):
+        raise ValueError("HTML 图片 CAS 大小或 hash 无效。")
+    _reference(reference, digest, size)
+    path = reference["storage_path"]
+    if path.split("/")[2] != _hash(owner.encode()):
+        raise ValueError("HTML 图片 CAS 不属于当前账号。")
+    descriptor = os.open(Path(data_dir).resolve(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = path.split("/")
+        for part in parts[:-1]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_fd
+        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=descriptor)
+        with os.fdopen(file_fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size != size:
+                raise ValueError("HTML 图片 CAS 原件大小无效。")
+            raw = stream.read(size + 1)
+            after = os.fstat(stream.fileno())
+            if (
+                len(raw) != size
+                or _hash(raw) != digest
+                or (before.st_mtime_ns, before.st_ctime_ns) != (after.st_mtime_ns, after.st_ctime_ns)
+            ):
+                raise ValueError("HTML 图片 CAS 原件发生变化。")
+            return raw
+    finally:
+        os.close(descriptor)
+
+
+def linked_image_references(manifest, *, source_url=None, allowed_source_urls=None):
+    """Validate all mappings without reading every image into memory."""
     from .native_asset_ocr import assets
 
     rows = [row for row in assets(manifest) if row["source_format"] == "html"]
-    if sum(row["size"] for row in rows) > MAX_TOTAL_IMAGE_BYTES:
-        raise ValueError("HTML 图片原件累计读取超过限制。")
-    owner_hash, result = _hash(owner.encode()), {}
-    root = Path(data_dir).resolve()
     for row in rows:
         validate_binding(manifest, row)
         if source_url is not None or allowed_source_urls is not None:
@@ -241,33 +351,36 @@ def read_linked_images(data_dir, owner, manifest, *, source_url=None, allowed_so
                 allowed.append(source_url)
             if len(allowed) > 51 or row["source_url"] not in {_validated_url(url)[0] for url in allowed}:
                 raise ValueError("HTML 图片父来源网址与当前文档不一致。")
-        path = row["original_image_blob"]["storage_path"]
-        if path.split("/")[2] != owner_hash:
-            raise ValueError("HTML 图片 CAS 不属于当前账号。")
-        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            parts = path.split("/")
-            for part in parts[:-1]:
-                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
-                os.close(descriptor)
-                descriptor = next_fd
-            file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=descriptor)
-            with os.fdopen(file_fd, "rb") as stream:
-                before = os.fstat(stream.fileno())
-                if not stat.S_ISREG(before.st_mode) or before.st_size != row["size"]:
-                    raise ValueError("HTML 图片 CAS 原件大小无效。")
-                raw = stream.read(row["size"] + 1)
-                after = os.fstat(stream.fileno())
-                if (
-                    len(raw) != row["size"]
-                    or _hash(raw) != row["image_hash"]
-                    or before.st_mtime_ns != after.st_mtime_ns
-                    or before.st_ctime_ns != after.st_ctime_ns
-                ):
-                    raise ValueError("HTML 图片 CAS 原件发生变化。")
-                result[row["asset_key"]] = raw
-        finally:
-            os.close(descriptor)
+    return rows
+
+
+def read_linked_images(
+    data_dir,
+    owner,
+    manifest,
+    *,
+    source_url=None,
+    allowed_source_urls=None,
+    pending_only=False,
+    max_assets=None,
+):
+    """Read only this account's exact CAS objects, without following symlinks."""
+    rows = linked_image_references(
+        manifest,
+        source_url=source_url,
+        allowed_source_urls=allowed_source_urls,
+    )
+    if pending_only:
+        rows = [row for row in rows if row["asset_status"] == "pending_vision"]
+    if max_assets is not None:
+        if type(max_assets) is not int or not 1 <= max_assets <= 20:
+            raise ValueError("HTML 图片批次大小无效。")
+        rows = rows[:max_assets]
+    if sum(row["size"] for row in rows) > MAX_TOTAL_IMAGE_BYTES:
+        raise ValueError("HTML 图片原件累计读取超过限制。")
+    result = {}
+    for row in rows:
+        result[row["asset_key"]] = read_image_blob(data_dir, owner, row["original_image_blob"])
     return result
 
 

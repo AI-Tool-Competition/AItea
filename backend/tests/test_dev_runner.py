@@ -604,7 +604,10 @@ def test_web_memory_environment_preserves_user_node_options(
              "json.dumps([os.environ.get('NODE_OPTIONS'), os.environ.get('NEXT_DISABLE_MEM_OVERRIDE')])); "
              "time.sleep(60)")
     script = fixture_runner(tmp_path, f'''
-def health_ready(*args, **kwargs): return True
+def health_ready(*args, **kwargs):
+    # Readiness must wait for the child snapshots that this test inspects.
+    return all(path.is_file() and path.read_text().endswith(']')
+               for path in (ROOT / 'api.json', ROOT / 'web.json'))
 def service_commands(args, root=ROOT):
     return [(name, ROOT, [sys.executable, '-c', {child!r}.format(name=name)])
             for name in ('api', 'web')]

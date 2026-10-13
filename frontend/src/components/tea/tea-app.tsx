@@ -375,6 +375,7 @@ export function TeaApp({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadScope, setUploadScope] = useState<string>();
   const [libraryRevision, setLibraryRevision] = useState(0);
+  const [libraryCaseId, setLibraryCaseId] = useState("");
   const [logoutBusy, setLogoutBusy] = useState(false);
   useEffect(() => {
     const expired = () => {
@@ -382,6 +383,8 @@ export function TeaApp({
       clearLegalDrafts();
       clearCollectionDrafts();
       setBootstrap(undefined);
+      setLibraryCaseId("");
+      setView("workspace");
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
     };
     window.addEventListener("tea:session-expired", expired);
@@ -393,12 +396,16 @@ export function TeaApp({
     setLoading(true);
     teaRequest<Bootstrap>("/bootstrap", { signal: abort.signal })
       .then((data) => {
+        if (abort.signal.aborted) return;
         setBootstrap(data);
         setError("");
         setCaseId((current) =>
           data.cases.some((c) => c.id === current)
             ? current
             : (data.cases[0]?.id ?? ""),
+        );
+        setLibraryCaseId((current) =>
+          data.cases.some((business) => business.id === current) ? current : "",
         );
       })
       .catch((e) => {
@@ -423,6 +430,7 @@ export function TeaApp({
     setRecordError("");
     teaRequest<CaseDetail>(`/cases/${caseId}`, { signal: abort.signal })
       .then((data) => {
+        if (abort.signal.aborted) return;
         setRecord(data);
         setStageId((current) =>
           data.stages.some((s) => s.id === current)
@@ -475,6 +483,7 @@ export function TeaApp({
       setBootstrap(undefined);
       setRecord(undefined);
       setCaseId("");
+      setLibraryCaseId("");
       setError("");
       setView("workspace");
     } catch (e) {
@@ -534,14 +543,25 @@ export function TeaApp({
         cases={bootstrap.cases}
         caseId={caseId}
         record={record}
+        recordLoading={recordLoading}
         stageId={stageId}
-        onNavigate={(next) =>
-          next === "studio" ? router.push("/tea/admin/workflow") : setView(next)
-        }
+        libraryCaseId={libraryCaseId}
+        onNavigate={(next) => {
+          if (next === "studio") router.push("/tea/admin/workflow");
+          else {
+            if (next === "library") setLibraryCaseId("");
+            setView(next);
+          }
+        }}
         onCase={selectCase}
         onStage={(id) => {
           setStageId(id);
           setView("workspace");
+        }}
+        onLibrary={(id) => {
+          selectCase(id);
+          setLibraryCaseId(id);
+          setView("library");
         }}
         onCreate={() => setCreateOpen(true)}
       />
@@ -550,17 +570,23 @@ export function TeaApp({
           <header className="tea-topbar">
             <SidebarTrigger className="md:hidden" aria-label="展开导航" />
             <div className="tea-breadcrumb">
-              {view === "workspace" ? (
+              {view === "workspace" || (view === "library" && libraryCaseId) ? (
                 <>
                   <span>出口业务</span>
                   <ChevronRight size={13} />
-                  <strong>{record?.title ?? "开始新业务"}</strong>
+                  <strong>
+                    {view === "library"
+                      ? `${bootstrap.cases.find((business) => business.id === libraryCaseId)?.title ?? "当前业务"} · 资料库`
+                      : (record?.title ?? "开始新业务")}
+                  </strong>
                 </>
               ) : (
                 <strong>
                   {view === "account"
                     ? "账号管理"
-                    : teaNavigationItems.find((n) => n.id === view)?.label}
+                    : view === "library"
+                      ? "公共资料库"
+                      : teaNavigationItems.find((n) => n.id === view)?.label}
                 </strong>
               )}
             </div>
@@ -601,11 +627,12 @@ export function TeaApp({
           )
         ) : view === "library" ? (
           <Library
-            key={bootstrap.user.id}
+            key={`${bootstrap.user.id}:${libraryCaseId || "public"}`}
             ownerId={bootstrap.user.id}
             revision={libraryRevision}
             cases={bootstrap.cases}
-            initialCaseId={caseId}
+            initialCaseId={libraryCaseId}
+            scopeLocked
             onUpload={(scope) => {
               setUploadScope(scope);
               setUploadOpen(true);

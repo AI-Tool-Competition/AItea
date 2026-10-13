@@ -358,19 +358,21 @@ export function Library({
   revision,
   cases,
   initialCaseId,
+  scopeLocked = false,
   ownerId,
 }: {
   onUpload: (caseId?: string) => void;
   revision: number;
   cases: CaseSummary[];
   initialCaseId?: string;
+  scopeLocked?: boolean;
   ownerId?: string;
 }) {
-  const countries = useCollectionCountries(ownerId);
+  const [scope, setScope] = useState(initialCaseId ?? "");
+  const countries = useCollectionCountries(ownerId, !scope);
   const [countrySelection, setCountrySelection] = useState("");
   const country = countrySelection || countries.defaultCountry;
   const [docs, setDocs] = useState<Document[]>([]);
-  const [scope, setScope] = useState(initialCaseId ?? "");
   const [total, setTotal] = useState(0);
   const [moreBusy, setMoreBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -483,51 +485,55 @@ export function Library({
   }
   return (
     <div className="tea-page tea-library">
-      <SectionHeading title="资料库">
+      <SectionHeading title={scopeLocked && !scope ? "公共资料库" : "资料库"}>
         <Button onClick={() => onUpload(scope || undefined)}>
           <Upload size={15} />
           上传资料
         </Button>
       </SectionHeading>
-      <label className="tea-field">
-        <span>资料范围</span>
-        <select
-          value={scope}
-          onChange={(e) => {
-            resetReads();
-            setScope(e.target.value);
-            setQuery("");
-          }}
-        >
-          <option value="">账号公共资料库</option>
-          {cases.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="tea-field">
-        <span>资料国家</span>
-        <select
-          aria-label="资料国家"
-          value={scope ? "case" : countries.ready ? country : ""}
-          disabled={!!scope || !countries.ready}
-          onChange={(event) => {
-            resetReads();
-            setCountrySelection(event.target.value);
-          }}
-        >
-          {!!scope && <option value="case">按业务目的地</option>}
-          {!countries.ready && <option value="">读取国家…</option>}
-          {countries.countries.map((code) => (
-            <option value={code} key={code}>
-              {countryLabel(code)}
-            </option>
-          ))}
-          <option value="unassigned">未分国</option>
-        </select>
-      </label>
+      {!scopeLocked && (
+        <label className="tea-field">
+          <span>资料范围</span>
+          <select
+            value={scope}
+            onChange={(e) => {
+              resetReads();
+              setScope(e.target.value);
+              setQuery("");
+            }}
+          >
+            <option value="">账号公共资料库</option>
+            {cases.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {(!scopeLocked || !scope) && (
+        <label className="tea-field">
+          <span>资料国家</span>
+          <select
+            aria-label="资料国家"
+            value={scope ? "case" : countries.ready ? country : ""}
+            disabled={!!scope || !countries.ready}
+            onChange={(event) => {
+              resetReads();
+              setCountrySelection(event.target.value);
+            }}
+          >
+            {!!scope && <option value="case">按业务目的地</option>}
+            {!countries.ready && <option value="">读取国家…</option>}
+            {countries.countries.map((code) => (
+              <option value={code} key={code}>
+                {countryLabel(code)}
+              </option>
+            ))}
+            <option value="unassigned">未分国</option>
+          </select>
+        </label>
+      )}
       <form
         className="tea-search-bar"
         onSubmit={(e) => {

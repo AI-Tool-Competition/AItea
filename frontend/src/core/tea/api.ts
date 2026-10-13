@@ -449,6 +449,7 @@ import type {
   MessageResult,
   MessageStreamEvent,
   TraceStep,
+  StageAnalysis,
 } from "./types";
 
 const legalPath = (caseId: string) =>
@@ -659,6 +660,55 @@ function legalAnalysisShape(value: unknown): value is LegalAnalysis {
     strings(result.gaps) &&
     Array.isArray(result.citations) &&
     result.citations.every(legalCitationShape)
+  );
+}
+
+export function streamStageAnalysis(
+  caseId: string,
+  stageId: string,
+  request: { expected_revision: number; retry: boolean },
+  options: { signal: AbortSignal; onEvent: (event: LegalStreamEvent) => void },
+): Promise<StageAnalysis> {
+  return streamTea(
+    `/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/analysis/stream`,
+    request,
+    {
+      signal: options.signal,
+      maxBytes: 32 * 1024 * 1024,
+      maxDurationMs: 20 * 60_000,
+      onFrame(event, data) {
+        if (event === "done") {
+          const value = data.analysis;
+          if (
+            !record(value) ||
+            value.case_id !== caseId ||
+            value.stage_id !== stageId ||
+            typeof value.id !== "string" ||
+            typeof value.output !== "string" ||
+            typeof value.legal_analysis_id !== "string" ||
+            !Number.isInteger(value.legal_revision) ||
+            !Number.isInteger(value.case_revision) ||
+            typeof value.created_at !== "string" ||
+            !["completed", "failed"].includes(String(value.status)) ||
+            !["live", "demo"].includes(String(value.assistant_mode)) ||
+            !Array.isArray(value.trace) ||
+            !value.trace.every(isTraceStep) ||
+            !Array.isArray(value.citations) ||
+            !value.citations.every(legalCitationShape) ||
+            !Array.isArray(value.checks)
+          )
+            throw invalidStream();
+          return value as unknown as StageAnalysis;
+        }
+        if (event === "step") {
+          if (!isTraceStep(data)) throw invalidStream();
+          options.onEvent({ event, data });
+        } else if (event === "status") {
+          if (typeof data.label !== "string") throw invalidStream();
+          options.onEvent({ event, data: { label: data.label } });
+        }
+      },
+    },
   );
 }
 

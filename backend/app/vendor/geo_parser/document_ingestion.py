@@ -924,7 +924,9 @@ def _semantic_units(text: str) -> list[str]:
         *(match.end() for match in re.finditer(r"[。！？.!?](?=\s)|(?=\n{2,})", text)),
         len(text),
     ]
-    return [text[start:end] for start, end in zip(boundaries, boundaries[1:]) if end > start]
+    return [
+        text[start:end] for start, end in zip(boundaries, boundaries[1:]) if end > start
+    ]
 
 
 def _joined_element_text(elements: list[ParsedElement]) -> str:
@@ -1309,15 +1311,17 @@ def _same_locator_anchor(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if left.get("kind") != right.get("kind"):
         return False
     keys_by_kind = {
+        "conversion_artifact": ("source_hash", "artifact_sha256", "xpath"),
         "pdf": ("page",),
-        "docx": ("section_path",),
+        "docx": ("section_path", "source_hash", "package_part", "part_hash"),
         "pptx": ("slide",),
         "spreadsheet": ("sheet",),
         "image": (),
         "text": ("heading_path",),
         "html": ("heading_path",),
     }
-    return all(left.get(key) == right.get(key) for key in keys_by_kind[left["kind"]])
+    keys = keys_by_kind.get(left["kind"])
+    return keys is not None and all(left.get(key) == right.get(key) for key in keys)
 
 
 def _merge_locators(locators: list[dict[str, Any]]) -> dict[str, Any]:

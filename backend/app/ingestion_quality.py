@@ -157,8 +157,6 @@ def validate_ocr_page(page: dict) -> None:
     ]
     if "\ufffd" in transcribed:
         warnings.append("ocr_decode_replacement")
-    if metadata.get("complete") is False and "model_reported_incomplete" not in warnings:
-        warnings.append("model_reported_incomplete")
     anchors = [number_anchors(text) for text in (native, transcribed)]
     for anchor in anchors[0]:
         if not anchor_present(anchor, anchors[1]):
@@ -174,6 +172,8 @@ def validate_ocr_page(page: dict) -> None:
         if not (item.startswith("native_ocr_") and item.endswith("_mismatch"))
         and item != "ocr_decode_replacement"
     ]
+    if metadata.get("complete") is False and "model_reported_incomplete" not in uncertainties:
+        uncertainties.append("model_reported_incomplete")
     uncertainties.extend(warning for warning in warnings if warning not in uncertainties)
     metadata["uncertain_spans"] = uncertainties
     page["status"] = "ocr_uncertain" if uncertainties else "ocr_complete"
@@ -185,6 +185,14 @@ def validate_ocr_page(page: dict) -> None:
 
 def text_complete(manifest: dict) -> bool:
     quality = manifest.get("quality")
+    if manifest.get("parser") == "docx-basic" and (
+        manifest.get("parser_version") != "2"
+        or str(manifest.get("pipeline_version", "")).split("+", 1)[0] != "docx-package-mapping-v2"
+        or not isinstance(quality, dict)
+    ):
+        # The old paragraph-only reader omitted headers, notes and objects.
+        # Its cached body must not stand in for a verified complete package.
+        return False
     return (quality is None or (isinstance(quality, dict) and quality.get("complete") is True)) and all(
         pdf_page_status(page) in {"native", "ocr_complete"} for page in manifest.get("pages", [])
     )

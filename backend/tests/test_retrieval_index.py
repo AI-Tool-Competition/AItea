@@ -219,6 +219,46 @@ def test_empty_database_records_pdf_quality_upgrade_idempotently(tmp_path):
         assert not conn.execute("SELECT 1 FROM retrieval_dirty").fetchone()
 
 
+def test_docx_upgrade_rechecks_old_published_body_cache_without_rewriting_evidence(workspace):
+    old = body("oldbodyonlyclause")
+    old.update(parser="docx-basic", parser_version="1", pipeline_version="docx-paragraphs-v1")
+    good = body("verifiedpackageclause")
+    good.update(
+        parser="docx-basic",
+        parser_version="2",
+        pipeline_version="docx-package-mapping-v2",
+        quality={"complete": True},
+    )
+    with workspace.db.transaction() as conn:
+        seed(conn, "old-docx", old)
+        seed(conn, "new-docx", good)
+        seed(conn, "foreign-docx", old, owner="other")
+        for identifier in ("old-docx", "new-docx", "foreign-docx"):
+            workspace.index.sync_document(conn, identifier)
+        conn.execute("UPDATE retrieval_documents SET complete=1 WHERE document_id='old-docx'")
+        conn.execute("DELETE FROM retrieval_dirty")
+        conn.execute("DELETE FROM schema_migrations WHERE version=14")
+        before = [
+            tuple(r)
+            for r in conn.execute("SELECT id,manifest,content_hash,version FROM documents ORDER BY id")
+        ]
+        reviews = [tuple(r) for r in conn.execute("SELECT * FROM document_metadata ORDER BY document_id")]
+    upgraded = Service(workspace.db.data_dir)
+    assert not search(upgraded, "oldbodyonlyclause")["items"]
+    assert [r["document_id"] for r in search(upgraded, "verifiedpackageclause")["items"]] == ["new-docx"]
+    restarted = Service(workspace.db.data_dir)
+    with closing(restarted.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=14").fetchone()[0] == 1
+        assert [r[0] for r in conn.execute("SELECT document_id FROM retrieval_dirty")] == ["foreign-docx"]
+        assert [
+            tuple(r)
+            for r in conn.execute("SELECT id,manifest,content_hash,version FROM documents ORDER BY id")
+        ] == before
+        assert [
+            tuple(r) for r in conn.execute("SELECT * FROM document_metadata ORDER BY document_id")
+        ] == reviews
+
+
 def test_rebuild_is_idempotent_and_removes_stale_chunk_text(workspace):
     with workspace.db.transaction() as conn:
         seed(conn, "changing", body("olduniqueterm"))

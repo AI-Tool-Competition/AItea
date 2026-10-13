@@ -103,6 +103,11 @@ class RetrievalIndex:
                 # without editing their text, review history or model vectors.
                 conn.execute("INSERT OR IGNORE INTO retrieval_dirty SELECT id FROM documents")
                 conn.execute("INSERT INTO schema_migrations VALUES(13,?)", (now(),))
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=14").fetchone():
+                # DOCX v1 retained only body paragraphs. Revalidate derived
+                # completeness without rewriting published source or reviews.
+                conn.execute("INSERT OR IGNORE INTO retrieval_dirty SELECT id FROM documents")
+                conn.execute("INSERT INTO schema_migrations VALUES(14,?)", (now(),))
 
     def ensure_current(
         self,

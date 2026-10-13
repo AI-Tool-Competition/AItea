@@ -21,7 +21,6 @@ import socket
 import ssl
 import threading
 import time
-import zipfile
 import zlib
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -33,7 +32,6 @@ from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
-from xml.etree import ElementTree
 
 from .vendor.geo_parser.document_ingestion import (
     DoclingDocumentParser,
@@ -60,6 +58,9 @@ _MIME_EXTENSIONS = {
     "application/x-msaccess": ".mdb",
     "application/vnd.ms-access": ".mdb",
     "application/msaccess": ".mdb",
+    "application/msword": ".doc",
+    "application/vnd.wordperfect": ".wpf",
+    "application/wordperfect": ".wpf",
 }
 
 
@@ -207,60 +208,6 @@ def _parse_html(content: bytes) -> ParsedDocument:
         extractor.feed(source)
         extractor.finish()
     return ParsedDocument("html-basic", "2", "html-blocks-v2", extractor.elements, [], [])
-
-
-def _parse_docx(content: bytes) -> ParsedDocument:
-    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            entries = archive.infolist()
-            if len(entries) > 2000 or sum(x.file_size for x in entries) > 50 * 1024 * 1024:
-                raise ValueError("DOCX 解压大小或文件数量超过限制。")
-            entry = archive.getinfo("word/document.xml")
-            if entry.file_size > 16 * 1024 * 1024:
-                raise ValueError("DOCX 正文超过处理限制。")
-            source = archive.read(entry)
-    except (zipfile.BadZipFile, KeyError, RuntimeError) as exc:
-        raise ValueError("DOCX 文件损坏或缺少正文。") from exc
-    if re.search(rb"<!\s*(DOCTYPE|ENTITY)\b", source, flags=re.I):
-        raise ValueError("DOCX 不允许 DOCTYPE 或 ENTITY 声明。")
-    try:
-        root = ElementTree.fromstring(source)
-    except ElementTree.ParseError as exc:
-        raise ValueError("DOCX 正文 XML 无法解析。") from exc
-    elements: list[ParsedElement] = []
-    headings: list[str] = []
-    for index, paragraph in enumerate(root.findall(".//w:p", ns), start=1):
-        if index > MAX_ELEMENTS:
-            raise ValueError("DOCX 段落数量超过限制。")
-        text = "".join(node.text or "" for node in paragraph.findall(".//w:t", ns)).strip()
-        if not text:
-            continue
-        style = paragraph.find("w:pPr/w:pStyle", ns)
-        style_name = style.get(f"{{{ns['w']}}}val", "") if style is not None else ""
-        heading = re.search(r"(?:heading|标题)\s*([1-6])", style_name, re.I)
-        kind = "paragraph"
-        if heading:
-            level = int(heading.group(1))
-            headings = headings[: level - 1] + [text]
-            kind = "heading"
-        locator = {
-            "kind": "docx",
-            "paragraph_start": index,
-            "paragraph_end": index,
-            "section_path": list(headings),
-        }
-        elements.append(
-            ParsedElement(f"paragraph-{index:06}", kind, index - 1, text, locator, list(headings))
-        )
-    return ParsedDocument(
-        "docx-basic",
-        "1",
-        "docx-paragraphs-v1",
-        elements,
-        [],
-        ["轻量 DOCX 解析保留段落顺序；复杂表格和图片请使用 Docling 并核对原文。"],
-    )
 
 
 def _parse_pdf(content: bytes) -> ParsedDocument:
@@ -596,11 +543,13 @@ def parse_file(
         from .mdb_parsing import parse_mdb
 
         return parse_mdb(content, filename=filename)
+    if extension in {".doc", ".wpf", ".wpd"} and parser == "basic":
+        from .legacy_doc_parsing import parse_legacy_doc, parse_wpf
+
+        return (parse_legacy_doc if extension == ".doc" else parse_wpf)(content, filename=filename)
     supported = {".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf"}
     if extension not in supported:
-        raise ValueError(
-            "支持 PDF、DOCX、XLS、HTML、TXT 和 Markdown；MDB 需配置只读工具，旧版 DOC 请转换为 DOCX。"
-        )
+        raise ValueError("支持 PDF、DOCX、XLS、HTML、TXT 和 Markdown；MDB、DOC 和 WPF 需配置只读工具。")
     if parser == "docling":
         # Explicit opt-in prevents accidental model downloads on a basic installation.
         if not os.environ.get("DOCLING_MODELS_PATH"):
@@ -624,7 +573,9 @@ def parse_file(
     elif extension in {".html", ".htm"}:
         document = _parse_html(content)
     elif extension == ".docx":
-        document = _parse_docx(content)
+        from .docx_parsing import parse_docx
+
+        return parse_docx(content, filename=filename)
     else:
         document = _parse_pdf(content)
     if (not document.elements and not document.pages) or sum(

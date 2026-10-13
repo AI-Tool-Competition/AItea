@@ -67,6 +67,39 @@ def test_declared_html_legacy_charset_preserves_accented_text():
     assert "Français" in parse_file("wto.html", content)["chunks"][0]["text"]
 
 
+def test_html_keeps_article_title_and_publication_details_inside_main():
+    content = b"""<html><header>SITE_MENU</header><main><article>
+<header><h1 id="law">Food Regulations</h1><p>Issued on 9 October 2026</p></header>
+<p>Article 1. Keep the original evidence.</p>
+<footer><p>Published by the official regulator.</p></footer>
+</article></main><footer>SITE_FOOTER</footer></html>"""
+    result = parse_file("law.html", content, "text/html")
+    text = " ".join(element["content_text"] for element in result["elements"])
+    assert "Food Regulations" in text and "9 October 2026" in text
+    assert "official regulator" in text
+    assert "SITE_MENU" not in text and "SITE_FOOTER" not in text
+    heading = result["elements"][0]
+    assert heading["locator"]["anchor"] == "law"
+    assert heading["locator"]["line_start"] == 2
+    assert result["elements"][1]["section_path"] == ["Food Regulations"]
+
+
+@pytest.mark.parametrize(
+    "decoy",
+    [
+        b"<!-- <main>template marker</main> -->",
+        b'<script>const template = "<main>template marker</main>";</script>',
+        b"<template><main>template marker</main></template>",
+    ],
+)
+def test_html_template_main_does_not_hide_the_actual_document(decoy):
+    content = b"<html>" + decoy + b"<h1>Official requirements</h1><p>Article 1. Retain records.</p></html>"
+    result = parse_file("law.html", content, "text/html")
+    text = " ".join(element["content_text"] for element in result["elements"])
+    assert "Official requirements" in text and "Retain records" in text
+    assert "template marker" not in text
+
+
 def test_scan_with_nonempty_broken_text_layer_requires_ocr():
     result = parse_file("scan.pdf", make_pdf([("Pasal 1\nPerjanjian tahun 2OL4", True)]))
     assert result["quality"]["complete"] is False
@@ -172,6 +205,33 @@ def test_unpainted_clipping_paths_are_not_visible_table_rules(end_path):
     result = parse_file("clipping.pdf", out.getvalue())
     assert "table_layout" not in result["pages"][0]["reasons"]
     assert result["quality"]["complete"]
+
+
+@pytest.mark.parametrize("layout", ["note_boxes", "flowchart"])
+def test_independent_painted_boxes_are_not_a_table_grid(layout):
+    reader = PdfReader(io.BytesIO(make_pdf([("Official explanation with readable original text.", False)])))
+    writer = PdfWriter()
+    page = writer.add_page(reader.pages[0])
+    if layout == "note_boxes":
+        boxes = [(x, y, 400, 60) for y in (100, 250, 400) for x in (50, 51)]
+    else:
+        boxes = [(50, 100, 100, 80), (220, 100, 100, 80), (390, 100, 100, 80), (220, 300, 100, 80)]
+    rules = []
+    for x, y, width, height in boxes:
+        rules += [
+            f"{x} {y} {width} 0.5 re f",
+            f"{x} {y + height} {width} 0.5 re f",
+            f"{x} {y} 0.5 {height} re f",
+            f"{x + width} {y} 0.5 {height} re f",
+        ]
+    stream = DecodedStreamObject()
+    stream.set_data(page.get_contents().get_data() + b"\n" + "\n".join(rules).encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = io.BytesIO()
+    writer.write(output)
+    result = parse_file("explanation.pdf", output.getvalue())
+    assert result["quality"]["complete"]
+    assert "table_layout" not in result["pages"][0]["reasons"]
 
 
 def test_transcribed_markdown_table_remains_a_table_element():

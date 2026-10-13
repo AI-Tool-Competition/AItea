@@ -103,8 +103,10 @@ class _HTMLDocument(HTMLParser):
     }
     _hidden = {"script", "style", "noscript", "template", "head"}
 
-    def __init__(self) -> None:
+    def __init__(self, *, main_only=False) -> None:
         super().__init__(convert_charrefs=True)
+        self.main_only, self.in_main = main_only, False
+        self.has_main = False
         self.elements: list[ParsedElement] = []
         self.headings: list[str] = []
         self.buffer: list[str] = []
@@ -141,10 +143,16 @@ class _HTMLDocument(HTMLParser):
         )
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self._hidden:
+        if tag in self._hidden or (self.main_only and tag in {"nav", "aside"}):
             self.hidden.append(tag)
             return
         if self.hidden:
+            return
+        if tag == "main":
+            self.in_main, self.has_main = True, True
+        # Article headers/footers can contain the title, issue date and source.
+        # Site-wide versions already fall outside the actual main element.
+        if self.main_only and not self.in_main:
             return
         values = dict(attrs)
         if tag == "a" and values.get("href"):
@@ -160,6 +168,12 @@ class _HTMLDocument(HTMLParser):
             if tag == self.hidden[-1]:
                 self.hidden.pop()
             return
+        if self.main_only and tag == "main":
+            self._flush()
+            self.in_main = False
+            return
+        if self.main_only and not self.in_main:
+            return
         if tag in self._blocks:
             self._flush()
             self.heading_level = 0
@@ -167,7 +181,7 @@ class _HTMLDocument(HTMLParser):
             self.start_line = self.getpos()[0]
 
     def handle_data(self, data: str) -> None:
-        if not self.hidden:
+        if not self.hidden and (not self.main_only or self.in_main):
             self.buffer.append(data)
 
     def finish(self) -> None:
@@ -179,10 +193,16 @@ def _parse_html(content: bytes) -> ParsedDocument:
     source = _decode(content)
     if len(source) > MAX_TEXT:
         raise ValueError("HTML 文本超过处理限制。")
-    extractor = _HTMLDocument()
+    extractor = _HTMLDocument(main_only=True)
     extractor.feed(source)
     extractor.finish()
-    return ParsedDocument("html-basic", "1", "html-blocks-v1", extractor.elements, [], [])
+    if not extractor.has_main:
+        # A main marker inside a comment, script or template is not document
+        # structure. Preserve legacy pages without a real main container.
+        extractor = _HTMLDocument()
+        extractor.feed(source)
+        extractor.finish()
+    return ParsedDocument("html-basic", "2", "html-blocks-v2", extractor.elements, [], [])
 
 
 def _parse_docx(content: bytes) -> ParsedDocument:
@@ -340,45 +360,87 @@ def _pdf_large_raster(page) -> bool:
     return False
 
 
-def _pdf_table_layout(stream) -> bool:
-    """Recognize a visible ruled grid as a layout risk, not an extracted table.
+TABLE_LAYOUT_VERSION = "painted-grid-intersections-v2"
 
-    Borderless tables remain a review limitation. The native worker bounds
-    parsing/decompression; this walk is separately capped and never renders.
+
+def _pdf_table_layout(stream) -> bool:
+    """Detect connected grid boundaries, retaining merged cells as OCR work.
+
+    Three unrelated rules do not establish a table. Outer columns must enclose
+    at least three spanning row rules and a distinct internal divider. This
+    excludes separate note boxes and most diagrams, while incomplete internal
+    dividers still require OCR rather than native cell reconstruction.
     """
     if stream is None:
         return False
-    horizontal, vertical = set(), set()
-    path_horizontal, path_vertical = set(), set()
+    horizontal, vertical, pending_h, pending_v = [], [], [], []
     point = None
     for index, (args, operator) in enumerate(stream.operations):
         if index > 100_000:
-            return False  # A complexity limit cannot prove a visible table.
+            return True  # Geometry is too complex to certify plain reading order.
         if operator == b"re" and len(args) == 4:
             x, y, width, height = map(float, args)
             if abs(width) > 20 and 0 < abs(height) < 2:
-                path_horizontal.add(round(y, 1))
+                pending_h.append((y, min(x, x + width), max(x, x + width)))
             if abs(height) > 20 and 0 < abs(width) < 2:
-                path_vertical.add(round(x, 1))
+                pending_v.append((x, min(y, y + height), max(y, y + height)))
         elif operator == b"m" and len(args) == 2:
             point = tuple(map(float, args))
         elif operator == b"l" and len(args) == 2 and point is not None:
             x, y = map(float, args)
             if abs(x - point[0]) > 20 and abs(y - point[1]) < 1:
-                path_horizontal.add(round(y, 1))
+                pending_h.append((y, min(x, point[0]), max(x, point[0])))
             if abs(y - point[1]) > 20 and abs(x - point[0]) < 1:
-                path_vertical.add(round(x, 1))
+                pending_v.append((x, min(y, point[1]), max(y, point[1])))
             point = (x, y)
         elif operator in {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*", b"n"}:
-            # W/W* only change clipping. A following n discards its path;
-            # scanned PDFs use these invisible outlines around text regions.
             if operator != b"n":
-                horizontal.update(path_horizontal)
-                vertical.update(path_vertical)
-            path_horizontal.clear()
-            path_vertical.clear()
-            point = None
-            if len(horizontal) >= 3 and len(vertical) >= 3:
+                horizontal.extend(pending_h)
+                vertical.extend(pending_v)
+            pending_h, pending_v, point = [], [], None
+    if len(horizontal) < 3 or len(vertical) < 3:
+        return False
+    if len(horizontal) > 4096 or len(vertical) > 4096:
+        return True
+    from .pdf_tables import _cluster
+
+    def merged(lines):
+        positions = _cluster([line[0] for line in lines], tolerance=2)
+        if len(positions) > 256:
+            return None
+        result = []
+        for position in positions:
+            spans = sorted((a, b) for p, a, b in lines if abs(p - position) <= 2)
+            combined = []
+            for a, b in spans:
+                if combined and a <= combined[-1][1] + 1.5:
+                    combined[-1] = (combined[-1][0], max(combined[-1][1], b))
+                else:
+                    combined.append((a, b))
+            result.extend((position, a, b) for a, b in combined)
+        return result
+
+    hs, vs = merged(horizontal), merged(vertical)
+    if hs is None or vs is None:
+        return True
+    for index, (left, low, high) in enumerate(vs):
+        for right, start, end in vs[index + 1 :]:
+            if right - left <= 6:
+                continue
+            bottom, top = max(low, start), min(high, end)
+            if top - bottom < 12:
+                continue
+            rows = _cluster(
+                [
+                    y
+                    for y, a, b in hs
+                    if bottom - 1.5 <= y <= top + 1.5 and a <= left + 1.5 and b >= right - 1.5
+                ],
+                tolerance=2,
+            )
+            if len(rows) < 3:
+                continue
+            if any(left + 3 < x < right - 3 and min(b, rows[-1]) - max(a, rows[0]) > 6 for x, a, b in vs):
                 return True
     return False
 

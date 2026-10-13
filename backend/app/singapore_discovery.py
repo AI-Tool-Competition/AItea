@@ -59,6 +59,10 @@ def scope_recipe(item, recipe):
         recipe["exclude_patterns"] += [
             r"(?:aquaculture|animal-feed|slaughter|veterinary|shell-eggs|cockle|pearl-oyster|drinking-water|digital-services|giro-form|application-for|inspection.*booking|inspection.*e-services)"
         ]
+    if code == "3.3":
+        recipe["exclude_patterns"] += [
+            r"(?:user[-_]?guide|file[-_]form|step[-_]by[-_]step|how[-_]to[-_](?:file|submit)|technical[-_]guide)"
+        ]
     if code in {"3.4", "3.5", "3.7"}:
         bucket = {"3.4": "277", "3.5": "45", "3.7": "61"}[code]
         recipe["document_patterns_by_host"] = {

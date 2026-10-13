@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 4,
+  "version": 5,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -1937,6 +1937,11 @@
           "url": "https://treaty-room.kemlu.go.id/daftar-perjanjian",
           "purpose": "catalog",
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
+        },
+        {
+          "url": "https://api-treaty-room.kemlu.go.id/publik/perjanjian?id_negara=&id_organisasi=&id_subjek=&jenis_perjanjian=&judul_perjanjian=&limit=40&page=1",
+          "purpose": "catalog",
+          "note": "2026-10-13 从公开官网目录组件核实的官方 JSON 接口；完整登记目录及未知字段，正文只自动优先贸易、投资、税收、海关、知识产权、争议解决、卫生贸易及 ASEAN 协定，外交文化项目通常仅登记。分页及四个文件栏需对账，元数据不证明法律效力。"
         }
       ],
       "tags": [
@@ -2001,7 +2006,10 @@
       "limits": {
         "exhaustive_catalog": true,
         "prioritize_legal_topics": true
-      }
+      },
+      "trusted_hosts": [
+        "api-treaty-room.kemlu.go.id"
+      ]
     },
     {
       "id": "5.2",

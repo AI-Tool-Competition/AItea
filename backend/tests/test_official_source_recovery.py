@@ -1,286 +1,187 @@
-"""Verified official mirrors retain country, instrument and original-file scope."""
+"""Only documented original paths widen; legal and source gates stay intact."""
 
+from copy import deepcopy
 import json
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from app.discovery import discover_page, normalized_seeds_for, recipe_for
-
-FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
-COURT = "https://kepaniteraan.mahkamahagung.go.id"
-FTA = "https://fta.mofcom.gov.cn"
-SECRETARIAT = "https://rcepsec.org/rcep-agreements/"
+from app.discovery import _Recipe, discover_page, recipe_for
+from app.official_source_recovery import recover_official_recipe, request_headers_for
 
 
-def definition(item_id, adapter, *urls):
-    return {
-        "id": item_id,
-        "adapter": adapter,
-        "execution": "discovery",
-        "tags": ["country:ID"],
-        "entries": [{"url": url, "purpose": "catalog"} for url in urls],
-    }
+PLAN = Path(__file__).resolve().parents[2] / "config/collection-plans/indonesia-20261003.json"
 
 
-def page(body):
-    return ("<title>Official document catalog</title><h1>Official documents</h1>" + body).encode()
+def item_recipe(item_id):
+    plan = json.loads(PLAN.read_text())
+    item = next(item for item in plan["items"] if item["id"] == item_id)
+    return recipe_for(item), item
 
 
-def test_http_200_bank_indonesia_rejection_is_never_an_empty_success():
-    source = definition("4.6", "html_links", "https://jdih.bi.go.id/Web/DaftarPeraturan")
-    result = discover_page(
-        source["entries"][0]["url"],
-        page(
-            "<div>Akses Ditolak</div><p>The requested URL was rejected. Please consult with your IT Administrator.</p>"
+@pytest.mark.parametrize(
+    ("item_id", "source", "original"),
+    [
+        (
+            "4.4",
+            "https://jdih.kemnaker.go.id/peraturan/detail/2983/surat-edaran-menteri-nomor-3-tahun-2026",
+            "https://jdih.kemnaker.go.id/asset/data_puu/2026senaker003.pdf",
         ),
-        "text/html",
-        recipe_for(source),
-    )
-    assert not result["matched"] and not result["links"]
-    assert result["reason"]
+        (
+            "4.6",
+            "https://www.bi.go.id/id/publikasi/peraturan/Pages/PADG_032026.aspx",
+            "https://www.bi.go.id/id/publikasi/peraturan/Documents/PADG_032026.pdf",
+        ),
+        (
+            "2.2",
+            "https://putusan3.mahkamahagung.go.id/rumusan_rakernas/detail/11eb5a277c763046aede313432353230.html",
+            "https://putusan3.mahkamahagung.go.id/rumusan_rakernas/download_file/11eb5a277c7632629062313432353230/pdf/11eb5a277c763046aede313432353230.html",
+        ),
+        (
+            "3.2",
+            "https://putusan3.mahkamahagung.go.id/yurisprudensi/detail/11e93a313416280ab9c0303834343231.html",
+            "https://putusan3.mahkamahagung.go.id/direktori/download_file/11eff43e5c1541069bbf313933363534/pdf/11eff43e5c12b2c4ac0c313933363534",
+        ),
+    ],
+)
+def test_documented_original_routes_are_discovered(item_id, source, original):
+    recipe, _ = item_recipe(item_id)
+    recovered = recover_official_recipe(recipe, country="ID", item_id=item_id)
+    body = f'<html><title>Official regulation</title><a href="{original}">Dokumen</a></html>'.encode()
+    result = discover_page(source, body, "text/html", recovered)
+    assert result["matched"]
+    assert result["links"][0]["url"] == original
+    assert result["links"][0]["purpose"] == "document"
 
 
-@pytest.mark.parametrize("item_id,category", [("1.9", 16), ("2.1", 10), ("2.3", 57)])
-def test_central_court_fallback_keeps_category_through_pagination_and_articles(item_id, category):
-    catalog = f"{COURT}/id/profil-kepaniteraan?id={category}&view=category"
-    source = definition(
-        item_id,
-        "ma_jdih",
-        "https://jdih.mahkamahagung.go.id/dokumen?jenis%5B%5D=peraturan-mahkamah-agung",
-        catalog,
+@pytest.mark.parametrize("item_id", ["3.2", "3.3", "3.4"])
+def test_judgment_route_applies_only_to_declared_ma_categories(item_id):
+    recipe, _ = item_recipe(item_id)
+    recovered = recover_official_recipe(recipe, country="ID", item_id=item_id)
+    address = (
+        "https://putusan3.mahkamahagung.go.id/direktori/download_file/"
+        "11eff43e5c1541069bbf313933363534/pdf/11eff43e5c12b2c4ac0c313933363534"
     )
-    other = 10 if category == 16 else 16
-    instrument = {"1.9": "PERMA", "2.1": "SEMA", "2.3": "SK KMA"}[item_id]
+    assert _Recipe(recovered).purpose(address) == "document"
+
+
+def test_original_address_returning_html_still_fails_original_gate():
+    recipe, _ = item_recipe("2.2")
+    recovered = recover_official_recipe(recipe, country="ID", item_id="2.2")
+    address = (
+        "https://putusan3.mahkamahagung.go.id/rumusan_rakernas/download_file/"
+        "11eb5a277c7632629062313432353230/pdf/11eb5a277c763046aede313432353230.html"
+    )
     result = discover_page(
-        catalog,
-        page(f"""
-        <a href="?id={category}&view=category&start=5">2</a>
-        <a href="?id={other}&view=category">Wrong type</a>
-        <a href="?view=category&start=5">Lost type</a>
-        <a href="?view=article&id=1199:official-law&catid={category}:official">{instrument} official law</a>
-        <a href="?view=article&id=1249:other-law&catid={other}">Other law</a>
-        """),
-        "text/html",
-        recipe_for(source),
+        address, b"<html><title>Rumusan</title>Summary only</html>", "text/html", recovered
     )
-    assert result["matched"] and result["purpose"] == "catalog"
-    assert [x["purpose"] for x in result["links"]] == ["catalog", "detail"]
-    assert parse_qs(urlsplit(result["links"][0]["url"]).query)["id"] == [str(category)]
-    detail = discover_page(
-        result["links"][1]["url"], page("Official metadata"), "text/html", recipe_for(source)
-    )
-    assert detail["matched"] and detail["purpose"] == "detail"
+    assert not result["matched"]
+    assert "HTML" in result["reason"]
 
 
-def test_central_court_perma_files_do_not_expand_to_sema_or_unrelated_images():
-    catalog = f"{COURT}/id/profil-kepaniteraan?id=16&view=category"
-    source = definition("1.9", "ma_jdih", catalog)
-    result = discover_page(
-        catalog,
-        page("""
-        <a href="/images/peraturan/perma/PERMA_02_2015_FIX4.pdf">PERMA 2/2015</a>
-        <a href="/images/peraturan/sema/perma%2005%202012.pdf">PERMA 5/2012</a>
-        <a href="/images/peraturan/sema/Sema22016.pdf">SEMA 2/2016</a>
-        <a href="/images/article/research.pdf">Research</a>
-        <a href="https://evil.example/images/peraturan/perma/example.pdf">External</a>
-        """),
-        "text/html",
-        recipe_for(source),
-    )
-    assert len(result["links"]) == 2
-    assert all(x["purpose"] == "document" for x in result["links"])
-
-
-def test_central_court_sema_does_not_collect_perma_misplaced_inside_sema_file_folder():
-    catalog = f"{COURT}/id/profil-kepaniteraan?id=10&view=category"
-    source = definition("2.1", "ma_jdih", catalog)
-    result = discover_page(
-        catalog,
-        page("""
-        <a href="/images/peraturan/sema/Sema22016.pdf">SEMA 2/2016</a>
-        <a href="/images/peraturan/sema/lampiran%20sema4_2014.pdf">Lampiran SEMA 4</a>
-        <a href="/images/peraturan/sema/perma%2005%202012.pdf">PERMA 5/2012</a>
-        """),
-        "text/html",
-        recipe_for(source),
-    )
-    assert len(result["links"]) == 2
-    assert all("perma%20" not in x["url"] for x in result["links"])
-
-
-def test_central_court_perma_catalog_does_not_relabel_guidance_as_perma():
-    catalog = f"{COURT}/id/profil-kepaniteraan?id=16&view=category"
-    source = definition("1.9", "ma_jdih", catalog)
-    result = discover_page(
-        catalog,
-        page("""
-        <a href="?view=article&id=1199:perma-2-2015&catid=16:perma">PERMA 2/2015</a>
-        <a href="?view=article&id=838:juklak-sema-1-2014&catid=16:perma">Juklak Sema 1/2014</a>
-        <a href="?view=article&id=184:sk-kma-047&catid=16:perma">Keputusan Ketua MA 047</a>
-        """),
-        "text/html",
-        recipe_for(source),
-    )
-    assert len(result["links"]) == 1 and result["links"][0]["title"] == "PERMA 2/2015"
-
-
-def test_rcep_secretariat_literal_buttons_find_complete_family_without_other_members():
-    source = definition("5.3", "html_links", SECRETARIAT)
-    result = discover_page(
-        SECRETARIAT,
-        (FIXTURES / "recovery-rcep-secretariat.html").read_bytes(),
-        "text/html",
-        recipe_for(source),
-    )
-    assert result["matched"] and len(result["links"]) == 45
-    paths = [urlsplit(x["url"]).path for x in result["links"]]
-    assert any("Chapter-20.pdf" in p for p in paths)
-    assert any("Schedule-of-Indonesia-for-China.pdf" in p for p in paths)
-    assert any("Indonesias-Schedule-on-TMNP.pdf" in p for p in paths)
-    assert not any("Schedule-of-Indonesia-for-Australia.pdf" in p for p in paths)
-    assert all(x["purpose"] == "document" for x in result["links"])
-    rejected = discover_page(
-        SECRETARIAT,
-        page("""
-        <a onclick="loadPdf(this, 'https://evil.example/legal.pdf')">External</a>
-        <a onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-1.pdf'); alert('x')">Extra code</a>
-        <a onclick="loadPdf(this, document.cookie)">Dynamic value</a>
-        <a onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-1.pdf?token=secret')">Query outside scope</a>
-        """),
-        "text/html",
-        recipe_for(source),
-    )
-    assert rejected["links"] == []
-
-
-def test_rcep_signatory_mirror_limits_tariffs_to_indonesia_china():
-    catalog = FTA + "/channel/rcep.shtml"
-    source = definition("5.3", "html_links", catalog)
-    result = discover_page(
-        catalog, (FIXTURES / "recovery-rcep-mofcom.html").read_bytes(), "text/html", recipe_for(source)
-    )
-    assert result["matched"] and len(result["links"]) == 45
-    paths = [urlsplit(x["url"]).path for x in result["links"]]
-    assert any("29%20Schedules%20-%20ID%20for%20CN.pdf" in p for p in paths)
-    assert not any("ID%20for%20AU" in p for p in paths)
-    assert not any("CN%20for%20ASEAN" in p for p in paths)
-    assert not any("yindunixiya.pdf" in p for p in paths)
-
-
-def test_acfta_mirror_keeps_originals_annexes_and_indonesia_schedules():
-    catalog = FTA + "/channel/china_dongmeng_special.shtml"
-    source = definition("5.2", "html_links", catalog)
-    result = discover_page(
-        catalog, (FIXTURES / "recovery-acfta-mofcom.html").read_bytes(), "text/html", recipe_for(source)
-    )
-    assert result["matched"] and len(result["links"]) > 35
-    paths = [urlsplit(x["url"]).path for x in result["links"]]
-    for expected in (
-        "xieyizw_en.pdf",
-        "hwmyxieyi02-FR3_cn.pdf",
-        "fwmyxieyi_fj-2rb-Indonesiacrb_en.pdf",
-        "yds3_fl14_en",
+def test_bi_faq_remains_locating_evidence_and_other_sources_remain_excluded():
+    recipe, _ = item_recipe("4.6")
+    rules = _Recipe(recover_official_recipe(recipe, country="ID", item_id="4.6"))
+    for address in (
+        "https://www.bi.go.id/id/publikasi/peraturan/Documents/FAQ_PADG_032026.pdf",
+        "https://www.bi.go.id/id/publikasi/peraturan/Documents/PADG_032026_FAQ.pdf",
+        "https://www.bi.go.id/id/publikasi/peraturan/Documents/PBI_032026_Tanya_Jawab.pdf",
     ):
-        assert any(p.endswith(expected) for p in paths)
-    assert not any("Vietnamcrb" in p or "Ching-Thailand" in p or "Chinacrb" in p for p in paths)
-    assert all(x["purpose"] == "document" for x in result["links"])
+        assert rules.purpose(address) == "detail"
+    for address in (
+        "https://www.bi.go.id/id/publikasi/laporan/Documents/PADG_032026.pdf",
+        "https://unofficial.example/id/publikasi/peraturan/Documents/PADG_032026.pdf",
+    ):
+        assert rules.purpose(address) is None
 
 
-def services_definition():
-    source = definition(
-        "5.4",
-        "html_links",
-        "https://www.wto.org/english/tratop_e/serv_e/telecom_e/telecom_commit_exempt_list_e.htm",
+def test_augmentation_preserves_input_recipe_and_scope():
+    recipe, _ = item_recipe("4.4")
+    before = deepcopy(recipe)
+    recovered = recover_official_recipe(recipe, country="ID", item_id="4.4")
+    assert recipe == before
+    assert recovered["allowed_hosts"] == before["allowed_hosts"]
+    for name in ("catalog_patterns", "detail_patterns", "exclude_patterns", "required_query", "max_links"):
+        assert recovered[name] == before[name]
+    assert recover_official_recipe(recovered, country="ID", item_id="4.4") == recovered
+
+
+def test_wrong_country_item_and_untrusted_host_do_not_gain_paths():
+    recipe, _ = item_recipe("4.4")
+    assert recover_official_recipe(recipe, country="SG", item_id="4.4") == recipe
+    assert recover_official_recipe(recipe, country="ID", item_id="4.3") == recipe
+    recipe["allowed_hosts"] = ["unofficial.example"]
+    assert recover_official_recipe(recipe, country="ID", item_id="4.4") == recipe
+
+
+def test_recovered_addresses_do_not_accept_nonpdf_or_traversal_paths():
+    recipe, _ = item_recipe("4.4")
+    recovered = recover_official_recipe(recipe, country="ID", item_id="4.4")
+    source = "https://jdih.kemnaker.go.id/peraturan/detail/2983/surat-edaran-menteri-nomor-3-tahun-2026"
+    body = (
+        b"<html><title>Official regulation</title>"
+        b'<a href="/asset/data_puu/2026senaker003.js">Script</a>'
+        b'<a href="/asset/data_puu/%2e%2e/private.pdf">Traversal</a></html>'
     )
-    source["trusted_hosts"] = ["docs.wto.org"]
-    return source
+    result = discover_page(source, body, "text/html", recovered)
+    assert result["matched"]
+    assert not result["links"]
 
 
-def test_wto_services_candidates_preserve_indonesia_and_normalize_published_legacy_link():
-    source = services_definition()
-    result = discover_page(
-        source["entries"][0]["url"],
-        page("""
-        <a href="sc42.pdf">GATS/SC/42</a><a href="sc43.pdf">GATS/SC/43</a>
-        <a href="http://docsonline.wto.org/imrd/directdoc.asp?DDFDocuments/t/SCHD/GATS-SC/sc43s2.wpf">GATS/SC/43/Suppl.2</a>
-        <a href="http://docsonline.wto.org/imrd/directdoc.asp?DDFDocuments/t/SCHD/GATS-SC/sc42s2.wpf">GATS/SC/42/Suppl.2</a>
-        """),
-        "text/html",
-        recipe_for(source),
-    )
-    assert len(result["links"]) == 2 and all(x["purpose"] == "document" for x in result["links"])
-    assert result["links"][0]["url"].endswith("/sc43.pdf")
-    assert result["links"][1]["url"].startswith("https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?")
-    assert parse_qs(urlsplit(result["links"][1]["url"]).query)["filename"] == ["Q:/SCHD/GATS-SC/SC43S2.pdf"]
+def test_browser_headers_are_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("COLLECTION_BROWSER_HEADERS_HOSTS", raising=False)
+    assert request_headers_for("jdih.kemnaker.go.id") == {}
 
 
-def test_wto_legacy_conversion_does_not_repair_untrusted_authority_or_protocol():
-    source = services_definition()
-    result = discover_page(
-        source["entries"][0]["url"],
-        page("""
-        <a href="http://name:password@docsonline.wto.org/imrd/directdoc.asp?DDFDocuments/t/SCHD/GATS-SC/sc43s2.wpf">Credentials</a>
-        <a href="http://docsonline.wto.org:444/imrd/directdoc.asp?DDFDocuments/t/SCHD/GATS-SC/sc43s2.wpf">Wrong port</a>
-        <a href="javascript://docsonline.wto.org/imrd/directdoc.asp?DDFDocuments/t/SCHD/GATS-SC/sc43s2.wpf">Other protocol</a>
-        """),
-        "text/html",
-        recipe_for(source),
-    )
-    assert result["links"] == []
+def test_browser_profile_only_applies_to_explicit_exact_hosts(monkeypatch):
+    monkeypatch.setenv("COLLECTION_BROWSER_HEADERS_HOSTS", " JDIH.KEMNAKER.GO.ID, treaty-room.kemlu.go.id ")
+    headers = request_headers_for("jdih.kemnaker.go.id")
+    assert set(headers) == {"User-Agent", "Accept", "Accept-Language"}
+    assert headers["User-Agent"].startswith("Mozilla/5.0")
+    assert request_headers_for("sub.jdih.kemnaker.go.id") == {}
+    assert request_headers_for("unofficial.example") == {}
+    headers["Cookie"] = "not retained"
+    assert "Cookie" not in request_headers_for("jdih.kemnaker.go.id")
 
 
-def test_wto_wrapper_reads_fixed_literal_navigation_without_executing_script():
-    source = services_definition()
-    source["entries"].append(
-        {
-            "url": "https://docs.wto.org/dol2fe/Pages/SS/directdoc.aspx?filename=Q:/SCHD/GATS-SC/SC43.pdf&Open=True",
-            "purpose": "detail",
-        }
-    )
-    url = source["entries"][-1]["url"]
-    rules = recipe_for(source)
-    result = discover_page(
-        url,
-        b"<html><script>window.location.href='directdoc2.aspx?filename=Q%3a%2fSCHD%2fGATS-SC%2fSC43.pdf&Open=True';</script></html>",
-        "text/html",
-        rules,
-    )
-    assert result["matched"] and result["purpose"] == "detail"
-    assert len(result["links"]) == 1 and result["links"][0]["purpose"] == "document"
-    assert discover_page(result["links"][0]["url"], b"%PDF-1.7\n%%EOF", "application/pdf", rules)["matched"]
-    switched = discover_page(
-        url,
-        b"<html><script>window.location.href='directdoc2.aspx?filename=Q:/SCHD/GATS-SC/SC99.pdf&Open=True';</script></html>",
-        "text/html",
-        rules,
-    )
-    assert not switched["matched"] and not switched["links"]
-    other_country = discover_page(url.replace("SC43", "SC430"), b"%PDF-1.7", "application/pdf", rules)
-    assert not other_country["matched"]
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://jdih.kemnaker.go.id/",
+        "*.kemnaker.go.id",
+        "user:secret@jdih.kemnaker.go.id",
+        "jdih.kemnaker.go.id:443",
+        "jdih.kemnaker.go.id/path",
+        "jdih.kemnaker.go.id?cookie=secret",
+        "jdih.kemnaker.go.id\nCookie:secret",
+        "127.0.0.1",
+        "10.0.0.2",
+        "192.168.0.1",
+        "::1",
+        "localhost",
+        "sub.localhost",
+        "jdih.kemnaker.go.id,",
+        ",".join(f"source{index}.example" for index in range(65)),
+        "a" * 8193,
+    ],
+)
+def test_browser_header_configuration_is_bounded_and_cannot_inject_headers(monkeypatch, value):
+    monkeypatch.setenv("COLLECTION_BROWSER_HEADERS_HOSTS", value)
+    with pytest.raises(ValueError, match="COLLECTION_BROWSER_HEADERS_HOSTS") as error:
+        request_headers_for("jdih.kemnaker.go.id")
+    assert "secret" not in str(error.value)
 
 
-def test_current_plan_preserves_previous_snapshots_and_declares_real_mirrors():
-    directory = Path(__file__).resolve().parents[2] / "config" / "collection-plans"
-    current = json.loads((directory / "indonesia-20261003.json").read_text())
-    assert current["version"] == 4
-    previous = json.loads((directory / "versions/indonesia-20261003.v3.json").read_text())
-    assert previous["version"] == 3
-    assert next(i for i in previous["items"] if i["id"] == "4.1")["entries"] == [
-        e for e in next(i for i in current["items"] if i["id"] == "4.1")["entries"]
-        if "/api/document-search" not in e["url"]
-    ]
-    previous = json.loads((directory / "versions" / "indonesia-20261003.v2.json").read_text())
-    assert previous["version"] == 2 and previous["id"] == current["id"]
-    assert len(current["items"]) == 29 and current["country"] == "ID"
-    previous_by_id = {x["id"]: x for x in previous["items"]}
-    for source in current["items"]:
-        old = previous_by_id[source["id"]]
-        assert source["scope_include"] == old["scope_include"]
-        assert source["scope_exclude"] == old["scope_exclude"]
-        assert all(x in source["entries"] for x in old["entries"])
-    rcep = next(x for x in current["items"] if x["id"] == "5.3")
-    seeds = normalized_seeds_for(rcep)
-    assert any(x["url"] == SECRETARIAT for x in seeds)
-    assert any(x["url"] == FTA + "/channel/rcep.shtml" for x in seeds)
+def test_browser_profile_accepts_at_most_64_exact_hosts(monkeypatch):
+    hosts = [f"source{index}.example" for index in range(64)]
+    monkeypatch.setenv("COLLECTION_BROWSER_HEADERS_HOSTS", ",".join(hosts))
+    assert request_headers_for(hosts[-1])
+
+
+def test_untrusted_headers_and_ambient_proxy_options_never_change_profile(monkeypatch):
+    monkeypatch.setenv("COLLECTION_BROWSER_HEADERS_HOSTS", "jdih.kemnaker.go.id")
+    expected = request_headers_for("jdih.kemnaker.go.id")
+    monkeypatch.setenv("COLLECTION_BROWSER_COOKIE", "secret-session")
+    monkeypatch.setenv("COLLECTION_BROWSER_AUTHORIZATION", "Bearer secret")
+    monkeypatch.setenv("HTTP_PROXY", "http://secret@untrusted.example:8080")
+    assert request_headers_for("jdih.kemnaker.go.id") == expected

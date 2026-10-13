@@ -19,6 +19,7 @@ from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from .blob_store import _sync_directory
@@ -28,6 +29,7 @@ SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12)
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
+    "catalog-documents.jsonl",
     "relations.jsonl",
     "ocr-pages.jsonl",
     "ocr-regions.jsonl",
@@ -88,7 +90,7 @@ def _json_value(value, expected, fallback, anomalies, label):
         if not isinstance(parsed, expected):
             raise ValueError
         return parsed
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         anomalies.append(f"invalid_{label}")
         return fallback
 
@@ -114,6 +116,7 @@ def _validate_schema(conn):
             "SELECT item_id,binding_id,url,final_url,content_hash,storage_path,size,purpose,warnings,created_at FROM checklist_pages LIMIT 0",
             "SELECT id,owner_id,run_id,status,document_id,candidate_id,url,created_at FROM collection_items LIMIT 0",
             "SELECT id,owner_id,source_id,plan FROM collection_runs LIMIT 0",
+            "SELECT id,owner_id FROM sources LIMIT 0",
         ):
             conn.execute(query)
         if version >= 11:
@@ -247,6 +250,8 @@ def _count(summary, kind, country, anomalies):
         {
             "documents": 0,
             "discovery_pages": 0,
+            "catalog_documents": 0,
+            "catalog_document_gaps": 0,
             "relations": 0,
             "ocr_pages": 0,
             "ocr_regions": 0,
@@ -536,12 +541,68 @@ def _ocr_regions(conn, partitions, originals, summary, owner, country):
         _count(summary, "ocr_regions", row["country"], anomalies)
 
 
-def _page_evidence(raw, anomalies):
-    """Export the official adapter's bounded request fields, never arbitrary metadata."""
-    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 16384:
+def _treaty_context(row):
+    """An adapter name alone cannot expand the private export boundary."""
+    from .treaty_room_discovery import catalog_query, purpose
+
+    if row is None:
+        return False
+    try:
+        return (
+            row["country"] == "ID"
+            and row["plan_id"] == "indonesia-20261003"
+            and type(row["plan_version"]) is int
+            and row["plan_version"] >= 5
+            and row["checklist_item_id"] == "5.1"
+            and row["purpose"] == "catalog"
+            and row["owner_id"] == row["run_owner_id"]
+            and row["owner_id"] == row["source_owner_id"]
+            and row["source_id"] == row["run_source_id"]
+            and row["url"] == row["item_url"] == row["final_url"]
+            and purpose(row["final_url"]) == "catalog"
+            and bool(catalog_query(row["final_url"]))
+            and re.fullmatch(r"[a-f0-9]{64}", row["content_hash"]) is not None
+            and row["storage_path"].endswith(
+                f"/files/blobs/{_owner_hash(row['owner_id'])}/"
+                f"{row['content_hash'][:2]}/{row['content_hash'][2:4]}/{row['content_hash']}"
+            )
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _parse_page_evidence(raw, anomalies, row=None):
+    limit = (
+        4 * 1024 * 1024 if row is not None and row["evidence_is_treaty"] and _treaty_context(row) else 16384
+    )
+    try:
+        valid_size = isinstance(raw, str) and len(raw.encode("utf-8")) <= limit
+    except UnicodeEncodeError:
+        valid_size = False
+    if not valid_size:
         anomalies.append("invalid_discovery_evidence")
         return {}
     value = _json_value(raw, dict, {}, anomalies, "discovery_evidence")
+    scope = value.get("scope", {})
+    if not isinstance(scope, dict):
+        anomalies.append("invalid_discovery_evidence")
+        return {}
+    if value and scope.get("provider") == "treaty-room-public":
+        request = value.get("request", {})
+        if (
+            not _treaty_context(row)
+            or not isinstance(request, dict)
+            or request.get("method") != "GET"
+            or request.get("url") != row["final_url"]
+        ):
+            anomalies.append("invalid_treaty_source_provenance")
+            return {}
+    return value
+
+
+def _page_evidence(raw, anomalies, *, value=None):
+    """Export the official adapter's bounded request fields, never arbitrary metadata."""
+    value = _parse_page_evidence(raw, anomalies) if value is None else value
     if not value:
         return {}
     request, scope = value.get("request", {}), value.get("scope", {})
@@ -551,7 +612,11 @@ def _page_evidence(raw, anomalies):
 
     def scalar(value):
         return (
-            isinstance(value, str) and len(value) <= 2048 or type(value) is int and 0 <= value <= 1000000000
+            isinstance(value, str)
+            and len(value) <= 2048
+            and not re.search(r"[\x00-\x1f\x7f]", value)
+            or type(value) is int
+            and 0 <= value <= 1000000000
         )
 
     body = request.get("json_body", {})
@@ -576,19 +641,300 @@ def _page_evidence(raw, anomalies):
     result = {"request": {}, "scope": {}}
     if request.get("method") in ("GET", "POST"):
         result["request"]["method"] = request["method"]
-    if isinstance(request.get("url"), str) and len(request["url"]) <= 2048:
-        result["request"]["url"] = request["url"]
+    request_url = request.get("url")
+    if isinstance(request_url, str):
+        try:
+            parsed = urlsplit(request_url)
+            keys = {key.lower().replace("-", "_") for key, _ in parse_qsl(parsed.query, max_num_fields=20)}
+            valid_url = (
+                len(request_url) <= 2048
+                and not re.search(r"[\x00-\x1f\x7f]", request_url)
+                and parsed.scheme == "https"
+                and parsed.hostname
+                and not parsed.username
+                and not parsed.password
+                and not parsed.fragment
+                and parsed.port in (None, 443)
+                and not keys
+                & {
+                    "api_key",
+                    "apikey",
+                    "token",
+                    "access_token",
+                    "auth",
+                    "authorization",
+                    "password",
+                    "secret",
+                    "signature",
+                    "credential",
+                }
+            )
+        except ValueError:
+            valid_url = False
+        if valid_url:
+            result["request"]["url"] = request_url
+        else:
+            anomalies.append("unsafe_discovery_request_url")
     if selected:
         result["request"]["json_body"] = selected
     for key in ("provider", "jns", "total", "offset", "page_size", "returned"):
         if scalar(scope.get(key)):
             result["scope"][key] = scope[key]
+    if scope.get("provider") == "treaty-room-public":
+        from .treaty_room_discovery import FILTERS
+
+        for key in ("page", "last_page"):
+            if type(scope.get(key)) is int and 1 <= scope[key] <= 20_000:
+                result["scope"][key] = scope[key]
+        filters = scope.get("filters")
+        if (
+            isinstance(filters, dict)
+            and set(filters) == set(FILTERS)
+            and all(
+                isinstance(item, str) and len(item) <= 200 and not re.search(r"[\x00-\x1f\x7f]", item)
+                for item in filters.values()
+            )
+        ):
+            result["scope"]["filters"] = filters
+        for key in ("legal_status_inferred", "exhaustive_content_verified"):
+            if scope.get(key) is False:
+                result["scope"][key] = False
     return result
+
+
+def _catalog_text(value, limit):
+    return value is None or (
+        isinstance(value, str)
+        and len(value) <= limit
+        and not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]", value)
+    )
+
+
+def _treaty_document(document, anomalies):
+    """Project known public fields; keep the stored classification unchanged."""
+    from .treaty_room_discovery import MAX_ID, _PRIORITIES, original_url, title_text
+
+    if not isinstance(document, dict) or len(json.dumps(document, ensure_ascii=True)) > 32 * 1024:
+        raise ValueError("invalid_treaty_catalog_record")
+    identifier, metadata = document.get("treaty_id"), document.get("source_metadata")
+    if (
+        type(identifier) is not int
+        or not 0 < identifier <= MAX_ID
+        or document.get("identity_key") != f"treaty-room:{identifier}"
+        or not isinstance(metadata, dict)
+        or metadata.get("id_perjanjian") != identifier
+        or type(metadata.get("id_perjanjian")) is not int
+        or not isinstance(metadata.get("judul"), str)
+        or not _catalog_text(metadata["judul"], 20_000)
+        or not metadata["judul"]
+        or document.get("title") != title_text(metadata["judul"])[:1000]
+    ):
+        raise ValueError("invalid_treaty_catalog_record")
+    known = {"id_perjanjian", "judul", "mulaiBerlaku", "masaBerlaku", "berlakuSetelah", "catatan", "file"}
+    selected = {key: metadata[key] for key in known if key in metadata}
+    if set(metadata) - known:
+        anomalies.append("treaty_metadata_fields_omitted")
+    if any(not _catalog_text(metadata.get(key), 4096) for key in known - {"id_perjanjian", "judul", "file"}):
+        raise ValueError("invalid_treaty_catalog_record")
+    files = metadata.get("file")
+    slots = ("file", "file2", "file3", "file4")
+    if isinstance(files, dict):
+        file_keys = {"id_konten", "teks_perjanjian", *slots}
+        if (
+            type(files.get("id_konten")) is not int
+            or not 0 < files["id_konten"] <= MAX_ID
+            or not _catalog_text(files.get("teks_perjanjian"), 4096)
+            or any(not _catalog_text(files.get(key), 180) for key in slots)
+        ):
+            raise ValueError("invalid_treaty_catalog_record")
+        selected["file"] = {key: files[key] for key in file_keys if key in files}
+        if set(files) - file_keys:
+            anomalies.append("treaty_metadata_fields_omitted")
+    elif files is not None and files != []:
+        raise ValueError("invalid_treaty_catalog_record")
+    topics, missing, invalid, originals = (
+        document.get(key)
+        for key in ("priority_topics", "missing_verified_fields", "invalid_file_slots", "originals")
+    )
+    missing_fields = {
+        "contracting_parties",
+        "signing_date",
+        "international_effective_date",
+        "indonesia_effective_date",
+        "legal_status",
+        "instrument_type",
+        "language",
+        "legal_force",
+    }
+    for values, allowed in (
+        (topics, set(_PRIORITIES) | {"asean_agreement"}),
+        (missing, missing_fields),
+        (invalid, set(slots)),
+    ):
+        if (
+            not isinstance(values, list)
+            or not all(isinstance(v, str) for v in values)
+            or len(values) != len(set(values))
+            or set(values) - allowed
+        ):
+            raise ValueError("invalid_treaty_catalog_record")
+    if (
+        document.get("original_policy") != ("priority_legal_topic" if topics else "catalog_only")
+        or document.get("legal_review_status") != "not_reviewed"
+        or not isinstance(originals, list)
+        or len(originals) > 4
+    ):
+        raise ValueError("invalid_treaty_catalog_record")
+    seen = set()
+    for original in originals:
+        if not isinstance(original, dict) or set(original) != {"slot", "original_url", "identity_key"}:
+            raise ValueError("invalid_treaty_catalog_record")
+        slot = original.get("slot")
+        if slot not in slots or slot in seen or not isinstance(files, dict):
+            raise ValueError("invalid_treaty_catalog_record")
+        if (
+            original.get("original_url") != original_url(identifier, files["id_konten"], files.get(slot))
+            or original.get("identity_key") != f"treaty-room:{identifier}:{slot}"
+        ):
+            raise ValueError("invalid_treaty_catalog_record")
+        seen.add(slot)
+    expected, invalid_slots = set(), set()
+    if isinstance(files, dict):
+        for slot in slots:
+            if files.get(slot) in (None, ""):
+                continue
+            try:
+                original_url(identifier, files["id_konten"], files[slot])
+            except ValueError:
+                invalid_slots.add(slot)
+            else:
+                expected.add(slot)
+    if seen != expected or set(invalid) != invalid_slots:
+        raise ValueError("invalid_treaty_catalog_record")
+    return {
+        **{
+            key: document[key]
+            for key in (
+                "identity_key",
+                "treaty_id",
+                "title",
+                "priority_topics",
+                "original_policy",
+                "missing_verified_fields",
+                "invalid_file_slots",
+                "legal_review_status",
+                "originals",
+            )
+        },
+        "source_metadata": selected,
+        "source_record_sha256": hashlib.sha256(
+            json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
+def _catalog_documents(row, page_record, value, partitions, summary):
+    from .treaty_room_discovery import FILTERS, MAX_ID, MAX_TOTAL, catalog_query
+
+    pointer = {
+        "provider": "treaty-room-public",
+        "owner_sha256": page_record["owner_sha256"],
+        **{
+            key: page_record[key]
+            for key in (
+                "country",
+                "plan_id",
+                "plan_version",
+                "checklist_item_id",
+                "binding_id",
+                "source_id",
+                "run_id",
+            )
+        },
+        "source_page_id": row["item_id"],
+        "source_hash": row["content_hash"],
+        "source_url": row["final_url"],
+        "source_original": page_record["original"],
+        "retrieval_eligible": False,
+    }
+
+    def emit(record, anomalies, *, valid):
+        _write_jsonl(
+            partitions.file(row["owner_id"], row["country"], "catalog-documents.jsonl"),
+            {
+                **pointer,
+                **record,
+                "anomalies": sorted(set(anomalies)),
+            },
+        )
+        _count(summary, "catalog_documents" if valid else "catalog_document_gaps", row["country"], anomalies)
+
+    scope = value.get("scope", {})
+    try:
+        query = catalog_query(row["final_url"])
+        page, limit = int(query["page"]), int(query["limit"])
+        total, documents = scope.get("total"), scope.get("documents")
+        if (
+            not _treaty_context(row)
+            or scope.get("provider") != "treaty-room-public"
+            or scope.get("filters") != {key: query[key] for key in FILTERS}
+            or type(total) is not int
+            or not 0 <= total <= MAX_TOTAL
+            or type(scope.get("page")) is not int
+            or scope["page"] != page
+            or type(scope.get("page_size")) is not int
+            or scope["page_size"] != limit
+            or type(scope.get("last_page")) is not int
+            or scope["last_page"] != max(1, (total + limit - 1) // limit)
+            or page > scope["last_page"]
+            or type(scope.get("offset")) is not int
+            or scope["offset"] != (page - 1) * limit
+            or type(scope.get("returned")) is not int
+            or scope["returned"] != max(0, min(limit, total - scope["offset"]))
+            or not isinstance(documents, list)
+            or len(documents) != scope["returned"]
+            or len(documents) > 40
+            or scope.get("legal_status_inferred") is not False
+            or scope.get("exhaustive_content_verified") is not False
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        page_record["anomalies"].append("invalid_treaty_catalog_page")
+        emit({"export_status": "invalid_page"}, ["invalid_treaty_catalog_page"], valid=False)
+        return
+    seen = set()
+    for index, document in enumerate(documents):
+        anomalies = list(page_record["anomalies"])
+        try:
+            record = _treaty_document(document, anomalies)
+            if record["treaty_id"] in seen:
+                raise ValueError("duplicate_treaty_catalog_record")
+            seen.add(record["treaty_id"])
+        except (TypeError, ValueError, RecursionError):
+            identifier = document.get("treaty_id") if isinstance(document, dict) else None
+            if type(identifier) is not int or not 0 < identifier <= MAX_ID:
+                identifier = None
+            emit(
+                {"export_status": "invalid_record", "source_row_index": index, "treaty_id": identifier},
+                [*anomalies, "invalid_treaty_catalog_record"],
+                valid=False,
+            )
+        else:
+            emit({**record, "export_status": "exported", "source_row_index": index}, anomalies, valid=True)
 
 
 def _pages(conn, partitions, originals, summary, owner, country):
     where, params = _where(owner, country, "b.owner_id", "b.country")
-    evidence = "COALESCE(e.evidence,'{}')" if summary["schema_version"] >= 11 else "'{}'"
+    evidence = (
+        "CASE WHEN length(CAST(e.evidence AS BLOB))<=4194304 THEN COALESCE(e.evidence,'{}') END"
+        if summary["schema_version"] >= 11
+        else "'{}'"
+    )
+    is_treaty = (
+        "CASE WHEN json_valid(e.evidence) THEN json_extract(e.evidence,'$.scope.provider')='treaty-room-public' ELSE 0 END"
+        if summary["schema_version"] >= 11
+        else "0"
+    )
     evidence_join = (
         "LEFT JOIN checklist_page_evidence e ON e.item_id=p.item_id"
         if summary["schema_version"] >= 11
@@ -596,14 +942,17 @@ def _pages(conn, partitions, originals, summary, owner, country):
     )
     cursor = conn.execute(
         f"""SELECT p.*,b.owner_id,b.country,b.plan_id,b.version plan_version,b.item_id checklist_item_id,
-        b.source_id,i.run_id,i.status fetch_status,
+        b.source_id,i.run_id,i.status fetch_status,i.url item_url,r.owner_id run_owner_id,r.source_id run_source_id,
+        s.owner_id source_owner_id,
         CASE WHEN json_valid(p.warnings) THEN json_array_length(p.warnings) END warning_count,
-        {evidence} evidence
-        FROM {_PAGES} {evidence_join} WHERE {where}
+        {evidence} evidence,{is_treaty} evidence_is_treaty
+        FROM {_PAGES} JOIN collection_runs r ON r.id=i.run_id
+        LEFT JOIN sources s ON s.id=b.source_id {evidence_join} WHERE {where}
         ORDER BY b.owner_id,b.country,b.plan_id,b.version,b.item_id,p.created_at,p.item_id""",
         params,
     )
-    for row in _rows(cursor):
+    # A validated provider can carry a 4 MiB page; keep only one page in memory.
+    while (row := cursor.fetchone()) is not None:
         original, anomalies = originals.inspect(row["storage_path"], row["size"])
         record = {
             key: row[key]
@@ -624,14 +973,17 @@ def _pages(conn, partitions, originals, summary, owner, country):
                 "warning_count",
             )
         }
+        value = _parse_page_evidence(row["evidence"], anomalies, row)
         record.update(
             collection_item_id=row["item_id"],
             binding_id=row["binding_id"],
             owner_sha256=_owner_hash(row["owner_id"]),
             original=original,
-            evidence=_page_evidence(row["evidence"], anomalies),
+            evidence=_page_evidence(row["evidence"], anomalies, value=value),
             anomalies=anomalies,
         )
+        if row["evidence_is_treaty"]:
+            _catalog_documents(row, record, value, partitions, summary)
         _write_jsonl(partitions.file(row["owner_id"], row["country"], "discovery-pages.jsonl"), record)
         _count(summary, "discovery_pages", row["country"], anomalies)
 
@@ -675,18 +1027,28 @@ def _texts(conn, partitions, summary, owner, country):
         FROM {_DOCUMENTS}
         LEFT JOIN legal_classifications l ON l.document_id=d.id AND l.collection='country:'||dc.country
         LEFT JOIN document_metadata m ON m.document_id=d.id
-        WHERE {where} AND d.role='primary' ORDER BY d.id""", params,
+        WHERE {where} AND d.role='primary' ORDER BY d.id""",
+        params,
     )
     while (row := cursor.fetchone()) is not None:
         elements, chunks = json.loads(row["elements"] or "[]"), json.loads(row["chunks"] or "[]")
         quality = json.loads(row["quality"] or "null")
         complete = bool(chunks) and (quality is None or quality.get("complete") is True)
         record = {
-            "document_id": row["id"], "version": row["version"], "source_hash": row["content_hash"],
-            "country": row["country"], "legal_level": row["level"], "source_url": row["source_url"],
-            "filename": row["filename"], "review_status": row["review_status"],
-            "text_complete": complete, "quality": quality, "elements": elements,
-            "chunks": [{key: chunk.get(key) for key in ("id", "text", "locator", "section_path")} for chunk in chunks],
+            "document_id": row["id"],
+            "version": row["version"],
+            "source_hash": row["content_hash"],
+            "country": row["country"],
+            "legal_level": row["level"],
+            "source_url": row["source_url"],
+            "filename": row["filename"],
+            "review_status": row["review_status"],
+            "text_complete": complete,
+            "quality": quality,
+            "elements": elements,
+            "chunks": [
+                {key: chunk.get(key) for key in ("id", "text", "locator", "section_path")} for chunk in chunks
+            ],
         }
         _write_jsonl(partitions.file(row["owner_id"], row["country"], "texts.jsonl"), record)
         summary["text_documents"] += 1
@@ -715,7 +1077,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 3,
+                "format_version": 4,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -723,6 +1085,8 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False):
                 "filters": {"country": country, "owner_sha256": _owner_hash(owner) if owner else None},
                 "documents": 0,
                 "discovery_pages": 0,
+                "catalog_documents": 0,
+                "catalog_document_gaps": 0,
                 "relations": 0,
                 "ocr_pages": 0,
                 "ocr_regions": 0,

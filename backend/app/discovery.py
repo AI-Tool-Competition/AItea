@@ -184,6 +184,18 @@ def request_parameters(url: str, definition: dict) -> dict:
     the same URL and a body generated here, never an arbitrary stored body.
     """
     current, host = _canonical(url)
+    if host == "api-treaty-room.kemlu.go.id":
+        from .treaty_room_discovery import purpose
+
+        item = definition.get("item", definition)
+        if _country(item) != "ID" or item.get("id") != "5.1" or not recipe_for(item).get("treaty_room"):
+            raise ValueError("TreatyRoom 请求没有对应的可信公开国际协定目录配置。")
+        kind = purpose(current)
+        if kind == "catalog":
+            return {"accept_compressed_json": True}
+        if kind == "document":
+            return {}
+        raise ValueError("TreatyRoom 请求不在公开目录和已发布原件路径内。")
     if host == _BKPM_HOST and urlsplit(current).path == "/api/document-search":
         item = definition.get("item", definition)
         if _country(item) != "ID" or item.get("id") != "4.1" or not recipe_for(item).get("bkpm_investment"):
@@ -489,6 +501,9 @@ class _Recipe:
         self.bkpm_investment = recipe.get("bkpm_investment", False)
         if not isinstance(self.bkpm_investment, bool):
             raise ValueError("BKPM 投资目录配置无效。")
+        self.treaty_room = recipe.get("treaty_room", False)
+        if not isinstance(self.treaty_room, bool):
+            raise ValueError("TreatyRoom 公开目录配置无效。")
         self.max_links = recipe.get("max_links", 200)
         if (
             isinstance(self.max_links, bool)
@@ -540,6 +555,10 @@ class _Recipe:
         parsed = urlsplit(url)
         if parsed.hostname not in self.hosts or self.matches(url, self.exclude_patterns):
             return None
+        if parsed.hostname == "api-treaty-room.kemlu.go.id":
+            from .treaty_room_discovery import purpose
+
+            return purpose(url) if self.treaty_room else None
         if parsed.hostname == _BKPM_HOST and parsed.path == "/api/document-search":
             if not self.bkpm_investment:
                 return None
@@ -687,7 +706,8 @@ def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
             isinstance(row, dict)
             and type(row.get("id")) is int
             and 0 < row["id"] <= 1_000_000
-            and type(row.get("id_theme")) is int and row["id_theme"] == 1
+            and type(row.get("id_theme")) is int
+            and row["id_theme"] == 1
             and isinstance(row.get("title"), str)
             and 0 < len(row["title"]) <= 10_000
             for row in rows
@@ -701,16 +721,28 @@ def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
             target, host = _canonical(row.get("document_file_url") or "")
         except (ValueError, TypeError):
             target, host = "", ""
-        if row.get("document_type") != "Peraturan" or host != _BKPM_FILES_HOST or rules.purpose(target) != "document":
+        if (
+            row.get("document_type") != "Peraturan"
+            or host != _BKPM_FILES_HOST
+            or rules.purpose(target) != "document"
+        ):
             warnings.append(f"BKPM 文书 {row['id']} 未提供受信法规原件，保留缺口。")
             continue
         identity = f"bkpm:{row['id']}"
-        links.append({"url": target, "purpose": "document", "title": row["title"][:300], "identity_key": identity})
+        links.append(
+            {"url": target, "purpose": "document", "title": row["title"][:300], "identity_key": identity}
+        )
         metadata = {"identity_key": identity, "original_url": target, "title": row["title"][:1000]}
         slug = row.get("slug")
         if isinstance(slug, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) and len(slug) <= 500:
             metadata["detail_url"] = f"https://{_BKPM_HOST}/id/document/{slug}"
-        for name in ("regulation_number", "regulation_type", "establishment_date", "publication_date", "status"):
+        for name in (
+            "regulation_number",
+            "regulation_type",
+            "establishment_date",
+            "publication_date",
+            "status",
+        ):
             value = row.get(name)
             if isinstance(value, str) and len(value) <= 200:
                 metadata[name] = value
@@ -727,8 +759,13 @@ def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
         return _result(reason="BKPM 单页行数超过候选限额，需减小请求分页。")
     result = _result(matched=True, purpose="catalog", links=links, warnings=warnings)
     result["scope"] = {
-        "provider": "bkpm", "theme_id": 1, "total": total, "offset": offset,
-        "page_size": length, "returned": len(rows), "documents": documents,
+        "provider": "bkpm",
+        "theme_id": 1,
+        "total": total,
+        "offset": offset,
+        "page_size": length,
+        "returned": len(rows),
+        "documents": documents,
     }
     return result
 
@@ -752,11 +789,21 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         if purpose == "document" and content.startswith(b"%PDF-"):
             return _result(matched=True, purpose=purpose)
         return _result(reason="PDF 地址、响应类型或文件签名不匹配。")
+    if (
+        rules.treaty_room
+        and urlsplit(current).hostname == "api-treaty-room.kemlu.go.id"
+        and purpose == "catalog"
+    ):
+        from .treaty_room_discovery import inspect_catalog
+
+        return inspect_catalog(current, content, mime, rules)
     if urlsplit(current).hostname == _SETNEG_HOST and purpose in {"catalog", "detail"}:
         return _setneg_json(current, content, mime, rules)
     if (
-        rules.bkpm_investment and urlsplit(current).hostname == _BKPM_HOST
-        and purpose == "catalog" and urlsplit(current).path == "/api/document-search"
+        rules.bkpm_investment
+        and urlsplit(current).hostname == _BKPM_HOST
+        and purpose == "catalog"
+        and urlsplit(current).path == "/api/document-search"
     ):
         return _bkpm_json(current, content, mime, rules)
     if mime not in {"text/html", "application/xhtml+xml"}:
@@ -800,7 +847,11 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
             matched=True,
             purpose=purpose,
             links=[
-                {"url": target, "purpose": "document", "title": _wto_service_file(target, rules.wto_member).rsplit("/", 1)[-1]}
+                {
+                    "url": target,
+                    "purpose": "document",
+                    "title": _wto_service_file(target, rules.wto_member).rsplit("/", 1)[-1],
+                }
             ],
         )
     if not visible:
@@ -1106,10 +1157,16 @@ def recipe_for(item: dict) -> dict:
         if item.get("id") == "5.2":
             result["wto_services"] = True
             result["wto_member"] = "SG"
-            result["catalog_patterns"] += [r"^/member/singapore/?(?:\?|$)", r"^/browse/\d+/file_browser/?(?:\?|$)"]
+            result["catalog_patterns"] += [
+                r"^/member/singapore/?(?:\?|$)",
+                r"^/browse/\d+/file_browser/?(?:\?|$)",
+            ]
             result["detail_patterns"] += [r"^/english/docs_e/legal_e/[^/?]+\.htm(?:\?|$)"]
             result["document_patterns_by_host"] = {
-                "www.wto.org": [r"^/english/docs_e/legal_e/downloads_e/[a-z0-9_-]+\.pdf(?:\?|$)", r"^/english/tratop_e/serv_e/telecom_e/sc76\.pdf$"],
+                "www.wto.org": [
+                    r"^/english/docs_e/legal_e/downloads_e/[a-z0-9_-]+\.pdf(?:\?|$)",
+                    r"^/english/tratop_e/serv_e/telecom_e/sc76\.pdf$",
+                ],
                 "goods-schedules.wto.org": [r"^/system/files/\d{4}-\d{2}/[a-z0-9_.-]+\.pdf(?:\?|$)"],
                 "docs.wto.org": [r"^/gattdocs/q/(?:[a-z0-9_-]+/)+[a-z0-9_-]+\.pdf(?:\?|$)"],
             }
@@ -1177,7 +1234,19 @@ def recipe_for(item: dict) -> dict:
             result["detail_patterns"].append(rf"^/{re.escape(branch)}/[^?]+(?:\?|$)")
     # Only official file locations, never a catch-all file extension at any URL.
     if (
-        _country(item) == "ID" and item.get("id") == "4.1"
+        _country(item) == "ID"
+        and item.get("id") == "5.1"
+        and "api-treaty-room.kemlu.go.id" in hosts
+        and any(
+            urlsplit(seed["url"]).hostname == "api-treaty-room.kemlu.go.id"
+            and urlsplit(seed["url"]).path == "/publik/perjanjian"
+            for seed in seeds
+        )
+    ):
+        result["treaty_room"] = True
+    if (
+        _country(item) == "ID"
+        and item.get("id") == "4.1"
         and _BKPM_FILES_HOST in hosts
         and any(urlsplit(seed["url"]).path == "/api/document-search" for seed in seeds)
     ):
@@ -1246,4 +1315,6 @@ def recipe_for(item: dict) -> dict:
         r"(?:^|/)(?:login|logout|sign-in|careers|contact-us|sitemap|news|news-events|press-releases|events)(?:/|\?|$)",
         r"(?:^|/)(?:privacy-policy|terms-of-use)(?:/|\?|$)",
     ]
-    return result
+    from .official_source_recovery import recover_official_recipe
+
+    return recover_official_recipe(result, country=_country(item), item_id=item["id"])

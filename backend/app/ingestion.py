@@ -696,7 +696,7 @@ class EmbeddingServiceError(ValueError):
 
 
 class EmbeddingProviderDeferred(EmbeddingServiceError):
-    """Provider cooldown or bounded capacity deferred a call that issued no HTTP."""
+    """Provider cooldown deferred a call that issued no HTTP."""
 
     def __init__(self, retry_after: float):
         super().__init__(retryable=True, retry_after=retry_after)
@@ -803,10 +803,12 @@ class _EmbeddingCall(AbstractContextManager):
 def _embedding_response(client, batch: list[str], base: str, key: str, model: str, call: _EmbeddingCall):
     import httpx
 
-    call.check()
-    if not _EMBEDDING_HTTP_SLOTS.acquire(timeout=max(0, min(5.0, call.deadline - time.monotonic()))):
+    # Normal contention is not a provider failure. Wait within this call's
+    # existing budget and poll cancellation/cooldown, without issuing retries.
+    while True:
         call.check()
-        call.defer(1.0)
+        if _EMBEDDING_HTTP_SLOTS.acquire(timeout=max(0, min(0.25, call.deadline - time.monotonic()))):
+            break
     begun, failed = False, False
     try:
         call.begin_request()

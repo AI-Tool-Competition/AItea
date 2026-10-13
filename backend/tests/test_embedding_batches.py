@@ -4,7 +4,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, BoundedSemaphore, Lock
+from threading import Barrier, BoundedSemaphore, Event, Lock
 
 import httpx
 import pytest
@@ -333,6 +333,53 @@ def test_process_slots_bound_all_document_and_query_callers(configured, monkeypa
     assert outputs == [[[float(value), 1.0] for value in values] for values in inputs]
 
 
+def test_two_healthy_slow_documents_wait_for_shared_slots_without_losing_vectors(configured, monkeypatch):
+    monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "4")
+    monkeypatch.setenv("EMBEDDING_REQUEST_CONCURRENCY", "2")
+    both_started, lock, requests = Event(), Lock(), []
+    active, peak = [0], [0]
+    original_response = ingestion._embedding_response
+
+    def scheduled_response(client, batch, base, key, model, call):
+        # Exercise the observed production schedule: each document has one
+        # healthy request in flight while its other request awaits capacity.
+        if batch[0] in {"5", "105"}:
+            assert both_started.wait(timeout=5)
+        return original_response(client, batch, base, key, model, call)
+
+    monkeypatch.setattr(ingestion, "_embedding_response", scheduled_response)
+
+    def handler(request):
+        values = json.loads(request.content)["input"]
+        with lock:
+            requests.append(values)
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            if len(requests) == 2:
+                both_started.set()
+        try:
+            assert both_started.wait(timeout=5)
+            # A normal provider latency longer than the old five-second local
+            # slot wait must not consume queue attempts or discard success.
+            time.sleep(10)
+            return response(values)
+        finally:
+            with lock:
+                active[0] -= 1
+
+    provider(monkeypatch, handler)
+    inputs = [[str(index) for index in range(start, start + 8)] for start in (1, 101)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outputs = list(pool.map(ingestion.embed_texts, inputs))
+    assert outputs == [[[float(value), 1.0] for value in values] for values in inputs]
+    assert peak == [2]
+    assert active == [0]
+    assert sorted(tuple(values) for values in requests) == sorted(
+        tuple(values[offset : offset + 4]) for values in inputs for offset in (0, 4)
+    )
+    assert not any(thread.name.startswith("tea-embedding") for thread in threading.enumerate())
+
+
 @pytest.mark.parametrize("status", [401, 429])
 def test_parallel_failure_drains_only_existing_wave_and_keeps_safe_error(configured, monkeypatch, status):
     monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "2")
@@ -457,7 +504,7 @@ def test_slot_wait_is_clipped_by_call_deadline_and_never_issues_http(configured,
     assert not released
 
 
-def test_occupied_slots_defer_without_exhausting_queue_attempts(configured, monkeypatch):
+def test_occupied_slots_wait_within_existing_deadline_without_provider_requests(configured, monkeypatch):
     clock, waits = [0.0], []
     monkeypatch.setattr(ingestion.time, "monotonic", lambda: clock[0])
 
@@ -469,10 +516,45 @@ def test_occupied_slots_defer_without_exhausting_queue_attempts(configured, monk
 
     monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", OccupiedSlots())
     provider(monkeypatch, lambda request: pytest.fail("occupied slots must issue no HTTP"))
+    with pytest.raises(ingestion.EmbeddingServiceError) as error:
+        ingestion.embed_texts(["1"])
+    assert not isinstance(error.value, ingestion.EmbeddingProviderDeferred)
+    assert error.value.retry_after is None
+    assert sum(waits) == pytest.approx(300)
+    assert max(waits) == 0.25
+
+
+def test_waiting_http_slots_recheck_provider_cooldown_without_issuing_requests(configured, monkeypatch):
+    waits = []
+
+    class CoolingProviderSlots:
+        def acquire(self, *, timeout):
+            waits.append(timeout)
+            ingestion._embedding_profile(ingestion._embedding_profile_key(), cooldown=10)
+            return False
+
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", CoolingProviderSlots())
+    provider(monkeypatch, lambda request: pytest.fail("cooled provider must issue no HTTP"))
     with pytest.raises(ingestion.EmbeddingProviderDeferred) as error:
         ingestion.embed_texts(["1"])
-    assert waits == [5.0]
-    assert error.value.retry_after == 1.0
+    assert waits == [0.25]
+    assert 0 < error.value.retry_after <= 10
+
+
+def test_waiting_http_slot_observes_sibling_cancellation_before_next_poll(configured, monkeypatch):
+    call, waits = ingestion._EmbeddingCall(ingestion._embedding_profile_key()), []
+
+    class CancelledSlots:
+        def acquire(self, *, timeout):
+            waits.append(timeout)
+            call.stop.set()
+            return False
+
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", CancelledSlots())
+    with pytest.raises(ingestion._EmbeddingCallCancelled):
+        ingestion._embedding_response(None, ["1"], "https://embed.example/v1", "test", "embed", call)
+    assert waits == [0.25]
+    assert call.requests == 0
 
 
 def test_request_timeout_accounts_for_slot_wait(configured, monkeypatch):

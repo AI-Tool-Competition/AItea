@@ -33,6 +33,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 from .html_parsing import HTMLDocument as _HTMLDocument
+from .pdf_table_detection import VERSION as _TABLE_LAYOUT_VERSION
 from .vendor.geo_parser.document_ingestion import (
     DoclingDocumentParser,
     ParsedDocument,
@@ -138,7 +139,7 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
                 reasons.append("native_decode_replacement")
             if _pdf_large_raster(page):
                 reasons.append("large_raster")
-            if _pdf_table_layout(stream):
+            if _pdf_table_layout(stream, page.get("/Resources")):
                 reasons.append("table_layout")
             pages.append(
                 {
@@ -210,89 +211,14 @@ def _pdf_large_raster(page) -> bool:
     return False
 
 
-TABLE_LAYOUT_VERSION = "painted-grid-intersections-v2"
+TABLE_LAYOUT_VERSION = _TABLE_LAYOUT_VERSION
 
 
-def _pdf_table_layout(stream) -> bool:
-    """Detect connected grid boundaries, retaining merged cells as OCR work.
+def _pdf_table_layout(stream, resources=None) -> bool:
+    """Actual painted grid evidence in page coordinates, including Form scopes."""
+    from .pdf_table_detection import requires_table_review
 
-    Three unrelated rules do not establish a table. Outer columns must enclose
-    at least three spanning row rules and a distinct internal divider. This
-    excludes separate note boxes and most diagrams, while incomplete internal
-    dividers still require OCR rather than native cell reconstruction.
-    """
-    if stream is None:
-        return False
-    horizontal, vertical, pending_h, pending_v = [], [], [], []
-    point = None
-    for index, (args, operator) in enumerate(stream.operations):
-        if index > 100_000:
-            return True  # Geometry is too complex to certify plain reading order.
-        if operator == b"re" and len(args) == 4:
-            x, y, width, height = map(float, args)
-            if abs(width) > 20 and 0 < abs(height) < 2:
-                pending_h.append((y, min(x, x + width), max(x, x + width)))
-            if abs(height) > 20 and 0 < abs(width) < 2:
-                pending_v.append((x, min(y, y + height), max(y, y + height)))
-        elif operator == b"m" and len(args) == 2:
-            point = tuple(map(float, args))
-        elif operator == b"l" and len(args) == 2 and point is not None:
-            x, y = map(float, args)
-            if abs(x - point[0]) > 20 and abs(y - point[1]) < 1:
-                pending_h.append((y, min(x, point[0]), max(x, point[0])))
-            if abs(y - point[1]) > 20 and abs(x - point[0]) < 1:
-                pending_v.append((x, min(y, point[1]), max(y, point[1])))
-            point = (x, y)
-        elif operator in {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*", b"n"}:
-            if operator != b"n":
-                horizontal.extend(pending_h)
-                vertical.extend(pending_v)
-            pending_h, pending_v, point = [], [], None
-    if len(horizontal) < 3 or len(vertical) < 3:
-        return False
-    if len(horizontal) > 4096 or len(vertical) > 4096:
-        return True
-    from .pdf_tables import _cluster
-
-    def merged(lines):
-        positions = _cluster([line[0] for line in lines], tolerance=2)
-        if len(positions) > 256:
-            return None
-        result = []
-        for position in positions:
-            spans = sorted((a, b) for p, a, b in lines if abs(p - position) <= 2)
-            combined = []
-            for a, b in spans:
-                if combined and a <= combined[-1][1] + 1.5:
-                    combined[-1] = (combined[-1][0], max(combined[-1][1], b))
-                else:
-                    combined.append((a, b))
-            result.extend((position, a, b) for a, b in combined)
-        return result
-
-    hs, vs = merged(horizontal), merged(vertical)
-    if hs is None or vs is None:
-        return True
-    for index, (left, low, high) in enumerate(vs):
-        for right, start, end in vs[index + 1 :]:
-            if right - left <= 6:
-                continue
-            bottom, top = max(low, start), min(high, end)
-            if top - bottom < 12:
-                continue
-            rows = _cluster(
-                [
-                    y
-                    for y, a, b in hs
-                    if bottom - 1.5 <= y <= top + 1.5 and a <= left + 1.5 and b >= right - 1.5
-                ],
-                tolerance=2,
-            )
-            if len(rows) < 3:
-                continue
-            if any(left + 3 < x < right - 3 and min(b, rows[-1]) - max(a, rows[0]) > 6 for x, a, b in vs):
-                return True
-    return False
+    return requires_table_review(stream, resources)
 
 
 def pdf_quality(pages: list[dict]) -> dict:

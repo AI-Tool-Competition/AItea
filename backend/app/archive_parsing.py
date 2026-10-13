@@ -388,7 +388,7 @@ def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pag
             reasons = [] if text else ["empty_text"]
             if _pdf_large_raster(page):
                 reasons.append("large_raster")
-            if _pdf_table_layout(content):
+            if _pdf_table_layout(content, page.get("/Resources")):
                 reasons.append("table_layout")
             pages[number - 1] = {
                 "page": number,

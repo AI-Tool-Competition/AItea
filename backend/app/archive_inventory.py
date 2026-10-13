@@ -582,6 +582,8 @@ def _parse_page_evidence(raw, anomalies, row=None):
         )
         else 16384
     )
+    if row is not None and row["evidence_is_bkpm"] and _bkpm_context(row):
+        limit = 64 * 1024
     try:
         valid_size = isinstance(raw, str) and len(raw.encode("utf-8")) <= limit
     except UnicodeEncodeError:
@@ -614,6 +616,16 @@ def _parse_page_evidence(raw, anomalies, row=None):
             or scope.get("member") != row["country"]
         ):
             anomalies.append("invalid_wto_source_provenance")
+            return {}
+    if value and scope.get("provider") == "bkpm":
+        request = value.get("request", {})
+        if (
+            not _bkpm_context(row)
+            or not isinstance(request, dict)
+            or request.get("method") != "GET"
+            or request.get("url") != row["final_url"]
+        ):
+            anomalies.append("invalid_bkpm_source_provenance")
             return {}
     return value
 
@@ -698,6 +710,13 @@ def _page_evidence(raw, anomalies, *, value=None):
     for key in ("provider", "jns", "total", "offset", "page_size", "returned"):
         if scalar(scope.get(key)):
             result["scope"][key] = scope[key]
+    if scope.get("provider") == "bkpm":
+        if scope.get("theme_id") == 1:
+            result["scope"]["theme_id"] = 1
+        documents, returned = scope.get("documents"), scope.get("returned")
+        if isinstance(documents, list) and type(returned) is int and 0 <= len(documents) <= returned <= 50:
+            result["scope"]["stored_document_count"] = len(documents)
+            result["scope"]["returned_rows_without_document_metadata"] = returned - len(documents)
     if scope.get("provider") == "treaty-room-public":
         from .treaty_room_discovery import FILTERS
 
@@ -749,6 +768,180 @@ def _page_evidence(raw, anomalies, *, value=None):
 
 
 _WTO_PROVIDERS = {"wto-goods-public", "wto-docs-public", "wto-goods-bundle-audit"}
+
+
+def _bkpm_context(row):
+    """A larger BKPM page is bound to the exact frozen owned investment recipe."""
+    from .discovery import _BKPM_API, _bkpm_query
+
+    if row is None:
+        return False
+    try:
+        parsed = urlsplit(row["final_url"])
+        query = _bkpm_query(row["final_url"])
+        return (
+            row["country"] == "ID"
+            and row["plan_id"] == "indonesia-20261003"
+            and type(row["plan_version"]) is int
+            and row["plan_version"] >= 4
+            and row["checklist_item_id"] == "4.1"
+            and row["purpose"] == "catalog"
+            and row["owner_id"] == row["run_owner_id"] == row["source_owner_id"]
+            and row["source_id"] == row["run_source_id"]
+            and row["url"] == row["item_url"] == row["final_url"]
+            and row["frozen_binding_id"] == row["binding_id"]
+            and row["frozen_kind"] == "discovery"
+            and row["frozen_country"] == "ID"
+            and row["frozen_plan_id"] == row["plan_id"]
+            and type(row["frozen_plan_version"]) is int
+            and row["frozen_plan_version"] == row["plan_version"]
+            and row["frozen_plan_country"] == "ID"
+            and row["frozen_item_id"] == "4.1"
+            and row["frozen_bkpm_recipe"] == 1
+            and parsed.scheme == "https"
+            and parsed.netloc == "jdih.bkpm.go.id"
+            and parsed.path == urlsplit(_BKPM_API).path
+            and not parsed.fragment
+            and query["limit"] == "50"
+            and re.fullmatch(r"[a-f0-9]{64}", row["content_hash"]) is not None
+            and row["storage_path"].endswith(
+                f"/files/blobs/{_owner_hash(row['owner_id'])}/"
+                f"{row['content_hash'][:2]}/{row['content_hash'][2:4]}/{row['content_hash']}"
+            )
+        )
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _bkpm_catalog_documents(row, page_record, value, partitions, summary):
+    from .discovery import _BKPM_FILES_HOST, _bkpm_query, _canonical
+
+    pointer = {
+        "provider": "bkpm",
+        "owner_sha256": page_record["owner_sha256"],
+        **{
+            key: page_record[key]
+            for key in (
+                "country",
+                "plan_id",
+                "plan_version",
+                "checklist_item_id",
+                "binding_id",
+                "source_id",
+                "run_id",
+            )
+        },
+        "source_page_id": row["item_id"],
+        "source_hash": row["content_hash"],
+        "source_url": row["final_url"],
+        "source_original": page_record["original"],
+        "mapping_record_indexed": False,
+        "legal_review_status": "not_reviewed",
+        "legal_status_inferred": False,
+        "exhaustive_content_verified": False,
+    }
+
+    def emit(record, anomalies, valid):
+        _write_jsonl(
+            partitions.file(row["owner_id"], row["country"], "catalog-documents.jsonl"),
+            {**pointer, **record, "anomalies": sorted(set(anomalies))},
+        )
+        _count(summary, "catalog_documents" if valid else "catalog_document_gaps", row["country"], anomalies)
+
+    scope = value.get("scope", {})
+    try:
+        query = _bkpm_query(row["final_url"])
+        offset = (int(query["page"]) - 1) * 50
+        total, returned, documents = scope.get("total"), scope.get("returned"), scope.get("documents")
+        if (
+            not _bkpm_context(row)
+            or page_record["original"]["exists"] is not True
+            or page_record["original"]["actual_size"] != row["size"]
+            or scope.get("provider") != "bkpm"
+            or type(scope.get("theme_id")) is not int
+            or scope["theme_id"] != 1
+            or type(total) is not int
+            or not 0 <= total <= 1_000_000
+            or type(scope.get("offset")) is not int
+            or scope["offset"] != offset
+            or type(scope.get("page_size")) is not int
+            or scope["page_size"] != 50
+            or type(returned) is not int
+            or returned != max(0, min(50, total - offset))
+            or not isinstance(documents, list)
+            or len(documents) > returned
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, AttributeError):
+        page_record["anomalies"].append("invalid_bkpm_catalog_page")
+        emit({"export_status": "invalid_page"}, ["invalid_bkpm_catalog_page"], False)
+        return
+    seen = set()
+    for index, document in enumerate(documents):
+        anomalies = list(page_record["anomalies"])
+        try:
+            if not isinstance(document, dict):
+                raise ValueError
+            identity = document.get("identity_key")
+            match = re.fullmatch(r"bkpm:([1-9]\d{0,6})", identity) if isinstance(identity, str) else None
+            if not match or not 0 < int(match[1]) <= 1_000_000 or identity in seen:
+                raise ValueError
+            seen.add(identity)
+            title, target = document.get("title"), document.get("original_url")
+            original, host = _canonical(target)
+            parsed = urlsplit(original)
+            if (
+                not title
+                or not _catalog_text(title, 1000)
+                or host != _BKPM_FILES_HOST
+                or original != target
+                or parsed.query
+                or parsed.fragment
+                or re.fullmatch(r"/jdih/(?:jdih|userfiles)/[^?]+\.pdf", parsed.path, re.I) is None
+            ):
+                raise ValueError
+            metadata = {}
+            for key in (
+                "regulation_number",
+                "regulation_type",
+                "establishment_date",
+                "publication_date",
+                "status",
+            ):
+                if key in document:
+                    if not _catalog_text(document[key], 200) or not isinstance(document[key], str):
+                        raise ValueError
+                    metadata[key] = document[key]
+            detail = document.get("detail_url")
+            if detail is not None:
+                if (
+                    not isinstance(detail, str)
+                    or len(detail) > 550
+                    or re.fullmatch(
+                        r"https://jdih\.bkpm\.go\.id/id/document/[a-z0-9]+(?:-[a-z0-9]+)*", detail
+                    )
+                    is None
+                ):
+                    raise ValueError
+                metadata["detail_url"] = detail
+            record = {
+                "identity_key": identity,
+                "bkpm_document_id": int(match[1]),
+                "title": title,
+                "original_url": original,
+                "source_metadata": metadata,
+                "source_record_sha256": hashlib.sha256(
+                    json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+            }
+        except (TypeError, ValueError, RecursionError):
+            emit(
+                {"export_status": "invalid_record", "source_row_index": index},
+                [*anomalies, "invalid_bkpm_catalog_record"],
+                False,
+            )
+        else:
+            emit({**record, "export_status": "exported", "source_row_index": index}, anomalies, True)
 
 
 def _wto_context(row):
@@ -1346,6 +1539,12 @@ def _pages(conn, partitions, originals, summary, owner, country):
         if summary["schema_version"] >= 11
         else "0"
     )
+    is_bkpm = (
+        "CASE WHEN json_valid(e.evidence) THEN json_extract(e.evidence,'$.scope.provider')='bkpm' ELSE 0 END"
+        if summary["schema_version"] >= 11
+        else "0"
+    )
+    plan = "CASE WHEN json_valid(r.plan) THEN r.plan ELSE '{}' END"
     evidence_join = (
         "LEFT JOIN checklist_page_evidence e ON e.item_id=p.item_id"
         if summary["schema_version"] >= 11
@@ -1356,7 +1555,15 @@ def _pages(conn, partitions, originals, summary, owner, country):
         b.source_id,i.run_id,i.status fetch_status,i.url item_url,r.owner_id run_owner_id,r.source_id run_source_id,
         s.owner_id source_owner_id,
         CASE WHEN json_valid(p.warnings) THEN json_array_length(p.warnings) END warning_count,
-        {evidence} evidence,{is_treaty} evidence_is_treaty,{is_wto} evidence_is_wto
+        {evidence} evidence,{is_treaty} evidence_is_treaty,{is_wto} evidence_is_wto,{is_bkpm} evidence_is_bkpm,
+        json_extract({plan},'$.checklist.binding_id') frozen_binding_id,
+        json_extract({plan},'$.checklist.kind') frozen_kind,
+        json_extract({plan},'$.checklist.country') frozen_country,
+        json_extract({plan},'$.checklist.definition.plan.id') frozen_plan_id,
+        json_extract({plan},'$.checklist.definition.plan.version') frozen_plan_version,
+        json_extract({plan},'$.checklist.definition.plan.country') frozen_plan_country,
+        json_extract({plan},'$.checklist.definition.item.id') frozen_item_id,
+        (json_type({plan},'$.checklist.recipe.bkpm_investment')='true') frozen_bkpm_recipe
         FROM {_PAGES} JOIN collection_runs r ON r.id=i.run_id
         LEFT JOIN sources s ON s.id=b.source_id {evidence_join} WHERE {where}
         ORDER BY b.owner_id,b.country,b.plan_id,b.version,b.item_id,p.created_at,p.item_id""",
@@ -1397,6 +1604,8 @@ def _pages(conn, partitions, originals, summary, owner, country):
             _catalog_documents(row, record, value, partitions, summary)
         if row["evidence_is_wto"]:
             _wto_catalog_documents(row, record, value, partitions, summary)
+        if row["evidence_is_bkpm"]:
+            _bkpm_catalog_documents(row, record, value, partitions, summary)
         _write_jsonl(partitions.file(row["owner_id"], row["country"], "discovery-pages.jsonl"), record)
         _count(summary, "discovery_pages", row["country"], anomalies)
 

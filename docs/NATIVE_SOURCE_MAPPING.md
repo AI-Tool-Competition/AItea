@@ -38,3 +38,7 @@ DOC/WPF 原始对象、转换 artifact 和图片的内嵌 Base64 按块检查编
 ## 验证
 
 专项测试覆盖账号/国别、不可变版本、独立二级法律资料与关联附件、归档路径、原生/转换定位、图片及 artifact 引用、Memo/NULL、前导零/浮点/公式缓存、打印偏移和损坏/超限输入。真实来源回放报告保存于任务的私有 `data/verification/native-source-mapping-20261013/report.json`；其范围是现有 manifest 的映射投影，不代表外部网站全量覆盖或法规全文审核。
+
+BKPM 投资目录另有来源限定的 64 KiB 元数据出口：仅接受冻结的印尼 `4.1` 投资采集配方、同账号/来源/绑定/版本、官方 `/api/document-search` 的 `id_theme=1&limit=50&page=N` GET 请求和归档原件 SHA-256/账号路径绑定。原件仍只做无符号链接路径、存在性和大小检查，SHA-256 使用数据库已有值。逐条目录映射保留真实 `bkpm:id`、标题、官方 PDF URL、有限来源元数据及父目录页标识/SHA-256，并标记 `mapping_record_indexed=false`、效力 `not_reviewed`。此例外不改变通用目录的 16 KiB 限制，也不将目录记录当作正文或有效法规。
+
+2026-10-13 的既有 BKPM 页记录报告 `returned=50`，实际已保存 `documents=30`；这次仅恢复这 30 个映射，并明确输出另 20 行缺少已保存文书元数据的差异和已有警告。不能由此推定该页全部法规原件或整个 BKPM 目录已覆盖。专项证明保存于私有 `data/verification/bkpm-inventory-mapping-20261013/report.json`，旧失败盘点保留。

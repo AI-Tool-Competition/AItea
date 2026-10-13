@@ -18,11 +18,16 @@ from copy import deepcopy
 MAX_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_PIXELS = 6_000_000
+MAX_HTML_PIXELS = 12_000_000
 MAX_ASSETS = 2000
 MAX_MANIFEST_BYTES = 40 * 1024 * 1024
 PROTOCOL = "native-asset-ocr-v1"
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _PREFIX = "native-asset-ocr-"
+
+
+def _pixels_limit(source_format):
+    return MAX_HTML_PIXELS if source_format == "html" else MAX_PIXELS
 
 
 def _digest(value):
@@ -41,6 +46,22 @@ def _identity(value, source_hash, source_format, pointer):
         "source_part": value.get("source_part"),
         "size": value.get("size"),
     }
+    if source_format == "html":
+        fields.update(
+            {
+                key: value.get(key)
+                for key in (
+                    "object_key",
+                    "source_fragment_sha256",
+                    "source_url",
+                    "requested_url",
+                    "fetched_url",
+                    "url_attribute",
+                    "original_image_blob",
+                    "protocol",
+                )
+            }
+        )
     return _digest(json.dumps(fields, ensure_ascii=False, sort_keys=True, allow_nan=False).encode())
 
 
@@ -48,6 +69,12 @@ def assets(manifest: dict) -> list[dict]:
     """Return stable mapped assets without reading files or calling a model."""
     if manifest.get("parser") == "docx-basic" and manifest.get("parser_version") == "2":
         rows, prefix, source_format = manifest.get("assets_pending", []), "/assets_pending", "docx"
+    elif manifest.get("parser") == "html-basic" and manifest.get("parser_version") == "3":
+        html = manifest.get("html_source") or {}
+        if not isinstance(html, dict):
+            raise ValueError("HTML 图片映射结构无效。")
+        rows = html.get("linked_images", [])
+        prefix, source_format = "/html_source/linked_images", "html"
     elif manifest.get("parser") in {"legacy-wpf", "legacy-doc"}:
         legacy = manifest.get("legacy") or {}
         if not isinstance(legacy, dict) or not isinstance(legacy.get("conversion", {}), dict):
@@ -61,7 +88,7 @@ def assets(manifest: dict) -> list[dict]:
     source_hash = manifest.get("source_hash")
     if not isinstance(source_hash, str) or not _HASH.fullmatch(source_hash):
         raise ValueError("原生图片父原件 hash 无效。")
-    if source_format != "docx" and legacy.get("source_hash") != source_hash:
+    if source_format not in {"docx", "html"} and legacy.get("source_hash") != source_hash:
         raise ValueError("旧格式图片与父原件不一致。")
     if not isinstance(rows, list) or len(rows) > MAX_ASSETS:
         raise ValueError("原生图片映射数量超过限制。")
@@ -71,6 +98,10 @@ def assets(manifest: dict) -> list[dict]:
             raise ValueError("原生图片缺少来源定位。")
         if raw["locator"].get("source_hash") != source_hash:
             raise ValueError("原生图片定位与父原件不一致。")
+        if source_format == "html":
+            from .html_linked_asset_ocr import validate_binding
+
+            validate_binding(manifest, raw)
         pointer = f"{prefix}/{index}"
         identity = _identity(raw, source_hash, source_format, pointer)
         key = raw.get("asset_key") if source_format == "docx" else _PREFIX + identity[:24]
@@ -80,7 +111,7 @@ def assets(manifest: dict) -> list[dict]:
             raise ValueError("转换图片标识与来源不一致。")
         value = deepcopy(raw)
         default = "pending_vision"
-        if source_format != "docx" and raw.get("image_bytes_verified") is not True:
+        if source_format not in {"docx", "html"} and raw.get("image_bytes_verified") is not True:
             default = "image_reference_pending"
         status = raw.get("asset_status", default)
         if status not in {
@@ -120,7 +151,7 @@ def assets(manifest: dict) -> list[dict]:
                 or type(ocr.get("height")) is not int
                 or not 0 < ocr["width"] <= 10000
                 or not 0 < ocr["height"] <= 10000
-                or ocr["width"] * ocr["height"] > MAX_PIXELS
+                or ocr["width"] * ocr["height"] > _pixels_limit(source_format)
                 or ocr.get("frame_count") != 1
                 or ocr.get("frame_basis") != "all_frames_verified_single_frame"
                 or type(ocr.get("image_size")) is not int
@@ -137,6 +168,8 @@ def assets(manifest: dict) -> list[dict]:
         result.append(value)
     if len({value["asset_key"] for value in result}) != len(result):
         raise ValueError("原生图片标识重复。")
+    if source_format == "html" and len({value["object_key"] for value in result}) != len(result):
+        raise ValueError("HTML 正文对象被重复绑定。")
     return result
 
 
@@ -161,11 +194,12 @@ def apply_asset_checkpoint(manifest: dict, value: dict) -> None:
     ):
         raise ValueError("原生图片检查点修改了原始来源。")
     index = int(value["mapping_path"].rsplit("/", 1)[1])
-    rows = (
-        manifest["assets_pending"]
-        if value["source_format"] == "docx"
-        else manifest["legacy"]["conversion"]["images"]
-    )
+    if value["source_format"] == "docx":
+        rows = manifest["assets_pending"]
+    elif value["source_format"] == "html":
+        rows = manifest["html_source"]["linked_images"]
+    else:
+        rows = manifest["legacy"]["conversion"]["images"]
     rows[index] = deepcopy(value)
 
 
@@ -209,7 +243,7 @@ def _decode_inline(value, *, digest_key="sha256", limit=MAX_MANIFEST_BYTES):
     return raw
 
 
-def _extract(content, manifest, value, *, max_bytes=MAX_BYTES):
+def _extract(content, manifest, value, *, max_bytes=MAX_BYTES, image_content=None):
     if value["source_format"] == "docx":
         from .docx_parsing import _package, parse_docx
 
@@ -218,6 +252,10 @@ def _extract(content, manifest, value, *, max_bytes=MAX_BYTES):
         if fresh is None or fresh["input_identity"] != value["input_identity"]:
             raise ValueError("DOCX 图片部件、关系或 XML 定位与原件不一致。")
         raw = _package(content, max_bytes=max_bytes)[value["package_part"]]
+    elif value["source_format"] == "html":
+        from .html_linked_asset_ocr import extract_image
+
+        raw = extract_image(content, manifest, value, image_content)
     elif value["source_format"] == "wpf":
         from .legacy_doc_parsing import _wpf_artifacts
 
@@ -254,7 +292,7 @@ def _extract(content, manifest, value, *, max_bytes=MAX_BYTES):
     return raw
 
 
-def _render(content, manifest, value, archive_path=None, archive_size=None):
+def _render(content, manifest, value, archive_path=None, archive_size=None, image_content=None):
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     max_bytes = MAX_BYTES
@@ -265,7 +303,7 @@ def _render(content, manifest, value, archive_path=None, archive_size=None):
         max_bytes = MAX_ARCHIVE_BYTES
     if _digest(content) != value["source_hash"]:
         raise ValueError("原生图片父原件 hash 不匹配。")
-    raw = _extract(content, manifest, value, max_bytes=max_bytes)
+    raw = _extract(content, manifest, value, max_bytes=max_bytes, image_content=image_content)
     try:
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
@@ -274,7 +312,11 @@ def _render(content, manifest, value, archive_path=None, archive_size=None):
                 raise ValueError("原生图片光栅格式不受支持。")
             if frames != 1:
                 raise ValueError("多帧原生图片需要逐帧映射，不能只识别首帧。")
-            if not 0 < width <= 10000 or not 0 < height <= 10000 or width * height > MAX_PIXELS:
+            if (
+                not 0 < width <= 10000
+                or not 0 < height <= 10000
+                or width * height > _pixels_limit(value["source_format"])
+            ):
                 raise ValueError("原生图片像素超过限制。")
             image.verify()
         with Image.open(io.BytesIO(raw)) as image:
@@ -347,7 +389,9 @@ def _worker(connection, operation, args):
         connection.close()
 
 
-def _one(content, manifest, value, on_asset, on_image, archive_path=None, archive_size=None):
+def _one(
+    content, manifest, value, on_asset, on_image, archive_path=None, archive_size=None, image_content=None
+):
     from .parsing import ProcessingDeferred, _OCR_SLOTS, _run_bounded
     from .vision import IMAGE_PROMPT_VERSION, OCRResponseError, transcribe_image
 
@@ -398,7 +442,7 @@ def _one(content, manifest, value, on_asset, on_image, archive_path=None, archiv
             return failure(ValueError("原生图片识别已达到自动重试上限。"))
         try:
             rendered = _run_bounded(
-                _worker, ("render", (content, manifest, value, archive_path, archive_size)), 45
+                _worker, ("render", (content, manifest, value, archive_path, archive_size, image_content)), 45
             )
         except ProcessingDeferred:
             return defer("render_capacity")
@@ -486,6 +530,10 @@ def rebuild_native_asset_text(manifest):
     if len(elements) > 20000 or sum(len(e.get("content_text", "")) for e in elements) > 4_000_000:
         raise ValueError("原生图片正文重组超过资源限制。")
     result.update(elements=elements, chunks=chunks, native_asset_ocr=summary(result))
+    if result.get("parser") == "html-basic" and result.get("html_source", {}).get("linked_images"):
+        from .html_linked_asset_ocr import update_quality
+
+        update_quality(result, assets(result))
     return result
 
 
@@ -499,7 +547,15 @@ def rebuild_native_asset_text_bounded(manifest):
 
 
 def ocr_native_assets_bounded(
-    content, manifest, *, on_asset=None, on_image=None, max_assets=4, archive_path=None, archive_size=None
+    content,
+    manifest,
+    *,
+    on_asset=None,
+    on_image=None,
+    max_assets=4,
+    archive_path=None,
+    archive_size=None,
+    image_contents=None,
 ):
     """Process one resumable native-image batch; do not alter legal quality gates."""
     from .parsing import _run_bounded
@@ -507,6 +563,16 @@ def ocr_native_assets_bounded(
 
     if type(max_assets) is not int or not 1 <= max_assets <= 20:
         raise ValueError("单批原生图片数量必须在 1 至 20 之间。")
+    if image_contents is not None and (
+        not isinstance(image_contents, dict)
+        or len(image_contents) > 500
+        or any(
+            not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_IMAGE_BYTES
+            for raw in image_contents.values()
+        )
+        or sum(len(raw) for raw in image_contents.values()) > 32 * 1024 * 1024
+    ):
+        raise ValueError("HTML 图片原字节集合超过处理限制。")
     if content is None:
         from .docx_archive_parsing import MAX_ARCHIVE_BYTES
 
@@ -542,7 +608,17 @@ def ocr_native_assets_bounded(
     if pending and vision_ocr_configured():
         executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="native-asset-ocr")
         futures = [
-            executor.submit(_one, content, result, value, on_asset, on_image, archive_path, archive_size)
+            executor.submit(
+                _one,
+                content,
+                result,
+                value,
+                on_asset,
+                on_image,
+                archive_path,
+                archive_size,
+                (image_contents or {}).get(value["asset_key"]),
+            )
             for value in pending
         ]
         try:

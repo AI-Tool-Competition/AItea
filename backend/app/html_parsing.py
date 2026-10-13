@@ -9,6 +9,7 @@ import re
 from .vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
 VERSION = "html-source-mapping-v3"
+VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
     "base",
@@ -360,7 +361,7 @@ class HTMLDocument(HTMLParser):
         complete = has_body and not self.objects and not self._uncertain and not error_page
         warnings = []
         if self.objects:
-            warnings.append("HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。")
+            warnings.append(VISUAL_PENDING_WARNING)
         if self._uncertain:
             warnings.append("HTML 对象边界或重复引用属性仍待核验。")
         if error_page:

@@ -802,8 +802,28 @@ class CollectionService:
 
     def _process_native_assets(self, doc, claim, manifest, content):
         from .native_asset_ocr import apply_asset_checkpoint, ocr_native_assets_bounded
+        from .html_linked_asset_ocr import read_linked_images
 
         checkpoint_lock = Lock()
+        with self.db.transaction() as conn:
+            if not self._valid_claim(conn, claim, True):
+                raise ValueError("处理任务已更新，请等待当前任务完成")
+            source_urls = [
+                row["final_url"]
+                for row in conn.execute(
+                    """SELECT final_url FROM collection_items
+                    WHERE owner_id=? AND document_id=? AND status='stored' AND final_url IS NOT NULL
+                    ORDER BY id LIMIT 50""",
+                    (doc["owner_id"], doc["id"]),
+                )
+            ]
+        image_contents = read_linked_images(
+            self.db.data_dir,
+            doc["owner_id"],
+            manifest,
+            source_url=doc["source_url"],
+            allowed_source_urls=source_urls,
+        )
 
         def checkpoint(asset):
             with checkpoint_lock, self.db.transaction() as conn:
@@ -828,6 +848,7 @@ class CollectionService:
             on_image=store_image,
             archive_path=doc["storage_path"] if content is None else None,
             archive_size=doc["size"] if content is None else None,
+            image_contents=image_contents,
         )
 
     def _process_pdf_ocr(self, doc, claim, manifest, content, archive_mode):

@@ -195,8 +195,14 @@ def text_complete(manifest: dict) -> bool:
     from .native_asset_ocr import assets
 
     try:
-        if any(asset["asset_status"] != "ocr_complete" for asset in assets(manifest)):
+        image_assets = assets(manifest)
+        if any(asset["asset_status"] != "ocr_complete" for asset in image_assets):
             return False
+        if manifest.get("parser") == "html-basic":
+            from .html_linked_asset_ocr import complete
+
+            if not complete(manifest, image_assets):
+                return False
     except (ValueError, TypeError, KeyError):
         return False
     quality = manifest.get("quality")

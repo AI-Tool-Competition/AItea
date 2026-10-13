@@ -322,6 +322,26 @@ def mappings(manifest, manifest_hash):
                     "sha256": attr["raw_value_sha256"],
                 }
                 yield emit("html_visual_reference", pointer, attribute)
+        for index, value in _items(html.get("linked_images", [])):
+            from .html_linked_asset_ocr import validate_binding
+
+            validate_binding(manifest, value)
+            base = _pointer("/html_source/linked_images", index)
+            record = _asset(value, base, manifest_hash)
+            record.update(_select(value, "protocol object_key source_fragment_sha256"))
+            for field in ("source_url", "requested_url", "fetched_url"):
+                record[field] = _reference_url(value[field])
+            record["original_image_blob"] = _select(
+                value["original_image_blob"], "content_hash size storage_path mime_type"
+            )
+            record["original_url_attribute"] = {
+                "attribute": value["url_attribute"]["attribute"],
+                "raw_value_sha256": value["url_attribute"]["raw_value_sha256"],
+                "json_pointer": base + "/url_attribute/raw_value",
+                "storage": "documents.manifest",
+                "manifest_sha256": manifest_hash,
+            }
+            yield emit("html_linked_image", base, record)
     for key in ("elements", "chunks"):
         for index, value in _items(manifest.get(key, [])):
             base = _pointer("/" + key, index)

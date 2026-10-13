@@ -86,7 +86,11 @@ PDF 的 `quality.complete` 仅表示所有物理页已完成原生提取或模�
 
 用户上传仍限 20 MiB。较大的已保存 DOCX 原件可经 `parse_archive_docx_bounded` 的文件模式处理，最大 64 MiB；父进程只传原件引用，子进程核对无符号链接普通文件、大小、前后 SHA 和文件身份。ZIP 实际展开仍限 50 MiB，XML、图片、进程时间、内存与输出限制保持独立。文件模式不修改或拆分原件，不执行宏，也不提高上传接口上限。
 
-HTML 使用 `html-basic` 版本 3／`html-source-mapping-v3`。正文图像、picture/source、SVG 引用、canvas、object/embed 和正文 PDF iframe 保存到 `html_source.objects`，包括原件 SHA、DOM 路径、解码后 HTML 字符范围、原始引用属性及其 UTF-8 SHA；字符偏移和片段 SHA 不冒充原件字节偏移。导航与隐藏对象按正文范围过滤，alt 只作元数据，不代替识别文字。无图正文仍可通过原生门禁；图像或对象未核验、边界不完整、错误页面及空脚本壳不能放行全文。只有图像的页面可以保存映射和原件，正文及切片为空；当前 HTML 外部图像仅映射，不自动进入原生图片 OCR 队列。
+HTML 使用 `html-basic` 版本 3／`html-source-mapping-v3`。正文图像、picture/source、SVG 引用、canvas、object/embed 和正文 PDF iframe 保存到 `html_source.objects`，包括原件 SHA、DOM 路径、解码后 HTML 字符范围、原始引用属性及其 UTF-8 SHA；字符偏移和片段 SHA 不冒充原件字节偏移。导航与隐藏对象按正文范围过滤，alt 只作元数据，不代替识别文字。无图正文仍可通过原生门禁；图像或对象未核验、边界不完整、错误页面及空脚本壳不能放行全文。只有图像的页面可以保存映射和原件，正文及切片为空。
+
+已经显式采集并存入当前账号 CAS 的独立正文 `img/src`，可经 `bind_linked_image_bounded` 绑定至 `html_source.linked_images`，复核父 HTML、DOM、字符范围、原始 URL 属性与图片原字节 SHA。此入口只验证 URL 语法、不下载外链或解析 DNS；新增采集必须使用现有 HTTPS 公网、重定向、体积与时间限制。处理服务要求绑定父网址等于文档来源或该账号、该文档已保存的采集最终网址；含 `base/href` 的 HTML 继续待核验。受限工作进程验证全部图片帧及像素，HTML 图最多 12 MP，Word/WPF 仍为 6 MP，原图与请求 PNG 各最多 8 MiB；不缩放或丢弃帧，进程仍限制 768 MiB、35 秒 CPU 与 45 秒墙钟。原件 CAS、送模型的 PNG、尝试及结果检查点分别保留；已有处理服务负责租约及恢复。`picture/srcset`、SVG、canvas、未知边界和脚本图片继续待核验，不把某个候选图的成功识别当作完整页面。只有所有正文对象均通过图片识别且原生解析门禁完整，才恢复正文完整性；法规审核、一级索引条件与普通附件原件保存边界继续适用。格式 5 清单同时导出链接图片原件 CAS、原文引用、PNG 及转写文本定位。图片候选与替代文字的语义以 [HTML 图片标准](https://html.spec.whatwg.org/multipage/images.html) 为参考；完整光栅解码以项目锁定的 Pillow 版本和 [官方接口说明](https://pillow.readthedocs.io/en/stable/reference/Image.html) 为准。
+
+全部已知对象核验完成后，当前提示只解除解析器自身的“尚未视觉核验”一条，移至 `quality.resolved_warnings` 保留记录；其他独立来源、版本或边界提示继续存在。检查点恢复按同一门禁重组派生状态，不重复调用图片模型，也不改变法规原件、版本、审核或有效向量。
 
 两份清单附件是范围和示范截图资料，不能因正文或图片识别完成而自动成为法规库资料。2026-10-13 的受限回放在原始印尼附件上保留了 48 个图片位置／47 个图片哈希；首两张真实截图的模型返回均不完整，保留待核对，未入业务数据库或向量库。普通 `role=secondary` 上传附件继续只存原件；独立二级法律资料仍可文本化，但不建立向量。
 

@@ -14,8 +14,9 @@ import type {
   TraceStep,
 } from "@/core/tea/types";
 
+import { AnalysisProcess } from "./analysis-process";
 import { LegalWorkbench } from "./legal-workbench";
-import { Busy, ErrorNotice } from "./shared";
+import { ErrorNotice } from "./shared";
 
 type Props = {
   accountId: string;
@@ -120,9 +121,15 @@ function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
         节点解锁后，将自动分析当前资料并给出办理建议。
       </div>
     );
-  const finished = steps.filter((step) =>
-    ["completed", "cached", "skipped"].includes(step.status),
-  ).length;
+  const processSteps = legalModules.map(
+    (module) =>
+      steps.find((step) => step.id === module.id) ?? {
+        id: module.id,
+        label: module.title,
+        status: "pending" as const,
+        detail: "",
+      },
+  );
   return (
     <section
       className="tea-proactive tea-node-analysis"
@@ -130,54 +137,28 @@ function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
       aria-busy={loading}
     >
       <header>
-        <Sparkles size={16} />
-        <strong>{stage.name} · 节点分析</strong>
-        <span>
-          {analysis
-            ? analysis.assistant_mode === "live"
-              ? "模型辅助分析"
-              : "演示模式"
-            : "进入节点后自动分析"}
+        <span className="tea-node-mark" aria-hidden="true">
+          <Sparkles size={16} />
         </span>
+        <div className="tea-node-identity">
+          <strong>{stage.name} · 节点分析</strong>
+          <span>
+            {analysis
+              ? analysis.assistant_mode === "live"
+                ? "模型辅助分析"
+                : "演示模式 · 未调用大模型"
+              : "根据当前业务资料分析"}
+          </span>
+        </div>
       </header>
-      <details className="tea-node-progress" open={loading || undefined}>
-        <summary>
-          {loading
-            ? "正在分析本节点"
-            : error || analysis?.status === "failed"
-              ? "分析未完成"
-              : "查看六步分析过程"}{" "}
-          · {finished}/6
-        </summary>
-        <ol>
-          {legalModules.map((module, index) => {
-            const step = steps.find((item) => item.id === module.id);
-            const state = step?.status ?? "pending";
-            const statuses = {
-              pending: loading ? "等待中" : "未执行",
-              running: loading ? "分析中" : "已中断",
-              completed: "已完成",
-              cached: "沿用结果",
-              skipped: "无需执行",
-              failed: "未完成",
-              cancelled: "已停止",
-            };
-            return (
-              <li key={module.id} data-state={state}>
-                <span className="tea-node-step-number">{index + 1}</span>
-                <div>
-                  <strong>{module.title}</strong>
-                  {step?.detail && <p>{step.detail}</p>}
-                </div>
-                <small>{statuses[state]}</small>
-              </li>
-            );
-          })}
-        </ol>
-      </details>
+      <AnalysisProcess
+        steps={processSteps}
+        running={loading}
+        incomplete={!!error || analysis?.status === "failed"}
+      />
       {loading && (
         <div className="tea-node-running">
-          <Busy label={label} />
+          <p role="status">{label}</p>
           <Button size="sm" variant="ghost" onClick={() => stop.current()}>
             <Square size={12} />
             停止
@@ -206,7 +187,7 @@ function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
         </>
       )}
       <footer>
-        <span>补充信息、核对依据和修改报告都可以在这里完成。</span>
+        <span>分析建议供办理与复核参考。</span>
         <Button
           variant="ghost"
           size="sm"

@@ -36,43 +36,44 @@ const conditionLabels = {
 export function LegalResultView({
   result,
   compact = false,
+  showTrace = true,
+  showMode = true,
 }: {
   result: LegalResult;
   compact?: boolean;
+  showTrace?: boolean;
+  showMode?: boolean;
 }) {
   if (compact)
     return (
       <div className="tea-node-summary">
         {result.issues.slice(0, 3).map((issue) => (
-          <div key={issue.id}>
-            <p>
-              <span className="ta-badge">{conclusionLabels[issue.status]}</span>{" "}
-              {issue.conclusion}
-            </p>
+          <article className="tea-node-conclusion" key={issue.id}>
+            <header>
+              <span className="tea-conclusion-state" data-status={issue.status}>
+                {conclusionLabels[issue.status]}
+              </span>
+              <small>
+                {issue.kind === "legal" ? "法律问题" : "信息问题"}
+                {issue.needs_review ? " · 待复核" : ""}
+              </small>
+            </header>
+            <p>{issue.conclusion}</p>
             {issue.actions.length > 0 && (
               <ul>
                 {issue.actions.slice(0, 3).map((action) => (
                   <li key={action.id}>
-                    <span>{actionLabels[action.nature]}</span> · {action.title}
+                    <span>{actionLabels[action.nature]}</span>
+                    <span>{action.title}</span>
                   </li>
                 ))}
               </ul>
             )}
-          </div>
+          </article>
         ))}
         {result.issues.length > 3 && (
           <p className="tea-legal-note">
             另有 {result.issues.length - 3} 项问题，可展开详细结论查看。
-          </p>
-        )}
-        {result.followups.length > 0 && (
-          <p className="tea-legal-note">
-            还需核对：
-            {result.followups
-              .slice(0, 3)
-              .map((item) => item.label)
-              .join("、")}
-            {result.followups.length > 3 ? "等" : ""}。下方可直接补充。
           </p>
         )}
         {!result.issues.length && result.output && (
@@ -80,21 +81,31 @@ export function LegalResultView({
         )}
       </div>
     );
+  const issueGaps = new Set(result.issues.flatMap((issue) => issue.gaps));
+  const additionalGaps = [...new Set(result.gaps)].filter(
+    (gap) => !issueGaps.has(gap),
+  );
   return (
     <div className="tea-legal-result">
-      <p className="tea-legal-note">
-        {result.assistant_mode === "live"
-          ? "模型辅助分析 · 结论状态逐项列出"
-          : "演示模式 · 未调用大模型"}
-      </p>
+      {showMode && (
+        <p className="tea-legal-note">
+          {result.assistant_mode === "live"
+            ? "模型辅助分析 · 结论状态逐项列出"
+            : "演示模式 · 未调用大模型"}
+        </p>
+      )}
       {result.issues.map((issue) => (
         <article key={issue.id} className="tea-legal-issue">
           <header>
-            <span className="ta-badge">
+            <span className="tea-legal-note">
               {issue.kind === "legal" ? "法律问题" : "信息问题"}
             </span>
-            <span className="ta-badge">{conclusionLabels[issue.status]}</span>
-            {issue.needs_review && <span className="ta-badge">待复核</span>}
+            <span className="tea-conclusion-state" data-status={issue.status}>
+              {conclusionLabels[issue.status]}
+            </span>
+            {issue.needs_review && (
+              <span className="tea-legal-note">待复核</span>
+            )}
           </header>
           <h4>{issue.question}</h4>
           <p className="tea-legal-note">
@@ -180,11 +191,14 @@ export function LegalResultView({
             </div>
           )}
           {issue.gaps.length > 0 && (
-            <ul className="tea-legal-gaps">
-              {issue.gaps.map((gap, i) => (
-                <li key={i}>{gap}</li>
-              ))}
-            </ul>
+            <details className="tea-legal-gap-details">
+              <summary>待补充与复核 · {new Set(issue.gaps).size} 项</summary>
+              <ul>
+                {[...new Set(issue.gaps)].map((gap, i) => (
+                  <li key={i}>{gap}</li>
+                ))}
+              </ul>
+            </details>
           )}
           {issue.citations.length > 0 && (
             <details>
@@ -202,39 +216,17 @@ export function LegalResultView({
       {!result.issues.length && result.output && (
         <p className="tea-legal-prose">{result.output}</p>
       )}
-      {result.gaps.length > 0 && (
-        <div className="tea-legal-gaps">
-          <strong>当前分析的缺口</strong>
+      {additionalGaps.length > 0 && (
+        <details className="tea-legal-gap-details">
+          <summary>其他待核对事项 · {additionalGaps.length} 项</summary>
           <ul>
-            {result.gaps.map((gap, i) => (
+            {additionalGaps.map((gap, i) => (
               <li key={i}>{gap}</li>
             ))}
           </ul>
-        </div>
-      )}
-      <Trace steps={result.trace} />
-      {result.trace.some((step) => step.input_data ?? step.output_data) && (
-        <details className="tea-legal-public-trace">
-          <summary>查看各阶段输入与结果</summary>
-          {result.trace.map((step) => (
-            <details key={step.id}>
-              <summary>{step.label}</summary>
-              {step.input_data && (
-                <>
-                  <h5>输入</h5>
-                  <pre>{JSON.stringify(step.input_data, null, 2)}</pre>
-                </>
-              )}
-              {step.output_data && (
-                <>
-                  <h5>结果</h5>
-                  <pre>{JSON.stringify(step.output_data, null, 2)}</pre>
-                </>
-              )}
-            </details>
-          ))}
         </details>
       )}
+      {showTrace && <Trace steps={result.trace} />}
     </div>
   );
 }

@@ -219,6 +219,48 @@ def test_empty_database_records_pdf_quality_upgrade_idempotently(tmp_path):
         assert not conn.execute("SELECT 1 FROM retrieval_dirty").fetchone()
 
 
+def test_html_and_missing_source_upgrade_preserves_evidence_and_quarantines_cached_flags(workspace):
+    old = body("omittedsourceimageclause")
+    old.update(parser="html-basic", parser_version="2", pipeline_version="html-blocks-v2")
+    good = body("verifiedhtmlclause")
+    good.update(
+        parser="html-basic",
+        parser_version="3",
+        pipeline_version="html-source-mapping-v3",
+        html_source={"mapping_version": "html-source-mapping-v3"},
+        quality={"complete": True},
+    )
+    missing = body("missingsourceclause")
+    missing.update(
+        pages=[{"page": 1, "status": "native", "text": "The linked image cannot be displayed."}],
+        quality={"complete": True},
+    )
+    with workspace.db.transaction() as conn:
+        seed(conn, "old-html", old)
+        seed(conn, "new-html", good)
+        seed(conn, "missing-pdf", missing)
+        seed(conn, "foreign-html", old, owner="other")
+        for identifier in ("old-html", "new-html", "missing-pdf", "foreign-html"):
+            workspace.index.sync_document(conn, identifier)
+        conn.execute("UPDATE retrieval_documents SET complete=1")
+        conn.execute("DELETE FROM retrieval_dirty")
+        conn.execute("DELETE FROM schema_migrations WHERE version=15")
+        before = [tuple(r) for r in conn.execute("SELECT * FROM documents ORDER BY id")]
+        reviews = [tuple(r) for r in conn.execute("SELECT * FROM document_metadata ORDER BY document_id")]
+    upgraded = Service(workspace.db.data_dir)
+    assert not search(upgraded, "omittedsourceimageclause")["items"]
+    assert not search(upgraded, "missingsourceclause")["items"]
+    assert [r["document_id"] for r in search(upgraded, "verifiedhtmlclause")["items"]] == ["new-html"]
+    restarted = Service(workspace.db.data_dir)
+    with closing(restarted.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=15").fetchone()[0] == 1
+        assert [r[0] for r in conn.execute("SELECT document_id FROM retrieval_dirty")] == ["foreign-html"]
+        assert [tuple(r) for r in conn.execute("SELECT * FROM documents ORDER BY id")] == before
+        assert [
+            tuple(r) for r in conn.execute("SELECT * FROM document_metadata ORDER BY document_id")
+        ] == reviews
+
+
 def test_docx_upgrade_rechecks_old_published_body_cache_without_rewriting_evidence(workspace):
     old = body("oldbodyonlyclause")
     old.update(parser="docx-basic", parser_version="1", pipeline_version="docx-paragraphs-v1")

@@ -440,6 +440,7 @@ def ocr_bounded(
     result = deepcopy(manifest)
     pages = result.get("pages", [])
     from .ocr_recovery import RECOVERY_VERSION
+    from .ingestion_quality import pdf_page_status
 
     if (
         not pages
@@ -451,10 +452,10 @@ def ocr_bounded(
     pending = [
         page
         for page in pages
-        if page["status"] == "pending_ocr"
+        if pdf_page_status(page) == "pending_ocr"
         or (
             on_region is not None
-            and page["status"] == "ocr_uncertain"
+            and pdf_page_status(page) == "ocr_uncertain"
             and (
                 (page.get("ocr") or {}).get("recovery", {}).get("version") != RECOVERY_VERSION
                 or (page.get("ocr") or {}).get("recovery", {}).get("status")

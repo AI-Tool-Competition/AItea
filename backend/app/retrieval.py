@@ -108,6 +108,11 @@ class RetrievalIndex:
                 # completeness without rewriting published source or reviews.
                 conn.execute("INSERT OR IGNORE INTO retrieval_dirty SELECT id FROM documents")
                 conn.execute("INSERT INTO schema_migrations VALUES(14,?)", (now(),))
+            if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=15").fetchone():
+                # HTML v2 omitted source images; source PDF placeholders cannot
+                # be repaired through OCR. Recheck derived completeness only.
+                conn.execute("INSERT OR IGNORE INTO retrieval_dirty SELECT id FROM documents")
+                conn.execute("INSERT INTO schema_migrations VALUES(15,?)", (now(),))
 
     def ensure_current(
         self,

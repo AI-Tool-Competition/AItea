@@ -11,6 +11,7 @@ import hashlib
 import math
 import re
 from urllib.parse import urlsplit
+from html import unescape
 
 MAX_MANIFEST_BYTES = 40 * 1024 * 1024
 MAX_RECORD_BYTES = 4 * 1024 * 1024
@@ -113,7 +114,10 @@ def locator(value, depth=0):
         "column column_start column_end column_span row_start row_end note_id note_type cell_range "
         "sheet source_area print_section artifact_sha256 artifact_kind xpath physical_page_verified "
         "database_page row_slot start length sha256 file_offset row_ordinal column_ordinal "
-        "source_type stream stream_offset cp_start cp_end encoding page char_start char_end",
+        "source_type stream stream_offset cp_start cp_end encoding page char_start char_end "
+        "asset_key asset_mapping_path original_image_sha256 image_sha256 source_kind physical_pages_known "
+        "dom_path dom_basis line_start column_start offset_basis end_tag_observed anchor "
+        "boundary_kind source_boundary_complete",
     )
     for key in ("source_record", "field_storage"):
         if key in value:
@@ -205,7 +209,8 @@ def _asset(value, base, manifest_hash):
         value,
         "asset_key package_part image_hash image_sha256 size relationship_id source_part mime_type "
         "width height frame_count state status image_bytes_verified original_object_mapping "
-        "reference_sha256 format supported_for_vision reason dimensions_from pixels_verified",
+        "reference_sha256 format supported_for_vision reason dimensions_from pixels_verified "
+        "asset_status mapping_path source_format source_hash input_identity",
     )
     if "locator" in value:
         result["locator"] = locator(value["locator"])
@@ -213,6 +218,53 @@ def _asset(value, base, manifest_hash):
         result["bytes_reference"] = _inline(
             value, base, manifest_hash, "content_base64", hash_key="image_sha256"
         )
+    if "ocr" in value:
+        ocr = value["ocr"]
+        proof = _select(
+            ocr,
+            "source_hash asset_key mapping_path image_sha256 original_image_sha256 "
+            "width height renderer renderer_version render_version physical_page_verified "
+            "attempts prompt_version requested_model model finish_reason complete is_blank "
+            "review_status text_sha256 reading_hash input_identity protocol source_format "
+            "original_image_size image_size original_width original_height frame_count "
+            "frame_basis pixel_transform exif_orientation physical_pages_known",
+        )
+        if "locator" in ocr:
+            proof["locator"] = locator(ocr["locator"])
+        if "image_blob" in ocr:
+            reference = _select(ocr["image_blob"], "content_hash size mime_type")
+            path = ocr["image_blob"].get("storage_path")
+            if path is not None:
+                match = re.fullmatch(
+                    r"files/blobs/[a-f0-9]{64}/([a-f0-9]{2})/([a-f0-9]{2})/([a-f0-9]{64})",
+                    path if isinstance(path, str) else "",
+                )
+                if not match or (
+                    match[3] != reference.get("content_hash")
+                    or match[1] != match[3][:2]
+                    or match[2] != match[3][2:4]
+                ):
+                    raise ValueError("invalid native image blob reference")
+                reference["storage_path"] = path
+            if reference.get("content_hash") != ocr.get("image_sha256"):
+                raise ValueError("native image blob hash mismatch")
+            proof["image_blob"] = reference
+        if "uncertain_spans" in ocr:
+            proof["uncertain_spans"] = [_scalar(item) for _, item in _items(ocr["uncertain_spans"])]
+        if "text" in ocr:
+            if not isinstance(ocr["text"], str) or len(ocr["text"]) > MAX_STRING:
+                raise ValueError("invalid native image transcription")
+            digest = hashlib.sha256(ocr["text"].encode()).hexdigest()
+            if ocr.get("text_sha256", digest) != digest:
+                raise ValueError("native image transcription hash mismatch")
+            proof["text_reference"] = {
+                "storage": "documents.manifest",
+                "manifest_sha256": manifest_hash,
+                "json_pointer": _pointer(base + "/ocr", "text"),
+                "sha256": digest,
+                "chars": len(ocr["text"]),
+            }
+        result["ocr"] = proof
     result["vision_completed_by_export"] = False
     return result
 
@@ -223,6 +275,53 @@ def mappings(manifest, manifest_hash):
     def emit(kind, base, value):
         return kind, base, value
 
+    html = manifest.get("html_source")
+    if html is not None:
+        yield emit(
+            "html_source",
+            "/html_source",
+            _select(
+                html,
+                "mapping_version source_hash decoded_source_sha256 decoded_character_count "
+                "offset_basis fragment_hash_basis dom_basis main_container_found navigation_excluded "
+                "external_resources_fetched scripts_executed",
+            ),
+        )
+        for index, value in _items(html.get("objects", [])):
+            base = _pointer("/html_source/objects", index)
+            record = _select(
+                value,
+                "object_key tag source_hash source_fragment_sha256 parent_object_key "
+                "alt_is_recognized_text duplicate_url_attributes vision_status resource_fetched indexed",
+            )
+            record["locator"] = locator(value["locator"])
+            if "metadata" in value:
+                record["metadata"] = _select(value["metadata"], "alt title type width height media sizes")
+            yield emit("html_visual_object", base, record)
+            for offset, attr in _items(value.get("url_attributes", [])):
+                pointer = _pointer(base + "/url_attributes", offset)
+                attribute = _select(
+                    attr,
+                    "attribute raw_value_sha256 char_start char_end offset_basis resource_fetched",
+                )
+                raw, decoded = attr.get("raw_value"), attr.get("decoded_value")
+                if (
+                    not isinstance(raw, str)
+                    or not isinstance(decoded, str)
+                    or len(raw) > MAX_STRING
+                    or len(decoded) > MAX_STRING
+                    or hashlib.sha256(raw.encode()).hexdigest() != attr.get("raw_value_sha256")
+                    or unescape(raw) != decoded
+                ):
+                    raise ValueError("HTML image reference literal hash mismatch")
+                attribute.update(_reference_url(decoded))
+                attribute["literal_reference"] = {
+                    "storage": "documents.manifest",
+                    "manifest_sha256": manifest_hash,
+                    "json_pointer": _pointer(pointer, "raw_value"),
+                    "sha256": attr["raw_value_sha256"],
+                }
+                yield emit("html_visual_reference", pointer, attribute)
     for key in ("elements", "chunks"):
         for index, value in _items(manifest.get(key, [])):
             base = _pointer("/" + key, index)

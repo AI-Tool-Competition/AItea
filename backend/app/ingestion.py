@@ -29,10 +29,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from email.message import EmailMessage
-from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
+from .html_parsing import HTMLDocument as _HTMLDocument
 from .vendor.geo_parser.document_ingestion import (
     DoclingDocumentParser,
     ParsedDocument,
@@ -86,128 +86,25 @@ def _decode(content: bytes) -> str:
     raise ValueError("文档文本编码无法识别，请转换为 UTF-8。")
 
 
-class _HTMLDocument(HTMLParser):
-    """Extract readable blocks and actual HTML source-line anchors, not fake offsets."""
-
-    _blocks = {
-        "p",
-        "div",
-        "section",
-        "article",
-        "li",
-        "tr",
-        "blockquote",
-        "pre",
-        "br",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-    }
-    _hidden = {"script", "style", "noscript", "template", "head"}
-
-    def __init__(self, *, main_only=False) -> None:
-        super().__init__(convert_charrefs=True)
-        self.main_only, self.in_main = main_only, False
-        self.has_main = False
-        self.elements: list[ParsedElement] = []
-        self.headings: list[str] = []
-        self.buffer: list[str] = []
-        self.heading_level = 0
-        self.hidden: list[str] = []
-        self.start_line = 1
-        self.links: list[str] = []
-        self.anchor: str | None = None
-
-    def _flush(self) -> None:
-        text = re.sub(r"\s+", " ", "".join(self.buffer)).strip()
-        self.buffer = []
-        if not text:
-            return
-        if len(self.elements) >= MAX_ELEMENTS:
-            raise ValueError("HTML 元素数量超过限制。")
-        kind = "paragraph"
-        if self.heading_level:
-            self.headings = self.headings[: self.heading_level - 1] + [text]
-            kind = "heading"
-        order = len(self.elements) + 1
-        locator = {
-            "kind": "html",
-            "element_start": order,
-            "element_end": order,
-            "line_start": self.start_line,
-            "line_end": self.getpos()[0],
-            "heading_path": list(self.headings),
-        }
-        if self.anchor:
-            locator["anchor"] = self.anchor
-        self.elements.append(
-            ParsedElement(f"html-{order:06}", kind, order - 1, text, locator, list(self.headings))
-        )
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self._hidden or (self.main_only and tag in {"nav", "aside"}):
-            self.hidden.append(tag)
-            return
-        if self.hidden:
-            return
-        if tag == "main":
-            self.in_main, self.has_main = True, True
-        # Article headers/footers can contain the title, issue date and source.
-        # Site-wide versions already fall outside the actual main element.
-        if self.main_only and not self.in_main:
-            return
-        values = dict(attrs)
-        if tag == "a" and values.get("href"):
-            self.links.append(values["href"])
-        if tag in self._blocks:
-            self._flush()
-            self.heading_level = int(tag[1]) if re.fullmatch("h[1-6]", tag) else 0
-            self.start_line = self.getpos()[0]
-            self.anchor = values.get("id")
-
-    def handle_endtag(self, tag: str) -> None:
-        if self.hidden:
-            if tag == self.hidden[-1]:
-                self.hidden.pop()
-            return
-        if self.main_only and tag == "main":
-            self._flush()
-            self.in_main = False
-            return
-        if self.main_only and not self.in_main:
-            return
-        if tag in self._blocks:
-            self._flush()
-            self.heading_level = 0
-            self.anchor = None
-            self.start_line = self.getpos()[0]
-
-    def handle_data(self, data: str) -> None:
-        if not self.hidden and (not self.main_only or self.in_main):
-            self.buffer.append(data)
-
-    def finish(self) -> None:
-        self.close()
-        self._flush()
-
-
 def _parse_html(content: bytes) -> ParsedDocument:
     source = _decode(content)
     if len(source) > MAX_TEXT:
         raise ValueError("HTML 文本超过处理限制。")
-    extractor = _HTMLDocument(main_only=True)
+    options = {
+        "source": source,
+        "source_hash": hashlib.sha256(content).hexdigest(),
+        "exclude_navigation": True,
+        "max_elements": MAX_ELEMENTS,
+    }
+    extractor = _HTMLDocument(main_only=True, **options)
     extractor.feed(source)
     extractor.finish()
     if not extractor.has_main:
-        # A main marker inside a comment, script or template is not document
-        # structure. Preserve legacy pages without a real main container.
-        extractor = _HTMLDocument()
+        # A main marker in a comment, script or hidden subtree is not document structure.
+        extractor = _HTMLDocument(**options)
         extractor.feed(source)
         extractor.finish()
-    return ParsedDocument("html-basic", "2", "html-blocks-v2", extractor.elements, [], [])
+    return extractor.document()
 
 
 def _parse_pdf(content: bytes) -> ParsedDocument:
@@ -406,6 +303,7 @@ def pdf_quality(pages: list[dict]) -> dict:
     pending = [page["page"] for page in pages if statuses[page["page"]] == "pending_ocr"]
     failed = [page["page"] for page in pages if statuses[page["page"]] == "ocr_failed"]
     review = [page["page"] for page in pages if statuses[page["page"]] == "ocr_uncertain"]
+    source_incomplete = [page["page"] for page in pages if statuses[page["page"]] == "source_incomplete"]
     deferred = [
         page["page"]
         for page in pages
@@ -425,6 +323,7 @@ def pdf_quality(pages: list[dict]) -> dict:
         "pending_parse_pages": pending_parse,
         "failed_pages": failed,
         "review_pages": review,
+        "source_incomplete_pages": source_incomplete,
         "review_required": bool(review),
         "deferred_pages": deferred,
         "retry_after_seconds": retry_delay if deferred else 0,
@@ -578,7 +477,8 @@ def parse_file(
         return parse_docx(content, filename=filename)
     else:
         document = _parse_pdf(content)
-    if (not document.elements and not document.pages) or sum(
+    html_source = getattr(document, "html_source", {})
+    if (not document.elements and not document.pages and not html_source.get("objects")) or sum(
         len(x.content_text) for x in document.elements
     ) > MAX_TEXT:
         raise ValueError("文档没有可解析的正文，或正文超过处理限制。")
@@ -587,7 +487,8 @@ def parse_file(
 
 def _parsed_result(document: ParsedDocument, source_hash: str, title: str) -> dict:
     manifest, _ = build_manifest(document, source_hash=source_hash, document_title=title)
-    if not manifest["chunks"] and not document.pages:
+    html_source = getattr(document, "html_source", {})
+    if not manifest["chunks"] and not document.pages and not html_source.get("objects"):
         raise ValueError("文档仅含标题或图片，没有可供检索的正文。")
     by_key = {element.element_key: element for element in document.elements}
     chunks = []
@@ -614,6 +515,7 @@ def _parsed_result(document: ParsedDocument, source_hash: str, title: str) -> di
         "warnings": document.warnings,
         "retrieval_mode": "lexical",
         **({"pages": document.pages, "quality": pdf_quality(document.pages)} if document.pages else {}),
+        **({"html_source": html_source, "quality": document.quality} if html_source else {}),
     }
 
 

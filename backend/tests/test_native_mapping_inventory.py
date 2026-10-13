@@ -86,6 +86,78 @@ def selected(rows, kind):
     return [row for row in rows if row["record_kind"] == kind]
 
 
+def test_html_visual_projection_preserves_literals_and_redacts_private_targets():
+    from app.ingestion import parse_file
+    from app.native_mapping_inventory import mappings, validate_mapping
+
+    source = (
+        '<main><p>Official trade rules.</p><img alt="Metadata only" '
+        'src="https://official.example/diagram.png?token=PRIVATE_QUERY&amp;v=2"></main>'
+    ).encode()
+    manifest = parse_file("rules.html", source, "text/html")
+    raw = json.dumps(manifest, ensure_ascii=False).encode()
+    rows = list(mappings(manifest, hashlib.sha256(raw).hexdigest()))
+    objects = [record for kind, _, record in rows if kind == "html_visual_object"]
+    references = [record for kind, _, record in rows if kind == "html_visual_reference"]
+    assert len(objects) == len(references) == 1
+    assert objects[0]["alt_is_recognized_text"] is False
+    assert references[0]["target_export_status"] == "redacted"
+    assert "PRIVATE_QUERY" not in json.dumps(rows)
+    assert references[0]["literal_reference"]["manifest_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert references[0]["literal_reference"]["json_pointer"].endswith("/raw_value")
+    for _, _, record in rows:
+        validate_mapping(record, manifest["source_hash"])
+    manifest["html_source"]["objects"][0]["url_attributes"][0]["raw_value_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="literal hash"):
+        list(mappings(manifest, "a" * 64))
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_native_ocr_projection_binds_transcript_and_only_relative_cas_paths(unsafe):
+    from app.native_mapping_inventory import mappings
+
+    digest = hashlib.sha256(b"sent pixels").hexdigest()
+    text = "Exact image transcription."
+    path = f"files/blobs/{'a' * 64}/{digest[:2]}/{digest[2:4]}/{digest}"
+    manifest = {
+        "assets_pending": [
+            {
+                "asset_key": "image1",
+                "image_hash": "b" * 64,
+                "ocr": {
+                    "image_sha256": digest,
+                    "original_image_sha256": "b" * 64,
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "input_identity": "c" * 64,
+                    "frame_basis": "all_frames_verified_single_frame",
+                    "physical_pages_known": False,
+                    "unknown_private_key": "PRIVATE_MODEL_KEY",
+                    "image_blob": {
+                        "content_hash": digest,
+                        "size": 11,
+                        "mime_type": "image/png",
+                        "storage_path": "/private/tools/api-key.env" if unsafe else path,
+                    },
+                },
+            }
+        ]
+    }
+    if unsafe:
+        with pytest.raises(ValueError, match="blob reference"):
+            list(mappings(manifest, "d" * 64))
+        return
+    rows = list(mappings(manifest, "d" * 64))
+    proof = rows[0][2]["ocr"]
+    assert proof["image_blob"]["storage_path"] == path
+    assert proof["text_reference"]["json_pointer"] == "/assets_pending/0/ocr/text"
+    assert proof["text_reference"]["sha256"] == hashlib.sha256(text.encode()).hexdigest()
+    assert "PRIVATE_MODEL_KEY" not in json.dumps(rows)
+    manifest["assets_pending"][0]["ocr"]["text"] = "Changed after checkpoint."
+    with pytest.raises(ValueError, match="transcription hash"):
+        list(mappings(manifest, "d" * 64))
+
+
 def simple(**extra):
     return {
         "chunks": [{"id": "chunk", "text": "Native law text", "locator": {"kind": "text"}}],

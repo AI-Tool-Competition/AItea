@@ -21,6 +21,14 @@ _NUMBER_FIELDS = {
 def pdf_page_status(page: dict) -> str:
     """Judge the accepted text, preserving damaged native text as evidence."""
     status = page["status"]
+    if any(
+        "the linked image cannot be displayed" in str(page.get(key, "")).casefold()
+        for key in ("native_text", "text")
+    ):
+        # Pixels and text cannot reconstruct an image absent from the source.
+        # Preserve the original and require a replacement source, never OCR it
+        # into a seemingly complete legal document.
+        return "source_incomplete"
     replacement = "\ufffd" in page.get("text", "")
     if status == "native" and replacement:
         return "pending_ocr"
@@ -184,7 +192,22 @@ def validate_ocr_page(page: dict) -> None:
 
 
 def text_complete(manifest: dict) -> bool:
+    from .native_asset_ocr import assets
+
+    try:
+        if any(asset["asset_status"] != "ocr_complete" for asset in assets(manifest)):
+            return False
+    except (ValueError, TypeError, KeyError):
+        return False
     quality = manifest.get("quality")
+    if manifest.get("parser") == "html-basic" and (
+        manifest.get("parser_version") != "3"
+        or str(manifest.get("pipeline_version", "")).split("+", 1)[0] != "html-source-mapping-v3"
+        or not isinstance(quality, dict)
+        or not isinstance(manifest.get("html_source"), dict)
+        or manifest.get("html_source", {}).get("mapping_version") != "html-source-mapping-v3"
+    ):
+        return False
     if manifest.get("parser") == "docx-basic" and (
         manifest.get("parser_version") != "2"
         or str(manifest.get("pipeline_version", "")).split("+", 1)[0] != "docx-package-mapping-v2"
@@ -202,19 +225,65 @@ def ocr_pending(manifest: dict) -> list[int]:
     return [page["page"] for page in manifest.get("pages", []) if pdf_page_status(page) == "pending_ocr"]
 
 
+def has_mapped_source_objects(manifest: dict) -> bool:
+    """An image-only source can preserve mappings without invented body text."""
+    from .native_asset_ocr import assets
+
+    html = manifest.get("html_source") or {}
+    return bool(
+        assets(manifest)
+        or (
+            isinstance(html, dict)
+            and html.get("mapping_version") == "html-source-mapping-v3"
+            and isinstance(html.get("objects"), list)
+            and html["objects"]
+        )
+    )
+
+
+def ocr_work_pending(manifest: dict) -> bool:
+    """Keep PDF page numbers separate from mapped native image identities."""
+    from .native_asset_ocr import pending_assets
+
+    try:
+        return bool(ocr_pending(manifest) or pending_assets(manifest))
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def quality_warning(manifest: dict) -> str | None:
+    from .native_asset_ocr import assets
+
     if text_complete(manifest):
         return None
     quality = manifest.get("quality") or {}
     pending = len(ocr_pending(manifest))
     failed = len(quality.get("failed_pages", []))
     review = len(quality.get("review_pages", []))
+    source_incomplete = sum(
+        pdf_page_status(page) == "source_incomplete" for page in manifest.get("pages", [])
+    )
+    try:
+        image_assets = assets(manifest)
+    except (ValueError, TypeError, KeyError):
+        return "原生图片来源映射待核验；原件已保存，暂不进入检索。"
     detail = "、".join(
         label
         for count, label in (
             (pending, f"待识别 {pending} 页"),
             (failed, f"识别失败 {failed} 页"),
             (review, f"待核对 {review} 页"),
+            (source_incomplete, f"原件缺少图片 {source_incomplete} 页"),
+            (
+                sum(asset["asset_status"] == "pending_vision" for asset in image_assets),
+                "原生图片待识别",
+            ),
+            (sum(asset["asset_status"] == "ocr_failed" for asset in image_assets), "原生图片识别失败"),
+            (sum(asset["asset_status"] == "ocr_uncertain" for asset in image_assets), "原生图片待核对"),
+            (
+                sum(asset["asset_status"] == "image_reference_pending" for asset in image_assets),
+                "原生图片引用待核验",
+            ),
         )
         if count
     )

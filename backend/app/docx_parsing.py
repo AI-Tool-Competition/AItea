@@ -131,9 +131,11 @@ def _xml(data: bytes, name: str):
     return root, paths, nodes
 
 
-def _package(content: bytes):
-    if not isinstance(content, bytes) or not content or len(content) > MAX_BYTES:
-        raise ValueError("DOCX 原件不能为空且不能超过 20 MB。")
+def _package(content: bytes, *, max_bytes: int = MAX_BYTES):
+    if type(max_bytes) is not int or not 1 <= max_bytes <= 64 * 1024 * 1024:
+        raise ValueError("DOCX 原件处理上限无效。")
+    if not isinstance(content, bytes) or not content or len(content) > max_bytes:
+        raise ValueError(f"DOCX 原件不能为空且不能超过 {max_bytes // (1024 * 1024)} MB。")
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             entries = archive.infolist()
@@ -922,10 +924,10 @@ class _Mapping:
         return native
 
 
-def parse_docx(content: bytes, *, filename: str = "document.docx") -> dict:
+def parse_docx(content: bytes, *, filename: str = "document.docx", max_bytes: int = MAX_BYTES) -> dict:
     """Return the existing manifest shape with explicit text-completeness gates."""
     source_hash = hashlib.sha256(content).hexdigest() if isinstance(content, bytes) else ""
-    mapping = _Mapping(_package(content), source_hash)
+    mapping = _Mapping(_package(content, max_bytes=max_bytes), source_hash)
     native_parts = mapping.extract()
     document = ParsedDocument("docx-basic", "2", "docx-package-mapping-v2", mapping.elements, [], [])
     # build_manifest already excludes empty figures and heading-only content. This

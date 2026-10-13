@@ -63,6 +63,33 @@ def test_scanned_original_with_no_ocr_is_preserved_and_not_embedded(service, mon
     assert job["status"] == "failed" and "正文未完整" in job["error"]
 
 
+def test_missing_source_image_cannot_be_repaired_by_ocr(service, monkeypatch):
+    from app import ingestion, parsing, vision
+
+    manifest = scanned()
+    manifest["pages"] = [
+        {
+            "page": 1,
+            "status": "pending_ocr",
+            "native_text": "The linked image cannot be displayed.",
+            "text": "",
+        }
+    ]
+    manifest["quality"] = ingestion.pdf_quality(manifest["pages"])
+    monkeypatch.setattr(parsing, "parse_bounded", lambda *a, **kw: manifest)
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(
+        parsing, "ocr_bounded", lambda *a, **kw: pytest.fail("Missing source was sent to OCR")
+    )
+    doc = store(service)
+    service.collection.process_item(service.collection.claim_processing())
+    detail = service.document_detail("owner", doc["id"])
+    assert not detail["quality"]["complete"]
+    assert detail["quality"]["source_incomplete_pages"] == [1]
+    assert "原件缺少图片" in detail["document"]["error"]
+    assert service.collection.claim_processing() is None
+
+
 def test_upload_queues_ocr_after_original_is_saved(service, monkeypatch):
     from app import parsing, vision
 

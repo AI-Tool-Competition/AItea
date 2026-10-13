@@ -718,7 +718,12 @@ class Service:
         source_url=None,
     ):
         from .parsing import parse_bounded
-        from .ingestion_quality import ocr_pending, quality_warning, text_complete
+        from .ingestion_quality import (
+            has_mapped_source_objects,
+            ocr_work_pending,
+            quality_warning,
+            text_complete,
+        )
         from .vision import vision_ocr_configured
 
         if len(content) > MAX_UPLOAD:
@@ -800,13 +805,17 @@ class Service:
                 manifest = parse_bounded(
                     filename, content, mime_type, parser=os.getenv("TEA_PARSER", "basic")
                 )
-                if not manifest.get("elements") and not manifest.get("pages"):
+                if (
+                    not manifest.get("elements")
+                    and not manifest.get("pages")
+                    and not has_mapped_source_objects(manifest)
+                ):
                     raise ValueError("文件没有可提取的正文；扫描件可能需要 OCR")
                 if manifest.get("warnings"):
                     error = "解析提示：" + "；".join(str(item) for item in manifest["warnings"])[:450]
                 if not text_complete(manifest):
                     error = quality_warning(manifest)
-                    if ocr_pending(manifest) and vision_ocr_configured():
+                    if ocr_work_pending(manifest) and vision_ocr_configured():
                         status = "processing"
             except Exception as exc:
                 logger.info("document_parse_failed", extra={"parser_error": type(exc).__name__})

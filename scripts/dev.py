@@ -534,12 +534,8 @@ def serve(args: argparse.Namespace) -> int:
             if name == "web" and not args.production:
                 # Next's config/directory watcher is separate from webpack's
                 # watcher. The process-local setting covers both instances.
-                service_env = {**env, "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000")}
-                node_options = env.get("NODE_OPTIONS", "")
-                names = node_option_names(node_options)
-                if (names is not None and not env.get("NEXT_DISABLE_MEM_OVERRIDE")
-                        and not names & {"--max-old-space-size", "--max-old-space-size-percentage"}):
-                    service_env["NODE_OPTIONS"] = node_options + (" " if node_options else "") + "--max-old-space-size=1536"
+                service_env = {**env, "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000"),
+                               "NEXT_DISABLE_MEM_OVERRIDE": "1"}
             process = subprocess.Popen(command, cwd=cwd, env=service_env, stdin=subprocess.DEVNULL,
                                        stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
             processes.append((name, process))

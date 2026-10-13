@@ -32,6 +32,9 @@ const config = {
   },
   devIndicators: false,
   allowedDevOrigins: getAllowedDevOrigins(),
+  experimental: {
+    devMemoryThresholdRestart: false,
+  },
   async rewrites() {
     const teaURL = getInternalServiceURL(
       "TEA_API_URL",

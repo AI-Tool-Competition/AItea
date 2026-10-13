@@ -574,30 +574,19 @@ def test_watcher_log_scans_incrementally_and_retains_detected_failure(tmp_path):
     assert scanner.scan(), "an observed watcher failure must remain sticky"
 
 
-@pytest.mark.parametrize("production,node_options,disable_override,expected_web", [
-    (False, None, None, "--max-old-space-size=1536"),
-    (False, '--trace-warnings --require "/tmp/my preload.js"', None,
-     '--trace-warnings --require "/tmp/my preload.js" --max-old-space-size=1536'),
-    (False, "--max-old-space-size=2048 --trace-warnings", None, "--max-old-space-size=2048 --trace-warnings"),
-    (False, "--max-old-space-size 2048", None, "--max-old-space-size 2048"),
-    (False, "--max_old_space_size=2048", None, "--max_old_space_size=2048"),
-    (False, "--max_old_space_size 2048", None, "--max_old_space_size 2048"),
-    (False, '"--max-old-space-size=2048"', None, '"--max-old-space-size=2048"'),
-    (False, "--max-old-space-size-percentage=25", None, "--max-old-space-size-percentage=25"),
-    (False, "--max-old-space-size-percentage 25", None, "--max-old-space-size-percentage 25"),
-    (False, "--max_old_space_size_percentage=25", None, "--max_old_space_size_percentage=25"),
-    (False, "--require=/tmp/--max-old-space-size=2048.js", None,
-     "--require=/tmp/--max-old-space-size=2048.js --max-old-space-size=1536"),
-    (False, None, "1", None),
-    (False, None, "0", None),
-    (False, None, "false", None),
-    (False, None, "", "--max-old-space-size=1536"),
-    (False, '--require "unfinished', None, '--require "unfinished'),
-    (True, None, None, None),
-    (True, "--trace-warnings", None, "--trace-warnings"),
+@pytest.mark.parametrize("production,node_options,disable_override", [
+    (False, None, None),
+    (False, '--trace-warnings --require "/tmp/my preload.js"', None),
+    (False, "--max-old-space-size=2048 --trace-warnings", None),
+    (False, "--max-old-space-size-percentage 25", None),
+    (False, None, "1"),
+    (False, None, "0"),
+    (False, None, ""),
+    (True, None, None),
+    (True, "--trace-warnings", "0"),
 ])
-def test_web_memory_environment_preserves_user_node_options(
-    tmp_path, production, node_options, disable_override, expected_web,
+def test_web_environment_disables_automatic_heap_limit_and_preserves_user_node_options(
+    tmp_path, production, node_options, disable_override,
 ):
     child = ("import json,os,time; from pathlib import Path; "
              "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
@@ -625,7 +614,7 @@ def service_commands(args, root=ROOT):
                                 timeout=10, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         import json
-        assert json.loads((tmp_path / "web.json").read_text()) == [expected_web, disable_override]
+        assert json.loads((tmp_path / "web.json").read_text()) == [node_options, disable_override if production else "1"]
         assert json.loads((tmp_path / "api.json").read_text()) == [node_options, disable_override]
     finally:
         stop_fixture(script, tmp_path)

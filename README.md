@@ -18,7 +18,7 @@ make dev
 
 开发前端默认每 1000 毫秒轮询文件变化，避免服务器的系统文件监听额度不足导致反复重启；后端与生产预览不受此默认值影响。已有 `WATCHPACK_POLLING` 设置会被保留，也可用 `WATCHPACK_POLLING=500 make dev` 调整间隔。只有后端健康检查、`/tea` 页面和经前端转发的 API 健康检查均成功，启动命令才会报告就绪；这也会预热首次页面请求使用的 API 转发。失败时会显示各自状态及有限日志摘要。检测到文件监听 `ENOSPC` 错误会立即结束本次启动并回收所属进程。
 
-为控制开发时的内存占用，开发前端的 Node 老生代堆默认限制为 1536 MiB，并关闭 Node 服务端源码映射；浏览器调试映射和热更新仍保留。已有 `NODE_OPTIONS` 参数原样保留；显式的绝对或百分比堆设置，以及非空的 `NEXT_DISABLE_MEM_OVERRIDE`，都会阻止追加默认堆限制。如需服务端源码映射，可在 `NODE_OPTIONS` 中加入 `--enable-source-maps`，例如 `NODE_OPTIONS="--enable-source-maps" make dev`。这些默认设置不影响后端、生产预览或构建。
+开发启动器不设置 Node 堆内存上限，并通过 `NEXT_DISABLE_MEM_OVERRIDE=1` 禁止 Next.js 自动追加堆限制；Next.js 的内存阈值自动重启也已关闭，避免页面加载期间重启并重复编译。已有 `NODE_OPTIONS` 参数原样保留。开发时默认关闭 Node 服务端源码映射，浏览器调试映射和热更新仍保留；如需服务端源码映射，可执行 `NODE_OPTIONS="--enable-source-maps" make dev`。这些设置不影响后端、生产预览或构建。
 
 ```bash
 make dev-status       # 当前工作树状态

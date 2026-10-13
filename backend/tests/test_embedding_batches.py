@@ -133,13 +133,18 @@ def test_retry_after_defers_sibling_jobs_without_another_request(configured, mon
     provider(monkeypatch, handler)
     with pytest.raises(ingestion.EmbeddingServiceError) as first:
         ingestion.embed_texts(["1"])
-    assert first.value.retry_after == 300
+    assert first.value.retry_after == 9999
     clock[0] += 30
     with pytest.raises(ingestion.EmbeddingProviderDeferred) as deferred:
         ingestion.embed_texts(["2"])
-    assert deferred.value.retry_after == 270
+    assert deferred.value.retry_after == 9969
     assert len(requests) == 1
     clock[0] += 270
+    with pytest.raises(ingestion.EmbeddingProviderDeferred) as still_waiting:
+        ingestion.embed_texts(["2"])
+    assert still_waiting.value.retry_after == 9699
+    assert len(requests) == 1
+    clock[0] += 9699
     with pytest.raises(ingestion.EmbeddingServiceError):
         ingestion.embed_texts(["2"])
     assert len(requests) == 2

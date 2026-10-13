@@ -1102,11 +1102,14 @@ class CollectionService:
             (processing and isinstance(error, ProcessingDeferred)) or transfer_progress or provider_wait
         )
         exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
-        delay = min(
-            300, max(2 ** claim["attempts"] + random.random(), getattr(error, "retry_after", None) or 0)
+        # Bound our own exponential backoff, but never shorten a server's
+        # Retry-After. Long waits remain queue timestamps, not worker sleeps.
+        delay = max(
+            min(300, 2 ** claim["attempts"] + random.random()),
+            getattr(error, "retry_after", None) or 0,
         )
         if deferred:
-            delay = min(300, max(1, error.retry_after)) if provider_wait else (0 if transfer_progress else 5)
+            delay = max(1, error.retry_after) if provider_wait else (0 if transfer_progress else 5)
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):

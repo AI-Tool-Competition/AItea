@@ -648,7 +648,7 @@ class _EmbeddingCall(AbstractContextManager):
             raise EmbeddingServiceError(retryable=True)
         remaining = _embedding_profile(self.profile_key).get("available_at", 0) - time.monotonic()
         if remaining > 0:
-            self.defer(min(300, remaining))
+            self.defer(remaining)
 
     def defer(self, delay: float) -> None:
         # Queue attempts are only reset when this complete call issued no HTTP.
@@ -1032,18 +1032,23 @@ def _bounded_header(value: str | None, limit: int = 1024) -> str | None:
 
 
 def _retry_after(value: str | None) -> float | None:
-    """RFC 9110 section 10.2.3: delay-seconds or HTTP-date, capped locally."""
+    """RFC 9110 section 10.2.3: retain the server's minimum retry delay.
+
+    The durable queue schedules long delays without occupying a worker. The
+    header bound keeps decimal conversion finite; truncating the delay would
+    issue requests before the server's stated recovery time.
+    """
     value = _bounded_header(value, 128)
     if value is None:
         return None
     value = value.strip()
     if re.fullmatch(r"[0-9]+", value):
-        return min(300.0, float(value))
+        return float(value)
     try:
         retry_at = parsedate_to_datetime(value)
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=timezone.utc)
-        return min(300.0, max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds()))
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
     except (ValueError, TypeError, OverflowError):
         return None
 

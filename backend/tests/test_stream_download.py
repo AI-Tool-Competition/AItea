@@ -459,13 +459,13 @@ def test_response_and_request_validators_are_bounded_and_cannot_inject_headers(t
 
 
 @pytest.mark.parametrize("status", [408, 429, 500, 502, 599])
-def test_transient_http_errors_expose_bounded_retry_after(transport, status):
+def test_transient_http_errors_preserve_server_retry_after(transport, status):
     responses, _, _ = transport
     responses.append(Response(status=status, headers={"Retry-After": "900"}))
     with pytest.raises(ingestion.DownloadError) as error:
         download()
     assert error.value.retryable is True
-    assert error.value.retry_after == 300
+    assert error.value.retry_after == 900
     assert error.value.response_host == "example.com"
 
 
@@ -493,13 +493,24 @@ def test_other_http_errors_are_permanent(transport, status):
     assert error.value.retry_after is None
 
 
-def test_retry_after_accepts_http_date(transport):
+@pytest.mark.parametrize("delay", [60, 900])
+def test_retry_after_accepts_http_date(transport, delay):
     responses, _, _ = transport
-    date = datetime.now(timezone.utc) + timedelta(seconds=60)
+    date = datetime.now(timezone.utc) + timedelta(seconds=delay)
     responses.append(Response(status=503, headers={"Retry-After": format_datetime(date, usegmt=True)}))
     with pytest.raises(ingestion.DownloadError) as error:
         download()
-    assert 58 <= error.value.retry_after <= 60
+    assert delay - 2 <= error.value.retry_after <= delay
+
+
+@pytest.mark.parametrize("value", ["9" * 129, "900\r\nX: header", "-1", "NaN", "Infinity"])
+def test_invalid_retry_after_does_not_create_a_cooldown(transport, value):
+    responses, _, _ = transport
+    responses.append(Response(status=429, headers={"Retry-After": value}))
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.retryable is True
+    assert error.value.retry_after is None
 
 
 def test_connection_slot_covers_each_actual_host_until_connection_is_closed(transport):

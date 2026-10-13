@@ -225,8 +225,9 @@ def test_embedding_retry_is_limited_to_failed_complete_primaries(tmp_path, monke
 
 
 @pytest.mark.parametrize("kind", ["cooldown", "invalid_credentials", "rate_limit"])
+@pytest.mark.parametrize("delay", [75, 900])
 def test_embedding_provider_wait_and_permanent_errors_keep_queue_attempts_meaningful(
-    tmp_path, monkeypatch, kind
+    tmp_path, monkeypatch, kind, delay
 ):
     from app.ingestion import EmbeddingProviderDeferred, EmbeddingServiceError
 
@@ -243,9 +244,9 @@ def test_embedding_provider_wait_and_permanent_errors_keep_queue_attempts_meanin
     claim = service.collection.claim_processing()
     assert claim["phase"] == "embed"
     error = (
-        EmbeddingProviderDeferred(75)
+        EmbeddingProviderDeferred(delay)
         if kind == "cooldown"
-        else EmbeddingServiceError(retryable=kind == "rate_limit", retry_after=75)
+        else EmbeddingServiceError(retryable=kind == "rate_limit", retry_after=delay)
     )
     started = time.time()
     service.collection._failure(claim, error, processing=True)
@@ -256,7 +257,7 @@ def test_embedding_provider_wait_and_permanent_errors_keep_queue_attempts_meanin
     assert job["status"] == ("failed" if kind == "invalid_credentials" else "queued")
     assert job["attempts"] == (0 if kind == "cooldown" else 1)
     if kind != "invalid_credentials":
-        assert started + 74 <= job["available_at"] <= time.time() + 76
+        assert started + delay - 1 <= job["available_at"] <= time.time() + delay + 1
 
 
 @pytest.mark.parametrize(

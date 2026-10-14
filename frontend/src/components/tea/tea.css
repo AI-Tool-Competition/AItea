@@ -3574,7 +3574,7 @@
   line-height: 1.6;
 }
 .tea-analysis-step-heading strong {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--foreground);
 }
@@ -3591,15 +3591,127 @@
   overflow-wrap: anywhere;
 }
 .tea-analysis-records {
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
 }
-.tea-analysis-records summary {
+.tea-analysis-records > summary,
+.tea-analysis-technical > summary {
   color: var(--muted-foreground);
-  padding: 4px 0;
+  padding: 8px 0;
+  cursor: pointer;
 }
-.tea-analysis-records > div {
+.tea-analysis-records > summary:hover,
+.tea-analysis-technical > summary:hover {
+  color: var(--foreground);
+}
+.tea-analysis-records summary:focus-visible,
+.tea-analysis-more:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.tea-analysis-findings {
+  margin-top: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.tea-analysis-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 0 0 14px;
+  list-style: none;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.tea-analysis-findings > section + section {
+  margin-top: 20px;
+}
+.tea-analysis-findings h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.tea-analysis-findings h4 > span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 400;
+}
+.tea-analysis-finding-list {
+  display: grid;
+  gap: 16px;
+  padding-left: 22px;
+  list-style: decimal;
+}
+.tea-analysis-finding::marker {
+  color: var(--muted-foreground);
+}
+.tea-analysis-finding > strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.75;
+}
+.tea-analysis-finding > p {
+  margin-top: 6px;
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+}
+.tea-analysis-attention {
   margin-top: 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--tea-warning);
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.tea-analysis-attention > span {
+  color: var(--tea-warning);
+  font-size: 12px;
+}
+.tea-analysis-attention ul {
+  padding-left: 18px;
+  list-style: disc;
+}
+.tea-analysis-attention li + li {
+  margin-top: 4px;
+}
+.tea-analysis-more {
+  margin-top: 10px;
+  min-height: 36px;
+  padding: 6px 0;
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+.tea-analysis-empty {
+  color: var(--muted-foreground);
+}
+.tea-analysis-technical {
+  margin-top: 16px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tea-analysis-technical > div > div {
+  margin-top: 12px;
+}
+.tea-analysis-technical > div > p {
+  margin: 8px 0;
+}
+.tea-analysis-findings .ta-debug-data {
+  font-size: 13px;
 }
 .tea-node-running {
   display: flex;
@@ -3807,6 +3919,17 @@
   .tea-analysis-steps {
     padding-inline: 4px;
   }
+  .tea-analysis-step {
+    gap: 8px;
+  }
+  .tea-analysis-findings {
+    padding: 12px;
+  }
+  .tea-analysis-records > summary,
+  .tea-analysis-technical > summary,
+  .tea-analysis-more {
+    min-height: 44px;
+  }
   .tea-fact-disclosure > summary {
     gap: 8px;
   }
@@ -3818,4 +3941,61 @@
     animation: none !important;
     transition: none !important;
   }
+}
+
+.ta-debug-data,
+.ta-debug-task-data dl {
+  display: grid;
+  gap: 12px;
+  font-size: 12px;
+}
+.ta-debug-data dt,
+.ta-debug-task-data dt {
+  color: var(--muted-foreground);
+  margin-bottom: 4px;
+}
+.ta-debug-data dd,
+.ta-debug-task-data dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ta-debug-value {
+  white-space: pre-wrap;
+  line-height: 1.75;
+}
+.ta-debug-data-list > div + div {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.ta-debug-check-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+}
+.ta-debug-check-row > strong {
+  font-weight: 500;
+}
+.ta-debug-check-row > span {
+  color: var(--tea-success);
+}
+.ta-debug-check-row[data-status="missing"] > span {
+  color: var(--tea-warning);
+}
+.ta-debug-check-row[data-status="conflict"] > span {
+  color: var(--destructive);
+}
+.ta-debug-check-row > small {
+  grid-column: 1 / -1;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.ta-debug-task-data > strong {
+  display: block;
+  margin-bottom: 12px;
+}
+.ta-debug-task-data dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
 }

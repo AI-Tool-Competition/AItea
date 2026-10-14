@@ -148,6 +148,15 @@ describe("proactive stage analysis", () => {
     expect(screen.getByText("正在核对本节点的问题范围")).toBeTruthy();
     expect(screen.getByText("分析中")).toBeTruthy();
     expect(screen.queryByText("本节点编辑：node-report")).toBeNull();
+    await act(async () =>
+      controller.enqueue(
+        new TextEncoder().encode(
+          'event: status\ndata: {"label":"QA-05 条件判断与有界复核"}\n\n',
+        ),
+      ),
+    );
+    expect(screen.getByText("正在分析结论与期限…")).toBeTruthy();
+    expect(screen.queryByText(/QA-05/)).toBeNull();
     await act(async () => {
       controller.enqueue(
         new TextEncoder().encode(

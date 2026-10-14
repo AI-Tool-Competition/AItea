@@ -650,7 +650,7 @@ it("keeps the selected report's execution records available when its revision di
   fireEvent.click(screen.getByText("查看详细结论与原文依据"));
   fireEvent.click(screen.getByRole("button", { name: /依据与检查记录/ }));
   expect(screen.getByText("本次修订的检查说明")).toBeTruthy();
-  fireEvent.click(screen.getByText("查看输入与结果"));
+  fireEvent.click(screen.getByText("查看本步发现"));
   expect(screen.getByText(/新修订输入/)).toBeTruthy();
 });
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { conclusionLabels } from "@/core/tea/legal-labels";
 import { type LegalResult } from "@/core/tea/types";
 
 import { CitationCard } from "./library";
@@ -12,12 +13,6 @@ export const legalStatusLabel = {
   needs_review: "待复核",
   failed: "分析未完成",
   cancelled: "已停止",
-};
-const conclusionLabels = {
-  supported: "有依据支持",
-  unsupported: "有依据不支持",
-  conditional: "附条件结论",
-  undetermined: "尚无法判断",
 };
 const actionLabels = {
   mandatory: "法定义务",

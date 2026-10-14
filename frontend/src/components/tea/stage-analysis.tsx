@@ -4,6 +4,7 @@ import { RefreshCw, Sparkles, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { processStepLabels } from "@/core/tea/analysis-process";
 import { errorMessage, teaRequest } from "@/core/tea/api";
 import { legalModules } from "@/core/tea/configuration";
 import { subscribeNodeAnalysis } from "@/core/tea/node-analysis";
@@ -65,8 +66,14 @@ function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
       attempt > 0,
       (event) => {
         if (!current) return;
-        if (event.event === "status") setLabel(event.data.label);
-        else if (event.event === "step")
+        if (event.event === "status") {
+          const stepNumber = /^QA-(0[1-6])(?:\s|$)/.exec(event.data.label)?.[1];
+          setLabel(
+            stepNumber
+              ? `正在${processStepLabels[`qa${stepNumber}`]}…`
+              : event.data.label,
+          );
+        } else if (event.event === "step")
           setSteps((prior) => [
             ...prior.filter((step) => step.id !== event.data.id),
             event.data,

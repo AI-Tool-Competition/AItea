@@ -340,7 +340,7 @@ export function AdminLibrary({
                             revision={revision}
                             onSelect={setSelected}
                             onUpload={
-                              samples
+                              samples || doc.source_scope === "system"
                                 ? undefined
                                 : () =>
                                     onUpload(
@@ -510,7 +510,7 @@ function Attachments({
           <Paperclip size={14} />
           附件
         </h4>
-        {onUpload && (
+        {onUpload && parent.source_scope !== "system" && (
           <Button variant="ghost" size="sm" onClick={onUpload}>
             添加关联附件
           </Button>
@@ -756,7 +756,7 @@ function DocumentInspector({
               <strong>v{document.version}</strong>
             </div>
           </div>
-          {!samples && (
+          {!samples && document.source_scope !== "system" && (
             <DocumentClassificationEditor
               document={document}
               ownerId={ownerId}

@@ -10,6 +10,7 @@ from urllib.parse import urldefrag
 from .blob_store import BlobStore
 from .countries import country_from_collection, document_country, resolve_country
 from .db import dump, now, uid
+from .system_library import SYSTEM_OWNER_ID, public_document_sql, register_source_guard, require_admission
 
 
 def family_key(
@@ -314,13 +315,16 @@ class LegalArchive:
         from .service import DOCUMENT_SUMMARY
 
         with closing(self.db.connect()) as conn:
-            doc = self.service.own_document(conn, owner, document_id)
+            doc = self.service.read_document(conn, owner, document_id)
+            actual_owner = doc["owner_id"]
+            scope = public_document_sql() if actual_owner == SYSTEM_OWNER_ID else "1"
             rows = conn.execute(
-                f"SELECT {DOCUMENT_SUMMARY} FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC,id DESC LIMIT ? OFFSET ?",
-                (owner, doc["family_id"], limit, offset),
+                f"SELECT {DOCUMENT_SUMMARY} FROM documents WHERE owner_id=? AND family_id=? AND {scope} ORDER BY version DESC,id DESC LIMIT ? OFFSET ?",
+                (actual_owner, doc["family_id"], limit, offset),
             ).fetchall()
             total = conn.execute(
-                "SELECT COUNT(*) FROM documents WHERE owner_id=? AND family_id=?", (owner, doc["family_id"])
+                f"SELECT COUNT(*) FROM documents WHERE owner_id=? AND family_id=? AND {scope}",
+                (actual_owner, doc["family_id"]),
             ).fetchone()[0]
             return {"items": self.service.document_summaries(rows, conn), "total": total}
 
@@ -387,18 +391,25 @@ class LegalArchive:
 
     def relations(self, owner, document_id, limit=20, offset=0):
         with closing(self.db.connect()) as conn:
-            self.service.own_document(conn, owner, document_id)
-            params = (owner, document_id, document_id)
+            doc = self.service.read_document(conn, owner, document_id)
+            params = (doc["owner_id"], document_id, document_id)
             where = "r.owner_id=? AND (r.source_document_id=? OR r.target_document_id=?)"
+            if doc["owner_id"] == SYSTEM_OWNER_ID:
+                where += f" AND {public_document_sql('s')} AND {public_document_sql('t')}"
+                where += """ AND (SELECT country FROM document_countries WHERE document_id=COALESCE(s.parent_id,s.id))
+                    =(SELECT country FROM document_countries WHERE document_id=COALESCE(t.parent_id,t.id))"""
             rows = conn.execute(
                 f"""SELECT r.*,s.title source_title,t.title target_title,s.version source_version,t.version target_version
                 FROM legal_relations r JOIN documents s ON s.id=r.source_document_id JOIN documents t ON t.id=r.target_document_id
                 WHERE {where} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?""",
                 (*params, limit, offset),
             ).fetchall()
-            total = conn.execute(f"SELECT COUNT(*) FROM legal_relations r WHERE {where}", params).fetchone()[
-                0
-            ]
+            total = conn.execute(
+                f"""SELECT COUNT(*) FROM legal_relations r
+                JOIN documents s ON s.id=r.source_document_id JOIN documents t ON t.id=r.target_document_id
+                WHERE {where}""",
+                params,
+            ).fetchone()[0]
             return {"items": [dict(row) for row in rows], "total": total}
 
     def store_original(
@@ -421,6 +432,7 @@ class LegalArchive:
         from .service import fail
 
         country = country_from_collection(collection)
+        require_admission(owner, source_url, country)
         filename = (
             re.sub(r"[\x00-\x1f\x7f]", "", Path(filename.replace("\\", "/")).name)[:180] or "source.bin"
         )
@@ -527,6 +539,8 @@ class LegalArchive:
         """One scope/version gate shared by lexical and dense persistent retrieval."""
         from .catalog import DocumentMetadata
 
+        register_source_guard(conn)
+
         business = dump(DocumentMetadata().model_dump(mode="json"))
         law = dump(DocumentMetadata(kind="law", review_status="draft").model_dump(mode="json"))
         collection_country = country_from_collection(collection)
@@ -538,6 +552,7 @@ class LegalArchive:
                 fail(422, "country_mismatch", "检索国家与采集组不一致")
         membership = """(NOT EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id)
             OR EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.level='primary'))"""
+        shared = public_document_sql("d") if country else "0"
         parameters = [business, law, owner, case_id]
         business_material = """(v.country IS NULL AND v.case_id IS NOT NULL
             AND json_extract(v.metadata_payload,'$.kind')='business')"""
@@ -560,6 +575,10 @@ class LegalArchive:
             AND (json_extract(v.metadata_payload,'$.effective_from') IS NULL OR json_extract(v.metadata_payload,'$.effective_from')<=?)
             AND (json_extract(v.metadata_payload,'$.effective_to') IS NULL OR json_extract(v.metadata_payload,'$.effective_to')>=?)"""
         parameters.extend([as_of.isoformat(), as_of.isoformat()])
+        system_review = f"""(v.owner_id<>'{SYSTEM_OWNER_ID}' OR
+            (v.reviewed_by IS NOT NULL AND v.reviewed_by<>'{SYSTEM_OWNER_ID}' AND v.reviewed_at IS NOT NULL
+             AND EXISTS(SELECT 1 FROM users reviewer WHERE reviewer.id=v.reviewed_by AND reviewer.is_demo=0)
+             AND json_extract(v.metadata_payload,'$.effective_from') IS NOT NULL))"""
         history = "v.family_rank=1"
         if historical:
             history = """(json_extract(v.metadata_payload,'$.kind')!='law' OR
@@ -574,9 +593,9 @@ class LegalArchive:
             parameters.extend(document_ids)
         index_gate = "AND text_complete=1 AND index_current=1" if require_current else ""
         query = f"""WITH versions AS (
-            SELECT d.id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,dc.country,
+            SELECT d.id,d.owner_id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,dc.country,
                 COALESCE(m.payload,CASE WHEN d.source_url IS NULL THEN ? ELSE ? END) metadata_payload,
-                COALESCE(m.revision,0) metadata_revision,m.reviewed_at,
+                COALESCE(m.revision,0) metadata_revision,m.reviewed_at,m.reviewed_by,
                 COALESCE(rx.complete,0) text_complete,COALESCE(rx.revision,0) index_revision,
                 (rx.source_hash=d.content_hash AND NOT EXISTS(
                     SELECT 1 FROM retrieval_dirty q WHERE q.document_id=d.id)) index_current,
@@ -584,10 +603,10 @@ class LegalArchive:
             FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
             LEFT JOIN document_countries dc ON dc.document_id=d.id
             LEFT JOIN retrieval_documents rx ON rx.document_id=d.id
-            WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary'
+            WHERE ((d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?)) OR {shared}) AND d.role='primary'
         ), applicable AS (
             SELECT v.*,ROW_NUMBER() OVER(PARTITION BY v.family_id ORDER BY v.version DESC,v.id DESC) selected
-            FROM versions v WHERE {scope} AND {membership} AND {period} AND {history}
+            FROM versions v WHERE {scope} AND {membership} AND {period} AND {system_review} AND {history}
                 AND v.status='ready'
         ) SELECT * FROM applicable WHERE selected=1 {index_gate} {selected_scope} ORDER BY created_at DESC,id DESC"""
         return query, parameters

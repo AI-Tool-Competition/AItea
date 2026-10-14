@@ -506,7 +506,7 @@ class RetrievalIndex:
                 rows = {
                     row["rowid"]: dict(row)
                     for row in conn.execute(
-                        """SELECT c.*,e.title,e.source_url,e.version,e.metadata_payload,e.metadata_revision,e.index_revision
+                        """SELECT c.*,e.owner_id,e.title,e.source_url,e.version,e.metadata_payload,e.metadata_revision,e.index_revision
                     FROM retrieval_chunks c JOIN retrieval_eligible e ON e.id=c.document_id WHERE c.rowid IN ("""
                         + ",".join("?" for _ in selected)
                         + ")",
@@ -570,6 +570,8 @@ class RetrievalIndex:
 
     @staticmethod
     def citation(hit, query):
+        from .system_library import source_scope
+
         text = hit["text"]
         # Keep ordinary legal chunks complete. Exceptionally long imported chunks
         # get a verbatim window around the first matched term, with explicit offsets.
@@ -586,6 +588,7 @@ class RetrievalIndex:
         if start or end != len(text):
             locator |= {"excerpt_char_start": start, "excerpt_char_end": end}
         return {
+            "source_scope": source_scope(hit["owner_id"]),
             "document_id": hit["document_id"],
             "title": hit["title"],
             "excerpt": text[start:end],

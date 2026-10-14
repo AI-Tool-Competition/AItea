@@ -18,6 +18,7 @@ export function DocumentChooser({
   primaryOnly = false,
   excludeId,
   multiple = true,
+  sourceScope,
 }: {
   selected: string[];
   onChange: (ids: string[]) => void;
@@ -27,6 +28,7 @@ export function DocumentChooser({
   primaryOnly?: boolean;
   excludeId?: string;
   multiple?: boolean;
+  sourceScope?: "personal" | "system";
 }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -51,6 +53,7 @@ export function DocumentChooser({
     if (scope) params.set("case_id", scope);
     if (collection) params.set("collection", collection);
     if (country) params.set("country", country);
+    if (sourceScope) params.set("source_scope", sourceScope);
     if (primaryOnly) params.set("legal_level", "primary");
     if (search) params.set("q", search);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
@@ -76,7 +79,16 @@ export function DocumentChooser({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [scope, collection, country, search, offset, retry, primaryOnly]);
+  }, [
+    scope,
+    collection,
+    country,
+    search,
+    offset,
+    retry,
+    primaryOnly,
+    sourceScope,
+  ]);
   const options = page.items.filter(
     (doc) =>
       doc.id !== excludeId &&

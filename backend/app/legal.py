@@ -134,6 +134,30 @@ class LegalService:
                 and (not row["classified"] or row["primary_source"])
             ):
                 valid.add(row["id"])
+        # Shared legal sources use the full country/review/quality/version gate.
+        # The pre-existing private evidence behavior above is unchanged.
+        if case_id:
+            from .system_library import SYSTEM_OWNER_ID
+
+            case = self.service.own_case(conn, owner, case_id)
+            template = json.loads(case["template"])
+            countries = set(self.allowed_countries(template))
+            for stage in template.get("stages", []):
+                countries.update(self.allowed_countries(template, stage))
+            for country in sorted(countries):
+                sql, parameters = self.service.archive.eligibility_sql(
+                    conn,
+                    owner,
+                    case_id,
+                    None,
+                    datetime.now(timezone.utc).date(),
+                    False,
+                    country,
+                    ids,
+                )
+                valid.update(
+                    row["id"] for row in conn.execute(sql, parameters) if row["owner_id"] == SYSTEM_OWNER_ID
+                )
         return valid
 
     def sync_facts(self, conn, owner, case_id):
@@ -200,7 +224,7 @@ class LegalService:
         from .countries import document_country
 
         for document_id in document_ids or []:
-            doc = self.service.own_document(conn, owner, document_id)
+            doc = self.service.read_document(conn, owner, document_id)
             if doc["case_id"] not in (None, case_id) or (case_id is None and doc["case_id"] is not None):
                 fail(404, "not_found", "未找到可用的检索资料")
             country = document_country(conn, document_id)
@@ -323,6 +347,27 @@ class LegalService:
             (owner, case["id"]),
         ):
             sources.update(dump(dict(row)).encode())
+        from .system_library import public_document_sql, register_source_guard
+
+        register_source_guard(conn)
+        countries = set(self.allowed_countries(case["template"]))
+        for stage in case["template"].get("stages", []):
+            countries.update(self.allowed_countries(case["template"], stage))
+        if countries:
+            placeholders = ",".join("?" for _ in countries)
+            for row in conn.execute(
+                f"""SELECT d.id,d.version,d.content_hash,d.status,dc.country,
+                    COALESCE(m.revision,0) metadata_revision,COALESCE(r.revision,0) index_revision,
+                    c.collection,c.level,c.revision classification_revision
+                    FROM documents d JOIN document_countries dc ON dc.document_id=d.id
+                    LEFT JOIN document_metadata m ON m.document_id=d.id
+                    LEFT JOIN retrieval_documents r ON r.document_id=d.id
+                    JOIN legal_classifications c ON c.document_id=d.id
+                    WHERE {public_document_sql("d")} AND d.role='primary' AND dc.country IN ({placeholders})
+                    ORDER BY d.id,c.collection""",
+                sorted(countries),
+            ):
+                sources.update(dump(dict(row)).encode())
         return {"environment": sources.hexdigest(), "facts": {fact["key"]: digest(fact) for fact in facts}}
 
     def affected(self, result, old, current):
@@ -489,7 +534,7 @@ class LegalService:
                 fail(422, "fact_limit", "本业务已达到事实记录上限，请整理现有事实")
             evidence = list(dict.fromkeys(payload.get("evidence_refs", [])))
             for document_id in evidence:
-                doc = self.service.own_document(conn, owner, document_id)
+                doc = self.service.read_document(conn, owner, document_id)
                 if doc["case_id"] not in (None, case_id):
                     fail(404, "not_found", "未找到可用的证明材料")
                 if doc["role"] != "primary" or doc["status"] != "ready":

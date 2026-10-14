@@ -16,6 +16,7 @@ from .db import Database, dump, now, uid
 from .catalog import DocumentMetadata, LegalCatalog, eligible
 from .defaults import DEFAULT_TEMPLATE
 from .models import Template
+from .system_library import public_document_sql, register_source_guard, source_scope
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD = 20 * 1024 * 1024
@@ -37,7 +38,9 @@ DOCUMENT_FIELDS = (
     "content_hash",
 )
 # Lists never materialize plaintext or embedding arrays from the manifest.
-DOCUMENT_SUMMARY = ",".join(DOCUMENT_FIELDS) + ",tags,json_array_length(manifest,'$.chunks') chunk_count"
+DOCUMENT_SUMMARY = (
+    "owner_id," + ",".join(DOCUMENT_FIELDS) + ",tags,json_array_length(manifest,'$.chunks') chunk_count"
+)
 
 
 class AppError(Exception):
@@ -624,12 +627,24 @@ class Service:
             fail(404, "not_found", "未找到资料")
         return doc
 
+    def read_document(self, conn, owner, id):
+        """Shared reads never grant permission to mutate a system original."""
+        register_source_guard(conn)
+        doc = conn.execute(
+            f"SELECT * FROM documents WHERE id=? AND (owner_id=? OR {public_document_sql()})",
+            (id, owner),
+        ).fetchone()
+        if doc is None:
+            fail(404, "not_found", "未找到资料")
+        return doc
+
     def document_dict(self, row, conn=None):
         doc = self.document_base(row)
         return self.archive.enrich(self.catalog.enrich_document(doc, conn=conn), conn=conn)
 
     def document_base(self, row):
         doc = {key: row[key] for key in DOCUMENT_FIELDS}
+        doc["source_scope"] = source_scope(row["owner_id"])
         doc["tags"] = json.loads(row["tags"])
         doc["chunk_count"] = (
             row["chunk_count"]
@@ -951,6 +966,7 @@ class Service:
         legal_level=None,
         collection=None,
         country=None,
+        source_scope=None,
     ):
         from .countries import country_from_collection, document_country, resolve_country
 
@@ -966,11 +982,17 @@ class Service:
                     if country and country != destination:
                         fail(422, "country_mismatch", "业务只能选择目标国家的法规")
                     country = destination
-            parent = self.own_document(conn, owner, parent_id) if parent_id else None
+            register_source_guard(conn)
+            parent = self.read_document(conn, owner, parent_id) if parent_id else None
             if parent and country is None:
                 country = document_country(conn, parent_id)
-            conditions = ["owner_id=?", "case_id IS ?"]
+            shared = public_document_sql() if country and country != "unassigned" else "0"
+            if source_scope == "personal":
+                shared = "0"
+            conditions = [f"((owner_id=? AND case_id IS ?) OR {shared})"]
             parameters = [owner, case_id]
+            if source_scope == "system":
+                conditions.append(shared)
             if country and country != "unassigned":
                 conditions.append(
                     """(EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id) AND dc.country=?)
@@ -1023,7 +1045,7 @@ class Service:
 
     def document_detail(self, owner, document_id, *, element_offset=0, chunk_offset=0, limit=100):
         with closing(self.db.connect()) as conn:
-            row = self.own_document(conn, owner, document_id)
+            row = self.read_document(conn, owner, document_id)
             manifest = json.loads(row["manifest"])
             elements, chunks = manifest.get("elements", []), manifest.get("chunks", [])
             return {

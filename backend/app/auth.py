@@ -10,6 +10,7 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from .db import now, uid
 from .defaults import DEFAULT_TEMPLATE
 from .service import fail
+from .system_library import SYSTEM_OWNER_ID
 
 COOKIE = "tea_session"
 hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
@@ -35,7 +36,7 @@ class Auth:
                 "SELECT users.* FROM users JOIN sessions ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?",
                 (token_hash, now()),
             ).fetchone()
-            return user_dict(row) if row else None
+            return user_dict(row) if row and row["id"] != SYSTEM_OWNER_ID else None
 
     def throttle(self, ip):
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -49,6 +50,8 @@ class Auth:
             conn.execute("INSERT INTO auth_attempts VALUES (?,?)", (ip, now()))
 
     def session(self, owner, old_token=None):
+        if owner == SYSTEM_OWNER_ID:
+            fail(403, "system_principal", "系统法规总库不能登录")
         token = secrets.token_urlsafe(48)
         expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
         with self.service.db.transaction() as conn:
@@ -111,10 +114,13 @@ class Auth:
         with closing(self.service.db.connect()) as conn:
             row = conn.execute("SELECT * FROM users WHERE email=?", (values["email"].lower(),)).fetchone()
         try:
-            valid = hasher.verify(row["password_hash"] if row else DUMMY_HASH, values["password"])
+            valid = hasher.verify(
+                row["password_hash"] if row and row["id"] != SYSTEM_OWNER_ID else DUMMY_HASH,
+                values["password"],
+            )
         except (VerificationError, InvalidHashError):
             valid = False
-        if not row or not valid:
+        if not row or not valid or row["id"] == SYSTEM_OWNER_ID:
             fail(401, "invalid_credentials", "邮箱或密码不正确")
         return user_dict(row), self.session(row["id"], old_token)
 

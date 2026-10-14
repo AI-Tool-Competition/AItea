@@ -11,6 +11,7 @@ import {
 import { AdminLibrary } from "@/components/tea/admin-library";
 import { DocumentClassificationEditor } from "@/components/tea/document-classification";
 import { DocumentRelations } from "@/components/tea/document-relations";
+import { DocumentMetadataEditor } from "@/components/tea/document-metadata";
 import { Library, UploadDialog } from "@/components/tea/library";
 import {
   clearCollectionDrafts,
@@ -69,6 +70,40 @@ afterEach(() => {
 });
 
 describe("country boundaries in document management", () => {
+  it("shows shared metadata and relations without granting write actions", async () => {
+    const shared: Document = {
+      ...law,
+      source_scope: "system",
+      metadata: {
+        kind: "law",
+        jurisdiction: "ID",
+        language: "id",
+        published_at: null,
+        effective_from: null,
+        effective_to: null,
+        review_status: "draft",
+      },
+    };
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => response({ items: [], total: 0 }));
+    render(
+      <>
+        <DocumentMetadataEditor document={shared} onSaved={() => undefined} />
+        <DocumentRelations document={shared} onSelect={() => undefined} />
+      </>,
+    );
+    expect(screen.getByText(/系统法规总库 · 只读/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "保存为待审核" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "添加关联" })).toBeNull();
+    await waitFor(() => expect(screen.getByText("0 条关联")).toBeTruthy());
+    expect(
+      fetcher.mock.calls.every(
+        ([, options]) => !options?.method || options.method === "GET",
+      ),
+    ).toBe(true);
+  });
+
   it("defaults public lists to the configured country and explicitly separates unassigned documents", async () => {
     const fetcher = rs
       .spyOn(globalThis, "fetch")

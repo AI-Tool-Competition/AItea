@@ -59,8 +59,11 @@ class Database:
             conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES (?,?)", (1, now()))
 
     def connect(self):
+        from .system_library import register_source_guard
+
         conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        register_source_guard(conn)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=15000")

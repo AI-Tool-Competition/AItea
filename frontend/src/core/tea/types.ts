@@ -133,6 +133,7 @@ export interface DocumentMetadata {
   review_status: "draft" | "published";
 }
 export interface Document {
+  source_scope?: "personal" | "system";
   country?: string | null;
   family_id?: string;
   content_hash?: string;
@@ -178,6 +179,7 @@ export interface CaseDetail extends CaseSummary {
   events: AuditEvent[];
 }
 export interface Citation {
+  source_scope?: "personal" | "system";
   id?: string;
   chunk_id?: string;
   chunk_hash?: string;

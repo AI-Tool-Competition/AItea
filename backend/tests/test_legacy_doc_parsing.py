@@ -420,7 +420,13 @@ def test_native_converter_dies_when_its_bound_parent_is_killed(native_launcher, 
         parent.wait(timeout=2)
         while time.monotonic() < deadline:
             status = Path(f"/proc/{pid}/stat")
-            if not status.exists() or status.read_text().split()[2] == "Z":
+            try:
+                state = status.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                # The child can exit between opening /proc and reading stat.
+                # Either disappearance proves the owned converter has stopped.
+                break
+            if state == "Z":
                 break
             time.sleep(0.02)
         else:

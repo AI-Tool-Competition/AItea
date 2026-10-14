@@ -5,6 +5,7 @@ import json
 import re
 
 OCR_VALIDATION_VERSION = "legal-numbers-v3"
+PDF_VISIBILITY_PIPELINES = {"pdf-pages-v5", "archive-pdf-pages-v3"}
 _MONTH = "januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember"
 _NUMBER_FIELDS = {
     "law_number_year": r"\bnomor\s+(\d{1,5})\s+tahun\s+((?:18|19|20|21)\d{2})\b",
@@ -30,6 +31,30 @@ def pdf_page_status(page: dict) -> str:
         # into a seemingly complete legal document.
         return "source_incomplete"
     replacement = "\ufffd" in page.get("text", "")
+    if status == "native" and "native_visibility" in page:
+        from .pdf_text_visibility import VERSION, prove_blank_page
+
+        audit = page["native_visibility"]
+        if (
+            not isinstance(audit, dict)
+            or audit.get("version") != VERSION
+            or audit.get("source_hash") != page.get("source_hash")
+            or audit.get("page") != page.get("page")
+            or audit.get("native_text_sha256")
+            != hashlib.sha256(page.get("native_text", "").encode()).hexdigest()
+            or audit.get("requires_visual_review") is not False
+            or audit.get("reasons") != []
+            or audit.get("unknown_reasons") != []
+        ):
+            return "pending_ocr"
+        if (
+            not page.get("text", "").strip()
+            and prove_blank_page(page.get("native_blank"), audit, native_text=page.get("native_text", ""))
+            is None
+        ):
+            return "pending_ocr"
+    elif status == "native" and "native_blank" in page:
+        return "pending_ocr"
     if status == "native" and replacement:
         return "pending_ocr"
     if status == "ocr_complete":
@@ -191,6 +216,25 @@ def validate_ocr_page(page: dict) -> None:
         ]
 
 
+def pdf_source_bindings_valid(manifest: dict) -> bool:
+    """A page/audit pair cannot move together to a different immutable source."""
+    source = manifest.get("source_hash")
+    pages = manifest.get("pages")
+    return (
+        isinstance(source, str)
+        and re.fullmatch(r"[a-f0-9]{64}", source) is not None
+        and isinstance(pages, list)
+        and 0 < len(pages) <= 5000
+        and all(
+            isinstance(page, dict)
+            and type(page.get("page")) is int
+            and page["page"] == index
+            and page.get("source_hash") == source
+            for index, page in enumerate(pages, start=1)
+        )
+    )
+
+
 def text_complete(manifest: dict) -> bool:
     from .native_asset_ocr import assets
 
@@ -222,6 +266,12 @@ def text_complete(manifest: dict) -> bool:
         # The old paragraph-only reader omitted headers, notes and objects.
         # Its cached body must not stand in for a verified complete package.
         return False
+    if str(manifest.get("pipeline_version", "")).split("+", 1)[0] in PDF_VISIBILITY_PIPELINES:
+        if not pdf_source_bindings_valid(manifest) or any(
+            page.get("status") == "native" and "native_visibility" not in page
+            for page in manifest.get("pages", [])
+        ):
+            return False
     return (quality is None or (isinstance(quality, dict) and quality.get("complete") is True)) and all(
         pdf_page_status(page) in {"native", "ocr_complete"} for page in manifest.get("pages", [])
     )

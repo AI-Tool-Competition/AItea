@@ -37,12 +37,21 @@ _NATIVE_WARNING = "PDF 原生文本不保证扫描页或复杂表格准确；页
 
 def needs_native(page):
     from .pdf_tables import VERSION
+    from .pdf_text_visibility import VERSION as VISIBILITY_VERSION
 
-    return page.get("status") == "pending_parse" or (
-        page.get("status") == "pending_ocr"
-        and page.get("reasons") == ["table_layout"]
-        and not page.get("ocr", {}).get("image_blob")
-        and page.get("native_grid_attempt") != VERSION
+    return (
+        (
+            page.get("status") == "native"
+            and not page.get("ocr")
+            and page.get("native_visibility", {}).get("version") != VISIBILITY_VERSION
+        )
+        or page.get("status") == "pending_parse"
+        or (
+            page.get("status") == "pending_ocr"
+            and page.get("reasons") == ["table_layout"]
+            and not page.get("ocr", {}).get("image_blob")
+            and page.get("native_grid_attempt") != VERSION
+        )
     )
 
 
@@ -164,11 +173,15 @@ def _checkpoint_payload(manifest: dict | None, source_hash: str) -> dict | None:
         return None
     if not isinstance(manifest, dict) or manifest.get("source_hash") != source_hash:
         raise ValueError("PDF 检查点 source hash 与完整原件不匹配。")
+    if "pipeline_version" in manifest and (
+        not isinstance(manifest["pipeline_version"], str) or len(manifest["pipeline_version"]) > 1024
+    ):
+        raise ValueError("PDF 检查点处理版本无效。")
     # Already derived chunks/elements are rebuilt from pages inside the worker;
     # carrying both would duplicate large text buffers through multiprocessing.
     checkpoint = {
         key: manifest[key]
-        for key in ("source_hash", "title", "warnings", "pages", "archive_pdf")
+        for key in ("source_hash", "pipeline_version", "title", "warnings", "pages", "archive_pdf")
         if key in manifest
     }
     try:
@@ -217,11 +230,14 @@ def _archive_auxiliary_worker(connection, operation, payload):
         if operation == "render":
             result = _render_archive_page(*payload)
         elif operation == "rebuild":
-            from .ingestion_quality import OCR_VALIDATION_VERSION
+            from .ingestion_quality import OCR_VALIDATION_VERSION, PDF_VISIBILITY_PIPELINES
 
             checkpoint, count = payload
             metadata = checkpoint["archive_pdf"]
             pages = _restore_pages(checkpoint, checkpoint["source_hash"], metadata["source_size"], count)
+            visibility_required = str(checkpoint.get("pipeline_version", "")).split("+", 1)[
+                0
+            ] in PDF_VISIBILITY_PIPELINES or any("native_visibility" in page for page in pages)
             result = _assemble_archive_manifest(
                 pages,
                 checkpoint["source_hash"],
@@ -230,7 +246,8 @@ def _archive_auxiliary_worker(connection, operation, payload):
                 metadata.get("window_size", _MAX_WINDOW_PAGES),
                 checkpoint,
                 checkpoint.get("title", ""),
-                f"archive-pdf-pages-v2+vision-ocr-v2+{OCR_VALIDATION_VERSION}",
+                f"archive-pdf-pages-v{3 if visibility_required else 2}"
+                f"+vision-ocr-v2+{OCR_VALIDATION_VERSION}",
             )
         else:
             raise ValueError("未知 PDF 归档处理操作。")
@@ -361,7 +378,7 @@ def _verify_identity(path, info, size) -> None:
 def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pages, page_limit):
     from pypdf import PdfReader
 
-    from .ingestion import _pdf_large_raster, _pdf_table_layout
+    from .ingestion import _audit_native_pdf_page, _pdf_large_raster, _pdf_table_layout
 
     stream, info = _open_original(path, size)
     with stream:
@@ -400,33 +417,25 @@ def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pag
                 "reasons": reasons,
                 "source_hash": source_hash,
             }
-        table_pages = [
-            pages[page["page"] - 1]
-            for page in pending
-            if pages[page["page"] - 1]["reasons"] == ["table_layout"]
-        ]
-        if table_pages:
+        if pending:
             import pypdfium2 as pdfium
-            from .pdf_tables import extract_grid
-            from .pdf_tables import VERSION
 
             stream.seek(0)
             with pdfium.PdfDocument(stream) as document:
-                for page in table_pages:
-                    page["native_grid_attempt"] = VERSION
+                for previous in pending:
+                    page = pages[previous["page"] - 1]
                     pdfpage = document[page["page"] - 1]
                     try:
-                        table = extract_grid(pdfpage, page["native_text"])
+                        _audit_native_pdf_page(
+                            page,
+                            pdfpage,
+                            optional_content="/OCProperties" in reader.trailer["/Root"],
+                            render_blank=lambda number: _render_archive_page(
+                                path, source_hash, size, number, None, 200, page_limit
+                            ),
+                        )
                     finally:
                         pdfpage.close()
-                    if table:
-                        page.update(
-                            text=table.pop("text"),
-                            status="native",
-                            ocr_required=False,
-                            reasons=[],
-                            native_table={**table, "source_hash": source_hash, "page": page["page"]},
-                        )
         # CAS files are immutable by design. Recheck bytes as well as identity
         # to reject in-place mutations or path replacement during extraction.
         _verify_hash(stream, source_hash, size)
@@ -439,7 +448,7 @@ def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pag
         max_pages,
         checkpoint,
         checkpoint.get("title", "") if checkpoint else Path(filename or path).stem,
-        "archive-pdf-pages-v2",
+        "archive-pdf-pages-v3",
     )
 
 

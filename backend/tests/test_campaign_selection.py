@@ -5,6 +5,7 @@ from copy import deepcopy
 import io
 import json
 import time
+import textwrap
 
 import pytest
 from pypdf import PdfWriter
@@ -120,7 +121,6 @@ def test_extension_cannot_rewrite_existing_material_or_reduce_limits(mutation):
 
 def pdf(text):
     writer = PdfWriter()
-    page = writer.add_blank_page(600, 800)
     font = DictionaryObject(
         {
             NameObject("/Type"): NameObject("/Font"),
@@ -128,12 +128,21 @@ def pdf(text):
             NameObject("/BaseFont"): NameObject("/Helvetica"),
         }
     )
-    page[NameObject("/Resources")] = DictionaryObject(
-        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
-    )
-    stream = DecodedStreamObject()
-    stream.set_data(("BT /F1 12 Tf 20 700 Td (" + text + ") Tj ET").encode())
-    page[NameObject("/Contents")] = writer._add_object(stream)
+    font_reference = writer._add_object(font)
+    lines = textwrap.wrap(text, width=65)
+    for start in range(0, max(1, len(lines)), 45):
+        page = writer.add_blank_page(600, 800)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_reference})}
+        )
+        commands = ["BT /F1 12 Tf 20 700 Td"]
+        for line in lines[start : start + 45]:
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            commands.append("(" + escaped + ") Tj 0 -14 Td")
+        commands.append("ET")
+        stream = DecodedStreamObject()
+        stream.set_data("\n".join(commands).encode())
+        page[NameObject("/Contents")] = writer._add_object(stream)
     output = io.BytesIO()
     writer.write(output)
     return output.getvalue()

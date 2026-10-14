@@ -222,7 +222,7 @@ class IngestionTests(unittest.TestCase):
         self.assertIn("Tea product 250 grams", result["chunks"][0]["text"])
         self.assertEqual(result["chunks"][0]["locator"], {"kind": "pdf", "page": 1})
 
-    def test_pdf_without_text_requires_ocr(self):
+    def test_blank_pdf_requires_full_page_pixel_proof_before_completion(self):
         from pypdf import PdfWriter
 
         writer = PdfWriter()
@@ -231,8 +231,11 @@ class IngestionTests(unittest.TestCase):
         writer.write(output)
         result = self.ingestion.parse_file("scan.pdf", output.getvalue())
         self.assertEqual(result["chunks"], [])
-        self.assertFalse(result["quality"]["complete"])
-        self.assertEqual(result["quality"]["pending_pages"], [1])
+        self.assertTrue(result["quality"]["complete"])
+        self.assertEqual(result["quality"]["pending_pages"], [])
+        proof = result["pages"][0]["native_blank"]
+        self.assertEqual(proof["proof_kind"], "verified_full_page_opaque_white_pixels")
+        self.assertEqual(proof["model_calls"], 0)
 
     def test_only_same_origin_direct_attachments_are_fetched(self):
         fetched = []

@@ -397,6 +397,81 @@ def mappings(manifest, manifest_hash):
                 "manifest_sha256": manifest_hash,
             }
             yield emit("html_linked_image", base, record)
+    for index, page in _items(manifest.get("pages", [])):
+        base = _pointer("/pages", index)
+        audit = page.get("native_visibility")
+        if audit is not None:
+            record = _select(
+                audit,
+                "version source_hash page native_text_sha256 native_text_field "
+                "visibility_complete_certified requires_visual_review annotation_count "
+                "object_count text_object_count audit_scope",
+            )
+            for key in ("reasons", "unknown_reasons", "page_bounds", "page_size"):
+                if key in audit:
+                    record[key] = [_scalar(item) for _, item in _items(audit[key])]
+            yield emit("pdf_native_visibility", base + "/native_visibility", record)
+            for evidence_index, evidence in _items(audit.get("evidence", [])):
+                pointer = _pointer(base + "/native_visibility/evidence", evidence_index)
+                value = _select(evidence, "object_order text_sha256 render_mode active")
+                for key in ("bounds_pdf_bottom_left", "matrix", "fill_rgba", "stroke_rgba", "reasons"):
+                    if key in evidence:
+                        value[key] = [_scalar(item) for _, item in _items(evidence[key])]
+                value["text_reference"] = {
+                    "storage": "documents.manifest",
+                    "manifest_sha256": manifest_hash,
+                    "json_pointer": pointer + "/text",
+                    "sha256": hashlib.sha256(evidence["text"].encode()).hexdigest(),
+                }
+                yield emit("pdf_native_visibility_object", pointer, value)
+        blank = page.get("native_blank")
+        if blank is not None:
+            from .pdf_text_visibility import prove_blank_page
+
+            if prove_blank_page(blank, audit, native_text=page.get("native_text", "")) is None:
+                raise ValueError("invalid native PDF blank-page proof")
+            record = _select(
+                blank,
+                "version source_hash page image_sha256 image_size mime_type width height dpi "
+                "renderer renderer_version pdfium_version render_version is_blank proof_kind "
+                "native_text_sha256 visibility_audit_version model_calls",
+            )
+            record["bytes_reference"] = _inline(
+                blank,
+                base + "/native_blank",
+                manifest_hash,
+                "image_base64",
+                size_key="image_size",
+                hash_key="image_sha256",
+            )
+            yield emit("pdf_native_blank_page", base + "/native_blank", record)
+        ocr = page.get("ocr", {})
+        if "native_hint_strategy" in ocr:
+            yield emit(
+                "pdf_ocr_native_hint",
+                base + "/ocr",
+                _select(
+                    ocr, "native_hint_strategy native_hint_hash native_hint_chars source_hash page attempts"
+                ),
+            )
+        if "reuse" in ocr:
+            record = _select(
+                ocr["reuse"],
+                "protocol source_document_id source_document_version source_content_hash source_page "
+                "source_page_checkpoint_sha256 target_document_id target_document_version "
+                "profile_fingerprint png_content_hash png_size native_text_sha256 reasons_sha256 "
+                "text_sha256 origin_attempts target_model_calls local_bounded_render_verified",
+            )
+            yield emit("pdf_ocr_reuse", base + "/ocr/reuse", record)
+        if "provider_profile" in ocr:
+            yield emit(
+                "pdf_ocr_provider_profile",
+                base + "/ocr/provider_profile",
+                _select(
+                    ocr["provider_profile"],
+                    "version fingerprint requested_model prompt_version prompt_sha256",
+                ),
+            )
     for key in ("elements", "chunks"):
         for index, value in _items(manifest.get(key, [])):
             base = _pointer("/" + key, index)

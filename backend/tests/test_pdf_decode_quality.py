@@ -52,7 +52,9 @@ def test_clean_complete_ocr_replaces_current_text_but_keeps_the_broken_native_ev
     page.update(status="ocr_complete", text="Tea 123", ocr={"complete": True, "uncertain_spans": []})
     rebuilt = rebuild_pdf_manifest(manifest)
     assert rebuilt["quality"]["complete"] and text_complete(rebuilt)
-    assert page["reasons"] == []
+    assert "native_decode_replacement" not in page["reasons"]
+    assert page["native_visibility"] == before["native_visibility"]
+    assert "native_visibility_review" in page["reasons"]
     assert page["native_text"] == before["native_text"] == "Tea \ufffd23"
     assert page["source_hash"] == before["source_hash"]
     assert page["text"] == "Tea 123"
@@ -99,7 +101,7 @@ def test_archive_worker_and_cached_restart_revalidate_missing_native_characters(
     path.write_bytes(content)
     digest = hashlib.sha256(content).hexdigest()
     parsed = parse_archive_pdf_bounded(path, source_hash=digest, size=len(content), max_pages=1)
-    assert parsed["pages"][0]["reasons"] == ["native_decode_replacement"]
+    assert set(parsed["pages"][0]["reasons"]) == {"native_decode_replacement", "native_visibility_review"}
     assert parsed["archive_pdf"]["complete"] is True
     assert parsed["quality"]["complete"] is False
     parsed["pages"][0].update(status="native", reasons=[], ocr_required=False)
@@ -112,4 +114,6 @@ def test_archive_worker_and_cached_restart_revalidate_missing_native_characters(
     assert rebuilt["pages"][0]["source_hash"] == digest
     resumed = parse_archive_pdf_bounded(path, source_hash=digest, size=len(content), manifest=parsed)
     assert resumed["quality"]["complete"] is False
-    assert resumed["pages"][0]["reasons"] == ["native_decode_replacement"]
+    assert "native_decode_replacement" in resumed["pages"][0]["reasons"]
+    assert resumed["pages"][0]["native_visibility"] == before["native_visibility"]
+    assert resumed["pages"][0]["native_visibility"]["requires_visual_review"]

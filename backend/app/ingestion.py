@@ -7,6 +7,7 @@ Business ownership, version persistence and access control belong to the service
 from __future__ import annotations
 
 import hashlib
+import base64
 import codecs
 import http.client
 import io
@@ -153,27 +154,22 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
                     "source_hash": source_hash,
                 }
             )
-        table_pages = [page for page in pages if page["reasons"] == ["table_layout"]]
-        if table_pages:
+        if pages:
             import pypdfium2 as pdfium
-            from .pdf_tables import VERSION, extract_grid
+            from .parsing import _render_pdf_page
 
             with pdfium.PdfDocument(content) as document:
-                for page in table_pages:
-                    page["native_grid_attempt"] = VERSION
+                for page in pages:
                     pdfpage = document[page["page"] - 1]
                     try:
-                        table = extract_grid(pdfpage, page["native_text"])
+                        _audit_native_pdf_page(
+                            page,
+                            pdfpage,
+                            optional_content="/OCProperties" in reader.trailer["/Root"],
+                            render_blank=lambda number: _render_pdf_page(content, number),
+                        )
                     finally:
                         pdfpage.close()
-                    if table:
-                        page.update(
-                            text=table.pop("text"),
-                            status="native",
-                            ocr_required=False,
-                            reasons=[],
-                            native_table={**table, "source_hash": source_hash, "page": page["page"]},
-                        )
     except ValueError:
         raise
     except Exception as exc:
@@ -184,8 +180,62 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
     if any("large_raster" in page["reasons"] for page in pages):
         warnings.append("存在大型扫描图，文字层仍需 OCR 核对。")
     return ParsedDocument(
-        "pypdf", version("pypdf"), "pdf-pages-v4", _pdf_elements(pages), [], warnings, pages
+        "pypdf", version("pypdf"), "pdf-pages-v5", _pdf_elements(pages), [], warnings, pages
     )
+
+
+def _audit_native_pdf_page(page, pdfpage, *, optional_content, render_blank):
+    """Keep native evidence; only visible text or proven white pages can pass."""
+    from .pdf_tables import VERSION, extract_grid
+    from .pdf_text_visibility import VERSION as VISIBILITY_VERSION, audit_page_visibility, prove_blank_page
+
+    if "large_raster" in page["reasons"]:
+        # A scan already requires full-page OCR. Its noisy text layer cannot
+        # acquire native acceptance, so expanding thousands of painting/text
+        # objects adds neither acceptance evidence nor useful source coverage.
+        audit = {
+            "version": VISIBILITY_VERSION,
+            "source_hash": page["source_hash"],
+            "page": page["page"],
+            "native_text_sha256": hashlib.sha256(page["native_text"].encode()).hexdigest(),
+            "native_text_field": "pages[].native_text",
+            "audit_scope": "not_inspected_raster_page_already_pending_ocr",
+            "visibility_complete_certified": False,
+            "requires_visual_review": True,
+            "reasons": [],
+            "unknown_reasons": ["raster_native_visibility_not_audited"],
+            "evidence": [],
+        }
+    else:
+        audit = audit_page_visibility(
+            pdfpage,
+            page["native_text"],
+            source_hash=page["source_hash"],
+            page_number=page["page"],
+            optional_content=optional_content,
+        )
+    page["native_visibility"] = audit
+    if audit["requires_visual_review"]:
+        page["reasons"].append("native_visibility_review")
+        page.update(status="pending_ocr", ocr_required=True)
+    if page["reasons"] == ["empty_text"]:
+        proof = prove_blank_page(render_blank(page["page"]), audit, native_text=page["native_text"])
+        if proof is not None:
+            # Persist the pixels and physical source locator in the manifest
+            # before any complete/indexing decision is possible.
+            proof["image_size"] = len(base64.b64decode(proof["image_base64"], validate=True))
+            page.update(native_blank=proof, status="native", ocr_required=False, reasons=[])
+    if page["reasons"] == ["table_layout"]:
+        page["native_grid_attempt"] = VERSION
+        table = extract_grid(pdfpage, page["native_text"])
+        if table:
+            page.update(
+                text=table.pop("text"),
+                status="native",
+                ocr_required=False,
+                reasons=[],
+                native_table={**table, "source_hash": page["source_hash"], "page": page["page"]},
+            )
 
 
 def _pdf_large_raster(page) -> bool:
@@ -330,17 +380,30 @@ def _pdf_text_blocks(text: str, start: int, end: int):
 
 
 def rebuild_pdf_manifest(manifest: dict) -> dict:
-    from .ingestion_quality import OCR_VALIDATION_VERSION, validate_ocr_page
+    from .ingestion_quality import (
+        OCR_VALIDATION_VERSION,
+        PDF_VISIBILITY_PIPELINES,
+        pdf_source_bindings_valid,
+        validate_ocr_page,
+    )
 
     pages = manifest["pages"]
     if len(pages) > MAX_PAGES or sum(len(page["text"]) for page in pages) > MAX_TEXT:
         raise ValueError("PDF 识别结果超过处理限制。")
+    visibility_required = str(manifest.get("pipeline_version", "")).split("+", 1)[
+        0
+    ] in PDF_VISIBILITY_PIPELINES or any("native_visibility" in page for page in pages)
+    if visibility_required:
+        if not pdf_source_bindings_valid(manifest):
+            raise ValueError("PDF 检查点原件哈希或物理页码不匹配，请重新解析原件。")
+        if any(page.get("status") == "native" and "native_visibility" not in page for page in pages):
+            raise ValueError("PDF 原生可见性检查点缺失，请重新解析原件。")
     for page in pages:
         validate_ocr_page(page)
     document = ParsedDocument(
         manifest["parser"],
         manifest["parser_version"],
-        f"pdf-pages-v4+vision-ocr-v2+{OCR_VALIDATION_VERSION}",
+        f"pdf-pages-v{5 if visibility_required else 4}+vision-ocr-v2+{OCR_VALIDATION_VERSION}",
         _pdf_elements(pages),
         [],
         manifest["warnings"],

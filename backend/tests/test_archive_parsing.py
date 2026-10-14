@@ -117,12 +117,14 @@ def test_final_reassembly_keeps_pasal_and_penjelasan_across_windows(tmp_path):
     )
 
 
-def test_scan_page_is_pending_ocr_after_native_windows_finish(tmp_path):
+def test_actual_blank_page_keeps_white_pixel_evidence_after_native_windows_finish(tmp_path):
     path, digest, size = pdf_file(tmp_path, ["Native body.", ""])
     result = parse(path, digest, size)
     assert result["archive_pdf"]["complete"]
-    assert not result["quality"]["complete"]
-    assert result["quality"]["pending_pages"] == [2]
+    assert result["quality"]["complete"]
+    assert result["quality"]["pending_pages"] == []
+    assert result["pages"][1]["status"] == "native"
+    assert result["pages"][1]["native_blank"]["is_blank"]
     assert result["pages"][1]["source_hash"] == digest
 
 
@@ -306,8 +308,8 @@ def test_archive_rebuild_handles_more_than_300_pages_without_reading_original(tm
 
     path, digest, size = pdf_file(tmp_path, ["Native body."] * 301)
     manifest = parse(path, digest, size, max_pages=1)
-    for page in manifest["pages"]:
-        page.update(status="native", native_text="Native body.", text="Native body.")
+    while manifest["archive_pdf"]["pending_pages"]:
+        manifest = parse(path, digest, size, manifest=manifest)
     monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("rebuild reads original"))
     path.unlink()
     result = archive_parsing.archive_rebuild_bounded(manifest)

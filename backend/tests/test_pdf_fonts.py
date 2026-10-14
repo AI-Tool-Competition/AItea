@@ -118,6 +118,7 @@ def test_missing_unicode_digit_stays_in_evidence_and_needs_bounded_ocr():
     assert page["source_hash"] == parsed["source_hash"] == hashlib.sha256(content).hexdigest()
     assert page["page"] == 1
     assert page["status"] == "pending_ocr" and page["ocr_required"] is True
-    assert page["reasons"] == ["native_decode_replacement"]
+    assert set(page["reasons"]) == {"native_decode_replacement", "native_visibility_review"}
+    assert page["native_visibility"]["requires_visual_review"]
     assert parsed["quality"]["complete"] is False
     assert parsed["quality"]["pending_pages"] == [1]

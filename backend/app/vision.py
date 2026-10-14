@@ -58,6 +58,28 @@ def vision_ocr_worker_limit() -> int:
     return value
 
 
+def vision_ocr_adaptive_enabled() -> bool:
+    value = os.getenv("VISION_OCR_ADAPTIVE", "false").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("VISION_OCR_ADAPTIVE must be true or false")
+
+
+def vision_ocr_capacity_state() -> dict:
+    """Observe capacity without initializing it or rereading live configuration."""
+    from .parsing import _OCR_SLOTS
+
+    return _OCR_SLOTS.snapshot()
+
+
+def _report_provider_result(*, status_code: int | None = None, timeout: str | None = None) -> None:
+    from .parsing import _OCR_SLOTS
+
+    _OCR_SLOTS.report_provider_result(status_code=status_code, timeout=timeout)
+
+
 def vision_ocr_unavailable_reason() -> str | None:
     if os.getenv("VISION_OCR_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return "图片识别未启用。"
@@ -101,8 +123,13 @@ def _invoke(body: dict) -> tuple[dict, str, str]:
                     data.extend(block)
                     if len(data) > MAX_RESPONSE_BYTES or time.monotonic() > deadline:
                         raise OCRResponseError("图片识别响应超过时间或大小限制。")
+                _report_provider_result(status_code=response.status_code)
                 payload = json.loads(data)
     except httpx.HTTPError as exc:
+        if isinstance(exc, httpx.HTTPStatusError):
+            _report_provider_result(status_code=exc.response.status_code)
+        elif isinstance(exc, (httpx.ReadTimeout, httpx.ConnectTimeout)):
+            _report_provider_result(timeout=type(exc).__name__)
         retryable = isinstance(exc, httpx.RequestError) or (
             isinstance(exc, httpx.HTTPStatusError)
             and (exc.response.status_code in {408, 429} or exc.response.status_code >= 500)

@@ -10,12 +10,13 @@ import math
 import multiprocessing
 import os
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore, Condition, Lock
 
-from .vision import vision_ocr_worker_limit
+from .vision import vision_ocr_adaptive_enabled, vision_ocr_worker_limit
 
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
@@ -74,8 +75,114 @@ class _ParserSlots:
         semaphore.release()
 
 
+class _VisionSlots:
+    """One immutable maximum; adaptive targets drain existing permits naturally."""
+
+    def __init__(self, *, clock: Callable[[], float] | None = None):
+        self._clock = clock or time.monotonic
+        self._condition = Condition(Lock())
+        self._maximum = self._adaptive = self._target = self._floor = None
+        self._active = self._peak = self._healthy = self._successes = self._failures = 0
+        self._increases = self._decreases = 0
+        self._changed_at = self._cooldown_until = 0.0
+        self._last_failure = None
+
+    def acquire(self, *, timeout):
+        maximum, adaptive = vision_ocr_worker_limit(), vision_ocr_adaptive_enabled()
+        with self._condition:
+            if self._maximum is None:
+                self._maximum, self._adaptive = maximum, adaptive
+                self._target = min(maximum, 16) if adaptive else maximum
+                self._floor = min(maximum, 8)
+                self._changed_at = self._clock()
+            elif maximum != self._maximum:
+                raise ValueError("VISION_OCR_WORKERS changed; restart this worker before processing.")
+            elif adaptive != self._adaptive:
+                raise ValueError("VISION_OCR_ADAPTIVE changed; restart this worker before processing.")
+            # Keep timed waits bounded even with a test-controlled adaptation clock.
+            deadline = time.monotonic() + timeout
+            while self._active >= self._target:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            self._active += 1
+            self._peak = max(self._peak, self._active)
+            return True
+
+    def release(self):
+        with self._condition:
+            if not self._active:
+                raise ValueError("VISION_OCR_WORKERS capacity was not acquired.")
+            self._active -= 1
+            self._condition.notify_all()
+
+    def report_provider_result(self, *, status_code=None, timeout=None):
+        with self._condition:
+            if self._maximum is None:
+                return  # Direct transcription calls do not initialize a worker pool.
+            failure = (
+                f"HTTP {status_code}"
+                if status_code == 429 or (status_code is not None and 500 <= status_code <= 599)
+                else timeout
+                if timeout in {"ReadTimeout", "ConnectTimeout"}
+                else None
+            )
+            success = status_code is not None and 200 <= status_code <= 299
+            if failure:
+                self._failures += 1
+                self._last_failure = failure
+            elif success:
+                self._successes += 1
+            else:
+                return
+            if not self._adaptive:
+                return
+            now = self._clock()
+            if failure:
+                target = max(self._floor, self._target // 2)
+                if target < self._target:
+                    self._decreases += 1
+                self._target = target
+                self._healthy = 0
+                self._changed_at = now
+                self._cooldown_until = now + 30
+                self._condition.notify_all()
+            else:
+                self._healthy = min(64, self._healthy + 1)
+                if (
+                    self._target < self._maximum
+                    and self._healthy >= max(16, self._target)
+                    and now >= max(self._changed_at + 30, self._cooldown_until)
+                ):
+                    self._target = min(self._maximum, self._target + 8)
+                    self._healthy = 0
+                    self._changed_at = now
+                    self._increases += 1
+                    self._condition.notify_all()
+
+    def snapshot(self) -> dict:
+        with self._condition:
+            return {
+                "initialized": self._maximum is not None,
+                "adaptive": self._adaptive,
+                "maximum": self._maximum,
+                "target": self._target,
+                "floor": self._floor,
+                "active": self._active,
+                "peak": self._peak,
+                "healthy_responses": self._healthy,
+                "successful_responses": self._successes,
+                "capacity_failures": self._failures,
+                "increases": self._increases,
+                "decreases": self._decreases,
+                "cooldown_remaining_seconds": max(0, self._cooldown_until - self._clock()),
+                "last_failure": self._last_failure,
+            }
+
+
 _SLOTS = _ParserSlots()
-_OCR_SLOTS = _ParserSlots(limit_reader=vision_ocr_worker_limit, setting="VISION_OCR_WORKERS")
+_OCR_SLOTS = _VisionSlots()
 _PROCESS_LIFECYCLE_LOCK = Lock()
 
 

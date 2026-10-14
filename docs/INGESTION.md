@@ -175,6 +175,10 @@ PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制
 
 ## 并发、背压与恢复
 
+显式设置 `VISION_OCR_ADAPTIVE=true` 时，图片识别共享槽从 `min(VISION_OCR_WORKERS,16)` 起步，下限为 `min(VISION_OCR_WORKERS,8)`；每次升额至少间隔 30 秒且收到至少 `max(16,当前目标)` 个完整 HTTP 2xx 响应，随后增加 8，最高不超过启动配置。429、5xx、连接或读取超时立即将目标减半至下限，并重新开始至少 30 秒冷却。下降只限制新领取，已持有的识别槽自然结束并归还；短时实际占用可以高于下降后的目标，但始终不超过固定最大值。此控制不新增请求或重试，也不改变每文档 4 页、模型截止、源图映射、正文校验及索引门禁。HTTP 成功仅衡量传输健康，无效 JSON 或正文不完整仍按原有规则处理，不能当作识别准确性的证据。
+
+OCR 共享槽通过条件变量维护当前占用与目标，原生解析继续使用固定信号量；运行中改变 `VISION_OCR_WORKERS` 或 `VISION_OCR_ADAPTIVE` 均拒绝新领取，需重启所属 worker。`app.vision.vision_ocr_capacity_state()` 只读返回最大值、当前目标、占用及峰值、成功响应和容量失败数、升降次数及冷却剩余秒数；读取不初始化额度、不读取密钥。默认 `VISION_OCR_ADAPTIVE=false` 保持固定额度，不进行健康升降。
+
 | 配置/限制 | 默认与边界 |
 | --- | --- |
 | `TEA_COLLECT_WORKERS` | 8 个下载任务，范围 1–16 |
@@ -182,6 +186,7 @@ PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制
 | `TEA_PROCESS_WORKERS` | 2 个处理任务，范围 1–32；同库有效处理租约共同占用此额度 |
 | `TEA_PARSE_WORKERS` | 每个服务进程 2 个受限解析子进程，范围 1–32；正文解析、归档 PDF 窗口、渲染、校验和重组装共同限流 |
 | `VISION_OCR_WORKERS` | 每个服务进程 2 个图片识别槽，范围 1–64；扫描页、原生图片和局部补读共用 |
+| `VISION_OCR_ADAPTIVE` | 默认 `false` 固定额度；显式 `true` 开启共享目标的健康升降，最大值仍为 `VISION_OCR_WORKERS` |
 | 下载待处理队列 | 全库最多 2000 项、单账号最多 1000 项，提交/重试/附件发现均检查 |
 | 解析背压 | 待处理正文达到 200 项时暂停领取下载任务 |
 | 单次计划 | 默认最多 200 文件，可配置至 500；触顶会显示未收齐提示 |
@@ -193,9 +198,9 @@ SQLite `BEGIN IMMEDIATE` 保护领取和状态转移；下载/解析/模型调�
 
 本机资源充足时，可在启动所属 worker 前明确设置 `TEA_PROCESS_WORKERS=32 TEA_PARSE_WORKERS=32`；应以实际工作负载测量选择并发数，最高配置不保证最快。解析额度在本服务进程首次使用后固定，运行中改变配置会拒绝新解析，需重启所属 worker。普通解析保持默认 45 秒截止，归档 PDF 保持固定 45 秒截止；各自的单次内存、CPU 和 40 MB 结果限制不变，Docling 保持其原有 4 GiB/110 秒 CPU 边界；并发增加会累加资源占用。32 个普通解析子进程的地址空间限额合计最高 24 GiB，Docling 合计最高 128 GiB，另有父进程及结果缓冲开销，这些限额不是实测 RSS。两个配置各自限制持久任务与本进程物理解析，多个服务 PID 的解析额度分别计算，不能称为跨进程全局解析上限；同库 worker 必须采用一致的处理任务配置。同账号、来源 URL、原件 SHA 与版本相同的有效 parse 租约继续串行，避免同原件两国副本同时识别；另一阶段待处理时继续优先填补阶段，OCR 和 embedding 请求仍有独立的原有名额，增加本机解析并发不增加这些外部请求上限。
 
-共享槽使用线程安全的 [BoundedSemaphore](https://docs.python.org/3/library/threading.html#threading.BoundedSemaphore)，实际解析继续使用独立的 [spawn 子进程](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods)。本管线全部受限子进程的启动与回收共用生命周期锁，避免当前 [CPython 的 waitpid 轮询](https://github.com/python/cpython/blob/v3.14.7/Lib/multiprocessing/popen_fork.py)在多线程 start/cleanup 与 join/close 之间竞争；正文计算和管道等待位于锁外。该锁不保证第三方另行创建的子进程封装或 `multiprocessing.active_children()` 线程安全。超时或进程中断只清理本次创建的子进程，确认回收后才归还槽；无法确认退出时保留所占额度，防止超发。暂时满额沿用 `ProcessingDeferred` 与 5 秒后重试。
+原生解析共享槽使用线程安全的 [BoundedSemaphore](https://docs.python.org/3/library/threading.html#threading.BoundedSemaphore)，实际解析继续使用独立的 [spawn 子进程](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods)。本管线全部受限子进程的启动与回收共用生命周期锁，避免当前 [CPython 的 waitpid 轮询](https://github.com/python/cpython/blob/v3.14.7/Lib/multiprocessing/popen_fork.py)在多线程 start/cleanup 与 join/close 之间竞争；正文计算和管道等待位于锁外。该锁不保证第三方另行创建的子进程封装或 `multiprocessing.active_children()` 线程安全。超时或进程中断只清理本次创建的子进程，确认回收后才归还槽；无法确认退出时保留所占额度，防止超发。暂时满额沿用 `ProcessingDeferred` 与 5 秒后重试。
 
-单次限定账号及文档的处理范围仍最多 20 个文档 ID；32 的本机容量不扩大这一授权边界。同库任务可共享额度；新空位优先缺失的 parse/embed 阶段，满额时仍等待，并无抢占或严格阶段比例。32 个任务可能同时持有各自的结果和 manifest，40 MiB 单结果上限不是父进程结果总量上限。需要提高图片识别并发时，可在启动所属 worker 前显式设置 `VISION_OCR_WORKERS=32`，观察 provider 请求额度和实际错误率后再选择 `64`；默认每文档 4 页的批次继续让出持久任务，至少 16 个可并行文档才可能占满 64 个槽。识别额度首次使用后固定，运行中变更或无效值会拒绝新工作，释放已取得的槽不重读配置；满额仍延后且不消耗模型尝试次数。此额度覆盖渲染、模型请求和结果校验整个识别步骤，是本 PID 的外部图片请求上限；多个 PID 分别计数。更高上限不保证实际占满或吞吐线性增加，embedding 继续共享其独立的 2 个请求名额。
+单次限定账号及文档的处理范围仍最多 20 个文档 ID；32 的本机容量不扩大这一授权边界。同库任务可共享额度；新空位优先缺失的 parse/embed 阶段，满额时仍等待，并无抢占或严格阶段比例。32 个任务可能同时持有各自的结果和 manifest，40 MiB 单结果上限不是父进程结果总量上限。需要提高图片识别并发时，可在启动所属 worker 前显式设置 `VISION_OCR_WORKERS=32`，观察 provider 请求额度和实际错误率后再选择 `64`；默认每文档 4 页的批次继续让出持久任务，至少 16 个可并行文档才可能占满 64 个槽。识别最大额度与自适应开关首次使用后固定，运行中变更或无效值会拒绝新工作，释放已取得的槽不重读配置；满额仍延后且不消耗模型尝试次数。此额度覆盖渲染、模型请求和结果校验整个识别步骤，是本 PID 的外部图片请求上限；多个 PID 分别计数。更高上限不保证实际占满或吞吐线性增加，embedding 继续共享其独立的 2 个请求名额。
 
 2026-10-14 的本机对照复用同 32 份原件的 499 页原生窗口：8、16、32 并发分别用时 3.295、1.982、2.198 秒，实际子进程峰值分别为 8、16、32，正文、chunks 和完整 manifest 哈希均一致。该组单次测量以 16 最快，32 比 16 慢约 10.9%；父进程及所属解析子进程的 RSS 采样峰值约 462、808、1307 MiB。96 个解析子进程均保持 768 MiB/35 秒 CPU 限制且完成回收。该结果只覆盖所测原生 PDF 窗口，不代表 OCR、模型服务或所有格式的吞吐。
 

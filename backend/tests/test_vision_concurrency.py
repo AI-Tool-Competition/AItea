@@ -25,7 +25,8 @@ def enabled(monkeypatch):
 @pytest.fixture
 def slots(monkeypatch):
     monkeypatch.delenv("VISION_OCR_WORKERS", raising=False)
-    value = parsing._ParserSlots(limit_reader=vision.vision_ocr_worker_limit, setting="VISION_OCR_WORKERS")
+    monkeypatch.delenv("VISION_OCR_ADAPTIVE", raising=False)
+    value = parsing._VisionSlots()
     monkeypatch.setattr(parsing, "_OCR_SLOTS", value)
     return value
 

@@ -381,11 +381,9 @@ export function StageChat({
             )}
           </div>
         </form>
-        <p className="tea-composer-note">
-          {capabilities.assistant_mode === "demo"
-            ? "演示助手 · 基于资料与配置规则"
-            : "AI 助手 · 请结合引用原文核对办理要求"}
-        </p>
+        {capabilities.assistant_mode === "demo" && (
+          <p className="tea-composer-note">演示助手 · 基于资料与配置规则</p>
+        )}
       </div>
     </div>
   );

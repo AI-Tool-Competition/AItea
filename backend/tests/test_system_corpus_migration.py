@@ -287,6 +287,73 @@ def test_schema9_upgrade_preserves_private_business_and_exact_ids_proofs_and_vec
     assert repeated["target_writes"] == 0 and repeated["unchanged_documents"] == 6
 
 
+@pytest.mark.parametrize("source_job", ["completed", "missing"])
+def test_partial_vector_cache_without_manifest_fingerprint_keeps_bytes_and_queues_missing_chunks(
+    pair, tmp_path, source_job
+):
+    source, target, docs = pair
+    document_id = docs["pending"]["id"]
+    fingerprint = source.embedding_fingerprint()
+    with source.db.transaction() as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document_id,)).fetchone()[0]
+        )
+        page = manifest["pages"][0]
+        page["status"], page["ocr"]["complete"] = "ocr_complete", True
+        manifest["quality"]["complete"] = True
+        # Both fragments come from the existing original/native text. Only the
+        # first has a durable current-model vector; no completion marker exists.
+        manifest["chunks"] = [
+            {"id": f"part-{number}", "text": word, "retrieval_text": word, "locator": {"page": 1}}
+            for number, word in enumerate(page["native_text"].split(), 1)
+        ]
+        manifest.pop("embedding_fingerprint", None)
+        manifest_bytes = dump(manifest)
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (manifest_bytes, document_id))
+        source.index.sync_document(conn, document_id, manifest)
+        pending = source.index.pending(conn, document_id, fingerprint)
+        assert [chunk["chunk_id"] for chunk in pending] == ["part-1", "part-2"]
+        source.index.store_vectors(conn, document_id, fingerprint, pending[:1], [[0.6, 0.8]])
+        if source_job == "missing":
+            conn.execute("DELETE FROM processing_jobs WHERE document_id=?", (document_id,))
+        else:
+            conn.execute("UPDATE processing_jobs SET status='completed' WHERE document_id=?", (document_id,))
+        cached = tuple(
+            conn.execute(
+                """SELECT v.fingerprint,v.input_hash,v.dimension,v.vector FROM retrieval_vectors v
+                JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?""",
+                (document_id,),
+            ).fetchone()
+        )
+        original_scope = module._scope(conn)
+    exported = snapshot(source, tmp_path)
+    result = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    assert result["true_vectors"] == 3 and result["vector_bytes_preserved_without_renormalization"]
+    assert result["model_calls"] == result["HTTP_calls"] == 0
+    with closing(target.db.connect()) as conn:
+        migrated = conn.execute("SELECT manifest,status FROM documents WHERE id=?", (document_id,)).fetchone()
+        assert migrated["manifest"] == manifest_bytes and migrated["status"] == "processing"
+        assert "embedding_fingerprint" not in json.loads(migrated["manifest"])
+        actual = tuple(
+            conn.execute(
+                """SELECT v.fingerprint,v.input_hash,v.dimension,v.vector FROM retrieval_vectors v
+                JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?""",
+                (document_id,),
+            ).fetchone()
+        )
+        assert actual == cached
+        assert [chunk["chunk_id"] for chunk in target.index.pending(conn, document_id, fingerprint)] == [
+            "part-2"
+        ]
+        job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (document_id,)).fetchone()
+        assert job["status"] == "queued" and job["phase"] == "embed" and job["attempts"] == 0
+        assert job["lease_token"] is job["lease_until"] is job["error"] is None
+    with closing(source.db.connect()) as conn:
+        assert module._scope(conn) == original_scope
+    repeated = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    assert repeated["target_writes"] == 0 and repeated["unchanged_documents"] == 6
+
+
 @pytest.mark.parametrize(
     "kind", ["source_lease", "target_lease", "target_edit", "FP", "PNG", "source_changed", "stop_flag"]
 )

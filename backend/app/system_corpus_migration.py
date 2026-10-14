@@ -534,7 +534,7 @@ def _normalized(source, target_dir):
                 "phase": "parse" if not complete else "embed",
                 "status": "queued",
                 "attempts": 0,
-                "available_at": 0,
+                "available_at": 0.0,
                 "lease_token": None,
                 "lease_until": None,
                 "error": None,

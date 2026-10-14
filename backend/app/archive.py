@@ -347,8 +347,14 @@ class LegalArchive:
         )
         if source_country != target_country or (country and source_country != country):
             fail(422, "country_mismatch", "关联法规必须已归属同一国家，不能通过其他采集组跨国关联")
-        # Explicitly selecting an uploaded primary as an anchor adds it to the collection.
-        self.classify(conn, owner, source, collection, "primary", json.loads(source["tags"]))
+        # Associations describe exact originals without changing an existing
+        # legal tier. Independent secondary regulations also cite and amend
+        # one another; linking them must not grant indexing eligibility.
+        if not conn.execute(
+            "SELECT 1 FROM legal_classifications WHERE document_id=? AND collection=?",
+            (source_id, collection),
+        ).fetchone():
+            self.classify(conn, owner, source, collection, "primary", json.loads(source["tags"]))
         if not conn.execute(
             "SELECT 1 FROM legal_classifications WHERE document_id=? AND collection=?",
             (target["id"], collection),

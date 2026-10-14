@@ -23,9 +23,24 @@ def managed_process(root: Path) -> tuple[subprocess.Popen, dict]:
     env = {**os.environ, "TEA_DEV_ROOT": str(root), "TEA_DEV_TOKEN": "test-private-launch"}
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=root,
                                env=env, start_new_session=True)
-    record = dev.process_identity(process.pid)
+    record = dev.launched_identity(process, "test-private-launch", root)
     assert record
     return process, record
+
+
+def test_new_child_identity_waits_for_launch_credentials(monkeypatch, tmp_path):
+    expected = {"pid": 123, "owner": str(tmp_path), "token": "owned-launch"}
+    snapshots = iter([None, {**expected, "token": ""}, {**expected, "owner": "/other"}, expected])
+    monkeypatch.setattr(dev, "process_identity", lambda pid: next(snapshots))
+    monkeypatch.setattr(dev.time, "sleep", lambda delay: None)
+    process = SimpleNamespace(pid=123, poll=lambda: None)
+    assert dev.launched_identity(process, "owned-launch", tmp_path) == expected
+
+
+def test_exited_child_identity_cannot_be_recorded(monkeypatch, tmp_path):
+    monkeypatch.setattr(dev, "process_identity", lambda pid: pytest.fail("exited process must not be recorded"))
+    process = SimpleNamespace(pid=123, poll=lambda: 1)
+    assert dev.launched_identity(process, "owned-launch", tmp_path) is None
 
 
 def test_occupied_port_is_rejected_without_stopping_listener():
@@ -578,14 +593,16 @@ def test_watcher_log_scans_incrementally_and_retains_detected_failure(tmp_path):
     (False, None, None),
     (False, '--trace-warnings --require "/tmp/my preload.js"', None),
     (False, "--max-old-space-size=2048 --trace-warnings", None),
+    (False, "--max_old_space_size=2048 --trace-warnings", None),
     (False, "--max-old-space-size-percentage 25", None),
+    (False, "--max-heap-size=2048", None),
     (False, None, "1"),
     (False, None, "0"),
     (False, None, ""),
     (True, None, None),
     (True, "--trace-warnings", "0"),
 ])
-def test_web_environment_disables_automatic_heap_limit_and_preserves_user_node_options(
+def test_web_environment_uses_available_memory_and_preserves_user_node_options(
     tmp_path, production, node_options, disable_override,
 ):
     child = ("import json,os,time; from pathlib import Path; "
@@ -614,10 +631,57 @@ def service_commands(args, root=ROOT):
                                 timeout=10, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         import json
-        assert json.loads((tmp_path / "web.json").read_text()) == [node_options, disable_override if production else "1"]
+        web_options, web_override = json.loads((tmp_path / "web.json").read_text())
+        options = dev.node_option_names(node_options or "")
+        if production or options & {"--max-old-space-size", "--max-old-space-size-percentage", "--max-heap-size"}:
+            assert web_options == node_options
+        else:
+            assert web_options.startswith(f"{node_options} --max-old-space-size=" if node_options else "--max-old-space-size=")
+            assert int(web_options.rsplit("=", 1)[1]) > 0
+        assert web_override == (disable_override if production else "1")
         assert json.loads((tmp_path / "api.json").read_text()) == [node_options, disable_override]
     finally:
         stop_fixture(script, tmp_path)
+
+
+def test_development_heap_exceeds_node_default_without_preallocating_memory(monkeypatch):
+    calls = []
+
+    def memory_probe(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="32768\n")
+
+    monkeypatch.setattr(dev.shutil, "which", lambda name: "/local/node")
+    monkeypatch.setattr(dev.subprocess, "run", memory_probe)
+    original = '--trace-warnings --require "/local/my preload.js"'
+    env = {"NODE_OPTIONS": original, "TEA_DEV_ROOT": "/local/project"}
+    assert dev.development_node_options(env) == f"{original} --max-old-space-size=32768"
+    assert env["NODE_OPTIONS"] == original
+    assert len(calls) == 1
+    assert calls[0][0][0] == "/local/node"
+    assert "availableMemory()" in calls[0][0][-1]
+    assert "NODE_OPTIONS" not in calls[0][1]["env"], "the memory probe must not execute user preloads"
+    assert calls[0][1]["env"]["TEA_DEV_ROOT"] == "/local/project"
+    assert calls[0][1]["timeout"] == 10
+
+
+@pytest.mark.parametrize("value", [
+    "--max-old-space-size=8192", "--max_old_space_size 8192", "--max-old-space-size-percentage=75",
+    "--max-heap-size=8192", '--require "unterminated',
+])
+def test_explicit_or_invalid_heap_options_are_not_rewritten(monkeypatch, value):
+    monkeypatch.setattr(dev.subprocess, "run", lambda *args, **kwargs: pytest.fail("unexpected memory probe"))
+    assert dev.development_node_options({"NODE_OPTIONS": value}) == value
+
+
+@pytest.mark.parametrize("returncode,output", [(1, "8192"), (0, "0"), (0, "invalid")])
+def test_unavailable_memory_fails_instead_of_silently_restoring_default_cap(monkeypatch, returncode, output):
+    monkeypatch.setattr(dev.shutil, "which", lambda name: "/local/node")
+    monkeypatch.setattr(dev.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=returncode, stdout=output,
+    ))
+    with pytest.raises(dev.DevError, match="无法读取开发前端可用内存"):
+        dev.development_node_options({})
 
 
 @pytest.mark.parametrize("production,node_options,disable_maps", [

@@ -14,19 +14,21 @@ make dev
 
 启动器会检查端口、同步锁定依赖、启动后端热更新与 Next.js 开发服务，并等待 API 与页面就绪。安装期间会显示最新进度；暂无新日志时也会提示安装仍在进行及日志位置。健康检查完成后输出访问地址并返回终端。默认入口为 <http://127.0.0.1:3000/tea>，API 监听本机 8000 端口。
 
-| 命令 | 行为 |
-| --- | --- |
-| `make dev` | 按需同步依赖，后台启动开发服务 |
-| `make dev-foreground` | 前台运行，Ctrl+C 停止本次服务 |
-| `make dev-status` | 查看当前工作树运行状态 |
-| `make dev-list` | 只读查看本仓库各工作树的运行状态 |
-| `make dev-stop` | 取消当前工作树的依赖准备/启动，或停止已运行的服务 |
-| `make dev-clean` | 停止服务，清理运行状态和日志，保留业务数据、配置、虚拟环境及依赖缓存 |
-| `make setup` | 显式同步前后端依赖，不启动服务 |
-| `make dev-check` | 检查启动器和工作树工具 |
-| `make check` | 后端测试与静态检查、前端类型检查和茶业务交互测试 |
-| `make build` | 构建前端生产产物 |
-| `make start` | 使用已有构建后台启动本地生产预览，后端不热更新 |
+开发前端使用 Node.js 的 [`process.availableMemory()`](https://nodejs.org/docs/latest-v22.x/api/process.html#processavailablememory) 读取启动时系统可用内存，并据此设置堆容量，取消默认约 4GB 的上限；系统或容器约束仍生效。已有 `NODE_OPTIONS` 参数保留，显式设置 `--max-old-space-size`、`--max-old-space-size-percentage` 或 `--max-heap-size` 时沿用该设置。此默认策略只作用于开发前端，不改变后端、生产预览或构建环境。
+
+| 命令                  | 行为                                                                 |
+| --------------------- | -------------------------------------------------------------------- |
+| `make dev`            | 按需同步依赖，后台启动开发服务                                       |
+| `make dev-foreground` | 前台运行，Ctrl+C 停止本次服务                                        |
+| `make dev-status`     | 查看当前工作树运行状态                                               |
+| `make dev-list`       | 只读查看本仓库各工作树的运行状态                                     |
+| `make dev-stop`       | 取消当前工作树的依赖准备/启动，或停止已运行的服务                    |
+| `make dev-clean`      | 停止服务，清理运行状态和日志，保留业务数据、配置、虚拟环境及依赖缓存 |
+| `make setup`          | 显式同步前后端依赖，不启动服务                                       |
+| `make dev-check`      | 检查启动器和工作树工具                                               |
+| `make check`          | 后端测试与静态检查、前端类型检查和茶业务交互测试                     |
+| `make build`          | 构建前端生产产物                                                     |
+| `make start`          | 使用已有构建后台启动本地生产预览，后端不热更新                       |
 
 同一工作树不能同时运行开发服务和生产预览。切换前先执行 `make dev-stop`；生产构建也应在停止开发服务后执行，避免两种模式同时修改 `.next`。
 

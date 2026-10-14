@@ -47,6 +47,17 @@ class OCRResponseError(ValueError):
         self.retryable = retryable
 
 
+def vision_ocr_worker_limit() -> int:
+    """Explicit per-process capacity shared by page, image and recovery work."""
+    try:
+        value = int(os.getenv("VISION_OCR_WORKERS", "2"))
+    except ValueError as exc:
+        raise ValueError("VISION_OCR_WORKERS must be between 1 and 16") from exc
+    if not 1 <= value <= 16:
+        raise ValueError("VISION_OCR_WORKERS must be between 1 and 16")
+    return value
+
+
 def vision_ocr_unavailable_reason() -> str | None:
     if os.getenv("VISION_OCR_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return "图片识别未启用。"

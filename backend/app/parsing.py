@@ -15,9 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from threading import BoundedSemaphore, Lock
 
+from .vision import vision_ocr_worker_limit
+
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
-_OCR_SLOTS = BoundedSemaphore(2)
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
@@ -40,25 +41,27 @@ def parse_worker_limit() -> int:
 
 
 class _ParserSlots:
-    """One immutable semaphore shared by every parser entry in this process.
+    """Immutable capacity shared by the relevant operations in this process.
 
     Resolve configuration on first use so command-line setup can precede work.
     Replacing a live semaphore would lose outstanding permits and overcommit.
     """
 
-    def __init__(self):
+    def __init__(self, *, limit_reader: Callable[[], int] | None = None, setting="TEA_PARSE_WORKERS"):
+        self._limit_reader = limit_reader or parse_worker_limit
+        self._setting = setting
         self._lock = Lock()
         self._semaphore = None
         self._limit = None
 
     def acquire(self, *, timeout):
-        limit = parse_worker_limit()
+        limit = self._limit_reader()
         with self._lock:
             if self._semaphore is None:
                 self._limit = limit
                 self._semaphore = BoundedSemaphore(limit)
             elif limit != self._limit:
-                raise ValueError("TEA_PARSE_WORKERS changed; restart this worker before processing.")
+                raise ValueError(f"{self._setting} changed; restart this worker before processing.")
             semaphore = self._semaphore
         return semaphore.acquire(timeout=timeout)
 
@@ -67,11 +70,12 @@ class _ParserSlots:
         with self._lock:
             semaphore = self._semaphore
         if semaphore is None:
-            raise ValueError("Parser capacity was not acquired.")
+            raise ValueError(f"{self._setting} capacity was not acquired.")
         semaphore.release()
 
 
 _SLOTS = _ParserSlots()
+_OCR_SLOTS = _ParserSlots(limit_reader=vision_ocr_worker_limit, setting="VISION_OCR_WORKERS")
 _PROCESS_LIFECYCLE_LOCK = Lock()
 
 
@@ -554,7 +558,9 @@ def ocr_bounded(
         )
     ][:max_pages]
     if pending and vision_ocr_configured():
-        executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="page-ocr")
+        executor = ThreadPoolExecutor(
+            max_workers=min(vision_ocr_worker_limit(), len(pending)), thread_name_prefix="page-ocr"
+        )
         futures = [
             executor.submit(
                 _ocr_one_page,

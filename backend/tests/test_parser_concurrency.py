@@ -1,4 +1,4 @@
-"""Real local child-process capacity, cleanup and durable eight-job scheduling."""
+"""Real local child-process capacity, cleanup and durable scheduling up to 32 jobs."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class _ObservedConnection:
 def _observe(connection, operation, worker, args):
     directory = Path(os.environ["TEA_TEST_PARSE_OBSERVATIONS"])
     (directory / f"{os.getpid()}.ready").write_text(operation)
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 25
     while not (directory / "release").exists():
         if time.monotonic() > deadline:
             raise RuntimeError("Test barrier did not release its own child.")
@@ -97,14 +97,14 @@ def parser_slots(monkeypatch):
 
 def test_default_capacity_remains_two_and_setup_can_precede_first_use(parser_slots, monkeypatch):
     assert parsing.parse_worker_limit() == 2
-    monkeypatch.setenv("TEA_PARSE_WORKERS", "8")
-    assert all(parser_slots.acquire(timeout=0) for _ in range(8))
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "32")
+    assert all(parser_slots.acquire(timeout=0) for _ in range(32))
     assert not parser_slots.acquire(timeout=0)
-    for _ in range(8):
+    for _ in range(32):
         parser_slots.release()
 
 
-@pytest.mark.parametrize("limit", range(1, 9))
+@pytest.mark.parametrize("limit", range(1, 33))
 def test_explicit_parse_capacities_are_bounded(parser_slots, monkeypatch, limit):
     monkeypatch.setenv("TEA_PARSE_WORKERS", str(limit))
     assert all(parser_slots.acquire(timeout=0) for _ in range(limit))
@@ -113,17 +113,17 @@ def test_explicit_parse_capacities_are_bounded(parser_slots, monkeypatch, limit)
         parser_slots.release()
 
 
-@pytest.mark.parametrize("value", ["0", "9", "16", "-1", "bad", "2.5", ""])
+@pytest.mark.parametrize("value", ["0", "33", "64", "-1", "bad", "2.5", ""])
 def test_invalid_capacity_fails_before_any_child_starts(parser_slots, monkeypatch, value):
     monkeypatch.setenv("TEA_PARSE_WORKERS", value)
     monkeypatch.setattr(multiprocessing, "get_context", lambda *_: pytest.fail("child started"))
-    with pytest.raises(ValueError, match="TEA_PARSE_WORKERS must be between 1 and 8"):
+    with pytest.raises(ValueError, match="TEA_PARSE_WORKERS must be between 1 and 32"):
         parsing.parse_bounded("law.txt", b"Original text", "text/plain")
 
 
 def test_active_capacity_cannot_be_replaced_and_acquired_slots_can_return(parser_slots, monkeypatch):
     assert parser_slots.acquire(timeout=0)
-    monkeypatch.setenv("TEA_PARSE_WORKERS", "8")
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "32")
     with pytest.raises(ValueError, match="restart this worker"):
         parser_slots.acquire(timeout=0)
     parser_slots.release()  # Releasing does not reread a changed configuration.
@@ -136,12 +136,15 @@ def test_active_capacity_cannot_be_replaced_and_acquired_slots_can_return(parser
         parser_slots.release()
 
 
-def test_eight_real_mixed_children_share_capacity_and_ninth_defers(parser_slots, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capacity", [8, 16, 32])
+def test_real_mixed_children_share_capacity_and_next_child_defers(
+    parser_slots, tmp_path, monkeypatch, capacity
+):
     observations = tmp_path / "observations"
     observations.mkdir()
     monkeypatch.setenv("TEA_TEST_PARSE_OBSERVATIONS", str(observations))
     originals = []
-    for index in range(8):
+    for index in range(capacity):
         directory = tmp_path / str(index)
         directory.mkdir()
         originals.append(pdf_file(directory, [f"Visible source {index}.\nTea import condition."]))
@@ -150,15 +153,15 @@ def test_eight_real_mixed_children_share_capacity_and_ninth_defers(parser_slots,
         for path, digest, size in originals[6:]
     ]
     # Replace only the test's fresh pool; production never replaces active slots.
-    monkeypatch.setenv("TEA_PARSE_WORKERS", "8")
+    monkeypatch.setenv("TEA_PARSE_WORKERS", str(capacity))
     monkeypatch.setattr(parsing, "_SLOTS", parsing._ParserSlots())
     monkeypatch.setattr(parsing, "_parse_worker", _observed_parse_worker)
     monkeypatch.setattr(archive_parsing, "_archive_pdf_worker", _observed_archive_worker)
     monkeypatch.setattr(archive_parsing, "_archive_auxiliary_worker", _observed_archive_auxiliary)
 
     def invoke(index):
-        path, digest, size = originals[index % 8]
-        if index < 2 or index == 8:
+        path, digest, size = originals[index % capacity]
+        if index < 2 or index == capacity:
             return parsing.parse_bounded("law.pdf", path.read_bytes(), "application/pdf")
         if index < 4:
             return archive_parsing.parse_archive_pdf_bounded(
@@ -170,31 +173,31 @@ def test_eight_real_mixed_children_share_capacity_and_ninth_defers(parser_slots,
             )
         return archive_parsing.archive_rebuild_bounded(checkpoints[index - 6])
 
-    with ThreadPoolExecutor(max_workers=9) as pool:
-        first = [pool.submit(invoke, index) for index in range(8)]
+    with ThreadPoolExecutor(max_workers=capacity + 1) as pool:
+        first = [pool.submit(invoke, index) for index in range(capacity)]
         try:
-            deadline = time.monotonic() + 4
-            while len(list(observations.glob("*.ready"))) < 8 and time.monotonic() < deadline:
+            deadline = time.monotonic() + 10
+            while len(list(observations.glob("*.ready"))) < capacity and time.monotonic() < deadline:
                 time.sleep(0.01)
             ready = list(observations.glob("*.ready"))
-            assert len(ready) == 8
-            assert len({item.stem for item in ready}) == 8
+            assert len(ready) == capacity
+            assert len({item.stem for item in ready}) == capacity
             assert {item.read_text() for item in ready} == {
                 "basic",
                 "archive-native",
                 "archive-render",
                 "archive-rebuild",
             }
-            ninth = pool.submit(invoke, 8)
+            next_child = pool.submit(invoke, capacity)
             with pytest.raises(parsing.ProcessingDeferred) as caught:
-                ninth.result(timeout=6)
+                next_child.result(timeout=6)
             assert caught.value.retryable and caught.value.retry_after == 5
-            assert len(list(observations.glob("*.ready"))) == 8
+            assert len(list(observations.glob("*.ready"))) == capacity
         finally:
             (observations / "release").touch()
         results = [future.result(timeout=12) for future in first]
     records = [json.loads(path.read_text()) for path in observations.glob("*.done")]
-    assert len(records) == 8
+    assert len(records) == capacity
     assert all(record["memory_limit"] == [768 * 1024 * 1024] * 2 for record in records)
     assert all(record["cpu_limit"] == [35, 35] and record["core_limit"] == [0, 0] for record in records)
     assert all(record["result_bytes"] <= 40 * 1024 * 1024 for record in records)
@@ -218,8 +221,12 @@ def test_eight_real_mixed_children_share_capacity_and_ninth_defers(parser_slots,
 
 
 @pytest.mark.parametrize("mode", ["crash", "timeout", "error"])
-def test_failed_children_are_reaped_before_capacity_is_reused(parser_slots, monkeypatch, tmp_path, mode):
-    monkeypatch.setenv("TEA_PARSE_WORKERS", "1")
+@pytest.mark.parametrize("capacity", [1, 32])
+def test_failed_children_are_reaped_before_capacity_is_reused(
+    parser_slots, monkeypatch, tmp_path, mode, capacity
+):
+    monkeypatch.setenv("TEA_PARSE_WORKERS", str(capacity))
+    assert all(parser_slots.acquire(timeout=0) for _ in range(capacity - 1))
     marker = tmp_path / "pid"
     expected = "进程中断" if mode == "crash" else "超时" if mode == "timeout" else "Known parser failure"
     with pytest.raises(ValueError, match=expected):
@@ -229,12 +236,16 @@ def test_failed_children_are_reaped_before_capacity_is_reused(parser_slots, monk
     healthy = parsing._run_bounded(_exit_worker, ("healthy", str(marker)), 5)
     assert healthy["pid"] != failed_pid
     assert healthy["pid"] not in {child.pid for child in multiprocessing.active_children()}
+    assert parser_slots.acquire(timeout=0)
+    assert not parser_slots.acquire(timeout=0)
+    for _ in range(capacity):
+        parser_slots.release()
 
 
 def test_concurrent_starts_and_cleanup_never_poll_the_same_child_together(parser_slots, monkeypatch):
     from multiprocessing.popen_fork import Popen
 
-    monkeypatch.setenv("TEA_PARSE_WORKERS", "8")
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "32")
     original_poll = Popen.poll
     counter_lock = Lock()
     polling = {}
@@ -254,7 +265,7 @@ def test_concurrent_starts_and_cleanup_never_poll_the_same_child_together(parser
 
     monkeypatch.setattr(Popen, "poll", observed_poll)
     contents = [f"Immutable native text {index}.".encode() for index in range(32)]
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=32) as pool:
         results = list(pool.map(lambda content: parsing.parse_bounded("law.txt", content), contents))
     assert len(maximum) == 32 and max(maximum.values()) == 1
     assert all(
@@ -382,9 +393,9 @@ def _store_text(service, index, *, shared=None, level="primary"):
         )
 
 
-@pytest.fixture
-def eight_job_service(tmp_path, monkeypatch):
-    monkeypatch.setenv("TEA_PROCESS_WORKERS", "8")
+@pytest.fixture(params=[8, 16, 32])
+def concurrent_job_service(tmp_path, monkeypatch, request):
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", str(request.param))
     service = Service(tmp_path / "owned")
     with service.db.transaction() as conn:
         conn.execute("INSERT INTO users VALUES(?,?,?,?,?,?)", ("owner", "owner", None, None, 1, now()))
@@ -392,9 +403,10 @@ def eight_job_service(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("first_phase", ["parse", "embed"])
-def test_eight_job_leases_remain_shared_and_phase_fair(eight_job_service, first_phase):
-    service = eight_job_service
-    docs = [_store_text(service, index) for index in range(12)]
+def test_job_leases_remain_shared_and_phase_fair(concurrent_job_service, first_phase):
+    service = concurrent_job_service
+    capacity = service.collection.processing_workers
+    docs = [_store_text(service, index) for index in range(capacity + 4)]
     second_phase = "embed" if first_phase == "parse" else "parse"
     with service.db.transaction() as conn:
         conn.execute("UPDATE processing_jobs SET phase=?,updated_at='2000'", (first_phase,))
@@ -406,27 +418,29 @@ def test_eight_job_leases_remain_shared_and_phase_fair(eight_job_service, first_
     assert first["phase"] == first_phase
     collections = [Service(service.db.path.parent).collection for _ in range(3)]
     assert collections[0].claim_processing()["phase"] == second_phase
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        picked = list(pool.map(lambda index: collections[index % 3].claim_processing(), range(12)))
-    assert sum(claim is not None for claim in picked) == 6
+    with ThreadPoolExecutor(max_workers=capacity + 4) as pool:
+        picked = list(pool.map(lambda index: collections[index % 3].claim_processing(), range(capacity + 4)))
+    assert sum(claim is not None for claim in picked) == capacity - 2
     assert all(collection.claim_processing() is None for collection in collections)
     with closing(service.db.connect()) as conn:
         assert (
-            conn.execute("SELECT count(*) FROM processing_jobs WHERE status='processing'").fetchone()[0] == 8
+            conn.execute("SELECT count(*) FROM processing_jobs WHERE status='processing'").fetchone()[0]
+            == capacity
         )
 
 
-def test_eight_jobs_keep_same_source_serial_and_expired_lease_recoverable(eight_job_service):
-    service = eight_job_service
+def test_jobs_keep_same_source_serial_and_expired_lease_recoverable(concurrent_job_service):
+    service = concurrent_job_service
+    capacity = service.collection.processing_workers
     shared = b"The identical immutable source original."
     a, b = [_store_text(service, index, shared=shared) for index in range(2)]
-    other = [_store_text(service, index) for index in range(2, 10)]
+    other = [_store_text(service, index) for index in range(2, capacity + 2)]
     picked = service.collection.claim_processing(owner_id="owner", document_ids=[a["id"]])
     assert picked["document_id"] == a["id"]
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        claims = list(pool.map(lambda _: service.collection.claim_processing(), range(10)))
+    with ThreadPoolExecutor(max_workers=capacity + 2) as pool:
+        claims = list(pool.map(lambda _: service.collection.claim_processing(), range(capacity + 2)))
     active = [claim for claim in claims if claim]
-    assert len(active) == 7 and b["id"] not in {claim["document_id"] for claim in active}
+    assert len(active) == capacity - 1 and b["id"] not in {claim["document_id"] for claim in active}
     assert all(claim["document_id"] in {doc["id"] for doc in other} for claim in active)
     with service.db.transaction() as conn:
         conn.execute(
@@ -436,13 +450,15 @@ def test_eight_jobs_keep_same_source_serial_and_expired_lease_recoverable(eight_
         service.collection.claim_processing(owner_id="owner", document_ids=[b["id"]])["document_id"]
         == b["id"]
     )
+    with closing(service.db.connect()) as conn:
+        assert not service.collection._valid_claim(conn, picked, True)
 
 
-def test_eight_job_configuration_keeps_independent_secondary_zero_vectors(eight_job_service, parser_slots):
-    service = eight_job_service
+def test_job_configuration_keeps_independent_secondary_zero_vectors(concurrent_job_service, parser_slots):
+    service = concurrent_job_service
     doc = _store_text(service, 1, level="secondary")
     claim = service.collection.claim_processing()
-    assert claim and service.collection.processing_workers == 8
+    assert claim and service.collection.processing_workers in {8, 16, 32}
     service.collection.process_item(claim)
     with closing(service.db.connect()) as conn:
         assert not conn.execute("SELECT count(*) FROM retrieval_vectors").fetchone()[0]
@@ -450,3 +466,42 @@ def test_eight_job_configuration_keeps_independent_secondary_zero_vectors(eight_
         row = conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone()
         assert json.loads(row["manifest"])["chunks"]
         assert row["content_hash"] == hashlib.sha256(b"Tea import original 1.").hexdigest()
+
+
+@pytest.mark.parametrize("value", ["0", "33", "64", "-1"])
+def test_invalid_process_capacity_is_rejected(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", value)
+    with pytest.raises(ValueError, match="TEA_PROCESS_WORKERS must be between 1 and 32"):
+        Service(tmp_path / "owned")
+
+
+def test_default_process_capacity_remains_two(tmp_path, monkeypatch):
+    monkeypatch.delenv("TEA_PROCESS_WORKERS", raising=False)
+    assert Service(tmp_path / "owned").collection.processing_workers == 2
+
+
+def test_processing_32_with_parse_two_defers_without_consuming_attempts(tmp_path, monkeypatch, parser_slots):
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", "32")
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "2")
+    service = Service(tmp_path / "owned")
+    with service.db.transaction() as conn:
+        conn.execute("INSERT INTO users VALUES(?,?,?,?,?,?)", ("owner", "owner", None, None, 1, now()))
+    doc = _store_text(service, 1)
+    claim = service.collection.claim_processing()
+    assert claim and service.collection.processing_workers == 32
+    assert parser_slots.acquire(timeout=0) and parser_slots.acquire(timeout=0)
+    try:
+        service.collection.process_item(claim)
+    finally:
+        parser_slots.release()
+        parser_slots.release()
+    deferred_at = time.time()
+    with closing(service.db.connect()) as conn:
+        job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (doc["id"],)).fetchone()
+        assert job["status"] == "queued" and job["attempts"] == 0
+        assert job["lease_token"] is None and job["lease_until"] is None
+        assert job["available_at"] >= deferred_at + 4.5
+        current = conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone()
+        assert current["content_hash"] == doc["content_hash"] and current["version"] == doc["version"]
+        assert Path(current["storage_path"]).read_bytes() == b"Tea import original 1."
+        assert not conn.execute("SELECT count(*) FROM retrieval_vectors").fetchone()[0]

@@ -33,9 +33,9 @@ def parse_worker_limit() -> int:
     try:
         value = int(os.getenv("TEA_PARSE_WORKERS", "2"))
     except ValueError as exc:
-        raise ValueError("TEA_PARSE_WORKERS must be between 1 and 8") from exc
-    if not 1 <= value <= 8:
-        raise ValueError("TEA_PARSE_WORKERS must be between 1 and 8")
+        raise ValueError("TEA_PARSE_WORKERS must be between 1 and 32") from exc
+    if not 1 <= value <= 32:
+        raise ValueError("TEA_PARSE_WORKERS must be between 1 and 32")
     return value
 
 

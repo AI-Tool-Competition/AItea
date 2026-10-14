@@ -337,7 +337,11 @@ def test_misconfigured_converter_descendants_are_reaped_on_timeout(tmp_path):
     for value in pids.read_text().splitlines():
         while time.monotonic() < deadline:
             status = Path(f"/proc/{int(value)}/stat")
-            if not status.exists() or status.read_text().split()[2] == "Z":
+            try:
+                state = status.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                break  # Reaping can finish between locating and reading /proc.
+            if state == "Z":
                 break
             time.sleep(0.01)
         else:

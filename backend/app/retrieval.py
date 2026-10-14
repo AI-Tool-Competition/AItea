@@ -87,6 +87,27 @@ def normalized_vector(vector):
         raise ValueError("向量必须为有限数值") from exc
 
 
+def stored_vector(vector, dimension, expected_dimension):
+    """Decode only a bounded, finite unit float32 checkpoint for numerical reuse."""
+    import numpy as np
+
+    if (
+        type(dimension) is not int
+        or not 1 <= dimension <= 65536
+        or type(expected_dimension) is not int
+        or not 1 <= expected_dimension <= 65536
+        or dimension != expected_dimension
+        or not isinstance(vector, bytes)
+        or len(vector) != dimension * 4
+    ):
+        raise ValueError("缓存向量维度或长度无效")
+    values = np.frombuffer(vector, dtype="<f4")
+    norm = float(np.einsum("i,i->", values, values, dtype=np.float64, optimize=False))
+    if not np.isfinite(values).all() or not math.isfinite(norm) or abs(norm - 1) > 0.0001:
+        raise ValueError("缓存向量不是有限单位向量")
+    return values.tolist()
+
+
 class RetrievalIndex:
     def __init__(self, service):
         self.service, self.db = service, service.db

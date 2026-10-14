@@ -1116,7 +1116,7 @@ class CollectionService:
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
             fingerprint = self.service.embedding_fingerprint()
-            batch, vectors = [], None
+            batch, vectors, reuse_plan = [], None, None
             if claim["phase"] == "parse":
                 content = None
                 is_pdf = (
@@ -1214,6 +1214,8 @@ class CollectionService:
                     else:
                         manifest = self._process_pdf_ocr(doc, claim, manifest, content, archive_mode)
             elif should_index and fingerprint and text_complete(manifest):
+                from .embedding_reuse import prepare_batch, verify_originals
+
                 with self.db.transaction() as conn:
                     if not self._valid_claim(conn, claim, True):
                         self._release_disallowed_policy_claim(conn, claim)
@@ -1222,18 +1224,42 @@ class CollectionService:
                         "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
                     ).fetchone():
                         self.service.index.sync_document(conn, doc["id"])
+                    current = self.service.own_document(conn, claim["owner_id"], doc["id"])
+                    if any(
+                        current[key] != doc[key]
+                        for key in (
+                            "owner_id",
+                            "role",
+                            "version",
+                            "content_hash",
+                            "source_url",
+                            "size",
+                            "storage_path",
+                        )
+                    ):
+                        raise ValueError("向量处理原件版本已变更")
+                    doc = current
+                    manifest = json.loads(doc["manifest"])
                     batch = self.service.index.pending(
                         conn, doc["id"], fingerprint, limit=embedding_claim_size()
                     )
+                    if batch:
+                        reuse_plan = prepare_batch(self.service, conn, doc, fingerprint, batch)
                 if batch:
+                    # CAS hashes are streamed once outside the short write transaction.
+                    verify_originals(self.service, reuse_plan)
                     with closing(self.db.connect()) as conn:
                         if not self._valid_claim(conn, claim, True):
                             with self.db.transaction() as write:
                                 self._release_disallowed_policy_claim(write, claim)
                             return
-                    vectors = embed_texts([chunk["retrieval_text"] for chunk in batch])
-                    if vectors is None:
-                        raise ValueError("向量配置已变更，请重试处理")
+                    misses = reuse_plan["misses"]
+                    generated = embed_texts([batch[n]["retrieval_text"] for n in misses]) if misses else []
+                    if generated is None or len(generated) != len(misses):
+                        raise ValueError("向量配置已变更或返回数量无效，请重试处理")
+                    resolved = {n: hit["values"] for n, hit in reuse_plan["hits"].items()}
+                    resolved.update(zip(misses, generated, strict=True))
+                    vectors = [resolved[n] for n in range(len(batch))]
             warning = "；".join(str(item) for item in manifest.get("warnings", []))[:500] or None
             warning = quality_warning(manifest) or warning
             with self.db.transaction() as conn:
@@ -1243,6 +1269,10 @@ class CollectionService:
                 # Classification may change while parsing or calling the provider. Decide
                 # follow-up work from current state in the same transaction as completion.
                 current_fingerprint = self.service.embedding_fingerprint()
+                if reuse_plan is not None:
+                    from .embedding_reuse import assert_current
+
+                    assert_current(self.service, conn, reuse_plan)
                 if claim["phase"] == "parse":
                     conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
                     self.service.index.sync_document(conn, doc["id"], manifest)
@@ -1253,6 +1283,18 @@ class CollectionService:
                 indexable = self.service.archive.can_index(conn, doc["id"])
                 if vectors is not None and fingerprint == current_fingerprint and indexable:
                     self.service.index.store_vectors(conn, doc["id"], fingerprint, batch, vectors)
+                    if reuse_plan is not None:
+                        from .embedding_reuse import record_commit
+
+                        checkpoint = record_commit(conn, reuse_plan, manifest)
+                        manifest["embedding_reuse"] = checkpoint
+                        conn.execute(
+                            "UPDATE documents SET manifest=json_set(manifest,'$.embedding_reuse',json(?)) WHERE id=?",
+                            (dump(checkpoint), doc["id"]),
+                        )
+                        # Only derived provenance changed; source/text/index fences
+                        # were checked in this same transaction before vector commit.
+                        conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (doc["id"],))
                 needs_index = (
                     indexable
                     and current_fingerprint

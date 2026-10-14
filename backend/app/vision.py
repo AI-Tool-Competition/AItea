@@ -52,9 +52,9 @@ def vision_ocr_worker_limit() -> int:
     try:
         value = int(os.getenv("VISION_OCR_WORKERS", "2"))
     except ValueError as exc:
-        raise ValueError("VISION_OCR_WORKERS must be between 1 and 16") from exc
-    if not 1 <= value <= 16:
-        raise ValueError("VISION_OCR_WORKERS must be between 1 and 16")
+        raise ValueError("VISION_OCR_WORKERS must be between 1 and 64") from exc
+    if not 1 <= value <= 64:
+        raise ValueError("VISION_OCR_WORKERS must be between 1 and 64")
     return value
 
 

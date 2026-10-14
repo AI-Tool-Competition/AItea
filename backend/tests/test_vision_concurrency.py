@@ -30,7 +30,7 @@ def slots(monkeypatch):
     return value
 
 
-@pytest.mark.parametrize("limit", [1, 2, 8, 16])
+@pytest.mark.parametrize("limit", [1, 2, 8, 16, 32, 64])
 def test_explicit_capacity_and_default_preserve_bounded_permits(slots, monkeypatch, limit):
     assert vision.vision_ocr_worker_limit() == 2
     monkeypatch.setenv("VISION_OCR_WORKERS", str(limit))
@@ -42,12 +42,12 @@ def test_explicit_capacity_and_default_preserve_bounded_permits(slots, monkeypat
         slots.release()
 
 
-@pytest.mark.parametrize("value", ["0", "17", "32", "-1", "bad", "2.5", ""])
+@pytest.mark.parametrize("value", ["0", "65", "128", "-1", "bad", "2.5", ""])
 def test_invalid_configuration_fails_before_render_or_request(enabled, slots, monkeypatch, value):
     monkeypatch.setenv("VISION_OCR_WORKERS", value)
     monkeypatch.setattr(parsing, "render_pdf_page_bounded", lambda *_: pytest.fail("render started"))
     monkeypatch.setattr(vision, "_invoke", lambda *_: pytest.fail("provider called"))
-    with pytest.raises(ValueError, match="VISION_OCR_WORKERS must be between 1 and 16"):
+    with pytest.raises(ValueError, match="VISION_OCR_WORKERS must be between 1 and 64"):
         parsing._ocr_one_page(b"source", {"page": 1, "status": "pending_ocr"})
 
 
@@ -67,7 +67,8 @@ def test_live_capacity_cannot_be_replaced_but_old_permit_can_return(slots, monke
 
 
 @pytest.mark.parametrize(
-    "capacity, document_count, expected_peak", [(2, 8, 2), (8, 8, 8), (16, 8, 16), (8, 1, 4)]
+    "capacity, document_count, expected_peak",
+    [(2, 8, 2), (8, 8, 8), (16, 8, 16), (8, 1, 4), (32, 8, 32), (64, 16, 64)],
 )
 def test_document_batches_fill_shared_capacity_without_expanding_four_page_batch(
     enabled, slots, monkeypatch, capacity, document_count, expected_peak
@@ -103,7 +104,20 @@ def test_document_batches_fill_shared_capacity_without_expanding_four_page_batch
     for index in range(document_count):
         content = make_pdf([(f"Pasal 1\nOriginal source {index}.", True)] * 5)
         documents.append((content, parse_file(f"source-{index}.pdf", content)))
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    if capacity >= 32:
+        # Isolate HTTP capacity from render-slot waiting: prepare real bounded
+        # snapshots first, then reuse only this test's immutable source/page map.
+        # Production keeps native16 and the unchanged per-document four-page batch.
+        monkeypatch.setenv("TEA_PARSE_WORKERS", "16")
+        monkeypatch.setattr(parsing, "_SLOTS", parsing._ParserSlots())
+        source_pages = [(content, page) for content, _ in documents for page in range(1, 5)]
+        with ThreadPoolExecutor(max_workers=16) as rendering:
+            snapshots = list(rendering.map(lambda pair: parsing.render_pdf_page_bounded(*pair), source_pages))
+        images = dict(zip(source_pages, snapshots, strict=True))
+        monkeypatch.setattr(
+            parsing, "render_pdf_page_bounded", lambda content, page: deepcopy(images[(content, page)])
+        )
+    with ThreadPoolExecutor(max_workers=document_count) as executor:
         futures = [
             executor.submit(parsing.ocr_bounded, "scan.pdf", content, "application/pdf", manifest)
             for content, manifest in documents

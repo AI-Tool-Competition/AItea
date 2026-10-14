@@ -221,13 +221,14 @@ def _rewrite(value, aliases, destinations, identities, *, bound_hash=None, targe
             result[key] = target_owner
             continue
         if _path_key(key) and isinstance(item, str):
+            if item in destinations.values():
+                result[key] = item  # A second pass must preserve the exact target image CAS.
+                continue
             digest = aliases.get(item)
             if digest is None and key in {"source_original_path", "storage_path", "raw_path"}:
                 digest = bound_hash
             if digest in destinations:
                 result[key] = destinations[digest]
-            elif item in destinations.values():
-                result[key] = item  # Already mapped to a verified target CAS object.
             elif Path(item).is_absolute() or "files/blobs/" in item:
                 raise CollectionImportError("unmapped_private_path")
             else:
@@ -657,7 +658,8 @@ def import_collected_resources(
                 if mark.get("guard") != _guard(conn, existing["id"]):
                     raise CollectionImportError("target_changed_since_import")
                 if (
-                    mark["snapshot_hash"] == snapshot_hash
+                    not refresh
+                    and mark["snapshot_hash"] == snapshot_hash
                     and mark.get("target_embedding_fingerprint") == _fingerprint()
                 ):
                     identities[ident] = {"document_id": existing["id"], "version": existing["version"]}

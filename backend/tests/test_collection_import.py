@@ -4,6 +4,7 @@ import json
 import hashlib
 import io
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
@@ -126,6 +127,56 @@ def test_official_system_import_reuses_vectors_without_publishing_draft(pair):
         assert dst.read_document(conn, "unrelated", target)["owner_id"] == SYSTEM_OWNER_ID
         assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] > 0
     assert dst.search("unrelated", "Source original", country="ID")["items"] == []
+
+
+def test_image_checkpoint_keeps_PNG_identity_after_both_passes_and_explicit_refresh(pair):
+    from PIL import Image
+
+    src, dst = pair
+    doc = original(src)
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 3), "white").save(buffer, format="PNG")
+    png = src.archive.blobs.put_bytes("source", buffer.getvalue())
+    with src.db.transaction() as conn:
+        manifest = json.loads(src.own_document(conn, "source", doc["id"])["manifest"])
+        manifest["quality"] = {"complete": False, "pending_pages": [1]}
+        manifest["pages"] = [
+            {
+                "page": 1,
+                "source_hash": doc["content_hash"],
+                "status": "pending_ocr",
+                "ocr": {
+                    "image_sha256": png.digest,
+                    "image_blob": {
+                        "content_hash": png.digest,
+                        "size": png.size,
+                        "mime_type": "image/png",
+                        "storage_path": str(png.path.relative_to(src.db.path.parent)),
+                    },
+                },
+            }
+        ]
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+    result = transfer(src, dst, apply=True)
+    target_id = result["document_versions"][doc["id"]]["document_id"]
+
+    def check_image():
+        with closing(dst.db.connect()) as conn:
+            target = dst.own_document(conn, "target", target_id)
+            blob = json.loads(target["manifest"])["pages"][0]["ocr"]["image_blob"]
+            image_path = dst.db.path.parent / blob["storage_path"]
+            assert image_path != Path(target["storage_path"])
+            assert hashlib.sha256(image_path.read_bytes()).hexdigest() == blob["content_hash"] == png.digest
+            assert image_path.read_bytes() == buffer.getvalue()
+            assert target["version"] == 1
+
+    check_image()
+    assert transfer(src, dst, apply=True)["unchanged_documents"] == 1
+    check_image()
+    refreshed = transfer(src, dst, apply=True, refresh=True)
+    assert refreshed["unchanged_documents"] == 0 and refreshed["target_writes"] == 0
+    assert refreshed["document_versions"] == result["document_versions"]
+    check_image()
 
 
 def test_dry_run_no_writes_and_complete_vectors_reuse(pair):

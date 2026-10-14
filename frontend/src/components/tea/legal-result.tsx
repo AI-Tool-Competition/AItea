@@ -1,5 +1,7 @@
 "use client";
 
+import { ChevronDown } from "lucide-react";
+
 import { conclusionLabels } from "@/core/tea/legal-labels";
 import { type LegalResult } from "@/core/tea/types";
 
@@ -33,25 +35,42 @@ export function LegalResultView({
   compact = false,
   showTrace = true,
   showMode = true,
+  detailsOnly = false,
 }: {
   result: LegalResult;
   compact?: boolean;
   showTrace?: boolean;
   showMode?: boolean;
+  detailsOnly?: boolean;
 }) {
   if (compact)
     return (
       <div className="tea-node-summary">
-        {result.issues.slice(0, 3).map((issue) => (
+        {result.issues.slice(0, 3).map((issue, index) => (
           <article className="tea-node-conclusion" key={issue.id}>
             <header>
+              <span className="tea-node-issue-number">{index + 1}</span>
+              <h5>
+                {issue.domains.length
+                  ? issue.domains
+                      .map((domain) =>
+                        domain === "general" ? "一般问题" : domain,
+                      )
+                      .join(" · ")
+                  : issue.kind === "legal"
+                    ? "法律分析"
+                    : "业务信息"}
+              </h5>
               <span className="tea-conclusion-state" data-status={issue.status}>
                 {conclusionLabels[issue.status]}
-              </span>
-              <small>
-                {issue.kind === "legal" ? "法律问题" : "信息问题"}
                 {issue.needs_review ? " · 待复核" : ""}
-              </small>
+              </span>
+              <details className="tea-node-question">
+                <summary aria-label={`查看问题 ${index + 1} 原文`}>
+                  问题原文 <ChevronDown size={12} aria-hidden="true" />
+                </summary>
+                <p>{issue.question}</p>
+              </details>
             </header>
             <p>{issue.conclusion}</p>
             {issue.actions.length > 0 && (
@@ -68,7 +87,8 @@ export function LegalResultView({
         ))}
         {result.issues.length > 3 && (
           <p className="tea-legal-note">
-            另有 {result.issues.length - 3} 项问题，可展开详细结论查看。
+            另有 {result.issues.length - 3}{" "}
+            项问题，可在「原文依据」中查看完整分析。
           </p>
         )}
         {!result.issues.length && result.output && (
@@ -76,6 +96,22 @@ export function LegalResultView({
         )}
       </div>
     );
+  const sourceKey = (source: LegalResult["citations"][number]) =>
+    source.id ??
+    JSON.stringify([
+      source.document_id,
+      source.document_version,
+      source.locator,
+    ]);
+  const shownSources = new Set(
+    result.issues.flatMap((issue) => issue.citations.map(sourceKey)),
+  );
+  const otherSources = result.citations.filter((source) => {
+    const key = sourceKey(source);
+    if (shownSources.has(key)) return false;
+    shownSources.add(key);
+    return true;
+  });
   const issueGaps = new Set(result.issues.flatMap((issue) => issue.gaps));
   const additionalGaps = [...new Set(result.gaps)].filter(
     (gap) => !issueGaps.has(gap),
@@ -89,7 +125,7 @@ export function LegalResultView({
             : "演示模式 · 未调用大模型"}
         </p>
       )}
-      {result.issues.map((issue) => (
+      {result.issues.map((issue, index) => (
         <article key={issue.id} className="tea-legal-issue">
           <header>
             <span className="tea-legal-note">
@@ -111,7 +147,9 @@ export function LegalResultView({
               ...issue.jurisdictions,
             ].join(" · ") || "适用范围待确认"}
           </p>
-          <p className="tea-legal-conclusion">{issue.conclusion}</p>
+          {(!detailsOnly || index >= 3) && (
+            <p className="tea-legal-conclusion">{issue.conclusion}</p>
+          )}
           {issue.explanation && <p>{issue.explanation}</p>}
           {issue.conditions.length > 0 && (
             <details>
@@ -208,7 +246,22 @@ export function LegalResultView({
           )}
         </article>
       ))}
-      {!result.issues.length && result.output && (
+      {otherSources.length > 0 && (
+        <section className="tea-node-other-sources" aria-label="其他原文依据">
+          <h4>其他原文依据</h4>
+          {otherSources.map((source) => (
+            <CitationCard key={sourceKey(source)} citation={source} />
+          ))}
+        </section>
+      )}
+      {detailsOnly &&
+        result.citations.length === 0 &&
+        !result.issues.some((issue) => issue.citations.length > 0) && (
+          <p className="tea-legal-note">
+            本报告暂无直接引用的原文，可展开分析过程查看查找记录。
+          </p>
+        )}
+      {!detailsOnly && !result.issues.length && result.output && (
         <p className="tea-legal-prose">{result.output}</p>
       )}
       {additionalGaps.length > 0 && (

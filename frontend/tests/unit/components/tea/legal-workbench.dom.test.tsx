@@ -540,14 +540,15 @@ it("opens the node's saved report inline and retains a draft across refreshed re
     />,
   );
   await waitFor(() =>
-    expect(screen.getByLabelText("报告段落：交付建议")).toBeTruthy(),
+    expect(screen.getByRole("button", { name: "编辑报告" })).toBeTruthy(),
   );
   const workbench = screen.getByRole("region", { name: "本节点分析与编辑" });
   expect(workbench.classList.contains("tea-legal-workbench")).toBe(true);
   expect(workbench.classList.contains("tea-legal-embedded")).toBe(true);
   expect(screen.queryByRole("heading", { name: "法律分析" })).toBeNull();
-  const editor = screen.getByLabelText("报告段落：交付建议");
-  fireEvent.click(screen.getByText("编辑分析报告"));
+  expect(screen.queryByRole("region", { name: "编辑分析报告" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "编辑报告" }));
+  const editor = screen.getByRole("textbox", { name: "报告段落：交付建议" });
   fireEvent.change(editor, { target: { value: "正在输入的节点修订" } });
   current = { ...current, revision: 2 };
   view.rerender(
@@ -566,6 +567,19 @@ it("opens the node's saved report inline and retains a draft across refreshed re
   expect(
     screen.getByLabelText<HTMLTextAreaElement>("报告段落：交付建议").value,
   ).toBe("正在输入的节点修订");
+  expect(screen.getByRole("region", { name: "编辑分析报告" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "原文依据" }));
+  expect(screen.queryByRole("region", { name: "编辑分析报告" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /编辑报告/ }));
+  expect(
+    screen.getByRole<HTMLTextAreaElement>("textbox", {
+      name: "报告段落：交付建议",
+    }).value,
+  ).toBe("正在输入的节点修订");
+  fireEvent.click(screen.getByRole("button", { name: "收起编辑分析报告" }));
+  expect(document.activeElement).toBe(
+    screen.getByRole("button", { name: /编辑报告/ }),
+  );
   expect(
     fetcher.mock.calls.every(
       ([, options]) => !options?.method || options.method === "GET",
@@ -597,22 +611,22 @@ it("opens one requested fact at a time and preserves its unsaved input when coll
   await waitFor(() =>
     expect(screen.getByLabelText("企业工商注册全称")).toBeTruthy(),
   );
-  const label = screen
-    .getAllByText("企业工商注册全称")
-    .find((element) => element.closest("summary"));
-  expect(label).toBeTruthy();
-  const disclosure = label!.closest("details")!;
-  expect(disclosure.open).toBe(false);
-  fireEvent.click(label!);
-  expect(disclosure.open).toBe(true);
-  fireEvent.change(screen.getByLabelText("企业工商注册全称"), {
+  const trigger = screen.getByRole("button", { name: "补充信息" });
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(
+    screen.queryByRole("textbox", { name: "企业工商注册全称" }),
+  ).toBeNull();
+  fireEvent.click(trigger);
+  expect(screen.getByRole("region", { name: "补充信息" })).toBeTruthy();
+  fireEvent.change(screen.getByRole("textbox", { name: "企业工商注册全称" }), {
     target: { value: "保留的企业名称" },
   });
-  fireEvent.click(label!);
-  expect(disclosure.open).toBe(false);
-  fireEvent.click(label!);
+  fireEvent.click(screen.getByRole("button", { name: "收起补充信息" }));
+  expect(screen.queryByRole("region", { name: "补充信息" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "补充信息" }));
   expect(
-    screen.getByLabelText<HTMLInputElement>("企业工商注册全称").value,
+    screen.getByRole<HTMLInputElement>("textbox", { name: "企业工商注册全称" })
+      .value,
   ).toBe("保留的企业名称");
   expect(
     rs
@@ -621,6 +635,76 @@ it("opens one requested fact at a time and preserves its unsaved input when coll
         ([, options]) => !options?.method || options.method === "GET",
       ),
   ).toBe(true);
+});
+
+it("keeps the selected fact and its draft open when a refreshed report removes the follow-up", async () => {
+  let current = structuredClone(analysis);
+  current.result.followups = [
+    {
+      key: "business_name",
+      label: "企业工商注册全称",
+      purpose: "确认企业主体",
+      decisive: true,
+    },
+    {
+      key: "registration",
+      label: "海关备案凭证",
+      purpose: "核对备案",
+      decisive: true,
+    },
+  ];
+  rs.spyOn(globalThis, "fetch").mockImplementation(async (path) =>
+    response(
+      requestPath(path).includes("/analyses/")
+        ? current
+        : { ...history, analyses: [current] },
+    ),
+  );
+  const view = render(
+    <LegalWorkbench
+      accountId="retained-followup-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "补充信息" })).toBeTruthy(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "补充信息" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "选择要补充的信息" }), {
+    target: { value: "registration" },
+  });
+  fireEvent.change(screen.getByRole("textbox", { name: "海关备案凭证" }), {
+    target: { value: "保留正在输入的备案凭证" },
+  });
+  current = {
+    ...current,
+    revision: 2,
+    result: { ...current.result, followups: [] },
+  };
+  view.rerender(
+    <LegalWorkbench
+      accountId="retained-followup-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={2}
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByText("这项信息已不在当前待补清单中，你的输入仍为你保留。"),
+    ).toBeTruthy(),
+  );
+  expect(
+    screen.getByRole<HTMLInputElement>("textbox", { name: "海关备案凭证" })
+      .value,
+  ).toBe("保留正在输入的备案凭证");
+  expect(screen.getByRole("region", { name: "补充信息" })).toBeTruthy();
 });
 
 it("keeps the selected report's execution records available when its revision differs from the node report", async () => {
@@ -646,11 +730,13 @@ it("keeps the selected report's execution records available when its revision di
       analysisRevision={1}
     />,
   );
-  await waitFor(() => expect(screen.getByText("修订 2")).toBeTruthy());
-  fireEvent.click(screen.getByText("查看详细结论与原文依据"));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "原文依据" })).toBeTruthy(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "原文依据" }));
   fireEvent.click(screen.getByRole("button", { name: /依据与检查记录/ }));
   expect(screen.getByText("本次修订的检查说明")).toBeTruthy();
-  fireEvent.click(screen.getByText("查看本步发现"));
+  fireEvent.click(screen.getByRole("button", { name: /理解业务问题/ }));
   expect(screen.getByText(/新修订输入/)).toBeTruthy();
 });
 
@@ -684,21 +770,90 @@ it("marks edited verified facts as unsaved in their collapsed summary", async ()
     />,
   );
   await waitFor(() => expect(screen.getByLabelText("交付日期")).toBeTruthy());
-  fireEvent.click(screen.getByText("核对已记录的事实 · 1 项"));
-  const label = screen
-    .getAllByText("交付日期")
-    .find((element) => element.closest("summary"))!;
-  const disclosure = label.closest("details")!;
-  expect(disclosure.querySelector("summary")!.textContent).toContain("已核验");
-  fireEvent.click(label);
-  fireEvent.change(screen.getByLabelText("交付日期"), {
+  fireEvent.click(screen.getByRole("button", { name: "已记录事实" }));
+  expect(screen.getByRole("region", { name: "已记录的事实" })).toBeTruthy();
+  expect(screen.getByText(/证据核验.*已核验/)).toBeTruthy();
+  fireEvent.change(screen.getByRole("textbox", { name: "交付日期" }), {
     target: { value: "2026-10-09" },
   });
-  fireEvent.click(label);
-  expect(disclosure.querySelector("summary")!.textContent).toContain("待保存");
-  expect(disclosure.querySelector("summary")!.textContent).not.toContain(
-    "已核验",
+  expect(screen.queryByText(/证据核验.*已核验/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "收起已记录的事实" }));
+  expect(screen.queryByRole("region", { name: "已记录的事实" })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: /已记录事实/ }).textContent,
+  ).toContain("1 项待保存");
+});
+
+it("retains a manually opened process and uses the saved step statuses after reanalysis", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let current = structuredClone(analysis);
+  rs.spyOn(globalThis, "fetch").mockImplementation(async (path, options) => {
+    if (options?.method === "POST")
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(value) {
+            controller = value;
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    return response(
+      requestPath(path).includes("/analyses/")
+        ? current
+        : { ...history, analyses: [current] },
+    );
+  });
+  render(
+    <LegalWorkbench
+      accountId="opened-run-owner"
+      record={record}
+      stageId="prepare"
+      embedded
+      analysisId={analysis.id}
+      analysisRevision={1}
+    />,
   );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "重新分析受影响问题" }),
+    ).toBeTruthy(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "重新分析受影响问题" }));
+  await waitFor(() => expect(controller).toBeTruthy());
+  const step = {
+    id: "qa01",
+    label: "问题识别",
+    status: "running",
+    detail: "正在核对最新资料",
+  };
+  controller.enqueue(
+    new TextEncoder().encode(`event: step\ndata: ${JSON.stringify(step)}\n\n`),
+  );
+  const process = await screen.findByRole("button", { name: /正在分析/ });
+  fireEvent.click(process);
+  fireEvent.click(process);
+  current = {
+    ...current,
+    revision: 2,
+    result: {
+      ...current.result,
+      trace: [
+        { ...step, status: "completed", detail: "最新资料已核对" },
+      ] as typeof current.result.trace,
+    },
+  };
+  controller.enqueue(
+    new TextEncoder().encode(
+      `event: done\ndata: ${JSON.stringify({ analysis: current })}\n\n`,
+    ),
+  );
+  controller.close();
+  const completed = await screen.findByRole("button", {
+    name: /依据与检查记录.*1\s*\/\s*1/,
+  });
+  expect(completed.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText("最新资料已核对")).toBeTruthy();
+  expect(screen.queryByText("已中断")).toBeNull();
 });
 
 it("keeps stop available in the result heading during an embedded reanalysis", async () => {
@@ -731,9 +886,11 @@ it("keeps stop available in the result heading during an embedded reanalysis", a
   );
   fireEvent.click(screen.getByRole("button", { name: "重新分析受影响问题" }));
   await waitFor(() => expect(signal).toBeTruthy());
-  const heading = screen.getByRole("heading", {
-    name: "分析结论与下一步",
-  }).parentElement!;
+  const heading = screen
+    .getByRole("heading", {
+      name: "分析结论",
+    })
+    .closest("header")!;
   const stop = heading.querySelector("button");
   expect(stop?.textContent).toContain("停止分析");
   fireEvent.click(stop!);

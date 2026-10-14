@@ -3,16 +3,23 @@
 // Reuses the retained copy of tmp/deer-flow/frontend/src/components/ai-elements/
 // chain-of-thought.tsx. License: frontend/DEERFLOW_LICENSE.
 import {
+  Brain,
   Check,
+  ChevronDown,
   Circle,
   CircleAlert,
+  FileText,
+  Globe,
   History,
   ListChecks,
   LoaderCircle,
   Minus,
+  ScanText,
+  Scale,
+  Search,
   Square,
 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 
 import {
   ChainOfThought,
@@ -28,6 +35,7 @@ import {
   type ProcessStep,
 } from "@/core/tea/analysis-process";
 
+import { CitationCard } from "./library";
 import { ReadableData } from "./readable-data";
 
 const stepIcons = {
@@ -38,6 +46,14 @@ const stepIcons = {
   cancelled: Square,
   pending: Circle,
   running: LoaderCircle,
+};
+const activityIcons = {
+  qa01: Brain,
+  qa02: ScanText,
+  qa03: Globe,
+  qa04: Search,
+  qa05: Scale,
+  qa06: FileText,
 };
 
 export function AnalysisProcess({
@@ -53,7 +69,9 @@ export function AnalysisProcess({
 }) {
   const id = useId();
   const [expanded, setExpanded] = useState<boolean | null>(null);
-  useEffect(() => setExpanded(null), [running]);
+  const [expandedSteps, setExpandedSteps] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   if (!steps.length) return null;
   const resolved = steps.filter((step) =>
     ["completed", "cached", "skipped"].includes(step.status),
@@ -67,15 +85,6 @@ export function AnalysisProcess({
       : cancelled
         ? "分析已停止"
         : title;
-  const statuses = {
-    pending: running ? "等待中" : "未执行",
-    running: running ? "分析中" : "已中断",
-    completed: "已完成",
-    cached: "沿用结果",
-    skipped: "无需执行",
-    failed: "未完成",
-    cancelled: "已停止",
-  };
   return (
     <ChainOfThought
       className="tea-analysis-process"
@@ -110,130 +119,180 @@ export function AnalysisProcess({
         className="tea-analysis-content"
       >
         <div className="tea-analysis-steps" role="list" aria-label="分析步骤">
-          {steps.map((step) => {
-            const Icon = stepIcons[step.status];
-            const input = step.input_data ?? step.input;
-            const output = step.output_data ?? step.output;
-            const hasOutput =
-              typeof output === "string"
-                ? !!output.trim()
-                : !!output && Object.keys(output).length > 0;
-            const view = presentProcessStep(step, steps);
-            return (
-              <ChainOfThoughtStep
-                key={step.id}
-                role="listitem"
-                className="tea-analysis-step"
-                data-state={step.status}
-                data-step-id={step.id}
-                status={
-                  step.status === "pending"
-                    ? "pending"
-                    : step.status === "running" && running
-                      ? "active"
-                      : "complete"
-                }
-                icon={
-                  <Icon
-                    className={
-                      step.status === "running" && running
-                        ? "tea-spin size-4"
-                        : "size-4"
-                    }
-                  />
-                }
-                label={
-                  <div className="tea-analysis-step-heading">
-                    <strong>
-                      {Object.hasOwn(processStepLabels, step.id)
-                        ? processStepLabels[step.id]
-                        : step.label}
-                    </strong>
-                    <span>{statuses[step.status]}</span>
-                  </div>
-                }
-                description={
-                  view.description ? (
-                    <p className="tea-analysis-step-detail">
-                      {view.description}
-                    </p>
-                  ) : undefined
-                }
-              >
-                {view.warning && (
-                  <p className="tea-analysis-attention">{view.warning}</p>
-                )}
-                {(input !== undefined || output !== undefined) && (
-                  <details className="tea-analysis-records">
-                    <summary>查看本步发现</summary>
-                    <div className="tea-analysis-findings">
-                      {view.context.length > 0 && (
-                        <ul
-                          className="tea-analysis-context"
-                          aria-label="分析范围"
-                        >
-                          {view.context.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                      )}
-                      {view.sections.length ? (
-                        view.sections.map((section) => (
-                          <FindingSection
-                            key={section.title}
-                            section={section}
-                          />
-                        ))
-                      ) : (
-                        <>
-                          {input !== undefined &&
-                            !(
-                              Object.hasOwn(processStepLabels, step.id) &&
-                              view.context.length
-                            ) && (
-                              <section>
-                                <h4>参考信息</h4>
-                                <ReadableData value={input} />
-                              </section>
-                            )}
-                          {hasOutput ? (
-                            <section>
-                              <h4>本步结果</h4>
-                              <ReadableData value={output} />
-                            </section>
-                          ) : (
-                            <p className="tea-analysis-empty">
-                              {step.status === "running" && running
-                                ? "正在整理，本步完成后会显示结果。"
-                                : "本步暂无可展示的结果。"}
-                            </p>
-                          )}
-                        </>
-                      )}
-                      <TechnicalRecords
-                        step={step}
-                        input={input}
-                        output={output}
-                      />
-                    </div>
-                  </details>
-                )}
-              </ChainOfThoughtStep>
-            );
-          })}
+          {steps.map((step) => (
+            <AnalysisStep
+              key={step.id}
+              step={step}
+              steps={steps}
+              running={running}
+              expanded={expandedSteps.has(step.id)}
+              onToggle={() =>
+                setExpandedSteps((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(step.id)) next.delete(step.id);
+                  else next.add(step.id);
+                  return next;
+                })
+              }
+            />
+          ))}
         </div>
       </ChainOfThoughtContent>
     </ChainOfThought>
   );
 }
 
+function AnalysisStep({
+  step,
+  steps,
+  running,
+  expanded,
+  onToggle,
+}: {
+  step: ProcessStep;
+  steps: readonly ProcessStep[];
+  running: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const id = useId();
+  const active = step.status === "running" && running;
+  const Icon =
+    step.status === "completed" && Object.hasOwn(activityIcons, step.id)
+      ? activityIcons[step.id as keyof typeof activityIcons]
+      : stepIcons[step.status];
+  const input = step.input_data ?? step.input;
+  const output = step.output_data ?? step.output;
+  const hasRecords = input !== undefined || output !== undefined;
+  const hasOutput =
+    typeof output === "string"
+      ? !!output.trim()
+      : !!output && Object.keys(output).length > 0;
+  const view = presentProcessStep(step, steps);
+  const label = Object.hasOwn(processStepLabels, step.id)
+    ? processStepLabels[step.id]
+    : step.label;
+  const status = {
+    pending: running ? "等待中" : "未执行",
+    running: running ? "分析中" : "已中断",
+    completed: "已完成",
+    cached: "沿用结果",
+    skipped: "无需执行",
+    failed: "未完成",
+    cancelled: "已停止",
+  }[step.status];
+  const heading = (
+    <>
+      <strong>{label}</strong>
+      <span className={step.status === "completed" ? "sr-only" : undefined}>
+        {status}
+      </span>
+      {hasRecords && <ChevronDown size={14} aria-hidden="true" />}
+    </>
+  );
+  return (
+    <ChainOfThoughtStep
+      role="listitem"
+      className="tea-analysis-step"
+      data-state={step.status}
+      data-step-id={step.id}
+      status={
+        step.status === "pending" ? "pending" : active ? "active" : "complete"
+      }
+      icon={
+        <Icon
+          className={active ? "tea-spin size-4" : "size-4"}
+          aria-hidden="true"
+        />
+      }
+      label={
+        hasRecords ? (
+          <button
+            id={id + "-trigger"}
+            type="button"
+            className="tea-analysis-step-heading tea-analysis-step-trigger"
+            aria-label={`${label} · ${status}`}
+            aria-expanded={expanded}
+            aria-controls={id + "-findings"}
+            onClick={onToggle}
+          >
+            {heading}
+          </button>
+        ) : (
+          <div className="tea-analysis-step-heading">{heading}</div>
+        )
+      }
+      description={
+        view.description ? (
+          <p className="tea-analysis-step-detail">{view.description}</p>
+        ) : undefined
+      }
+    >
+      {view.warning && <p className="tea-analysis-attention">{view.warning}</p>}
+      {expanded && (
+        <div
+          id={id + "-findings"}
+          className="tea-analysis-findings"
+          role="region"
+          aria-labelledby={id + "-trigger"}
+        >
+          {view.context.length > 0 && (
+            <ul className="tea-analysis-context" aria-label="分析范围">
+              {view.context.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+          {view.sections.length ? (
+            view.sections.map((section) => (
+              <FindingSection key={section.title} section={section} />
+            ))
+          ) : (
+            <>
+              {input !== undefined &&
+                !(
+                  Object.hasOwn(processStepLabels, step.id) &&
+                  view.context.length
+                ) && (
+                  <section>
+                    <h4>参考信息</h4>
+                    <ReadableData value={input} />
+                  </section>
+                )}
+              {hasOutput ? (
+                <section>
+                  <h4>本步结果</h4>
+                  <ReadableData value={output} />
+                </section>
+              ) : (
+                <p className="tea-analysis-empty">
+                  {active
+                    ? "正在整理，本步完成后会显示结果。"
+                    : "本步暂无可展示的结果。"}
+                </p>
+              )}
+            </>
+          )}
+          <TechnicalRecords step={step} input={input} output={output} />
+        </div>
+      )}
+    </ChainOfThoughtStep>
+  );
+}
+
 function Finding({ item }: { item: ProcessFinding }) {
   return (
     <li className="tea-analysis-finding">
-      <strong>{item.title}</strong>
-      {item.details?.map((detail, index) => (
-        <p key={index}>{detail}</p>
-      ))}
+      {item.source ? (
+        <CitationCard citation={item.source} />
+      ) : (
+        <>
+          <strong>{item.title}</strong>
+          {item.details?.map((detail, index) => (
+            <p key={index}>{detail}</p>
+          ))}
+        </>
+      )}
       {!!item.attention?.length && (
         <div className="tea-analysis-attention">
           <span>待核实</span>
@@ -253,7 +312,11 @@ function FindingSection({ section }: { section: ProcessSection }) {
   const id = useId();
   const visible = expanded ? section.items : section.items.slice(0, 3);
   return (
-    <section>
+    <section
+      className={
+        section.kind === "sources" ? "tea-analysis-sources" : undefined
+      }
+    >
       <h4>
         {section.title}
         <span>{section.items.length} 项</span>
@@ -299,7 +362,10 @@ function TechnicalRecords({
       className="tea-analysis-technical"
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary>技术记录</summary>
+      <summary>
+        <ChevronDown size={12} aria-hidden="true" />
+        技术记录
+      </summary>
       {open && (
         <div>
           <p>保留本步的运行说明与原始数据，供核对或排查问题。</p>

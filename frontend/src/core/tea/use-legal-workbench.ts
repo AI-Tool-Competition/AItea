@@ -166,6 +166,10 @@ export function useLegalWorkbench(
     };
   }, [scope]);
   useEffect(() => {
+    // A different saved node report replaces only the transient run record.
+    setSteps((current) => (current.length ? [] : current));
+  }, [analysisId, analysisRevision]);
+  useEffect(() => {
     if (analysisId)
       update((current) => ({ ...current, selectedId: analysisId }));
     // A new node report changes selection without clearing any unsaved edits.
@@ -295,6 +299,7 @@ export function useLegalWorkbench(
       );
       if (!valid(abort)) return;
       adopt(value);
+      setSteps(value.result.trace);
       update((current) => ({
         ...current,
         selectedId: value.id,
@@ -485,6 +490,7 @@ export function useLegalWorkbench(
     choose: (selectedId: string) => {
       if (busy) return;
       setAnalysis(undefined);
+      setSteps([]);
       update((current) => ({ ...current, selectedId }));
     },
     setPage,

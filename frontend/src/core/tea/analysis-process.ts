@@ -1,6 +1,6 @@
 import { countryLabel } from "./countries";
 import { conclusionLabels } from "./legal-labels";
-import { type TraceStep } from "./types";
+import { type Citation, type TraceStep } from "./types";
 
 export type ProcessStep = Omit<TraceStep, "status"> & {
   status: TraceStep["status"] | "pending";
@@ -17,11 +17,13 @@ export type ProcessFinding = {
   title: string;
   details?: string[];
   attention?: string[];
+  source?: Citation;
 };
 export type ProcessSection = {
   title: string;
   items: ProcessFinding[];
   empty: string;
+  kind?: "sources";
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -61,8 +63,12 @@ export function presentProcessStep(
   const output = record(step.output_data);
   const sections: ProcessSection[] = [];
   let summary = "";
-  const add = (title: string, items: ProcessFinding[], empty: string) =>
-    sections.push({ title, items, empty });
+  const add = (
+    title: string,
+    items: ProcessFinding[],
+    empty: string,
+    kind?: ProcessSection["kind"],
+  ) => sections.push({ title, items, empty, kind });
   const issueNames = new Map<string, string>();
   for (const source of steps) {
     for (const issue of records(record(source.output_data).issues)) {
@@ -164,6 +170,16 @@ export function presentProcessStep(
         "可供核对的原文",
         citations.map((item) => ({
           title: text(item.title) || "参考资料",
+          source:
+            typeof item.document_id === "string" && item.document_id
+              ? ({
+                  ...item,
+                  document_id: item.document_id,
+                  title: text(item.title) || "参考资料",
+                  excerpt: text(item.excerpt),
+                  locator: record(item.locator),
+                } as Citation)
+              : undefined,
           details: [
             text(item.document_version)
               ? `资料版本：第 ${text(item.document_version)} 版`
@@ -172,6 +188,7 @@ export function presentProcessStep(
           ].filter(Boolean),
         })),
         "暂无原文依据",
+        "sources",
       );
   } else if (step.id === "qa05" && Array.isArray(output.issues)) {
     const issues = records(output.issues);

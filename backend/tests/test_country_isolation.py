@@ -10,6 +10,8 @@ from app.countries import country_from_collection, document_country, resolve_cou
 from app.main import create_app
 from app.service import AppError
 
+pytestmark = pytest.mark.usefixtures("sample_workflow")
+
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):

@@ -13,16 +13,19 @@ export interface Mode {
 export interface FieldDefinition {
   key: string;
   label: string;
-  type: "text" | "number" | "textarea";
+  type: "text" | "number" | "textarea" | "select";
   required: boolean;
   min?: number;
   placeholder?: string;
+  options?: string[] | null;
+  accepted_values?: string[] | null;
 }
 export interface TaskDefinition {
   id: string;
   title: string;
   description: string;
   required: boolean;
+  blocks_next_stage?: boolean;
   fields: FieldDefinition[];
   require_document: boolean;
   require_confirmation: boolean;
@@ -105,7 +108,7 @@ export interface StageState {
   name: string;
   actor: string;
   description: string;
-  status: "locked" | "active" | "completed";
+  status: "locked" | "active" | "follow_up" | "completed";
   tasks: TaskState[];
 }
 export interface Fact {

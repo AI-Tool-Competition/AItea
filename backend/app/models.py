@@ -23,10 +23,31 @@ class StrictModel(BaseModel):
 class FieldDefinition(StrictModel):
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     label: str = Field(min_length=1, max_length=100)
-    type: Literal["text", "number", "textarea"]
+    type: Literal["text", "number", "textarea", "select"]
     required: bool = True
     min: float | None = None
     placeholder: str | None = None
+    options: list[Annotated[str, Field(min_length=1, max_length=100)]] | None = Field(
+        default=None, min_length=1, max_length=50
+    )
+    accepted_values: list[Annotated[str, Field(min_length=1, max_length=100)]] | None = Field(
+        default=None, min_length=1, max_length=50
+    )
+
+    @model_validator(mode="after")
+    def valid_options(self):
+        if self.type != "select":
+            if self.options is not None or self.accepted_values is not None:
+                raise ValueError("仅单选字段支持选项及核验通过值")
+        elif not self.options or len(set(self.options)) != len(self.options):
+            raise ValueError("单选字段需要非空且不重复的选项")
+        if self.accepted_values is not None and (
+            not self.required
+            or len(set(self.accepted_values)) != len(self.accepted_values)
+            or not set(self.accepted_values).issubset(self.options or [])
+        ):
+            raise ValueError("核验通过值必须是必填单选字段的不重复选项子集")
+        return self
 
 
 class TaskDefinition(StrictModel):
@@ -34,6 +55,7 @@ class TaskDefinition(StrictModel):
     title: str = Field(min_length=1, max_length=100)
     description: str = Field(max_length=2000)
     required: bool = True
+    blocks_next_stage: bool = True
     fields: list[FieldDefinition] = Field(max_length=30)
     require_document: bool = False
     require_confirmation: bool = True

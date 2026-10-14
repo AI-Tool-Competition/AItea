@@ -19,6 +19,7 @@ from .assistant import generate_guidance
 from .countries import resolve_country
 from .legal_models import (
     LEGAL_MODULES,
+    MAX_ANALYSIS_FACTS,
     AssessmentOutput,
     ClassificationOutput,
     DeadlineRequest,
@@ -275,7 +276,9 @@ class _LegalRunner:
             )
         )
         clean_facts = [LegalFact.model_validate(item).model_dump() for item in facts]
-        if len(clean_facts) > 300 or len({item["key"] for item in clean_facts}) != len(clean_facts):
+        if len(clean_facts) > MAX_ANALYSIS_FACTS or len({item["key"] for item in clean_facts}) != len(
+            clean_facts
+        ):
             raise LegalEngineError("事实数量超限或编号重复。")
         self.configuration = _fingerprint(
             {

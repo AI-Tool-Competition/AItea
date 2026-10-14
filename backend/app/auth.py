@@ -75,9 +75,9 @@ class Auth:
         self.service.create_case(
             id,
             {
-                "title": "乌龙茶 · 印尼出口准备",
+                "title": DEFAULT_TEMPLATE["title"],
                 "company": "",
-                "product": "乌龙茶",
+                "product": "六堡茶",
                 "mode_id": mode_id,
                 "template_id": DEFAULT_TEMPLATE["id"],
             },

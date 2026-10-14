@@ -74,7 +74,10 @@ export function Studio({
   requestedStage?: string;
 }) {
   const [templateId, setTemplateId] = useState(
-    selectedTemplates.get(ownerId) ?? templates[0]?.id ?? "",
+    selectedTemplates.get(ownerId) ??
+      templates.find((item) => !item.is_demo)?.id ??
+      templates[0]?.id ??
+      "",
   );
   const [localTemplates, setLocalTemplates] = useState(() =>
     localConfigurationDrafts(ownerId),

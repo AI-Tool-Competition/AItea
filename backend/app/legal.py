@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from .countries import resolve_country
 from .db import dump, now, uid
+from .legal_models import MAX_CASE_FACTS
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,8 @@ class LegalService:
         return [
             self.public(json.loads(row["payload"]))
             for row in conn.execute(
-                "SELECT payload FROM legal_facts WHERE case_id=? ORDER BY key LIMIT 200", (case_id,)
+                "SELECT payload FROM legal_facts WHERE case_id=? ORDER BY key LIMIT ?",
+                (case_id, MAX_CASE_FACTS),
             )
         ]
 
@@ -98,7 +100,7 @@ class LegalService:
                 "SELECT COUNT(*) FROM (SELECT key FROM facts WHERE case_id=? UNION SELECT key FROM legal_facts WHERE case_id=?)",
                 (case_id, case_id),
             ).fetchone()[0]
-            > 200
+            > MAX_CASE_FACTS
         )
 
     def valid_evidence(self, conn, owner, case_id, ids):
@@ -139,7 +141,8 @@ class LegalService:
         stored = {
             row["key"]: json.loads(row["payload"])
             for row in conn.execute(
-                "SELECT key,payload FROM legal_facts WHERE case_id=? ORDER BY key LIMIT 200", (case_id,)
+                "SELECT key,payload FROM legal_facts WHERE case_id=? ORDER BY key LIMIT ?",
+                (case_id, MAX_CASE_FACTS),
             )
         }
         for row in conn.execute("SELECT * FROM facts WHERE case_id=? ORDER BY key", (case_id,)):
@@ -149,7 +152,7 @@ class LegalService:
                 continue
             original = json.loads(row["value"])
             if fact is None:
-                if len(stored) >= 200:
+                if len(stored) >= MAX_CASE_FACTS:
                     continue
                 fact = {
                     "key": row["key"],
@@ -482,7 +485,7 @@ class LegalService:
             if payload["expected_revision"] != revision:
                 fail(409, "stale_fact", "事实已有新版本，你的输入已保留，请核对最新内容后再保存")
             count = conn.execute("SELECT COUNT(*) FROM legal_facts WHERE case_id=?", (case_id,)).fetchone()[0]
-            if revision == 0 and count >= 200:
+            if revision == 0 and count >= MAX_CASE_FACTS:
                 fail(422, "fact_limit", "本业务已达到事实记录上限，请整理现有事实")
             evidence = list(dict.fromkeys(payload.get("evidence_refs", [])))
             for document_id in evidence:
@@ -602,7 +605,11 @@ class LegalService:
                 fail(503, "analysis_busy", "当前分析较多，请稍后重试")
             snapshot = self.snapshot(conn, owner, case)
             if self.facts_truncated(conn, case_id):
-                fail(422, "fact_limit", "业务事实超过本版 200 条分析上限，请先整理事实，避免遗漏重要前提")
+                fail(
+                    422,
+                    "fact_limit",
+                    f"业务事实超过本版 {MAX_CASE_FACTS} 条分析上限，请先整理事实，避免遗漏重要前提",
+                )
             if analysis_id:
                 analysis = self.mark_stale(conn, self.own(conn, owner, case_id, analysis_id), snapshot)
                 if not existing and payload["expected_revision"] != analysis["revision"]:
@@ -741,7 +748,7 @@ class LegalService:
             )
             if prior and not fills_missing and prior.get("conflicts") == proposed.get("conflicts"):
                 continue
-            if not prior and len(current) >= 200:
+            if not prior and len(current) >= MAX_CASE_FACTS:
                 result["gaps"].append("事实已达记录上限；部分新提取事实未保存，请先整理事实。")
                 break
             fact = copy.deepcopy(prior or proposed)

@@ -85,7 +85,7 @@ function Welcome({
       <header>
         <Brand />
         <span className="tea-welcome-tag">
-          中国 → 印度尼西亚 <span>DEMO</span>
+          中国 → 印尼 / 新加坡 <span>六堡茶</span>
         </span>
       </header>
       <main>
@@ -113,7 +113,7 @@ function Welcome({
           </div>
           <div className="tea-welcome-note">
             <ShieldCheck size={14} />
-            演示业务独立保存 · 示例流程可配置
+            体验业务独立保存 · 四条六堡茶出口流程
           </div>
           {error && <ErrorNotice message={error} />}
         </div>
@@ -206,7 +206,9 @@ function NewCase({
   templates: Template[];
   onCreated: (record: CaseDetail) => void;
 }) {
-  const [templateId, setTemplateId] = useState(templates[0]?.id ?? "");
+  const [templateId, setTemplateId] = useState(
+    templates.find((item) => !item.is_demo)?.id ?? templates[0]?.id ?? "",
+  );
   const template = templates.find((t) => t.id === templateId);
   const [mode, setMode] = useState(
     template?.modes.find((m) => m.enabled)?.id ?? "",
@@ -261,7 +263,7 @@ function NewCase({
               maxLength={120}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="例如：秋季乌龙茶出口准备"
+              placeholder="例如：六堡茶 · 新加坡线上出口"
             />
           </label>
           <div className="tea-form-row">
@@ -280,7 +282,7 @@ function NewCase({
                 required
                 value={product}
                 onChange={(e) => setProduct(e.target.value)}
-                placeholder="例如：乌龙茶"
+                placeholder="例如：六堡茶"
               />
             </label>
           </div>

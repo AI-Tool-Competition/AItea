@@ -8,6 +8,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from .db import dump, now, uid
+from .defaults import RETIRED_TEMPLATE_ID
 
 
 class AdminStudio:
@@ -41,11 +42,12 @@ class AdminStudio:
                 """SELECT id,revision,updated_at,
                 CASE WHEN json_type(payload,'$.title')='text'
                     THEN substr(json_extract(payload,'$.title'),1,200) ELSE NULL END title
-                FROM template_drafts WHERE owner_id=? ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?""",
-                (owner, limit, offset),
+                FROM template_drafts WHERE owner_id=? AND id!=? ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?""",
+                (owner, RETIRED_TEMPLATE_ID, limit, offset),
             ).fetchall()
             total = conn.execute(
-                "SELECT COUNT(*) FROM template_drafts WHERE owner_id=?", (owner,)
+                "SELECT COUNT(*) FROM template_drafts WHERE owner_id=? AND id!=?",
+                (owner, RETIRED_TEMPLATE_ID),
             ).fetchone()[0]
             return {
                 "items": [dict(row) | {"title": (row["title"] or "").strip() or row["id"]} for row in rows],
@@ -53,6 +55,8 @@ class AdminStudio:
             }
 
     def draft(self, owner, template_id, conn=None):
+        if template_id == RETIRED_TEMPLATE_ID:
+            self.service.template(owner, template_id)
         if conn is None:
             with closing(self.db.connect()) as db:
                 return self.draft(owner, template_id, db)
@@ -74,6 +78,7 @@ class AdminStudio:
         if (
             not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", template_id)
             or payload.template.get("id") != template_id
+            or template_id == RETIRED_TEMPLATE_ID
         ):
             fail(422, "invalid_template_id", "草稿编号必须与当前流程编号一致")
         with self.db.transaction() as conn:
@@ -188,10 +193,7 @@ class AdminStudio:
             if existing and existing["status"] in ("completed", "failed"):
                 cached = json.loads(existing["payload"])
                 same_inputs = previous and previous.get("_snapshot") == legal.snapshot(conn, owner, case)
-                if (
-                    same_inputs
-                    and (previous["status"] not in ("failed", "cancelled") or not payload.retry)
-                ):
+                if same_inputs and (previous["status"] not in ("failed", "cancelled") or not payload.retry):
                     return cached | self.node_result(stage_id, previous)
             analysis_id = uid()
             expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()

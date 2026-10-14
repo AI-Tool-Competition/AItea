@@ -598,10 +598,25 @@ class CollectionService:
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope
                 + policy
+                + """ AND (phase!='parse' OR NOT EXISTS (
+                    SELECT 1 FROM documents candidate
+                    JOIN documents busy_document INDEXED BY documents_source
+                        ON busy_document.owner_id=candidate.owner_id
+                        AND busy_document.source_url IS candidate.source_url
+                        AND busy_document.content_hash=candidate.content_hash
+                        AND busy_document.version=candidate.version
+                    JOIN processing_jobs busy_job ON busy_job.document_id=busy_document.id
+                    WHERE candidate.id=processing_jobs.document_id
+                        AND candidate.owner_id=processing_jobs.owner_id
+                        AND busy_document.id!=candidate.id
+                        AND busy_job.owner_id=candidate.owner_id
+                        AND busy_job.status='processing' AND busy_job.phase='parse'
+                        AND busy_job.lease_until>?
+                ))"""
                 + " ORDER BY "
                 + order
                 + "updated_at,document_id LIMIT 1",
-                (timestamp, *arguments, *((preferred,) if preferred else ())),
+                (timestamp, *arguments, timestamp, *((preferred,) if preferred else ())),
             ).fetchone()
             if not row:
                 return None
@@ -990,24 +1005,42 @@ class CollectionService:
 
     def _process_pdf_ocr(self, doc, claim, manifest, content, archive_mode):
         from .parsing import ocr_bounded
+        from .pdf_ocr_reuse import candidate_is_current, find_verified_reuse
 
         checkpoint_lock = Lock()
 
+        def current_document(conn):
+            current = conn.execute(
+                "SELECT owner_id,role,version,content_hash,size,storage_path FROM documents WHERE id=?",
+                (doc["id"],),
+            ).fetchone()
+            if (
+                not self._valid_claim(conn, claim, True)
+                or current is None
+                or any(
+                    current[key] != doc[key]
+                    for key in ("owner_id", "role", "version", "content_hash", "size", "storage_path")
+                )
+            ):
+                raise ValueError("处理任务或原件版本已更新，请等待当前任务完成")
+
         def store_image(rendered):
+            with closing(self.db.connect()) as conn:
+                current_document(conn)
             reference = self._persist_ocr_image(doc, rendered)
             with checkpoint_lock, self.db.transaction() as conn:
-                if not self._valid_claim(conn, claim, True):
-                    raise ValueError("处理任务已更新，请等待当前任务完成")
+                current_document(conn)
                 page = next(page for page in manifest["pages"] if page["page"] == rendered["page"])
                 page.setdefault("ocr", {})["image_blob"] = reference
                 conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
             return reference
 
         def store_region(rendered):
+            with closing(self.db.connect()) as conn:
+                current_document(conn)
             reference = self._persist_ocr_image(doc, rendered)
             with checkpoint_lock, self.db.transaction() as conn:
-                if not self._valid_claim(conn, claim, True):
-                    raise ValueError("处理任务已更新，请等待当前任务完成")
+                current_document(conn)
             # The parser checkpoints the returned reference and the
             # request attempt through on_page before any HTTP call.
             return reference
@@ -1016,8 +1049,7 @@ class CollectionService:
             # Each completed physical page is durable before another batch.
             # The lease check prevents a stale worker from replacing new work.
             with checkpoint_lock, self.db.transaction() as conn:
-                if not self._valid_claim(conn, claim, True):
-                    raise ValueError("处理任务已更新，请等待当前任务完成")
+                current_document(conn)
                 manifest["pages"] = [
                     page if previous["page"] == page["page"] else previous for previous in manifest["pages"]
                 ]
@@ -1025,6 +1057,24 @@ class CollectionService:
                     "UPDATE documents SET manifest=? WHERE id=?",
                     (dump(manifest), doc["id"]),
                 )
+
+        def reuse(page, rendered):
+            with closing(self.db.connect()) as conn:
+                current_document(conn)
+            candidate = find_verified_reuse(self.service, doc, page, rendered)
+            if candidate is None:
+                return None
+            with checkpoint_lock, self.db.transaction() as conn:
+                current_document(conn)
+                if not candidate_is_current(conn, doc, candidate):
+                    return None
+                completed = candidate["page"]
+                manifest["pages"] = [
+                    completed if previous["page"] == completed["page"] else previous
+                    for previous in manifest["pages"]
+                ]
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+            return completed
 
         return ocr_bounded(
             doc["filename"],
@@ -1034,6 +1084,7 @@ class CollectionService:
             on_page=checkpoint,
             on_image=store_image,
             on_region=store_region,
+            on_reuse=reuse,
             archive_path=doc["storage_path"] if archive_mode else None,
             archive_size=doc["size"] if archive_mode else None,
         )

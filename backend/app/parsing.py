@@ -287,11 +287,15 @@ def _ocr_one_page(
     on_page: Callable[[dict], None] | None = None,
     archive_path=None,
     archive_size: int | None = None,
+    on_reuse: Callable[[dict, dict], dict | None] | None = None,
 ) -> dict:
     from .ingestion_quality import validate_ocr_page
     from .vision import OCRResponseError, PROMPT_VERSION, transcribe_page
 
     updated = deepcopy(page)
+    previous_metadata = page.get("ocr") if page.get("ocr") is not None else {}
+    if not isinstance(previous_metadata, dict):
+        raise ValueError("页面识别检查点格式无效。")
 
     def defer(reason: str) -> dict:
         updated.update(status="pending_ocr", deferred_reason=reason)
@@ -302,7 +306,7 @@ def _ocr_one_page(
         return defer("ocr_capacity")
     updated.pop("deferred_reason", None)
     if on_region is not None and (
-        page.get("status") == "ocr_uncertain" or (page.get("ocr") or {}).get("phase") == "recovery"
+        page.get("status") == "ocr_uncertain" or previous_metadata.get("phase") == "recovery"
     ):
         try:
             from .ocr_recovery import recover_page_step
@@ -319,15 +323,13 @@ def _ocr_one_page(
             return defer("render_capacity")
         finally:
             _OCR_SLOTS.release()
-    previous_attempts = (page.get("ocr") or {}).get("attempts", 0)
+    previous_attempts = previous_metadata.get("attempts", 0)
     metadata = {
         "prompt_version": PROMPT_VERSION,
-        "requested_model": os.getenv("LLM_MODEL", "")[:200],
+        "requested_model": os.getenv("LLM_MODEL", "").strip()[:200],
         "source_hash": page["source_hash"],
         "page": page["page"],
-        "attempts": previous_attempts
-        if type(previous_attempts) is int and 0 <= previous_attempts <= 3
-        else 0,
+        "attempts": previous_attempts,
     }
 
     def failure(exc: ValueError | OSError) -> dict:
@@ -344,6 +346,11 @@ def _ocr_one_page(
         return updated
 
     try:
+        if type(previous_attempts) is not int or not 0 <= previous_attempts <= 3:
+            raise ValueError("页面识别尝试次数无效。")
+        if previous_attempts >= 3:
+            updated.update(status="ocr_failed", error="页面识别已达到自动重试上限。")
+            return updated
         try:
             if content is None:
                 from .archive_parsing import render_archive_page_bounded
@@ -358,6 +365,10 @@ def _ocr_one_page(
         except (ValueError, OSError) as exc:
             return failure(exc)
         metadata.update({key: value for key, value in rendered.items() if key != "image_base64"})
+        if on_reuse is not None:
+            reused = on_reuse(deepcopy(page), deepcopy(rendered))
+            if reused is not None:
+                return reused
         # Persist exactly the sent pixels before the external request. A storage
         # callback failure must stop the job, not be reclassified as model error.
         if on_image is not None:
@@ -365,14 +376,32 @@ def _ocr_one_page(
             if not isinstance(reference, dict):
                 raise ValueError("图像存储回调必须返回持久引用。")
             metadata["image_blob"] = reference
+        from .pdf_ocr_reuse import current_profile, native_hint
+
+        profile = current_profile()
+        hint, hint_strategy = native_hint(page)
+        metadata.update(
+            native_hint_strategy=hint_strategy,
+            native_hint_hash=hashlib.sha256(hint.encode()).hexdigest(),
+            native_hint_chars=len(hint),
+        )
+        if profile is not None:
+            metadata["provider_profile"] = profile
+        metadata["attempts"] += 1
+        updated.update(status="pending_ocr", ocr=metadata)
+        # The entire request intent (not just PNG) survives process interruption.
+        # Callback failure propagates before any provider request or model-error handler.
+        if on_page is not None:
+            on_page(deepcopy(updated))
+        if current_profile() != profile:
+            raise ValueError("图片识别配置已变更，请重新领取任务。")
         try:
-            metadata["attempts"] += 1
-            transcript = transcribe_page({**rendered, "native_text": page["native_text"]})
+            transcript = transcribe_page({**rendered, "native_text": hint})
         except (ValueError, OSError) as exc:
             return failure(exc)
         if transcript["is_blank"] and page["native_text"].strip():
             transcript["uncertain_spans"].append("blank_response_conflicts_with_native_text")
-        elif len(page["native_text"]) > 200 and len(transcript["text"]) < len(page["native_text"]) * 0.5:
+        elif len(hint) > 200 and len(transcript["text"]) < len(hint) * 0.5:
             transcript["uncertain_spans"].append("transcription_much_shorter_than_native_text")
         if "table_layout" in page.get("reasons", []) and not re.search(
             r"(?m)^\s*\|(?:[ \t]*:?-{2,}:?[ \t]*\|)+[ \t]*$", transcript["text"]
@@ -415,6 +444,7 @@ def ocr_bounded(
     on_page: Callable[[dict], None] | None = None,
     on_image: Callable[[dict], dict] | None = None,
     on_region: Callable[[dict], dict] | None = None,
+    on_reuse: Callable[[dict, dict], dict | None] | None = None,
     max_pages: int = 4,
     archive_path=None,
     archive_size: int | None = None,
@@ -467,7 +497,15 @@ def ocr_bounded(
         executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="page-ocr")
         futures = [
             executor.submit(
-                _ocr_one_page, content, page, on_image, on_region, on_page, archive_path, archive_size
+                _ocr_one_page,
+                content,
+                page,
+                on_image,
+                on_region,
+                on_page,
+                archive_path,
+                archive_size,
+                on_reuse,
             )
             for page in pending
         ]

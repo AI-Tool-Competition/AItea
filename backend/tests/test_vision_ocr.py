@@ -149,13 +149,18 @@ def test_broken_native_anchor_does_not_invalidate_additional_readable_numbers(en
     assert result["quality"]["complete"]
 
 
-def test_model_receives_high_detail_image_and_bounded_untrusted_native_hint(enabled, monkeypatch):
+@pytest.mark.parametrize("scanned", [False, True])
+def test_model_receives_high_detail_image_and_visibility_aware_native_hint(enabled, monkeypatch, scanned):
     requests = fake_provider(monkeypatch, payload())
-    content = make_pdf([("native layer", True)])
-    parsing.ocr_bounded("scan.pdf", content, "application/pdf", parse_file("scan.pdf", content))
+    content = make_pdf([("native layer", scanned)])
+    page = parse_file("scan.pdf", content)["pages"][0]
+    parsing._ocr_one_page(content, page)
     parts = requests[0]["messages"][1]["content"]
     assert parts[0]["image_url"]["detail"] == "high"
-    assert "native layer" in parts[1]["text"]
+    if (page.get("native_visibility") or {}).get("requires_visual_review"):
+        assert "native layer" not in parts[1]["text"] and parts[1]["text"].endswith('""')
+    else:
+        assert "native layer" in parts[1]["text"]
     assert "untrusted" in parts[1]["text"]
 
 
@@ -198,8 +203,9 @@ def test_ocr_retains_full_transcript_and_checkpoint_without_resending_success(en
         on_page=checkpoints.append,
         max_pages=1,
     )
-    assert len(checkpoints) == 1
-    page = checkpoints[0]
+    assert len(checkpoints) == 2
+    assert checkpoints[0]["status"] == "pending_ocr" and checkpoints[0]["ocr"]["attempts"] == 1
+    page = checkpoints[1]
     assert page["page"] == 1 and page["printed_page"] == "11"
     assert page["native_text"] == "broken native"
     assert page["text"] == "Pasal 1\nKetentuan lengkap."

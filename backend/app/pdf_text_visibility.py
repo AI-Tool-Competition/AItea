@@ -11,6 +11,7 @@ import hashlib
 import io
 import math
 import re
+import unicodedata
 
 VERSION = "pdf-native-visibility-v1"
 _HASH = re.compile(r"[a-f0-9]{64}")
@@ -21,6 +22,7 @@ _MAX_PAINT_COMPARISONS = 1_000_000
 _MAX_CLIPS = 8
 _MAX_SEGMENTS = 64
 _MAX_PIXELS = 6_000_000
+_MAX_COMPARISON_CHARS = 20_000
 
 
 def _finite(values):
@@ -103,6 +105,110 @@ def _clip_evidence(raw, obj):
     return result
 
 
+def _hyphen_reader_comparison(raw, textpage, native_text, object_text, text_objects):
+    """Reconcile only API-proved line-end hyphens in a derived comparison.
+
+    PDFium marks these characters U+0002 while retaining their source glyph.
+    Every non-space character must agree in order; source text is never edited.
+    This does not resolve clipping, painting, Forms or optional content.
+    """
+    try:
+        count = textpage.count_chars()
+        if not 0 < count <= _MAX_COMPARISON_CHARS or len(native_text) > _MAX_COMPARISON_CHARS:
+            return None
+        chars, candidate, markers = [], [], []
+        per_object_chars = {}
+        normalized_index = 0
+        for index in range(count):
+            value = raw.FPDFText_GetUnicode(textpage.raw, index)
+            if not 0 <= value <= 0x10FFFF or 0xD800 <= value <= 0xDFFF:
+                return None
+            char = chr(value)
+            chars.append(char)
+            obj = raw.FPDFText_GetTextObject(textpage.raw, index)
+            address = ctypes.cast(obj, ctypes.c_void_p).value if obj else None
+            if address is not None:
+                per_object_chars.setdefault(address, []).append(char)
+            if value == 2:
+                flags = (
+                    raw.FPDFText_IsHyphen(textpage.raw, index),
+                    raw.FPDFText_IsGenerated(textpage.raw, index),
+                    raw.FPDFText_HasUnicodeMapError(textpage.raw, index),
+                )
+                if flags != (1, 0, 0) or len(markers) >= _MAX_EVIDENCE or address not in text_objects:
+                    return None
+                markers.append(
+                    {
+                        "pdfium_char_index": index,
+                        "normalized_nonspace_index": normalized_index,
+                        "unicode": value,
+                        "is_hyphen": flags[0],
+                        "is_generated": flags[1],
+                        "unicode_map_error": flags[2],
+                        "comparison_character": "-",
+                        "page_text_object_order": text_objects[address][0],
+                    }
+                )
+                char = "-"
+            candidate.append(char)
+            normalized_index += sum(not item.isspace() for item in unicodedata.normalize("NFKC", char))
+        if not markers:
+            return None
+
+        def normalized(text):
+            return "".join(char for char in unicodedata.normalize("NFKC", text) if not char.isspace())
+
+        reader_text = "".join(chars)
+        comparison_text = "".join(candidate)
+        # This audit inspected the page's root text objects. Do not use the
+        # full textpage to silently fill a missing/unsupported Form subtree.
+        if normalized(object_text) != normalized(reader_text):
+            return None
+        for address, values in per_object_chars.items():
+            if any(value == "\x02" for value in values):
+                if address not in text_objects or normalized("".join(values)) != normalized(
+                    text_objects[address][1]
+                ):
+                    return None
+        native_sequence = normalized(native_text)
+        if normalized(comparison_text) != native_sequence:
+            return None
+        # NFKC can map full-width or compatibility symbols to '-'. Each alias
+        # must instead bind to a literal U+002D in the immutable native string.
+        native_positions, expanded = [], []
+        for native_index, char in enumerate(native_text):
+            for normalized_char in unicodedata.normalize("NFKC", char):
+                if not normalized_char.isspace():
+                    expanded.append(normalized_char)
+                    native_positions.append((native_index, char))
+        if "".join(expanded) != native_sequence:
+            return None
+        for marker in markers:
+            native_index, native_char = native_positions[marker["normalized_nonspace_index"]]
+            if native_char != "-":
+                return None
+            marker["native_char_index"] = native_index
+        from pypdfium2.version import PDFIUM_INFO, PYPDFIUM_INFO
+
+        return {
+            "version": "pdfium-api-hyphen-reader-comparison-v1",
+            "purpose": "derived_reader_comparison_only",
+            "native_text_unchanged": True,
+            "native_text_sha256": hashlib.sha256(native_text.encode()).hexdigest(),
+            "object_reader_text_sha256": hashlib.sha256(object_text.encode()).hexdigest(),
+            "api_reader_text_sha256": hashlib.sha256(reader_text.encode()).hexdigest(),
+            "comparison_text_sha256": hashlib.sha256(comparison_text.encode()).hexdigest(),
+            "normalized_native_sequence_sha256": hashlib.sha256(native_sequence.encode()).hexdigest(),
+            "normalization": "NFKC_nonspace_exact_order",
+            "pypdfium2_version": str(PYPDFIUM_INFO),
+            "pdfium_version": str(PDFIUM_INFO),
+            "pdfium_char_count": count,
+            "markers": markers,
+        }
+    except Exception:  # noqa: BLE001 -- missing/ambiguous API proof keeps the original disagreement
+        return None
+
+
 def audit_page_visibility(page, native_text, *, source_hash, page_number, optional_content=False):
     """Inspect an already-open PDFium page in its resource-bounded caller.
 
@@ -155,7 +261,7 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
         if not 0 <= count <= _MAX_OBJECTS:
             raise ValueError("PDF 可见性对象超过限制。")
         result["object_count"] = count
-        texts, paints = [], []
+        texts, paints, text_objects = [], [], {}
         textpage = page.get_textpage()
         try:
             for index, obj in enumerate(page.get_objects(max_depth=1, textpage=textpage)):
@@ -174,6 +280,7 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
                         raise ValueError("PDF 可见性文字对象超过限制。")
                     if not text.strip():
                         continue
+                    text_objects[ctypes.cast(obj.raw, ctypes.c_void_p).value] = (index, text)
                     row = {
                         "object_order": index,
                         "text": text,
@@ -279,8 +386,13 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
                     result["evidence"].append(text)
                     if len(result["evidence"]) > _MAX_EVIDENCE:
                         raise ValueError("PDF 可见性证据超过限制。")
-            if _characters(native_text) != _characters("".join(text["text"] for text in texts)):
-                result["unknown_reasons"].append("native_text_reader_disagreement")
+            object_text = "".join(text["text"] for text in texts)
+            if _characters(native_text) != _characters(object_text):
+                comparison = _hyphen_reader_comparison(raw, textpage, native_text, object_text, text_objects)
+                if comparison is None:
+                    result["unknown_reasons"].append("native_text_reader_disagreement")
+                else:
+                    result["reader_comparison"] = comparison
             result["text_object_count"] = len(texts)
         finally:
             textpage.close()

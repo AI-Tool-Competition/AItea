@@ -59,8 +59,10 @@ def original(stream=b"", *, rotation=0, form=False, alpha=None):
     return output.getvalue()
 
 
-def inspect(content, *, optional_content=False):
+def inspect(content, *, optional_content=False, native_override=None):
     native = PdfReader(io.BytesIO(content)).pages[0].extract_text() or ""
+    if native_override is not None:
+        native = native_override
     with pdfium.PdfDocument(content) as document:
         page = document[0]
         try:
@@ -194,6 +196,132 @@ def test_native_claim_without_matching_page_objects_is_not_certified():
             page.close()
     assert "native_text_reader_disagreement" in audit["unknown_reasons"]
     assert audit["requires_visual_review"]
+
+
+HYPHEN_TEXT = b"BT /F1 12 Tf 1 0 0 1 10 140 Tm (undang-) Tj 0 -20 Td (undang123) Tj ET"
+
+
+def test_api_proved_line_end_hyphen_has_only_derived_exact_comparison():
+    native, audit = inspect(original(HYPHEN_TEXT))
+    assert native == "undang-\nundang123"
+    assert audit["native_text_sha256"] == hashlib.sha256(native.encode()).hexdigest()
+    assert audit["requires_visual_review"] is False
+    assert audit["visibility_complete_certified"] is False
+    proof = audit["reader_comparison"]
+    assert proof["native_text_unchanged"] and proof["purpose"] == "derived_reader_comparison_only"
+    assert proof["normalization"] == "NFKC_nonspace_exact_order"
+    assert proof["native_text_sha256"] == audit["native_text_sha256"]
+    assert proof["pypdfium2_version"].startswith("5.14.0")
+    assert proof["pdfium_version"] == "156.0.8076.0"
+    assert len(proof["markers"]) == 1
+    assert proof["markers"][0] == {
+        "pdfium_char_index": 6,
+        "normalized_nonspace_index": 6,
+        "unicode": 2,
+        "is_hyphen": 1,
+        "is_generated": 0,
+        "unicode_map_error": 0,
+        "comparison_character": "-",
+        "page_text_object_order": 0,
+        "native_char_index": 6,
+    }
+
+
+@pytest.mark.parametrize(
+    "function,value",
+    [
+        ("FPDFText_IsHyphen", 0),
+        ("FPDFText_IsHyphen", -1),
+        ("FPDFText_IsGenerated", 1),
+        ("FPDFText_IsGenerated", -1),
+        ("FPDFText_HasUnicodeMapError", 1),
+        ("FPDFText_HasUnicodeMapError", -1),
+    ],
+)
+def test_unproved_hyphen_flags_keep_reader_disagreement(monkeypatch, function, value):
+    import pypdfium2.raw as raw
+
+    monkeypatch.setattr(raw, function, lambda *args: value)
+    native, audit = inspect(original(HYPHEN_TEXT))
+    assert native == "undang-\nundang123"
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+    assert audit["requires_visual_review"]
+
+
+def test_missing_hyphen_api_keeps_reader_disagreement(monkeypatch):
+    import pypdfium2.raw as raw
+
+    monkeypatch.delattr(raw, "FPDFText_IsHyphen")
+    _, audit = inspect(original(HYPHEN_TEXT))
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+
+
+def test_literal_control_character_is_not_guessed_as_a_hyphen():
+    _, audit = inspect(original(b"BT /F1 12 Tf 10 100 Td (A\x02B) Tj ET"), native_override="A-B")
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+
+
+@pytest.mark.parametrize(
+    "claimed",
+    [
+        "undang-\nundang128",
+        "gnadnu-\nundang123",
+        "undangundang123-",
+        "undang\nundang123",
+        "undang－\nundang123",
+    ],
+)
+def test_hyphen_alias_requires_full_source_character_order_and_numbers(claimed):
+    _, audit = inspect(original(HYPHEN_TEXT), native_override=claimed)
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+    assert audit["requires_visual_review"]
+
+
+def test_one_valid_marker_cannot_alias_an_unmarked_literal_on_the_same_page():
+    mixed = HYPHEN_TEXT + b" BT /F1 12 Tf 10 80 Td (A\x02B) Tj ET"
+    _, audit = inspect(original(mixed), native_override="undang-\nundang123\nA-B")
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+
+
+def test_hyphen_comparison_requires_its_text_object_identity(monkeypatch):
+    import pypdfium2.raw as raw
+
+    monkeypatch.setattr(raw, "FPDFText_GetTextObject", lambda *args: None)
+    _, audit = inspect(original(HYPHEN_TEXT))
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+
+
+def test_hyphen_comparison_budget_cannot_relax_reader_disagreement(monkeypatch):
+    monkeypatch.setattr(visibility, "_MAX_COMPARISON_CHARS", 5)
+    _, audit = inspect(original(HYPHEN_TEXT))
+    assert "reader_comparison" not in audit
+    assert "native_text_reader_disagreement" in audit["unknown_reasons"]
+
+
+@pytest.mark.parametrize("fault", ["clip", "cover", "optional", "invisible", "form"])
+def test_hyphen_comparison_never_clears_independent_visibility_faults(fault):
+    stream = HYPHEN_TEXT
+    if fault == "clip":
+        stream = b"q 0 0 200 30 re W n " + stream + b" Q"
+    elif fault == "cover":
+        stream += b" 1 1 1 rg 0 100 250 80 re f"
+    elif fault == "invisible":
+        stream = stream.replace(b"BT", b"BT 3 Tr")
+    _, audit = inspect(original(stream, form=fault == "form"), optional_content=fault == "optional")
+    assert audit["requires_visual_review"]
+    assert audit["reasons"] or audit["unknown_reasons"]
+    if fault == "form":
+        assert "reader_comparison" not in audit
+        assert "form_visibility_geometry_unverified" in audit["unknown_reasons"]
+    else:
+        assert "reader_comparison" in audit
+        assert "native_text_reader_disagreement" not in audit["unknown_reasons"]
 
 
 @pytest.fixture

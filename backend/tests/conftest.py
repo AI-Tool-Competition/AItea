@@ -12,3 +12,19 @@ def isolated_providers(monkeypatch):
             monkeypatch.setenv(f"{prefix}_{field}", "")
     monkeypatch.setenv("VISION_OCR_ENABLED", "false")
     monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "64")
+
+
+@pytest.fixture
+def sample_workflow(monkeypatch):
+    """Explicit compact fixture for generic engine tests, never a shipped route."""
+    import json
+    from pathlib import Path
+
+    from app import auth, service
+    from app.models import Template
+
+    sample = Template.model_validate(
+        json.loads((Path(__file__).parent / "fixtures/minimal-workflow.json").read_text())
+    ).model_dump()
+    monkeypatch.setattr(auth, "DEFAULT_TEMPLATE", sample)
+    monkeypatch.setattr(service, "BUILTIN_TEMPLATES", {sample["id"]: sample})

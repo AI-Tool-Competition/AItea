@@ -788,14 +788,14 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
         raise
 
 
-def embed_texts(texts: list[str]) -> list[list[float]] | None:
-    base = os.environ.get("EMBEDDING_BASE_URL", "").strip()
-    key = os.environ.get("EMBEDDING_API_KEY", "").strip()
-    model = os.environ.get("EMBEDDING_MODEL", "").strip()
+def model_service_config(prefix: str) -> tuple[str, str, str] | None:
+    base = os.environ.get(f"{prefix}_BASE_URL", "").strip()
+    key = os.environ.get(f"{prefix}_API_KEY", "").strip()
+    model = os.environ.get(f"{prefix}_MODEL", "").strip()
     if not any((base, key, model)):
         return None
     if not all((base, key, model)):
-        raise ValueError("必须同时配置 EMBEDDING_BASE_URL、EMBEDDING_API_KEY 和 EMBEDDING_MODEL。")
+        raise ValueError(f"必须同时配置 {prefix}_BASE_URL、{prefix}_API_KEY 和 {prefix}_MODEL。")
     parsed = urlsplit(base)
     if (
         parsed.scheme not in {"https", "http"}
@@ -805,9 +805,17 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("EMBEDDING_BASE_URL 无效。")
+        raise ValueError(f"{prefix}_BASE_URL 无效。")
     if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise ValueError("远程 embedding 服务必须使用 HTTPS。")
+        raise ValueError(f"远程 {prefix.lower()} 服务必须使用 HTTPS。")
+    return base.rstrip("/"), key, model
+
+
+def embed_texts(texts: list[str]) -> list[list[float]] | None:
+    configuration = model_service_config("EMBEDDING")
+    if configuration is None:
+        return None
+    base, key, model = configuration
     if not texts:
         return []
     if len(texts) > 10000 or any(not isinstance(text, str) or len(text) > 20000 for text in texts):
@@ -868,6 +876,75 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
                         vectors.append(vector)
                 start += sum(len(batch) for batch in batches)
         return vectors
+
+
+_RERANK_SLOTS = threading.BoundedSemaphore(4)
+
+
+def rerank_chunks(query: str, chunks: list[dict], limit: int = 5) -> list[dict] | None:
+    """Rank eligible candidates by returned indices; never accept provider evidence."""
+    configuration = model_service_config("RERANK")
+    if configuration is None:
+        return None
+    if not chunks:
+        return []
+    texts = [chunk.get("text") for chunk in chunks]
+    if (
+        not isinstance(query, str)
+        or not 1 <= len(query) <= 2000
+        or len(chunks) > 60
+        or not 1 <= limit <= 20
+        or any(not isinstance(text, str) or not text or len(text) > 20000 for text in texts)
+        or sum(len(text) for text in texts) > 1_000_000
+    ):
+        raise ValueError("Rerank 输入超过处理限制。")
+    if not _RERANK_SLOTS.acquire(blocking=False):
+        raise ValueError("Rerank 服务繁忙。")
+    import httpx
+
+    base, key, model = configuration
+    count = min(limit, len(chunks))
+    try:
+        deadline = time.monotonic() + 20
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0, connect=5.0), follow_redirects=False, trust_env=False
+        ) as client:
+            with client.stream(
+                "POST",
+                base + "/rerank",
+                json={"model": model, "query": query, "documents": texts, "top_n": count},
+                headers={"Authorization": f"Bearer {key}"},
+            ) as response:
+                response.raise_for_status()
+                payload = bytearray()
+                for block in response.iter_bytes():
+                    payload.extend(block)
+                    if time.monotonic() > deadline or len(payload) > 1024 * 1024:
+                        raise ValueError("Rerank 服务响应超过处理限制。")
+                body = json.loads(payload)
+        results = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(results, list) or len(results) != count:
+            raise ValueError("Rerank 服务返回数量与请求不一致。")
+        ranked, indices = [], set()
+        for result in results:
+            index = result.get("index") if isinstance(result, dict) else None
+            score = result.get("relevance_score") if isinstance(result, dict) else None
+            if (
+                type(index) is not int
+                or not 0 <= index < len(chunks)
+                or index in indices
+                or isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not math.isfinite(score)
+            ):
+                raise ValueError("Rerank 服务返回索引或分数无效。")
+            indices.add(index)
+            ranked.append({**chunks[index], "rerank_score": float(score)})
+        return sorted(ranked, key=lambda item: item["rerank_score"], reverse=True)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ValueError("Rerank 服务请求失败，请检查服务配置或稍后重试。") from exc
+    finally:
+        _RERANK_SLOTS.release()
 
 
 class DownloadError(ValueError):

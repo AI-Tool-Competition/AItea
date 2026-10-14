@@ -1862,62 +1862,6 @@
   padding: 18px 0 12px;
   color: var(--muted-foreground);
 }
-.ta-debug-data,
-.ta-debug-task-data dl {
-  display: grid;
-  gap: 12px;
-  font-size: 12px;
-}
-.ta-debug-data dt,
-.ta-debug-task-data dt {
-  color: var(--muted-foreground);
-  margin-bottom: 4px;
-}
-.ta-debug-data dd,
-.ta-debug-task-data dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.ta-debug-value {
-  white-space: pre-wrap;
-  line-height: 1.75;
-}
-.ta-debug-data-list > div + div {
-  border-top: 1px solid var(--border);
-  margin-top: 10px;
-  padding-top: 10px;
-}
-.ta-debug-check-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 12px;
-}
-.ta-debug-check-row > strong {
-  font-weight: 500;
-}
-.ta-debug-check-row > span {
-  color: var(--tea-success);
-}
-.ta-debug-check-row[data-status="missing"] > span {
-  color: var(--tea-warning);
-}
-.ta-debug-check-row[data-status="conflict"] > span {
-  color: var(--destructive);
-}
-.ta-debug-check-row > small {
-  grid-column: 1 / -1;
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-.ta-debug-task-data > strong {
-  display: block;
-  margin-bottom: 12px;
-}
-.ta-debug-task-data dl > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-}
 .ta-debug-raw {
   max-height: 380px;
   padding: 12px;

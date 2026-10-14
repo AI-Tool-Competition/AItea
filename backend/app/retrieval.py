@@ -514,14 +514,16 @@ class RetrievalIndex:
                     )
                 }
                 hits = [rows[rowid] for rowid in selected]
+        reranked = False
         if hits:
             try:
-                candidates = [hit["retrieval_text"][: min(20000, 240000 // len(hits))] for hit in hits]
-                ranking = rerank_texts(query, candidates, limit=len(hits))
+                candidates = [hit["text"][: min(20000, 240000 // len(hits))] for hit in hits]
+                ranking = rerank_texts(query, candidates, limit=min(limit, len(hits)))
                 if ranking is not None:
                     hits = [hits[item["index"]] for item in ranking]
+                    reranked = True
             except Exception:
-                warnings.append("重排暂不可用，本次保留原检索顺序。")
+                warnings.append("重排服务暂不可用，本次保留原检索顺序。")
         if hits:
             # External calls release the snapshot. Revalidate the same scope and
             # the exact current chunk before returning any evidence to a caller.
@@ -563,7 +565,11 @@ class RetrievalIndex:
                 if len(unchanged) != len(hits):
                     warnings.append("检索期间资料或审核状态发生变更，已排除受影响引用，请重试。")
                 hits = unchanged
-        result = {"items": [self.citation(hit, query) for hit in hits[:limit]], "mode": mode}
+        result = {
+            "items": [self.citation(hit, query) for hit in hits[:limit]],
+            "mode": mode,
+            "reranked": reranked,
+        }
         if warnings:
             result["warning"] = "；".join(warnings)
         return result

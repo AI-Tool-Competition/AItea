@@ -44,6 +44,41 @@ const template = {
 };
 
 describe("configuration compatibility and editing", () => {
+  it("round trips select completion rules through export and import", () => {
+    const value = structuredClone(template);
+    const selected = {
+      key: "result",
+      label: "办理结果",
+      type: "select",
+      required: true,
+      options: ["待核验", "已核验完成"],
+      accepted_values: ["已核验完成"],
+    };
+    const input = {
+      ...value,
+      stages: [
+        {
+          ...value.stages[0],
+          tasks: [
+            {
+              ...value.stages[0]!.tasks[0],
+              blocks_next_stage: false,
+              fields: [selected],
+            },
+          ],
+        },
+      ],
+    };
+    const parsed = configurationSchema.parse(JSON.parse(JSON.stringify(input)));
+    expect(parsed.stages[0]?.tasks[0]?.blocks_next_stage).toBe(false);
+    expect(parsed.stages[0]?.tasks[0]?.fields[0]?.accepted_values).toEqual([
+      "已核验完成",
+    ]);
+    expect(parsed.stages[0]?.tasks[0]?.fields[0]?.options).toEqual([
+      "待核验",
+      "已核验完成",
+    ]);
+  });
   it("imports old configurations and per-stage analysis without losing instructions", () => {
     expect(configurationSchema.safeParse(template).success).toBe(true);
     const customized = structuredClone(template);

@@ -157,7 +157,21 @@ export function DebugSampleEditor({
                       {field.label}
                       {field.required ? " *" : ""}
                     </span>
-                    {field.type === "textarea" ? (
+                    {field.type === "select" ? (
+                      <select
+                        value={sample.task_values[task.id]?.[field.key] ?? ""}
+                        onChange={(event) =>
+                          fieldValue(task.id, field.key, event.target.value)
+                        }
+                      >
+                        <option value="">留空可测试缺项</option>
+                        {field.options?.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : field.type === "textarea" ? (
                       <Textarea
                         value={sample.task_values[task.id]?.[field.key] ?? ""}
                         rows={2}

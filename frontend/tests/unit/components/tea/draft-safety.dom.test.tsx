@@ -61,6 +61,45 @@ afterEach(() => {
 });
 
 describe("Draft and revision safety", () => {
+  it("retains a selected review state and clears confirmation when it changes", () => {
+    const selected: TaskState = {
+      ...task,
+      require_confirmation: true,
+      fields: [
+        {
+          key: "result",
+          label: "办理结果",
+          type: "select",
+          required: true,
+          options: ["等待外部", "已核验完成"],
+          accepted_values: ["已核验完成"],
+        },
+      ],
+      values: { result: "等待外部" },
+    };
+    const props = {
+      task: selected,
+      record,
+      locked: false,
+      onUpdate: () => undefined,
+      onArtifact: () => undefined,
+      onUpload: () => undefined,
+    };
+    const first = render(<TaskPanel {...props} />);
+    const confirmation = screen.getByRole<HTMLInputElement>("checkbox");
+    fireEvent.click(confirmation);
+    expect(confirmation.checked).toBe(true);
+    fireEvent.change(screen.getByRole("combobox", { name: /办理结果/ }), {
+      target: { value: "已核验完成" },
+    });
+    expect(confirmation.checked).toBe(false);
+    first.unmount();
+    render(<TaskPanel {...props} />);
+    expect(
+      screen.getByRole<HTMLSelectElement>("combobox", { name: /办理结果/ })
+        .value,
+    ).toBe("已核验完成");
+  });
   it("does not block page navigation when no artifact exists", () => {
     const listener = rs.spyOn(window, "addEventListener");
     render(<ArtifactPanel onSaved={() => undefined} />);
@@ -90,9 +129,9 @@ describe("Draft and revision safety", () => {
         onSaved={() => undefined}
       />,
     );
-    expect(screen.getByLabelText<HTMLTextAreaElement>("正文 · 支持 Markdown").value).toBe(
-      "用户尚未保存的文字",
-    );
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>("正文 · 支持 Markdown").value,
+    ).toBe("用户尚未保存的文字");
     fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
     expect(
@@ -101,9 +140,9 @@ describe("Draft and revision safety", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("版本冲突"),
     );
-    expect(screen.getByLabelText<HTMLTextAreaElement>("正文 · 支持 Markdown").value).toBe(
-      "用户尚未保存的文字",
-    );
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>("正文 · 支持 Markdown").value,
+    ).toBe("用户尚未保存的文字");
   });
   it("saves changed task inputs before requesting a draft", async () => {
     const saved = {
@@ -164,6 +203,8 @@ describe("Draft and revision safety", () => {
     });
     first.unmount();
     render(<TaskPanel {...props} />);
-    expect(screen.getByLabelText<HTMLInputElement>(/产品名称/).value).toBe("未保存的茶叶名称");
+    expect(screen.getByLabelText<HTMLInputElement>(/产品名称/).value).toBe(
+      "未保存的茶叶名称",
+    );
   });
 });

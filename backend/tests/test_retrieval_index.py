@@ -735,12 +735,14 @@ def test_historical_query_does_not_fall_back_to_older_text_when_selected_version
 def test_stage_analysis_prepares_legacy_index_before_snapshot_without_wasting_model_calls(
     workspace, monkeypatch, documents
 ):
+    from app.legal_models import LegalResult
     from app.service import AppError
 
     stage = {"id": "stage", "name": "stage", "description": "", "tasks": [], "status": "active"}
     case = {
         "id": "case",
         "template": {
+            "id": "index-preparation-fixture",
             "modes": [],
             "origin": "ID",
             "destination": "ID",
@@ -763,20 +765,21 @@ def test_stage_analysis_prepares_legacy_index_before_snapshot_without_wasting_mo
         seed(conn, "irrelevant-country", body(), country="SG")
     calls = []
 
-    def run(*args, **kwargs):
+    def execute(owner, template, stage, question, facts, **options):
         calls.append(True)
-        hits = workspace.search("owner", "permit", case_id="case", country="ID")
-        return {
-            "stage_id": "stage",
-            "output": "answer",
-            "checks": [],
-            "citations": hits["items"],
-            "assistant_mode": "demo",
-            "trace": [],
-        }
+        hits = workspace.legal.search(owner, "permit", "case", template, ["ID"], 5)
+        assert hits["items"] and all(hit["country"] == "ID" for hit in hits["items"])
+        return LegalResult(
+            question=question,
+            output="answer",
+            citations=[
+                {key: value for key, value in hit.items() if key != "source_scope"} for hit in hits["items"]
+            ],
+            assistant_mode="demo",
+        ).model_dump(mode="json")
 
     monkeypatch.setattr(workspace, "case_detail", lambda *_: case)
-    monkeypatch.setattr(workspace, "run_workflow", run)
+    monkeypatch.setattr(workspace.legal, "execute_engine", execute)
     payload = SimpleNamespace(expected_revision=1, retry=False)
     if documents > 20:
         with pytest.raises(AppError) as preparing:
@@ -800,7 +803,13 @@ def test_legal_request_prepares_legacy_index_before_reserving_snapshot(workspace
     stage = {"id": "stage", "name": "stage", "description": "", "tasks": [], "status": "active"}
     case = {
         "id": "case",
-        "template": {"modes": [], "origin": "ID", "destination": "ID", "agent": {}},
+        "template": {
+            "id": "index-preparation-fixture",
+            "modes": [],
+            "origin": "ID",
+            "destination": "ID",
+            "agent": {},
+        },
         "company": "",
         "product": "",
         "mode_id": "",
@@ -871,7 +880,13 @@ def test_legal_request_prepares_unassigned_legacy_business_before_snapshot(works
     stage = {"id": "stage", "name": "stage", "description": "", "tasks": [], "status": "active"}
     case = {
         "id": "case",
-        "template": {"modes": [], "origin": "待明确", "destination": "待明确", "agent": {}},
+        "template": {
+            "id": "index-preparation-fixture",
+            "modes": [],
+            "origin": "待明确",
+            "destination": "待明确",
+            "agent": {},
+        },
         "company": "",
         "product": "",
         "mode_id": "",

@@ -75,17 +75,19 @@ export function useLegalWorkbench(
   stageId: string,
   caseRevision: number,
   onUpdate?: (record: CaseDetail) => void,
+  analysisId?: string,
+  analysisRevision?: number,
 ) {
   const scope = JSON.stringify([accountId, caseId, stageId]);
-  const [draft, setDraft] = useState<LegalDraft>(
-    () =>
-      drafts.get(scope) ?? {
-        question: "",
-        selectedId: "",
-        facts: {},
-        sections: {},
-      },
-  );
+  const [draft, setDraft] = useState<LegalDraft>(() => ({
+    ...(drafts.get(scope) ?? {
+      question: "",
+      selectedId: "",
+      facts: {},
+      sections: {},
+    }),
+    ...(analysisId ? { selectedId: analysisId } : {}),
+  }));
   const updateCase = useRef(onUpdate);
   updateCase.current = onUpdate;
   const latest = useRef(draft);
@@ -164,6 +166,16 @@ export function useLegalWorkbench(
     };
   }, [scope]);
   useEffect(() => {
+    // A different saved node report replaces only the transient run record.
+    setSteps((current) => (current.length ? [] : current));
+  }, [analysisId, analysisRevision]);
+  useEffect(() => {
+    if (analysisId)
+      update((current) => ({ ...current, selectedId: analysisId }));
+    // A new node report changes selection without clearing any unsaved edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisId]);
+  useEffect(() => {
     const abort = controller();
     setLoading(true);
     setHistoryError("");
@@ -190,7 +202,7 @@ export function useLegalWorkbench(
     };
     // Scope is remounted by LegalWorkbench; revisions refresh server values only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, caseRevision, page, reload]);
+  }, [scope, caseRevision, page, reload, analysisRevision]);
   useEffect(() => {
     setVersions(undefined);
     versionSequence.current++;
@@ -219,7 +231,7 @@ export function useLegalWorkbench(
       release(abort);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, caseRevision, draft.selectedId, reload]);
+  }, [scope, caseRevision, draft.selectedId, reload, analysisRevision]);
   useEffect(() => () => mutation.current?.abort(), [caseRevision]);
   const dirty =
     !!draft.question ||
@@ -287,6 +299,7 @@ export function useLegalWorkbench(
       );
       if (!valid(abort)) return;
       adopt(value);
+      setSteps(value.result.trace);
       update((current) => ({
         ...current,
         selectedId: value.id,
@@ -477,6 +490,7 @@ export function useLegalWorkbench(
     choose: (selectedId: string) => {
       if (busy) return;
       setAnalysis(undefined);
+      setSteps([]);
       update((current) => ({ ...current, selectedId }));
     },
     setPage,

@@ -13,16 +13,19 @@ export interface Mode {
 export interface FieldDefinition {
   key: string;
   label: string;
-  type: "text" | "number" | "textarea";
+  type: "text" | "number" | "textarea" | "select";
   required: boolean;
   min?: number;
   placeholder?: string;
+  options?: string[] | null;
+  accepted_values?: string[] | null;
 }
 export interface TaskDefinition {
   id: string;
   title: string;
   description: string;
   required: boolean;
+  blocks_next_stage?: boolean;
   fields: FieldDefinition[];
   require_document: boolean;
   require_confirmation: boolean;
@@ -105,7 +108,7 @@ export interface StageState {
   name: string;
   actor: string;
   description: string;
-  status: "locked" | "active" | "completed";
+  status: "locked" | "active" | "follow_up" | "completed";
   tasks: TaskState[];
 }
 export interface Fact {
@@ -238,6 +241,12 @@ export interface Capabilities {
   assistant_mode: "demo" | "live";
   retrieval_mode: "lexical" | "hybrid";
   parser: string;
+}
+export interface SearchResult {
+  items: Citation[];
+  mode: Capabilities["retrieval_mode"];
+  reranked: boolean;
+  warning?: string;
 }
 export interface Bootstrap {
   user: User;
@@ -535,6 +544,9 @@ export interface TemplateDraftSummary {
 }
 export interface StageAnalysis extends DebugResult {
   id: string;
+  case_id: string;
+  legal_analysis_id: string;
+  legal_revision: number;
   case_revision: number;
   status: "completed" | "failed";
   created_at: string;

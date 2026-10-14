@@ -8,13 +8,24 @@ from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from .models import Template
+from .workflow_catalog import load_workflow_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
+RETIRED_TEMPLATE_ID = "china-indonesia-demo"
+BUILTIN_TEMPLATES = load_workflow_catalog(PROJECT_ROOT / "config/workflows/liubao-export.json")
 
 
 def load_template(path=None):
-    configured = path or os.getenv("TEA_TEMPLATE_FILE") or "config/workflows/china-indonesia.json"
+    configured = path or os.getenv("TEA_TEMPLATE_FILE")
+    # Existing .env files may still name the retired bundled demo file.
+    # It no longer supplies a fifth route or creates old demonstration cases.
+    if (
+        not configured
+        or (PROJECT_ROOT / configured).resolve()
+        == (PROJECT_ROOT / "config/workflows/china-indonesia.json").resolve()
+    ):
+        return json.loads(json.dumps(BUILTIN_TEMPLATES["liubao-id-online"]))
     file = Path(configured).expanduser()
     if not file.is_absolute():
         file = PROJECT_ROOT / file
@@ -27,3 +38,6 @@ def load_template(path=None):
 
 
 DEFAULT_TEMPLATE = load_template()
+if DEFAULT_TEMPLATE["id"] not in BUILTIN_TEMPLATES:
+    raise ValueError("本地流程配置必须使用四条六堡茶路线之一的编号")
+BUILTIN_TEMPLATES[DEFAULT_TEMPLATE["id"]] = DEFAULT_TEMPLATE

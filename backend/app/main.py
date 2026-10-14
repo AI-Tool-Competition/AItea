@@ -433,6 +433,27 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     ):
         return service.studio.analyze(current["id"], case_id, stage_id, payload)
 
+    @app.post("/api/tea/cases/{case_id}/stages/{stage_id}/analysis/stream")
+    def stage_analysis_stream(
+        case_id: str, stage_id: str, payload: models.StageAnalysisInput, current=Depends(user)
+    ):
+        from .streaming import workflow_events
+
+        service.case_detail(current["id"], case_id)
+        return StreamingResponse(
+            workflow_events(
+                lambda emit, check: {
+                    "analysis": service.studio.analyze(
+                        current["id"], case_id, stage_id, payload, emit=emit, check_cancelled=check
+                    )
+                },
+                models.LegalStreamEvent,
+                "正在读取本节点的资料与分析记录…",
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"},
+        )
+
     @app.patch("/api/tea/cases/{case_id}/tasks/{task_id}")
     def patch_task(case_id: str, task_id: str, payload: models.TaskPatch, current=Depends(user)):
         return service.patch_task(current["id"], case_id, task_id, payload.model_dump())
@@ -583,7 +604,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     def add_document_relation(id: str, payload: models.LegalRelationInput, current=Depends(user)):
         return service.archive.add_relation(current["id"], id, payload.model_dump())
 
-    @app.post("/api/tea/search")
+    @app.post("/api/tea/search", response_model=models.SearchResult, response_model_exclude_none=True)
     def search(payload: models.Search, current=Depends(user)):
         return service.search(
             current["id"],

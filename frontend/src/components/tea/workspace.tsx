@@ -8,7 +8,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   ShieldCheck,
-  Scale,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
@@ -36,12 +35,11 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 
 import { ArtifactPanel } from "./artifact-panel";
-import { LegalWorkbench } from "./legal-workbench";
 import { dateLabel, ErrorNotice } from "./shared";
 import { StageChat } from "./stage-chat";
 export { clearChatDrafts } from "@/core/tea/use-stage-chat";
 import { TaskPanel } from "./task-panel";
-type PanelTab = "flow" | "task" | "document" | "facts" | "legal";
+type PanelTab = "flow" | "task" | "document" | "facts";
 
 function Flow({
   record,
@@ -113,7 +111,9 @@ function Flow({
                     ? "进行中"
                     : stage.status === "completed"
                       ? "已完成"
-                      : "待解锁"}
+                      : stage.status === "follow_up"
+                        ? "待收尾"
+                        : "待解锁"}
                 </span>
               </button>
               <div className="tea-flow-tasks">
@@ -136,7 +136,9 @@ function Flow({
               <p>
                 {stage.status === "locked"
                   ? "前一阶段完成后解锁"
-                  : stage.description}
+                  : stage.status === "follow_up"
+                    ? "后续阶段可继续；本阶段仍有必办收尾任务，完成后才能结案。"
+                    : stage.description}
               </p>
             </div>
           </section>
@@ -174,7 +176,6 @@ export function Workspace({
   const [panelOpen, setPanelOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [tab, setTab] = useState<PanelTab>("flow");
-  const [legalOpened, setLegalOpened] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [artifactId, setArtifactId] = useState("");
   const isMobile = useIsMobile();
@@ -191,7 +192,6 @@ export function Workspace({
     else panelRef.current?.collapse();
   }, [panelOpen, isMobile, panelRef]);
   function openPanel(next: PanelTab) {
-    if (next === "legal") setLegalOpened(true);
     setTab(next);
     setPanelOpen(true);
     if (isMobile) setMobileOpen(true);
@@ -223,14 +223,12 @@ export function Workspace({
               ["task", "当前任务"],
               ["document", "文稿"],
               ["facts", "档案"],
-              ["legal", "法律分析"],
             ] as const
           ).map(([id, label]) => (
             <button
               className={tab === id ? "active" : ""}
               key={id}
               onClick={() => {
-                if (id === "legal") setLegalOpened(true);
                 setTab(id);
               }}
             >
@@ -238,27 +236,20 @@ export function Workspace({
             </button>
           ))}
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={() => {
             setPanelOpen(false);
             setMobileOpen(false);
           }}
           aria-label="收起右侧面板"
+          title="收起流程"
         >
           <PanelRightClose size={17} />
-        </button>
+        </Button>
       </div>
       <div className="tea-sidepanel-scroll">
-        <div hidden={tab !== "legal"}>
-          {legalOpened && (
-            <LegalWorkbench
-              accountId={accountId}
-              record={record}
-              stageId={stage.id}
-              onUpdate={onUpdate}
-            />
-          )}
-        </div>
         <div hidden={tab !== "flow"}>
           <Flow
             record={record}
@@ -364,38 +355,28 @@ export function Workspace({
   );
   return (
     <div className="tea-workspace">
-      <header className="tea-workspace-toolbar">
-        <div className="tea-workspace-heading">
-          <SidebarTrigger className="md:hidden" aria-label="展开导航" />
-          <span className="tea-workspace-title">{record.title}</span>
-          <span className="tea-workspace-stage">{stage.name}</span>
-        </div>
-        <div className="tea-workspace-actions">
-          <button
-            onClick={() => openPanel("legal")}
-            aria-expanded={
-              tab === "legal" && (isMobile ? mobileOpen : panelOpen)
-            }
-          >
-            <Scale size={16} />
-            法律分析
-          </button>
-          <button
+      <SidebarTrigger
+        className="tea-workspace-navigation md:hidden"
+        aria-label="展开导航"
+      />
+      {(!panelOpen || isMobile) && (
+        <div className="tea-workspace-panel-actions">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="tea-workspace-panel-toggle"
+            aria-label="展开流程"
+            title="展开流程"
             aria-expanded={isMobile ? mobileOpen : panelOpen}
             onClick={() => {
               if (isMobile) setMobileOpen(true);
-              else setPanelOpen(!panelOpen);
+              else setPanelOpen(true);
             }}
           >
-            {panelOpen && !isMobile ? (
-              <PanelRightClose size={16} />
-            ) : (
-              <PanelRightOpen size={16} />
-            )}
-            {panelOpen && !isMobile ? "收起流程" : "办理流程"}
-          </button>
+            <PanelRightOpen size={17} />
+          </Button>
         </div>
-      </header>
+      )}
       <ResizablePanelGroup
         orientation="horizontal"
         className="tea-workspace-panels"
@@ -449,7 +430,7 @@ export function Workspace({
             <SheetHeader className="sr-only">
               <SheetTitle>办理流程与资料</SheetTitle>
               <SheetDescription>
-                查看任务、核验进度、编辑文稿和法律分析。
+                查看任务、核验进度、编辑文稿和业务档案。
               </SheetDescription>
             </SheetHeader>
             {panel}

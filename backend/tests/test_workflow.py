@@ -1,6 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.usefixtures("sample_workflow")
+
 
 @pytest.fixture
 def client(tmp_path):

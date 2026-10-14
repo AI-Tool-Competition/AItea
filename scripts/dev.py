@@ -105,6 +105,18 @@ def process_identity(pid: int) -> dict | None:
         return None
 
 
+def launched_identity(process: subprocess.Popen, token: str, root: Path = ROOT) -> dict | None:
+    # /proc can briefly expose the pre-exec environment of a newly spawned
+    # process. Record only the credentials we passed to this specific child.
+    deadline = time.monotonic() + 2
+    while process.poll() is None and time.monotonic() < deadline:
+        record = process_identity(process.pid)
+        if record and record.get("owner") == str(root) and record.get("token") == token:
+            return record
+        time.sleep(0.01)
+    return None
+
+
 def owns_process(record: dict, root: Path = ROOT) -> bool:
     if not isinstance(record, dict) or record.get("owner") != str(root) or not record.get("token"):
         return False
@@ -261,7 +273,7 @@ def run_install(command: list[str], cwd: Path, env: dict, log: Path, root: Path 
     with log.open("wb") as handle:
         process = subprocess.Popen(command, cwd=cwd, env=launch_env, stdout=handle,
                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
-        record = process_identity(process.pid)
+        record = launched_identity(process, token, root)
         try:
             if not record:
                 raise DevError("依赖安装进程在记录身份前退出。")
@@ -343,6 +355,32 @@ def node_option_names(value: str) -> set[str] | None:
     except ValueError:
         # Let Node report malformed user options without rewriting them.
         return None
+
+
+def development_node_options(env: dict[str, str]) -> str:
+    value = env.get("NODE_OPTIONS", "")
+    options = node_option_names(value)
+    heap_options = {"--max-old-space-size", "--max-old-space-size-percentage", "--max-heap-size"}
+    if options is None or options & heap_options:
+        return value
+    # Leaving the flag unset still gives V8 a roughly 4 GiB default heap on a
+    # large machine. Use the memory available to this process, including cgroup
+    # constraints, without imposing another fixed development-only cap.
+    node = shutil.which("node")
+    if not node:
+        raise DevError("无法读取开发前端可用内存：未找到 Node.js。")
+    probe_env = {key: item for key, item in env.items() if key != "NODE_OPTIONS"}
+    try:
+        probe = subprocess.run(
+            [node, "-p", "Math.floor(process.availableMemory() / 1024 / 1024)"],
+            env=probe_env, capture_output=True, text=True, timeout=10, check=False,
+        )
+        size = int(probe.stdout.strip())
+        if probe.returncode or size <= 0:
+            raise ValueError("no available memory")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise DevError("无法读取开发前端可用内存；请检查 Node.js 22+ 及系统内存状态。") from exc
+    return f"{value} --max-old-space-size={size}".strip()
 
 
 def dependency_fingerprint(component: str, root: Path = ROOT) -> str:
@@ -553,16 +591,13 @@ def serve(args: argparse.Namespace) -> int:
             if name == "web" and not args.production:
                 # Next's config/directory watcher is separate from webpack's
                 # watcher. The process-local setting covers both instances.
-                service_env = {**env, "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000")}
-                node_options = env.get("NODE_OPTIONS", "")
-                names = node_option_names(node_options)
-                if (names is not None and not env.get("NEXT_DISABLE_MEM_OVERRIDE")
-                        and not names & {"--max-old-space-size", "--max-old-space-size-percentage"}):
-                    service_env["NODE_OPTIONS"] = node_options + (" " if node_options else "") + "--max-old-space-size=1536"
+                service_env = {**env, "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000"),
+                               "NEXT_DISABLE_MEM_OVERRIDE": "1",
+                               "NODE_OPTIONS": development_node_options(env)}
             process = subprocess.Popen(command, cwd=cwd, env=service_env, stdin=subprocess.DEVNULL,
                                        stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
             processes.append((name, process))
-            record = process_identity(process.pid)
+            record = launched_identity(process, token)
             if not record:
                 raise DevError(f"{name} 在记录进程身份前退出；请查看 {name}.log。")
             state["services"].append(record)
@@ -675,7 +710,7 @@ def launch(args: argparse.Namespace) -> subprocess.Popen:
     with (runtime() / "supervisor.log").open("wb") as handle:
         process = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
                                    stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
-    supervisor = process_identity(process.pid)
+    supervisor = launched_identity(process, token)
     if not args.production:
         polling = env.get("WATCHPACK_POLLING")
         mode = "文件轮询（每 1000 毫秒）" if polling is None else (

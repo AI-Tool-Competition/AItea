@@ -45,6 +45,7 @@ const fieldTypes: Record<FieldDefinition["type"], string> = {
   text: "短文字",
   textarea: "多行文字",
   number: "数字",
+  select: "单选",
 };
 
 export function WorkflowEditor({
@@ -827,8 +828,20 @@ function TaskFields({
               onChange({ ...task, required: event.target.checked })
             }
           />
-          必须完成才能推进
+          业务结案前必须完成
         </label>
+        {task.required && (
+          <label className="tea-checkbox">
+            <input
+              type="checkbox"
+              checked={task.blocks_next_stage !== false}
+              onChange={(event) =>
+                onChange({ ...task, blocks_next_stage: event.target.checked })
+              }
+            />
+            完成后才能进入下一阶段
+          </label>
+        )}
         <label className="tea-checkbox">
           <input
             type="checkbox"
@@ -896,12 +909,18 @@ function FieldFields({
             onChange({
               ...field,
               type: event.target.value as FieldDefinition["type"],
+              options:
+                event.target.value === "select"
+                  ? ["待核验", "已核验完成"]
+                  : undefined,
+              accepted_values: undefined,
             })
           }
         >
           <option value="text">短文字</option>
           <option value="textarea">多行文字</option>
           <option value="number">数字</option>
+          <option value="select">单选</option>
         </select>
       </label>
       <label className="tea-checkbox">
@@ -909,11 +928,47 @@ function FieldFields({
           type="checkbox"
           checked={field.required}
           onChange={(event) =>
-            onChange({ ...field, required: event.target.checked })
+            onChange({
+              ...field,
+              required: event.target.checked,
+              accepted_values: event.target.checked
+                ? field.accepted_values
+                : undefined,
+            })
           }
         />
         必填
       </label>
+      {field.type === "select" && (
+        <>
+          <label className="tea-field">
+            <span>可选值（每行一项）</span>
+            <Textarea
+              value={field.options?.join("\n") ?? ""}
+              onChange={(event) =>
+                onChange({ ...field, options: event.target.value.split("\n") })
+              }
+            />
+          </label>
+          {field.required && (
+            <label className="tea-field">
+              <span>核验通过值（每行一项，留空表示任一有效选项）</span>
+              <Textarea
+                value={field.accepted_values?.join("\n") ?? ""}
+                onChange={(event) =>
+                  onChange({
+                    ...field,
+                    accepted_values:
+                      event.target.value === ""
+                        ? undefined
+                        : event.target.value.split("\n"),
+                  })
+                }
+              />
+            </label>
+          )}
+        </>
+      )}
       {field.type === "number" && (
         <label className="tea-field">
           <span>允许的最小值（可不填）</span>

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { errorMessage, streamMessage, teaRequest } from "./api";
+import { clearNodeAnalyses } from "./node-analysis";
 import type { CaseDetail, ListResult, Message, MessageInput } from "./types";
 
 export interface ChatTurn {
@@ -20,6 +21,7 @@ type ChatEntry =
 const drafts = new Map<string, Draft>();
 const controllers = new Set<AbortController>();
 export function clearChatDrafts() {
+  clearNodeAnalyses();
   for (const controller of controllers) controller.abort();
   controllers.clear();
   drafts.clear();

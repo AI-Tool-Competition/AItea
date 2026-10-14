@@ -97,6 +97,61 @@ function Editor({
 }
 
 describe("workflow editor", () => {
+  it("keeps a required closeout task while allowing later stages to proceed", () => {
+    const changed = rs.fn();
+    render(<Editor onDraft={changed} />);
+    fireEvent.click(screen.getByRole("button", { name: "产品信息" }));
+    const inspector = within(
+      screen.getByRole("complementary", { name: "流程编辑栏" }),
+    );
+    fireEvent.click(inspector.getByLabelText("完成后才能进入下一阶段"));
+    const task = changed.mock.calls.at(-1)?.[0].stages[0].tasks[0];
+    expect(task.required).toBe(true);
+    expect(task.blocks_next_stage).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "收起流程编辑栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "产品信息" }));
+    expect(
+      inspector.getByLabelText<HTMLInputElement>("完成后才能进入下一阶段")
+        .checked,
+    ).toBe(false);
+    expect(
+      inspector.getByLabelText<HTMLInputElement>("业务结案前必须完成").checked,
+    ).toBe(true);
+  });
+  it("edits select options and completion values without losing them on reopen", () => {
+    const changed = rs.fn();
+    render(<Editor onDraft={changed} />);
+    const tree = within(screen.getByRole("region", { name: "流程结构" }));
+    fireEvent.click(tree.getByRole("button", { name: "展开任务：产品信息" }));
+    fireEvent.click(tree.getByRole("button", { name: "产品名称" }));
+    const inspector = within(
+      screen.getByRole("complementary", { name: "流程编辑栏" }),
+    );
+    fireEvent.change(inspector.getByLabelText("填写方式"), {
+      target: { value: "select" },
+    });
+    fireEvent.change(inspector.getByLabelText("可选值（每行一项）"), {
+      target: { value: "等待外部\n已核验完成\n经核验不适用" },
+    });
+    fireEvent.change(inspector.getByLabelText(/核验通过值/), {
+      target: { value: "已核验完成\n经核验不适用" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "收起流程编辑栏" }));
+    fireEvent.click(tree.getByRole("button", { name: "产品名称" }));
+    expect(
+      inspector.getByLabelText<HTMLTextAreaElement>(/核验通过值/).value,
+    ).toBe("已核验完成\n经核验不适用");
+    expect(
+      changed.mock.calls.at(-1)?.[0].stages[0].tasks[0].fields[0].options,
+    ).toEqual(["等待外部", "已核验完成", "经核验不适用"]);
+    fireEvent.change(inspector.getByLabelText("填写方式"), {
+      target: { value: "text" },
+    });
+    expect(
+      changed.mock.calls.at(-1)?.[0].stages[0].tasks[0].fields[0]
+        .accepted_values,
+    ).toBeUndefined();
+  });
   it("opens only for editing, dismisses outside, and preserves unsaved inputs", () => {
     render(<Editor />);
     expect(

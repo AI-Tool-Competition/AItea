@@ -8,7 +8,7 @@ import { type CollectionBlueprintSummary, type ListResult } from "./types";
 export function countryLabel(country: string) {
   return (
     (
-      { ID: "印尼", SG: "新加坡", unassigned: "未分国" } as Record<
+      { CN: "中国", ID: "印尼", SG: "新加坡", unassigned: "未分国" } as Record<
         string,
         string
       >

@@ -85,7 +85,7 @@ function Welcome({
       <header>
         <Brand />
         <span className="tea-welcome-tag">
-          中国 → 印度尼西亚 <span>DEMO</span>
+          中国 → 印尼 / 新加坡 <span>六堡茶</span>
         </span>
       </header>
       <main>
@@ -113,7 +113,7 @@ function Welcome({
           </div>
           <div className="tea-welcome-note">
             <ShieldCheck size={14} />
-            演示业务独立保存 · 示例流程可配置
+            体验业务独立保存 · 四条六堡茶出口流程
           </div>
           {error && <ErrorNotice message={error} />}
         </div>
@@ -206,7 +206,9 @@ function NewCase({
   templates: Template[];
   onCreated: (record: CaseDetail) => void;
 }) {
-  const [templateId, setTemplateId] = useState(templates[0]?.id ?? "");
+  const [templateId, setTemplateId] = useState(
+    templates.find((item) => !item.is_demo)?.id ?? templates[0]?.id ?? "",
+  );
   const template = templates.find((t) => t.id === templateId);
   const [mode, setMode] = useState(
     template?.modes.find((m) => m.enabled)?.id ?? "",
@@ -261,7 +263,7 @@ function NewCase({
               maxLength={120}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="例如：秋季乌龙茶出口准备"
+              placeholder="例如：六堡茶 · 新加坡线上出口"
             />
           </label>
           <div className="tea-form-row">
@@ -280,7 +282,7 @@ function NewCase({
                 required
                 value={product}
                 onChange={(e) => setProduct(e.target.value)}
-                placeholder="例如：乌龙茶"
+                placeholder="例如：六堡茶"
               />
             </label>
           </div>
@@ -375,6 +377,7 @@ export function TeaApp({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadScope, setUploadScope] = useState<string>();
   const [libraryRevision, setLibraryRevision] = useState(0);
+  const [libraryCaseId, setLibraryCaseId] = useState("");
   const [logoutBusy, setLogoutBusy] = useState(false);
   useEffect(() => {
     const expired = () => {
@@ -382,6 +385,8 @@ export function TeaApp({
       clearLegalDrafts();
       clearCollectionDrafts();
       setBootstrap(undefined);
+      setLibraryCaseId("");
+      setView("workspace");
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
     };
     window.addEventListener("tea:session-expired", expired);
@@ -393,12 +398,16 @@ export function TeaApp({
     setLoading(true);
     teaRequest<Bootstrap>("/bootstrap", { signal: abort.signal })
       .then((data) => {
+        if (abort.signal.aborted) return;
         setBootstrap(data);
         setError("");
         setCaseId((current) =>
           data.cases.some((c) => c.id === current)
             ? current
             : (data.cases[0]?.id ?? ""),
+        );
+        setLibraryCaseId((current) =>
+          data.cases.some((business) => business.id === current) ? current : "",
         );
       })
       .catch((e) => {
@@ -423,6 +432,7 @@ export function TeaApp({
     setRecordError("");
     teaRequest<CaseDetail>(`/cases/${caseId}`, { signal: abort.signal })
       .then((data) => {
+        if (abort.signal.aborted) return;
         setRecord(data);
         setStageId((current) =>
           data.stages.some((s) => s.id === current)
@@ -475,6 +485,7 @@ export function TeaApp({
       setBootstrap(undefined);
       setRecord(undefined);
       setCaseId("");
+      setLibraryCaseId("");
       setError("");
       setView("workspace");
     } catch (e) {
@@ -534,14 +545,25 @@ export function TeaApp({
         cases={bootstrap.cases}
         caseId={caseId}
         record={record}
+        recordLoading={recordLoading}
         stageId={stageId}
-        onNavigate={(next) =>
-          next === "studio" ? router.push("/tea/admin/workflow") : setView(next)
-        }
+        libraryCaseId={libraryCaseId}
+        onNavigate={(next) => {
+          if (next === "studio") router.push("/tea/admin/workflow");
+          else {
+            if (next === "library") setLibraryCaseId("");
+            setView(next);
+          }
+        }}
         onCase={selectCase}
         onStage={(id) => {
           setStageId(id);
           setView("workspace");
+        }}
+        onLibrary={(id) => {
+          selectCase(id);
+          setLibraryCaseId(id);
+          setView("library");
         }}
         onCreate={() => setCreateOpen(true)}
       />
@@ -550,17 +572,23 @@ export function TeaApp({
           <header className="tea-topbar">
             <SidebarTrigger className="md:hidden" aria-label="展开导航" />
             <div className="tea-breadcrumb">
-              {view === "workspace" ? (
+              {view === "workspace" || (view === "library" && libraryCaseId) ? (
                 <>
                   <span>出口业务</span>
                   <ChevronRight size={13} />
-                  <strong>{record?.title ?? "开始新业务"}</strong>
+                  <strong>
+                    {view === "library"
+                      ? `${bootstrap.cases.find((business) => business.id === libraryCaseId)?.title ?? "当前业务"} · 资料库`
+                      : (record?.title ?? "开始新业务")}
+                  </strong>
                 </>
               ) : (
                 <strong>
                   {view === "account"
                     ? "账号管理"
-                    : teaNavigationItems.find((n) => n.id === view)?.label}
+                    : view === "library"
+                      ? "公共资料库"
+                      : teaNavigationItems.find((n) => n.id === view)?.label}
                 </strong>
               )}
             </div>
@@ -601,11 +629,12 @@ export function TeaApp({
           )
         ) : view === "library" ? (
           <Library
-            key={bootstrap.user.id}
+            key={`${bootstrap.user.id}:${libraryCaseId || "public"}`}
             ownerId={bootstrap.user.id}
             revision={libraryRevision}
             cases={bootstrap.cases}
-            initialCaseId={caseId}
+            initialCaseId={libraryCaseId}
+            scopeLocked
             onUpload={(scope) => {
               setUploadScope(scope);
               setUploadOpen(true);

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from .db import Database, dump, now, uid
 from .catalog import DocumentMetadata, LegalCatalog, eligible
-from .defaults import DEFAULT_TEMPLATE
+from .defaults import BUILTIN_TEMPLATES, RETIRED_TEMPLATE_ID
 from .models import Template
 from .system_library import public_document_sql, register_source_guard, source_scope
 
@@ -99,7 +99,13 @@ class Service:
             else None
         )
 
+    def rerank_fingerprint(self):
+        values = [os.getenv(key) for key in ("RERANK_BASE_URL", "RERANK_MODEL", "RERANK_API_KEY")]
+        return hashlib.sha256(dump(values).encode()).hexdigest() if any(values) else None
+
     def template(self, owner, template_id, conn=None):
+        if template_id == RETIRED_TEMPLATE_ID:
+            fail(404, "not_found", "旧演示流程已下线，请选择六堡茶流程")
         if conn is None:
             with closing(self.db.connect()) as db:
                 return self.template(owner, template_id, db)
@@ -109,19 +115,31 @@ class Service:
         ).fetchone()
         if row:
             return json.loads(row["payload"])
-        if template_id == DEFAULT_TEMPLATE["id"]:
-            return json.loads(dump(DEFAULT_TEMPLATE))
+        if template_id in BUILTIN_TEMPLATES:
+            return json.loads(dump(BUILTIN_TEMPLATES[template_id]))
         fail(404, "not_found", "未找到流程模板")
 
     def templates(self, owner):
         with closing(self.db.connect()) as conn:
             ids = [
                 row["id"]
-                for row in conn.execute("SELECT DISTINCT id FROM templates WHERE owner_id=?", (owner,))
+                for row in conn.execute(
+                    "SELECT DISTINCT id FROM templates WHERE owner_id=? ORDER BY id", (owner,)
+                )
             ]
-            return [self.template(owner, id, conn) for id in dict.fromkeys([DEFAULT_TEMPLATE["id"], *ids])]
+            return [
+                self.template(owner, id, conn)
+                for id in dict.fromkeys([*BUILTIN_TEMPLATES, *ids])
+                if id != RETIRED_TEMPLATE_ID
+            ]
 
     def validate_template(self, payload):
+        if payload.get("id") == RETIRED_TEMPLATE_ID:
+            return {
+                "valid": False,
+                "errors": [{"path": "id", "message": "旧演示流程已下线，请选择六堡茶流程"}],
+                "preview": {"stages": 0, "tasks": 0},
+            }
         try:
             template = Template.model_validate(payload)
             return {
@@ -155,8 +173,10 @@ class Service:
             row = conn.execute(
                 "SELECT MAX(version) n FROM templates WHERE owner_id=? AND id=?", (owner, template["id"])
             ).fetchone()
-            base = DEFAULT_TEMPLATE["version"] if template["id"] == DEFAULT_TEMPLATE["id"] else 0
-            latest = max(base, row["n"] or 0)
+            base = BUILTIN_TEMPLATES.get(template["id"], {}).get("version", 0)
+            # A previously published account version remains authoritative even
+            # when a later application bundle raises its built-in version.
+            latest = row["n"] if row["n"] is not None else base
             if template["version"] != (latest or 1):
                 fail(409, "stale_template", "已发布配置已有更新，请载入最新版本后再发布")
             if expected_draft_revision is not None:
@@ -176,7 +196,7 @@ class Service:
 
     def own_case(self, conn, owner, case_id):
         row = conn.execute("SELECT * FROM cases WHERE id=? AND owner_id=?", (case_id, owner)).fetchone()
-        if row is None:
+        if row is None or json.loads(row["template"])["id"] == RETIRED_TEMPLATE_ID:
             fail(404, "not_found", "未找到业务")
         return row
 
@@ -213,10 +233,17 @@ class Service:
                         "verification": json.loads(state["verification"]) if state["verification"] else None,
                     }
                 )
-            done = all(t["status"] == "completed" and not t["needs_review"] for t in tasks if t["required"])
-            status = ("completed" if done else "active") if predecessor_ok else "locked"
+            remaining = [
+                t for t in tasks if t["required"] and (t["status"] != "completed" or t["needs_review"])
+            ]
+            ready_for_next = not any(t.get("blocks_next_stage", True) for t in remaining)
+            status = (
+                ("completed" if not remaining else "follow_up" if ready_for_next else "active")
+                if predecessor_ok
+                else "locked"
+            )
             stages.append({**definition, "status": status, "tasks": tasks})
-            predecessor_ok = predecessor_ok and done
+            predecessor_ok = predecessor_ok and ready_for_next
         facts = [
             {
                 "key": r["key"],
@@ -271,7 +298,10 @@ class Service:
                 t["status"] == "completed" and not t["needs_review"] for s in stages for t in s["tasks"]
             ),
             "total_tasks": sum(len(s["tasks"]) for s in stages),
-            "current_stage_id": next((s["id"] for s in stages if s["status"] == "active"), stages[-1]["id"]),
+            "current_stage_id": next(
+                (s["id"] for s in stages if s["status"] == "active"),
+                next((s["id"] for s in stages if s["status"] == "follow_up"), stages[-1]["id"]),
+            ),
         }
 
     def cases(self, owner, limit=100, offset=0):
@@ -279,11 +309,14 @@ class Service:
             ids = [
                 r["id"]
                 for r in conn.execute(
-                    "SELECT id FROM cases WHERE owner_id=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                    (owner, limit, offset),
+                    "SELECT id FROM cases WHERE owner_id=? AND json_extract(template,'$.id')!=? ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?",
+                    (owner, RETIRED_TEMPLATE_ID, limit, offset),
                 )
             ]
-            total = conn.execute("SELECT COUNT(*) n FROM cases WHERE owner_id=?", (owner,)).fetchone()["n"]
+            total = conn.execute(
+                "SELECT COUNT(*) n FROM cases WHERE owner_id=? AND json_extract(template,'$.id')!=?",
+                (owner, RETIRED_TEMPLATE_ID),
+            ).fetchone()["n"]
             items = []
             for id in ids:
                 detail = self.case_detail(owner, id, conn)
@@ -328,7 +361,12 @@ class Service:
             content = (
                 f"欢迎来到茶叶出口工作台。我们先一起完成「{first['name']}」。\n\n{first['description']}\n\n"
                 + "\n".join(f"- **{t['title']}**：{t['description']}" for t in first["tasks"])
-                + "\n\n这些任务可以并行办理。你可以先上传资料，或选择一项任务开始。当前流程为演示配置，正式要求需要法务配置和可靠来源。"
+                + "\n\n这些任务可以并行办理。你可以先上传资料，或选择一项任务开始。"
+                + (
+                    "当前流程为演示配置，正式要求需要法务配置和可靠来源。"
+                    if template["is_demo"]
+                    else "请按任务要求记录责任人、办理结果和证据；流程核验不代替主管机构审批。"
+                )
             )
             self.insert_message(
                 conn,
@@ -386,9 +424,12 @@ class Service:
                 for i, stage in enumerate(template["stages"])
                 if any(t["id"] == task_id for t in stage["tasks"])
             )
-            affected = [task_id] + [
-                t["id"] for stage in template["stages"][current_stage + 1 :] for t in stage["tasks"]
-            ]
+            changed = next(t for t in template["stages"][current_stage]["tasks"] if t["id"] == task_id)
+            affected = [task_id]
+            if changed.get("blocks_next_stage", True):
+                affected += [
+                    t["id"] for stage in template["stages"][current_stage + 1 :] for t in stage["tasks"]
+                ]
             for affected_id in affected:
                 if affected_id != task_id:
                     conn.execute(
@@ -424,6 +465,12 @@ class Service:
                     fail(422, "invalid_number", f"{definitions[key]['label']}必须是有限数值")
             elif definitions[key]["type"] != "number":
                 value = str(value).strip()
+            if (
+                definitions[key]["type"] == "select"
+                and value != ""
+                and value not in definitions[key]["options"]
+            ):
+                fail(422, "invalid_option", f"{definitions[key]['label']}必须选择配置中的选项")
             values[key] = value
         return values
 
@@ -486,6 +533,13 @@ class Service:
                     ok = False
                 if not ok:
                     reason = f"需要有效数值，最小值为 {definition.get('min', '无限制')}"
+            if not missing and definition["type"] == "select":
+                ok = value in (definition.get("options") or [])
+                if not ok:
+                    reason = "请选择配置中的有效选项"
+                elif definition.get("accepted_values") and value not in definition["accepted_values"]:
+                    ok = False
+                    reason = f"当前为「{value}」，尚未满足完成条件；请核对实际办理结果和证据"
             checks.append(
                 check(definition["key"], definition["label"], "passed" if ok else "missing", reason)
             )
@@ -1327,7 +1381,7 @@ class Service:
                 if prior["status"] == "needs_input":
                     question = prior["question"] + "\n\n用户补充说明：" + question
             if len(question) > 20000:
-                fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在法律分析面板整理事实后继续")
+                fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在本节点分析中整理事实后继续")
 
             def legal_emit(event, data):
                 if emit and event in ("status", "delta"):
@@ -1363,6 +1417,7 @@ class Service:
                         (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
                     ),
                     "recent_messages": prepared["history"],
+                    "node_analysis": self.studio.node_context(owner, case, stage["id"]),
                 },
             )
         if emit and any(step["status"] == "failed" for step in result["trace"]):

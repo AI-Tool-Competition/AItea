@@ -154,6 +154,7 @@ function normalizedTemplate(template: Template) {
       tasks: stage.tasks.map((task) => ({
         ...task,
         required: task.required ?? true,
+        blocks_next_stage: task.blocks_next_stage ?? true,
         require_document: task.require_document ?? false,
         require_confirmation: task.require_confirmation ?? true,
         output_template: task.output_template ?? null,

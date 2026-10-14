@@ -3,7 +3,6 @@
 import {
   ArrowUp,
   BookOpen,
-  ChevronDown,
   Circle,
   Leaf,
   Paperclip,
@@ -186,12 +185,16 @@ export function StageChat({
   });
   const input = useRef<HTMLTextAreaElement>(null);
   const conversation = useRef<StickToBottomContext>(null);
+  const followMessages = useRef(false);
   const focusedTask = stage.tasks.find((task) => task.id === taskId);
   const hasConversation = chat.messages.length > 0 || chat.turns.length > 0;
   const sendingId = chat.turns.find((turn) => turn.state === "sending")?.request
     .client_message_id;
   useLayoutEffect(() => {
-    if (sendingId) void conversation.current?.scrollToBottom("instant");
+    if (sendingId) {
+      followMessages.current = true;
+      void conversation.current?.scrollToBottom("instant");
+    }
   }, [sendingId]);
   useLayoutEffect(() => {
     if (!input.current) return;
@@ -199,28 +202,34 @@ export function StageChat({
     input.current.style.height = `${Math.min(input.current.scrollHeight, 200)}px`;
   }, [chat.text]);
 
+  function releaseEntryPosition() {
+    if (followMessages.current) return;
+    followMessages.current = true;
+    conversation.current?.stopScroll();
+  }
   return (
-    <div className="tea-chat">
+    <div
+      className="tea-chat"
+      onPointerDownCapture={releaseEntryPosition}
+      onWheelCapture={releaseEntryPosition}
+      onTouchMoveCapture={releaseEntryPosition}
+      onKeyDownCapture={releaseEntryPosition}
+    >
       <Conversation
         contextRef={conversation}
-        initial="instant"
+        initial={false}
         resize="instant"
+        targetScrollTop={(target) => (followMessages.current ? target : 0)}
         className="tea-conversation"
         aria-label="与茶渡助手的对话"
       >
         <ConversationContent className="tea-conversation-content">
-          <details className="tea-chat-analysis">
-            <summary>
-              <Leaf size={15} />
-              <span>{stage.name} · 节点分析</span>
-              <ChevronDown size={15} />
-            </summary>
-            <StageAnalysisPanel
-              record={record}
-              stage={stage}
-              onUpdate={onUpdate}
-            />
-          </details>
+          <StageAnalysisPanel
+            accountId={accountId}
+            record={record}
+            stage={stage}
+            onUpdate={onUpdate}
+          />
           {chat.hasEarlier && (
             <Button
               variant="ghost"
@@ -253,11 +262,11 @@ export function StageChat({
               )}
               {!hasConversation && !chat.historyError && (
                 <div className="tea-chat-welcome">
-                  <h2>从你的问题开始</h2>
+                  <h2>继续聊聊这个节点</h2>
                   <p>
                     {stage.status === "locked"
                       ? "可以先了解这一阶段的准备要求，完成前一阶段后继续办理。"
-                      : "聊聊办理要求，或上传资料一起核对。"}
+                      : "可以接着上面的分析提问，或上传资料一起核对。"}
                   </p>
                   <div className="tea-chat-suggestions">
                     {[
@@ -372,11 +381,9 @@ export function StageChat({
             )}
           </div>
         </form>
-        <p className="tea-composer-note">
-          {capabilities.assistant_mode === "demo"
-            ? "演示助手 · 基于资料与配置规则"
-            : "AI 助手 · 请结合引用原文核对办理要求"}
-        </p>
+        {capabilities.assistant_mode === "demo" && (
+          <p className="tea-composer-note">演示助手 · 基于资料与配置规则</p>
+        )}
       </div>
     </div>
   );

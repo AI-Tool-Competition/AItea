@@ -31,6 +31,11 @@ _VISUAL = {"img", "picture", "svg", "canvas", "object", "embed", "iframe", "vide
 _ATTRIBUTES = {"src", "srcset", "data-src", "data-srcset", "data", "href", "xlink:href", "poster"}
 _ATTRIBUTE = re.compile(r"([^\s<>/=]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
 RSC_VIDEO_SCAN_VERSION = "html-next-flight-video-source-v1"
+_ERROR_TITLE = re.compile(
+    r"\s*(?:404(?:\s*[-:|]\s*|\s+)?(?:not found|page not found)?|403(?:\s*[-:|]\s*|\s+)?(?:forbidden)?|access denied|page not found|just a moment[.! ]*)\s*",
+    re.I,
+)
+_DOWNLOAD_ERROR_BODY = re.compile(r"download\s+url\s+is\s+not\s+correct[.!]?", re.I)
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +366,7 @@ class HTMLDocument(HTMLParser):
         self._root_children = {}
         self._nodes = 0
         self._uncertain = False
+        self._visible_quoted_text = False
         self._scripts = []
         self._rsc_scan = None
         self._line_offsets = [0]
@@ -601,6 +607,8 @@ class HTMLDocument(HTMLParser):
 
     def handle_data(self, data):
         if self._visible() and not (self._stack and self._stack[-1]["visual"]):
+            if data.strip() and any(frame["tag"] in {"blockquote", "q", "code"} for frame in self._stack):
+                self._visible_quoted_text = True
             self.buffer.append(data)
 
     def finish(self):
@@ -650,14 +658,21 @@ class HTMLDocument(HTMLParser):
         head_title = re.search(r"<title\b[^>]*>([^<]{0,200})</title\s*>", self.source or "", re.I)
         if head_title:
             titles.append(unescape(head_title.group(1)))
-        error_page = any(
-            re.fullmatch(
-                r"\s*(?:404(?:\s*[-:|]\s*|\s+)?(?:not found|page not found)?|403(?:\s*[-:|]\s*|\s+)?(?:forbidden)?|access denied|page not found|just a moment[.! ]*)\s*",
-                title,
-                re.I,
+        visible_text = [element.content_text for element in self.elements]
+        # A successful HTTP response can contain only a download error. Match
+        # complete visible elements, never words or an error quoted in legal
+        # reasoning. Recognized error headings may accompany the same message.
+        download_error = (
+            not self._visible_quoted_text
+            and any(_DOWNLOAD_ERROR_BODY.fullmatch(text) for text in visible_text)
+            and all(
+                _DOWNLOAD_ERROR_BODY.fullmatch(text)
+                or _ERROR_TITLE.fullmatch(text)
+                or text.casefold() == "download error"
+                for text in visible_text
             )
-            for title in titles
         )
+        error_page = download_error or any(_ERROR_TITLE.fullmatch(title) for title in titles)
         complete = has_body and not self.objects and not self._uncertain and not error_page
         warnings = []
         if self.objects:
@@ -665,7 +680,7 @@ class HTMLDocument(HTMLParser):
         if self._uncertain:
             warnings.append("HTML 对象边界或重复引用属性仍待核验。")
         if error_page:
-            warnings.append("HTML 标题表明来源为错误或访问验证页，正文完整性不能确认。")
+            warnings.append("HTML 标题或完整可见正文表明来源为错误或访问验证页，正文完整性不能确认。")
         quality = {
             "status": "complete" if complete else "partial",
             "complete": complete,

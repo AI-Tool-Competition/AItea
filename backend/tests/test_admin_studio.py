@@ -389,9 +389,14 @@ def test_legal_and_stage_caches_expire_when_reranker_configuration_changes(clien
     enabled = fingerprints()
     assert all(a != b for a, b in zip(partial, enabled, strict=True))
     monkeypatch.setenv("RERANK_API_KEY", "rotated-private-test-key")
-    assert fingerprints() == enabled
+    rotated = fingerprints()
+    assert all(a != b for a, b in zip(enabled, rotated, strict=True))
+    assert fingerprints() == rotated
     monkeypatch.setenv("RERANK_MODEL", "rank-2")
-    assert all(a != b for a, b in zip(enabled, fingerprints(), strict=True))
+    changed_model = fingerprints()
+    assert all(a != b for a, b in zip(rotated, changed_model, strict=True))
+    monkeypatch.delenv("RERANK_API_KEY")
+    assert all(a != b for a, b in zip(changed_model, fingerprints(), strict=True))
 
 
 def test_analysis_claim_prevents_duplicate_provider_calls_without_holding_write_lock(client, monkeypatch):

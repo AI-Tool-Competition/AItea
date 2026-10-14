@@ -489,13 +489,22 @@ def test_processing_32_with_parse_two_defers_without_consuming_attempts(tmp_path
     doc = _store_text(service, 1)
     claim = service.collection.claim_processing()
     assert claim and service.collection.processing_workers == 32
+    deferred_at = None
+    original_failure = service.collection._failure
+
+    def record_failure(owned_claim, error, *, processing):
+        nonlocal deferred_at
+        deferred_at = time.time()
+        return original_failure(owned_claim, error, processing=processing)
+
+    monkeypatch.setattr(service.collection, "_failure", record_failure)
     assert parser_slots.acquire(timeout=0) and parser_slots.acquire(timeout=0)
     try:
         service.collection.process_item(claim)
     finally:
         parser_slots.release()
         parser_slots.release()
-    deferred_at = time.time()
+    assert deferred_at is not None
     with closing(service.db.connect()) as conn:
         job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (doc["id"],)).fetchone()
         assert job["status"] == "queued" and job["attempts"] == 0

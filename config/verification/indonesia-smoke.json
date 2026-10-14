@@ -1,0 +1,22 @@
+{
+  "country": "ID",
+  "samples": [
+    {
+      "id": "wto-sps",
+      "url": "https://www.wto.org/english/docs_e/legal_e/downloads_e/SPS_en.pdf",
+      "level": "primary"
+    },
+    {
+      "id": "wto-framework",
+      "url": "https://www.wto.org/english/docs_e/legal_e/downloads_e/WTO_en.pdf",
+      "level": "secondary",
+      "primary_sample_id": "wto-sps"
+    }
+  ],
+  "queries": [
+    {
+      "text": "Agreement on the Application of Sanitary and Phytosanitary Measures risk assessment",
+      "expected_sample_ids": ["wto-sps"]
+    }
+  ]
+}

@@ -16,6 +16,7 @@ from .db import Database, dump, now, uid
 from .catalog import DocumentMetadata, LegalCatalog, eligible
 from .defaults import BUILTIN_TEMPLATES, RETIRED_TEMPLATE_ID
 from .models import Template
+from .system_library import public_document_sql, register_source_guard, source_scope
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD = 20 * 1024 * 1024
@@ -37,7 +38,9 @@ DOCUMENT_FIELDS = (
     "content_hash",
 )
 # Lists never materialize plaintext or embedding arrays from the manifest.
-DOCUMENT_SUMMARY = ",".join(DOCUMENT_FIELDS) + ",tags,json_array_length(manifest,'$.chunks') chunk_count"
+DOCUMENT_SUMMARY = (
+    "owner_id," + ",".join(DOCUMENT_FIELDS) + ",tags,json_array_length(manifest,'$.chunks') chunk_count"
+)
 
 
 class AppError(Exception):
@@ -73,6 +76,9 @@ class Service:
         from .legal import LegalService
 
         self.legal = LegalService(self)
+        from .retrieval import RetrievalIndex
+
+        self.index = RetrievalIndex(self)
 
     @property
     def capabilities(self):
@@ -84,8 +90,14 @@ class Service:
         }
 
     def embedding_fingerprint(self):
+        from .retrieval import EMBEDDING_RECIPE
+
         values = [os.getenv(key) for key in ("EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_API_KEY")]
-        return hashlib.sha256(dump(values[:2]).encode()).hexdigest() if all(values) else None
+        return (
+            hashlib.sha256(dump([*values[:2], EMBEDDING_RECIPE]).encode()).hexdigest()
+            if all(values)
+            else None
+        )
 
     def rerank_fingerprint(self):
         values = [os.getenv(key) for key in ("RERANK_BASE_URL", "RERANK_MODEL", "RERANK_API_KEY")]
@@ -669,12 +681,24 @@ class Service:
             fail(404, "not_found", "未找到资料")
         return doc
 
+    def read_document(self, conn, owner, id):
+        """Shared reads never grant permission to mutate a system original."""
+        register_source_guard(conn)
+        doc = conn.execute(
+            f"SELECT * FROM documents WHERE id=? AND (owner_id=? OR {public_document_sql()})",
+            (id, owner),
+        ).fetchone()
+        if doc is None:
+            fail(404, "not_found", "未找到资料")
+        return doc
+
     def document_dict(self, row, conn=None):
         doc = self.document_base(row)
         return self.archive.enrich(self.catalog.enrich_document(doc, conn=conn), conn=conn)
 
     def document_base(self, row):
         doc = {key: row[key] for key in DOCUMENT_FIELDS}
+        doc["source_scope"] = source_scope(row["owner_id"])
         doc["tags"] = json.loads(row["tags"])
         doc["chunk_count"] = (
             row["chunk_count"]
@@ -763,6 +787,13 @@ class Service:
         source_url=None,
     ):
         from .parsing import parse_bounded
+        from .ingestion_quality import (
+            has_mapped_source_objects,
+            ocr_work_pending,
+            quality_warning,
+            text_complete,
+        )
+        from .vision import vision_ocr_configured
 
         if len(content) > MAX_UPLOAD:
             fail(413, "file_too_large", "文件不能超过 20 MB")
@@ -805,13 +836,35 @@ class Service:
                 previous
                 and previous["content_hash"] == content_hash
                 and previous["status"] in ("ready", "stored")
-                and not previous["error"]
             ):
                 manifest = json.loads(previous["manifest"])
-                if (
-                    role == "secondary"
-                    or manifest.get("embedding_fingerprint") == self.embedding_fingerprint()
-                ):
+                fingerprint = self.embedding_fingerprint()
+                pending = bool(
+                    fingerprint
+                    and (
+                        manifest.get("embedding_fingerprint") != fingerprint
+                        or self.index.pending(conn, previous["id"], fingerprint, limit=1)
+                        or conn.execute(
+                            "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (previous["id"],)
+                        ).fetchone()
+                    )
+                )
+                if role == "primary" and pending and text_complete(manifest) and manifest.get("chunks"):
+                    # Retry the existing immutable original instead of creating a
+                    # new legal version merely because its vector service failed.
+                    with self.db.transaction() as write:
+                        current = write.execute(
+                            "SELECT * FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC LIMIT 1",
+                            (owner, family),
+                        ).fetchone()
+                        if (
+                            current
+                            and current["id"] == previous["id"]
+                            and self.archive.can_index(write, current["id"])
+                        ):
+                            self.collection.queue_processing(write, current["id"], owner)
+                            return self.document_dict(current, conn=write)
+                if role == "secondary" or (not previous["error"] and not pending):
                     return self.document_dict(previous, conn=conn)
         blob = self.archive.blobs.put_bytes(owner, content)
         manifest, error = {"elements": [], "chunks": []}, None
@@ -821,21 +874,31 @@ class Service:
                 manifest = parse_bounded(
                     filename, content, mime_type, parser=os.getenv("TEA_PARSER", "basic")
                 )
-                if not manifest.get("elements"):
+                if (
+                    not manifest.get("elements")
+                    and not manifest.get("pages")
+                    and not has_mapped_source_objects(manifest)
+                ):
                     raise ValueError("文件没有可提取的正文；扫描件可能需要 OCR")
                 if manifest.get("warnings"):
                     error = "解析提示：" + "；".join(str(item) for item in manifest["warnings"])[:450]
+                if not text_complete(manifest):
+                    error = quality_warning(manifest)
+                    if ocr_work_pending(manifest) and vision_ocr_configured():
+                        status = "processing"
             except Exception as exc:
                 logger.info("document_parse_failed", extra={"parser_error": type(exc).__name__})
                 status, error = "failed", str(exc)[:500]
-            if status == "ready":
+            if status == "ready" and text_complete(manifest):
                 from .ingestion import embed_texts
+                from .retrieval import embedding_text, input_hash
 
                 try:
-                    vectors = embed_texts([c["text"] for c in manifest.get("chunks", [])])
+                    vectors = embed_texts([embedding_text(c) for c in manifest.get("chunks", [])])
                     if vectors is not None:
                         for chunk, vector in zip(manifest["chunks"], vectors, strict=True):
                             chunk["embedding"] = vector
+                            chunk["embedding_input_hash"] = input_hash(embedding_text(chunk))
                         manifest["embedding_fingerprint"] = self.embedding_fingerprint()
                 except Exception:
                     embedding_error = "原文和关键词索引已保存，但向量服务暂不可用；请检查模型配置后重新上传。"
@@ -884,6 +947,41 @@ class Service:
                         family,
                     ),
                 )
+                if status == "processing":
+                    self.collection.queue_processing(conn, id, owner)
+                conn.execute("SAVEPOINT upload_index")
+                try:
+                    # Bad vectors may be skipped when importing old data, but a
+                    # new upload must never advertise a silently incomplete index.
+                    self.index.sync_document(conn, id, manifest, strict_vectors=True)
+                except ValueError as exc:
+                    conn.execute("ROLLBACK TO upload_index")
+                    for chunk in manifest.get("chunks", []):
+                        chunk.pop("embedding", None)
+                    manifest.pop("embedding_fingerprint", None)
+                    error = "向量索引未完成：" + str(exc)[:350]
+                    manifest["embedding_error"] = error
+                    conn.execute(
+                        "UPDATE documents SET manifest=?,error=? WHERE id=?", (dump(manifest), error, id)
+                    )
+                    self.index.sync_document(conn, id, manifest)
+                finally:
+                    conn.execute("RELEASE upload_index")
+                fingerprint = self.embedding_fingerprint()
+                if (
+                    role == "primary"
+                    and status == "ready"
+                    and text_complete(manifest)
+                    and fingerprint
+                    and self.index.pending(conn, id, fingerprint, limit=1)
+                ):
+                    error = error or "向量索引未完成，已排队重试。"
+                    conn.execute(
+                        "UPDATE documents SET manifest=json_remove(manifest,'$.embedding_fingerprint'),error=? WHERE id=?",
+                        (error, id),
+                    )
+                    conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (id,))
+                    self.collection.queue_processing(conn, id, owner)
                 if case_id:
                     if previous:
                         for state in conn.execute(
@@ -922,6 +1020,7 @@ class Service:
         legal_level=None,
         collection=None,
         country=None,
+        source_scope=None,
     ):
         from .countries import country_from_collection, document_country, resolve_country
 
@@ -937,11 +1036,17 @@ class Service:
                     if country and country != destination:
                         fail(422, "country_mismatch", "业务只能选择目标国家的法规")
                     country = destination
-            parent = self.own_document(conn, owner, parent_id) if parent_id else None
+            register_source_guard(conn)
+            parent = self.read_document(conn, owner, parent_id) if parent_id else None
             if parent and country is None:
                 country = document_country(conn, parent_id)
-            conditions = ["owner_id=?", "case_id IS ?"]
+            shared = public_document_sql() if country and country != "unassigned" else "0"
+            if source_scope == "personal":
+                shared = "0"
+            conditions = [f"((owner_id=? AND case_id IS ?) OR {shared})"]
             parameters = [owner, case_id]
+            if source_scope == "system":
+                conditions.append(shared)
             if country and country != "unassigned":
                 conditions.append(
                     """(EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id) AND dc.country=?)
@@ -994,7 +1099,7 @@ class Service:
 
     def document_detail(self, owner, document_id, *, element_offset=0, chunk_offset=0, limit=100):
         with closing(self.db.connect()) as conn:
-            row = self.own_document(conn, owner, document_id)
+            row = self.read_document(conn, owner, document_id)
             manifest = json.loads(row["manifest"])
             elements, chunks = manifest.get("elements", []), manifest.get("chunks", [])
             return {
@@ -1011,6 +1116,7 @@ class Service:
                 "limit": limit,
                 "parser": manifest.get("parser"),
                 "warnings": manifest.get("warnings", []),
+                "quality": manifest.get("quality"),
             }
 
     def search(
@@ -1058,113 +1164,20 @@ class Service:
         historical=False,
     ):
         """Shared eligible-document search; callers resolve their allowed country scope first."""
-        from .ingestion import embed_texts, lexical_search, rerank_chunks
-
         with closing(self.db.connect()) as conn:
             if case_id:
                 self.own_case(conn, owner, case_id)
-            rows, metadata, limited = self.archive.retrieval_rows(
-                conn,
-                owner,
-                case_id,
-                collection,
-                as_of,
-                historical,
-                country=None if country == "unassigned" else country,
-                document_ids=document_ids,
-            )
-        chunks = []
-        for row in rows:
-            for chunk in json.loads(row["manifest"]).get("chunks", []):
-                chunks.append(
-                    {
-                        **chunk,
-                        "document_id": row["id"],
-                        "title": row["title"],
-                        "source_url": row["source_url"],
-                        "document_version": row["version"],
-                        **metadata[row["id"]],
-                    }
-                )
-        rerank_enabled = self.rerank_fingerprint() is not None
-        candidate_limit = min(limit * 3, 60) if rerank_enabled else limit
-        hits = lexical_search(query, chunks, limit=candidate_limit)
-        mode, warning = "lexical", None
-        fingerprint = self.embedding_fingerprint()
-        indexed = []
-        if fingerprint:
-            for row in rows:
-                manifest = json.loads(row["manifest"])
-                if manifest.get("embedding_fingerprint") == fingerprint:
-                    indexed.extend(c for c in chunks if c["document_id"] == row["id"] and c.get("embedding"))
-            if indexed:
-                try:
-                    query_vector = embed_texts([query])[0]
-                    query_norm = math.sqrt(sum(x * x for x in query_vector))
-                    semantic = []
-                    for chunk in indexed:
-                        vector = chunk["embedding"]
-                        if len(vector) != len(query_vector):
-                            raise ValueError("embedding dimensions changed")
-                        norm = math.sqrt(sum(x * x for x in vector))
-                        score = (
-                            sum(x * y for x, y in zip(vector, query_vector, strict=True))
-                            / (query_norm * norm)
-                            if query_norm and norm
-                            else 0
-                        )
-                        if score >= 0.3:
-                            semantic.append({**chunk, "score": score})
-                    semantic.sort(key=lambda c: c["score"], reverse=True)
-                    combined = {}
-                    for ranking in (hits, semantic[: limit * 3]):
-                        for rank, chunk in enumerate(ranking):
-                            key = (chunk["document_id"], chunk["id"])
-                            current = combined.setdefault(key, {**chunk, "fusion_score": 0})
-                            current["fusion_score"] += 1 / (60 + rank + 1)
-                    hits = sorted(combined.values(), key=lambda c: c["fusion_score"], reverse=True)[
-                        :candidate_limit
-                    ]
-                    mode = "hybrid"
-                except Exception:
-                    warning = "向量检索暂不可用，本次已回退到关键词检索。"
-            elif chunks:
-                warning = "当前材料尚未使用此向量模型建立索引，本次使用关键词检索。"
-        reranked = False
-        if rerank_enabled and hits:
-            try:
-                ranked = rerank_chunks(query, hits, limit)
-                if ranked is not None:
-                    hits, reranked = ranked, True
-            except ValueError:
-                warning = "；".join(filter(None, [warning, "重排服务暂不可用，本次保留原检索顺序。"]))
-        hits = hits[:limit]
-        if limited:
-            warning = "；".join(
-                filter(
-                    None, [warning, "当前检索范围超过单机检索预算，请按采集组缩小范围；结果不代表全部资料"]
-                )
-            )
-        result = {
-            "items": [
-                {
-                    "document_id": hit["document_id"],
-                    "title": hit["title"],
-                    "excerpt": hit["text"][:1500],
-                    "locator": hit.get("locator", {}),
-                    "source_url": hit.get("source_url"),
-                    "document_version": hit["document_version"],
-                    "metadata": hit["metadata"],
-                    "metadata_revision": hit["metadata_revision"],
-                }
-                for hit in hits
-            ],
-            "mode": mode,
-            "reranked": reranked,
-        }
-        if warning:
-            result["warning"] = warning
-        return result
+        return self.index.search(
+            owner,
+            query,
+            case_id,
+            limit,
+            as_of,
+            collection,
+            None if country == "unassigned" else country,
+            document_ids,
+            historical,
+        )
 
     def insert_message(self, conn, case_id, stage_id, task_id, role, content, citations, trace):
         message = {

@@ -77,13 +77,20 @@ def process_identity(pid: int) -> dict | None:
     """Linux identity prevents PID reuse; launch credentials prove checkout ownership."""
     try:
         base = Path("/proc") / str(pid)
-        stat = (base / "stat").read_text()
-        fields = stat[stat.rfind(")") + 2:].split()
-        if fields[0] == "Z":
-            return None
-        environment = dict(
-            item.split(b"=", 1) for item in (base / "environ").read_bytes().split(b"\0") if b"=" in item
-        )
+        for attempt in range(5):
+            stat = (base / "stat").read_text()
+            fields = stat[stat.rfind(")") + 2:].split()
+            if fields[0] in {"Z", "X"}:
+                return None
+            environment = dict(
+                item.split(b"=", 1) for item in (base / "environ").read_bytes().split(b"\0") if b"=" in item
+            )
+            # Popen's exec handshake can finish while /proc still exposes the
+            # child's transitional environment. Wait only for our direct child;
+            # never fabricate ownership from the parent's credentials.
+            if int(fields[1]) != os.getpid() or environment.get(b"TEA_DEV_ROOT") or attempt == 4:
+                break
+            time.sleep(0.01)
         return {
             "pid": pid,
             "start": fields[19],
@@ -139,6 +146,13 @@ def owned_group(record: dict, root: Path = ROOT) -> bool:
     for path in Path("/proc").iterdir():
         if not path.name.isdigit():
             continue
+        try:
+            stat = (path / "stat").read_text()
+            fields = stat[stat.rfind(")") + 2:].split()
+            if (int(fields[2]), int(fields[3])) != (record["pgid"], record["sid"]):
+                continue
+        except (OSError, ValueError, IndexError):
+            continue
         current = process_identity(int(path.name))
         if current and all(current.get(key) == record.get(key) for key in ("pgid", "sid", "owner", "token")):
             return True
@@ -176,6 +190,11 @@ def terminate(records: list[dict], root: Path = ROOT) -> None:
         time.sleep(0.1)
     for record in records:
         signal_owned(record, signal.SIGKILL, root, group=True)
+    # Signals are asynchronous. Do not report cleanup while owned descendants
+    # are still exiting, especially after the group leader has already gone.
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and any(owned_group(record, root) for record in records):
+        time.sleep(0.02)
 
 
 

@@ -370,6 +370,8 @@ class CollectionPlan(StrictModel):
     )
     discover_attachments: bool = True
     max_items: int = Field(default=200, ge=1, le=500)
+    max_original_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=128 * 1024 * 1024)
+    download_timeout_seconds: int = Field(default=90, ge=30, le=900)
 
     @model_validator(mode="after")
     def valid_secondary(self):

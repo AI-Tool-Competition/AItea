@@ -26,7 +26,7 @@ export SYNC
 
 PNPM := npx --yes pnpm@10.26.2
 
-.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory
+.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory collect-resources
 
 help:
 	@printf '%s\n' \
@@ -41,6 +41,7 @@ help:
 	  'make check            运行后端、前端类型与茶业务交互检查' \
 	  'make build / start    构建 / 启动本地生产预览' \
 	  'make archive-inventory COUNTRY=ID  导出资料目录，可选 OWNER=账号ID' \
+	  'make collect-resources OUTPUT=data/campaigns/run ORIGINALS=2  并发采集；RESUME=1 续跑' \
 	  'make worktree NAME=feature/foo  创建隔离开发工作树' \
 	  '选项：SYNC=auto|force|skip，API_PORT=8000，WEB_PORT=3000'
 
@@ -79,6 +80,16 @@ archive-inventory: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 archive-inventory: export TEA_INVENTORY_OWNER = $(OWNER)
 archive-inventory:
 	cd backend && uv run --locked python -m app.archive_inventory
+
+collect-resources: export TEA_CAMPAIGN_OUTPUT = $(if $(strip $(OUTPUT)),$(abspath $(OUTPUT)))
+collect-resources: export TEA_CAMPAIGN_ITEMS = $(ITEMS)
+collect-resources: export TEA_CAMPAIGN_ORIGINALS = $(if $(strip $(ORIGINALS)),$(ORIGINALS),0)
+collect-resources: export TEA_CAMPAIGN_BATCHES = $(if $(strip $(BATCHES)),$(BATCHES),1)
+collect-resources: export TEA_CAMPAIGN_BUDGET = $(if $(strip $(BUDGET)),$(BUDGET),600)
+collect-resources: export TEA_CAMPAIGN_RESUME = $(RESUME)
+collect-resources: export TEA_CAMPAIGN_EXTEND = $(EXTEND)
+collect-resources:
+	uv run --project backend --locked python scripts/collect_resources.py
 
 backend-check:
 	uv run --project backend --locked pytest backend/tests --basetemp=.dev/pytest

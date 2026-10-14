@@ -16,7 +16,7 @@ def test_normal_document_parses_in_an_isolated_process():
 
 
 def test_parser_failure_is_returned_as_a_controlled_error():
-    with pytest.raises(ValueError, match="支持|格式|DOCX"):
+    with pytest.raises(ValueError, match="DOC.*OLE"):
         parse_bounded("legacy.doc", b"not a real legacy word document")
 
 

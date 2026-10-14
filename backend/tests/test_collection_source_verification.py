@@ -1,0 +1,170 @@
+"""Source access, original proof, and exhaustive legal coverage are distinct."""
+
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+from app.checklists import load_blueprints
+from app.ingestion import DownloadError
+
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location(
+    "collection_source_verification", ROOT / "scripts/verify_collection_sources.py"
+)
+verification = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(verification)
+
+
+def selected(*items):
+    plans = load_blueprints()
+    plan = plans["indonesia-20261003"]
+    plan["items"] = [item for item in plan["items"] if item["id"] in items]
+    return {plan["id"]: plan}
+
+
+def transport(monkeypatch, bodies):
+    requests = []
+
+    def download(url, *, consume, **options):
+        requests.append((url, options))
+        body, mime = bodies(url)
+        if isinstance(body, Exception):
+            raise body
+        return {
+            "url": url,
+            "filename": "proof.pdf" if body.startswith(b"%PDF-") else "source.html",
+            "mime_type": mime,
+            "response_status": 200,
+            "blob": consume(iter([body])),
+        }
+
+    monkeypatch.setattr(verification, "_download", download)
+    return requests
+
+
+def test_all_checklist_requirements_and_hashes_survive_matrix_generation():
+    plans = load_blueprints()
+    rows = verification.source_rows(plans, False)
+    assert len(rows) == 45
+    assert sum(row["state"] == "conditional_not_triggered" for row in rows) == 2
+    assert sum(row["execution"] == "dataset_review" for row in rows) == 1
+    for row in rows:
+        path = ROOT / "config/collection-plans" / f"{row['plan_id']}.json"
+        assert row["plan_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert row["requirements"]["steps"]
+        source_item = next(item for item in plans[row["plan_id"]]["items"] if item["id"] == row["item_id"])
+        assert row["requirements"]["acceptance"] == source_item["acceptance"]
+        assert row["coverage"]["full_required_content_verified"] is False
+
+
+def test_successful_directory_response_cannot_become_coverage_or_original(tmp_path, monkeypatch):
+    body = b"<html><title>Access denied</title><h1>Access denied</h1></html>"
+    transport(monkeypatch, lambda url: (body, "text/html"))
+    report = verification.verify(selected("1.2"), tmp_path, follow_limit=0, time_budget=10)
+    row = report["items"][0]
+    assert row["coverage"]["root_reachable"] is True
+    assert row["coverage"]["scope_discovery_supported"] is False
+    assert row["coverage"]["original_acquired"] is False
+    assert row["state"] == "reachable_adapter_or_content_gap"
+    assert report["all_required_content_verified"] is False
+    assert (tmp_path / "report.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_full_original_bytes_have_immutable_hash_and_do_not_claim_parser_validation(tmp_path, monkeypatch):
+    body = b"%PDF-1.7\nactual immutable source original\n%%EOF"
+    requests = transport(monkeypatch, lambda url: (body, "application/pdf"))
+    report = verification.verify(selected("1.1"), tmp_path, follow_limit=0, time_budget=10)
+    row = report["items"][0]
+    assert row["state"] == "original_sample_acquired"
+    original = row["originals"][0]
+    assert original["content_hash"] == hashlib.sha256(body).hexdigest()
+    assert original["size"] == len(body)
+    path = tmp_path / original["evidence_path"]
+    assert path.read_bytes() == body
+    assert path.stat().st_mode & 0o777 == 0o400
+    assert report["summary"]["original_sample_items"] == 1
+    assert report["summary"]["full_required_content_verified_items"] == 0
+    assert all(callable(options["connection_slot"]) for _, options in requests)
+    assert all(options["max_bytes"] <= 20 * 1024 * 1024 for _, options in requests)
+    assert any(
+        probe.get("parser_verification") == "not_executed_by_source_access_probe"
+        for probe in row["root_probes"]
+    )
+    assert not (tmp_path / "tea.sqlite3").exists()
+
+
+def test_followed_original_keeps_exact_archived_source_proof(tmp_path, monkeypatch):
+    html = b'<html><title>Constitution</title><a href="https://s.mkri.id/public/content/infoumum/regulation/pdf/UUD%20NRI%2045%20.pdf">UUD 1945</a></html>'
+    pdf = b"%PDF-1.7\nimmutable original\n%%EOF"
+    plans = selected("1.1")
+    plans["indonesia-20261003"]["items"][0]["entries"] = plans["indonesia-20261003"]["items"][0]["entries"][
+        :1
+    ]
+    transport(
+        monkeypatch, lambda url: (pdf, "application/pdf") if "s.mkri.id" in url else (html, "text/html")
+    )
+    report = verification.verify(plans, tmp_path, follow_limit=2, time_budget=10)
+    row = report["items"][0]
+    assert row["coverage"]["original_acquired"] is True
+    probe = row["follow_probes"][0]
+    assert probe["discovered_from"]["content_hash"] == hashlib.sha256(html).hexdigest()
+    assert (tmp_path / probe["discovered_from"]["evidence_path"]).read_bytes() == html
+    assert probe["discovered_from"]["final_url"] == row["root_probes"][0]["final_url"]
+
+
+def test_scoped_json_adapter_retains_replayable_public_request(tmp_path, monkeypatch):
+    body = b'{"recordsTotal":0,"data":[]}'
+    requests = transport(monkeypatch, lambda url: (body, "application/json"))
+    report = verification.verify(selected("1.3"), tmp_path, follow_limit=0, time_budget=10)
+    probe = next(p for p in report["items"][0]["root_probes"] if "setneg" in p["requested_url"])
+    assert probe["request_method"] == "POST"
+    assert probe["request_body"]["jns"] == ["UU"]
+    request = next(options for url, options in requests if "setneg" in url)
+    assert request["accept_compressed_json"] is True
+    assert request["max_bytes"] <= 4 * 1024 * 1024
+
+
+def test_unexpected_exception_messages_are_not_exported(tmp_path, monkeypatch):
+    transport(monkeypatch, lambda url: (RuntimeError("PRIVATE_CREDENTIAL_VALUE"), "text/html"))
+    report = verification.verify(selected("1.2"), tmp_path, follow_limit=0, time_budget=10)
+    assert report["items"][0]["state"] == "source_access_failed"
+    assert "PRIVATE_CREDENTIAL_VALUE" not in json.dumps(report)
+    assert all(probe["error_type"] == "RuntimeError" for probe in report["items"][0]["root_probes"])
+
+
+def test_public_downloader_rejection_is_preserved_not_bypassed(tmp_path, monkeypatch):
+    transport(monkeypatch, lambda url: (DownloadError("抓取地址必须是 public 公网地址。"), "text/html"))
+    report = verification.verify(selected("1.2"), tmp_path, follow_limit=0, time_budget=10)
+    assert all("公网" in probe["error"] for probe in report["items"][0]["root_probes"])
+    assert report["summary"]["original_sample_items"] == 0
+
+
+def test_new_output_stays_in_worktree_and_never_overwrites(tmp_path, monkeypatch):
+    monkeypatch.setattr(verification, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="below this worktree"):
+        verification.new_output(tmp_path / "outside")
+    output = verification.new_output(tmp_path / "data/verification/new-run")
+    assert output.is_dir()
+    with pytest.raises(ValueError, match="new directory"):
+        verification.new_output(output)
+    (tmp_path / "data/escape").symlink_to(tmp_path.parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="below this worktree"):
+        verification.new_output(tmp_path / "data/escape/disallowed-run")
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"workers": 17},
+        {"per_host": 5},
+        {"timeout": 91},
+        {"time_budget": 1801},
+        {"max_original_bytes": 134217729},
+    ],
+)
+def test_limits_do_not_expand_network_boundary(tmp_path, options):
+    with pytest.raises(ValueError):
+        verification.SourceVerifier(tmp_path, **options)

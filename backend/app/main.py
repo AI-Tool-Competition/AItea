@@ -504,6 +504,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         legal_level: Literal["primary", "secondary", "attachment"] | None = None,
         collection: str | None = Query(None, min_length=1, max_length=100),
         country: str | None = Query(None, pattern=r"^(?:[A-Z]{2}|unassigned)$"),
+        source_scope: Literal["personal", "system"] | None = None,
         current=Depends(user),
     ):
         return service.documents(
@@ -517,6 +518,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             legal_level=legal_level,
             collection=collection,
             country=country,
+            source_scope=source_scope,
         )
 
     @app.post("/api/tea/documents", status_code=201)
@@ -567,7 +569,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     @app.get("/api/tea/documents/{id}/download")
     def document_download(id: str, current=Depends(user)):
         with closing(service.db.connect()) as conn:
-            row = service.own_document(conn, current["id"], id)
+            row = service.read_document(conn, current["id"], id)
         return FileResponse(
             row["storage_path"],
             filename=row["filename"],

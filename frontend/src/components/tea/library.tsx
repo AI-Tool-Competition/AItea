@@ -503,7 +503,7 @@ export function Library({
               setQuery("");
             }}
           >
-            <option value="">账号公共资料库</option>
+            <option value="">系统总库与账号资料</option>
             {cases.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title}

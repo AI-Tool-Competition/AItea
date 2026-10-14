@@ -6,6 +6,8 @@ All network I/O continues through the bounded, durable collection worker.
 
 import hashlib
 import json
+import os
+import stat
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
@@ -13,7 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .db import dump, now, uid
-from .discovery import discover_page, normalized_seeds_for, recipe_for
+from .discovery import MAX_HTML_BYTES, discover_page, normalized_seeds_for, recipe_for
 
 PAGE_BATCH = 40
 FRONTIER_LIMIT = 20000
@@ -94,17 +96,49 @@ class Blueprint(Definition):
         return self
 
 
+def _read_blueprint(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2_000_000:
+            raise ValueError("collection blueprint must be a bounded regular file")
+        return Blueprint.model_validate_json(handle.read(2_000_001)).model_dump()
+
+
 def load_blueprints():
     directory = Path(__file__).resolve().parents[2] / "config" / "collection-plans"
     plans = {}
     for path in sorted(directory.glob("*.json")):
-        if path.stat().st_size > 2_000_000:
-            raise ValueError("collection blueprint exceeds size limit")
-        plan = Blueprint.model_validate_json(path.read_text()).model_dump()
+        plan = _read_blueprint(path)
         if plan["id"] in plans:
             raise ValueError("duplicate collection blueprint")
         plans[plan["id"]] = plan
     return plans
+
+
+def load_blueprint_version(plan_id, version):
+    """Read one checked-in immutable snapshot; never migrate a running campaign."""
+    if not isinstance(plan_id, str) or type(version) is not int or version < 1:
+        raise ValueError("collection blueprint identifier/version is invalid")
+    current = load_blueprints().get(plan_id)
+    if current is None or version > current["version"]:
+        raise ValueError("collection blueprint version is not available")
+    if version == current["version"]:
+        return current
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "collection-plans"
+        / "versions"
+        / f"{plan_id}.v{version}.json"
+    )
+    try:
+        plan = _read_blueprint(path)
+    except (FileNotFoundError, OSError):
+        raise ValueError("collection blueprint snapshot is not available") from None
+    if plan["id"] != plan_id or plan["version"] != version or plan["country"] != current["country"]:
+        raise ValueError("collection blueprint snapshot identity does not match")
+    return plan
 
 
 class ChecklistService:
@@ -112,6 +146,7 @@ class ChecklistService:
         self.service, self.db = service, service.db
         self.plans = load_blueprints()
         self._migrate()
+        self._migrate_page_evidence()
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -157,12 +192,38 @@ class ChecklistService:
             conn.execute("CREATE INDEX pages_binding ON checklist_pages(binding_id,url)")
             conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (7, now()))
 
-    def definition(self, plan_id, item_id=None):
+    def _migrate_page_evidence(self):
+        with self.db.transaction() as conn:
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE version=11").fetchone():
+                return
+            # Keep the deployed ten-column page table intact for existing
+            # snapshots and read-only inventories. Evidence records a request,
+            # not a claim that the source's legal coverage is complete.
+            conn.execute("""CREATE TABLE checklist_page_evidence(
+                item_id TEXT PRIMARY KEY REFERENCES checklist_pages(item_id),
+                evidence TEXT NOT NULL CHECK(json_valid(evidence)))""")
+            conn.execute("""CREATE TRIGGER page_evidence_immutable_update
+                BEFORE UPDATE ON checklist_page_evidence
+                BEGIN SELECT RAISE(ABORT,'page evidence is immutable'); END""")
+            conn.execute("""CREATE TRIGGER page_evidence_immutable_delete
+                BEFORE DELETE ON checklist_page_evidence
+                BEGIN SELECT RAISE(ABORT,'page evidence is immutable'); END""")
+            conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (11, now()))
+
+    def definition(self, plan_id, item_id=None, *, version=None):
         from .service import fail
 
         plan = self.plans.get(plan_id)
         if not plan:
             fail(404, "not_found", "未找到采集清单")
+        if version is not None:
+            if type(version) is not int or version < 1:
+                fail(422, "invalid_plan_version", "清单版本必须是正整数")
+            if version != plan["version"]:
+                try:
+                    plan = load_blueprint_version(plan_id, version)
+                except ValueError:
+                    fail(404, "not_found", "未找到指定版本的采集清单")
         if item_id is None:
             return plan
         item = next((item for item in plan["items"] if item["id"] == item_id), None)
@@ -288,8 +349,8 @@ class ChecklistService:
                 skipped.append({"item_id": item["id"], "reason": error.message})
         return {"runs": runs, "started": len(runs), "skipped": skipped}
 
-    def detail(self, owner, plan_id):
-        plan = self.definition(plan_id)
+    def detail(self, owner, plan_id, *, version=None):
+        plan = self.definition(plan_id, version=version)
         with closing(self.db.connect()) as conn:
             bindings = conn.execute(
                 "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
@@ -405,23 +466,26 @@ class ChecklistService:
                 fail(409, "request_conflict", "同一请求标识不能用于不同采集内容")
             return self.service.collection.run_dict(conn, row)
 
-    def start(self, owner, plan_id, item_id, payload, *, kind):
+    def start(self, owner, plan_id, item_id, payload, *, kind, defer_relations=False, version=None):
         from .service import fail
 
-        plan, item = self.definition(plan_id, item_id)
+        plan, item = self.definition(plan_id, item_id, version=version)
         self._gate(item, payload)
         recipe = recipe_for(item)
         if recipe["adapter"] == "manual":
             fail(409, "adapter_required", recipe["reason"])
-        fingerprint = self._request_hash(plan, item, kind, payload)
+        fingerprint = self._request_hash(
+            plan, item, kind, payload | {"defer_relations": True} if defer_relations else payload
+        )
         with self.db.transaction() as conn:
             previous = self._previous(conn, owner, payload, fingerprint)
             if previous:
                 return previous
             binding, _ = self._configure_item(conn, owner, plan, item)
             if conn.execute(
-                "SELECT 1 FROM collection_runs WHERE source_id=? AND status IN ('queued','running')",
-                (binding["source_id"],),
+                """SELECT 1 FROM collection_runs r WHERE r.source_id=? AND r.status IN ('queued','running')
+                AND (?=0 OR EXISTS(SELECT 1 FROM collection_items i WHERE i.run_id=r.id AND i.status IN ('queued','fetching')))""",
+                (binding["source_id"], int(defer_relations and kind == "collection")),
             ).fetchone():
                 fail(409, "collection_active", "本条目已有进行中的任务")
             level = payload.get("level", "primary")
@@ -483,6 +547,8 @@ class ChecklistService:
                 primary_document_ids=anchors,
                 discover_attachments=False,
                 max_items=PAGE_BATCH if kind == "discovery" else 200,
+                max_original_bytes=item.get("limits", {}).get("max_original_bytes", 20 * 1024 * 1024),
+                download_timeout_seconds=item.get("limits", {}).get("download_timeout_seconds", 90),
             ).model_dump()
             run_plan["checklist"] = {
                 "binding_id": binding["id"],
@@ -491,6 +557,7 @@ class ChecklistService:
                 "definition": json.loads(binding["snapshot"]),
                 "recipe": recipe,
                 "confirmed_condition": payload.get("confirm_condition", False),
+                "defer_relations": defer_relations,
             }
             run = self.service.collection.enqueue(
                 owner,
@@ -571,13 +638,17 @@ class ChecklistService:
 
     @staticmethod
     def inspect(plan, fetched):
-        # The full blob is already streamed/hashed with the global size bound. HTML
-        # discovery is capped independently; PDF identification only needs a header.
+        # The full blob is already streamed/hashed with the global size bound.
+        # Catalog JSON/HTML have their own bound; neither becomes legal text.
         blob = fetched["blob"]
-        if fetched["mime_type"].startswith("text/html") and blob.size > 4_000_000:
-            raise ValueError("目录或详情页超过 4 MB 解析上限")
+        mime = fetched["mime_type"].split(";", 1)[0].strip().lower()
+        if (
+            mime in {"text/html", "application/xhtml+xml", "application/json", "text/xml", "application/xml"}
+            and blob.size > MAX_HTML_BYTES
+        ):
+            raise ValueError("目录或详情页超过 4 MiB 解析上限")
         with blob.path.open("rb") as stream:
-            body = stream.read(4_000_000)
+            body = stream.read(MAX_HTML_BYTES)
         result = discover_page(fetched["url"], body, fetched["mime_type"], plan["checklist"]["recipe"])
         if not result["matched"]:
             raise ValueError(result.get("reason") or "页面不符合当前清单范围")
@@ -602,6 +673,16 @@ class ChecklistService:
                 dump(result["warnings"]),
                 now(),
             ),
+        )
+        evidence = {
+            "request": fetched.get("request_evidence")
+            or {"method": fetched.get("request_method", "GET"), "url": fetched["url"]}
+        }
+        if result.get("scope"):
+            evidence["scope"] = result["scope"]
+        conn.execute(
+            "INSERT INTO checklist_page_evidence(item_id,evidence) VALUES(?,?)",
+            (claim["id"], dump(evidence)),
         )
         conn.execute(
             "UPDATE collection_items SET status='discovered',final_url=?,fetched_at=?,error=NULL,lease_token=NULL,lease_until=NULL WHERE id=?",
@@ -699,6 +780,81 @@ class ChecklistService:
                 "UPDATE collection_runs SET error=? WHERE id=?", ("；".join(warnings)[:500], claim["run_id"])
             )
         self.service.collection._refresh(conn, claim["run_id"])
+
+    @staticmethod
+    def verify_wto_candidate_origin(conn, claim, plan, result):
+        """Unknown MDB bytes require the current member-bound catalog chain."""
+        scope = result.get("scope", {}) if isinstance(result, dict) else {}
+        if not isinstance(scope, dict) or scope.get("pending_format_verification") is not True:
+            return
+        from .wto_discovery import MEMBERS
+
+        checklist = plan.get("checklist", {})
+        row = conn.execute(
+            """SELECT c.url,c.discovered_from,b.country,b.plan_id,b.version,b.item_id,
+            p.content_hash,p.storage_path,p.final_url,p.purpose,e.evidence
+            FROM checklist_candidates c JOIN checklist_bindings b ON b.id=c.binding_id
+            JOIN checklist_pages p ON p.binding_id=b.id AND p.final_url=c.discovered_from
+            JOIN checklist_page_evidence e ON e.item_id=p.item_id
+            WHERE c.id=? AND c.binding_id=? AND c.url=? AND b.owner_id=?
+            ORDER BY p.created_at DESC,p.item_id DESC LIMIT 1""",
+            (claim.get("candidate_id"), checklist.get("binding_id"), claim["url"], claim["owner_id"]),
+        ).fetchone()
+        try:
+            if (
+                row is None
+                or not isinstance(row["evidence"], str)
+                or len(row["evidence"].encode()) > MAX_HTML_BYTES
+            ):
+                raise ValueError
+            evidence = json.loads(row["evidence"])
+            source = evidence["scope"]
+            member = scope["member"]
+            minimum, code, identifier = {
+                "ID": (6, "5.4", "indonesia-20261003"),
+                "SG": (3, "5.2", "singapore-demo-20261009"),
+            }[member]
+            documents = source.get("documents")
+            request = evidence.get("request", {})
+            if (
+                row["country"] != member
+                or row["plan_id"] != identifier
+                or row["item_id"] != code
+                or type(row["version"]) is not int
+                or row["version"] < minimum
+                or row["purpose"] != "detail"
+                or row["discovered_from"] != scope["catalog_url"]
+                or source.get("provider") != "wto-goods-public"
+                or source.get("member") != member
+                or source.get("schedule") != MEMBERS[member]["schedule"]
+                or type(source.get("schedule_number")) is not int
+                or source["schedule_number"] != MEMBERS[member]["number"]
+                or source.get("source_url") != row["final_url"]
+                or source.get("source_sha256") != row["content_hash"]
+                or not isinstance(row["content_hash"], str)
+                or len(row["content_hash"]) != 64
+                or any(char not in "0123456789abcdef" for char in row["content_hash"])
+                or not row["storage_path"].endswith(
+                    f"/files/blobs/{hashlib.sha256(claim['owner_id'].encode()).hexdigest()}/"
+                    f"{row['content_hash'][:2]}/{row['content_hash'][2:4]}/{row['content_hash']}"
+                )
+                or not isinstance(request, dict)
+                or request.get("method") != "GET"
+                or request.get("url") != row["final_url"]
+                or not isinstance(documents, list)
+                or len(documents) > 1000
+                or not any(
+                    isinstance(document, dict)
+                    and document.get("original_url") == claim["url"]
+                    and document.get("original_policy") == "public_original"
+                    and document.get("schedule") == MEMBERS[member]["schedule"]
+                    for document in documents
+                )
+            ):
+                raise ValueError
+        except (KeyError, ValueError, TypeError, AttributeError, RecursionError, UnicodeEncodeError):
+            raise ValueError("待识别 MDB 缺少当前成员目录、原件及候选归属的完整映射。") from None
+        scope["current_catalog_sha256"] = row["content_hash"]
 
     def stored_candidate(self, conn, claim, doc):
         if not claim["candidate_id"]:

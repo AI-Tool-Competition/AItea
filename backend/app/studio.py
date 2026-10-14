@@ -126,9 +126,10 @@ class AdminStudio:
         # Iterate bounded-size metadata rows instead of collecting document bodies.
         for row in conn.execute(
             """SELECT d.id,d.version,d.content_hash,d.status,d.case_id,d.filename,d.source_url,dc.country,
-            COALESCE(m.revision,0) metadata_revision FROM documents d
+            COALESCE(m.revision,0) metadata_revision,COALESCE(r.revision,0) index_revision FROM documents d
             LEFT JOIN document_metadata m ON m.document_id=d.id
             LEFT JOIN document_countries dc ON dc.document_id=d.id
+            LEFT JOIN retrieval_documents r ON r.document_id=d.id
             WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary' ORDER BY d.id""",
             (owner, case["id"]),
         ):
@@ -149,11 +150,13 @@ class AdminStudio:
         return digest.hexdigest()
 
     def analyze(self, owner, case_id, stage_id, payload, *, emit=None, check_cancelled=None):
+        from .countries import resolve_country
         from .service import AppError, fail
         from .streaming import StreamCancelled
 
         legal = self.service.legal
-        with self.db.transaction() as conn:
+
+        def inputs(conn):
             case = self.service.case_detail(owner, case_id, conn)
             self.service.check_revision(case, payload.expected_revision)
             stage = next((item for item in case["stages"] if item["id"] == stage_id), None)
@@ -161,6 +164,33 @@ class AdminStudio:
                 fail(404, "not_found", "未找到办理节点")
             if stage["status"] == "locked":
                 fail(409, "stage_locked", "请先完成前序节点的必办任务")
+            return case, stage
+
+        with closing(self.db.connect()) as conn:
+            case, stage = inputs(conn)
+        agent = stage.get("analysis") or case["template"]["agent"]
+        legal_enabled = (agent.get("legal") or {}).get("enabled", False)
+        countries = (
+            legal.allowed_countries(case["template"], stage)
+            if legal_enabled
+            else [resolve_country(case["template"].get("destination"))]
+        )
+        if legal_enabled or any(
+            step.get("enabled") and step["type"] == "retrieve" for step in agent["steps"]
+        ):
+            # Prepare before reserving the immutable analysis snapshot. Old-library
+            # migration cannot invalidate its own first generated answer; each request
+            # still processes at most one shared batch across all allowed countries.
+            progress = self.service.index.prepare_scopes(
+                owner, countries, case_id=case_id, historical=legal_enabled
+            )
+            if progress["remaining"]:
+                fail(409, "index_preparing", "本次范围仍有资料待索引，已完成一批准备；请重试后再分析。")
+
+        with self.db.transaction() as conn:
+            # Preserve the original revision/claim guards against actual concurrent
+            # edits during index preparation or provider work.
+            case, stage = inputs(conn)
             fingerprint = self.fingerprint(conn, owner, case)
             existing = conn.execute(
                 "SELECT * FROM stage_analyses WHERE case_id=? AND stage_id=? AND fingerprint=?",

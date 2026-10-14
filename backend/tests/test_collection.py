@@ -4,6 +4,7 @@ from contextlib import closing
 from pathlib import Path
 from threading import Event
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -460,7 +461,8 @@ def test_progress_does_not_conflict_with_cancel_but_retry_creates_new_control_re
     )
 
 
-def test_retry_after_cools_actual_redirect_host(client, monkeypatch):
+@pytest.mark.parametrize("delay", [180, 900])
+def test_retry_after_cools_actual_redirect_host(client, monkeypatch, delay):
     from app import ingestion
 
     src = source(client)
@@ -469,14 +471,20 @@ def test_retry_after_cools_actual_redirect_host(client, monkeypatch):
 
     def unavailable(*a, **kw):
         raise ingestion.DownloadError(
-            "limited", retryable=True, retry_after=180, response_host="limited.example"
+            "limited", retryable=True, retry_after=delay, response_host="limited.example"
         )
 
     monkeypatch.setattr(ingestion, "_download", unavailable)
-    collection.fetch_item(collection.claim_fetch())
+    started = time.time()
+    claim = collection.claim_fetch()
+    collection.fetch_item(claim)
     with closing(collection.db.connect()) as conn:
-        hosts = [row[0] for row in conn.execute("SELECT host FROM collection_host_cooldowns")]
-    assert hosts == ["limited.example"]
+        cooldowns = list(conn.execute("SELECT host,available_at FROM collection_host_cooldowns"))
+        item = conn.execute("SELECT available_at FROM collection_items WHERE id=?", (claim["id"],)).fetchone()
+    assert len(cooldowns) == 1 and cooldowns[0]["host"] == "limited.example"
+    assert cooldowns[0]["available_at"] >= started + delay
+    assert item["available_at"] >= started + delay
+    assert collection.claim_fetch() is None
 
 
 def test_promotion_during_parsing_queues_index_using_current_classification(client, monkeypatch):

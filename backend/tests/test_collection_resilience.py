@@ -492,7 +492,15 @@ def test_embedding_batches_resume_after_restart_without_reembedding_committed_ch
     saved = json.loads(
         rows(collection, "SELECT manifest FROM documents WHERE id=?", (document["id"],))[0]["manifest"]
     )
-    assert sum(bool(chunk.get("embedding")) for chunk in saved["chunks"]) == 64
+    assert not any("embedding" in chunk for chunk in saved["chunks"])
+    assert (
+        rows(
+            collection,
+            "SELECT COUNT(*) n FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
+            (document["id"],),
+        )[0]["n"]
+        == 64
+    )
     restarted = Service(tmp_path).collection
     fail_once = True
     restarted.process_item(restarted.claim_processing())
@@ -508,7 +516,15 @@ def test_embedding_batches_resume_after_restart_without_reembedding_committed_ch
     saved = json.loads(
         rows(collection, "SELECT manifest FROM documents WHERE id=?", (document["id"],))[0]["manifest"]
     )
-    assert sum(bool(chunk.get("embedding")) for chunk in saved["chunks"]) == 130
+    assert not any("embedding" in chunk for chunk in saved["chunks"])
+    assert (
+        rows(
+            collection,
+            "SELECT COUNT(*) n FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
+            (document["id"],),
+        )[0]["n"]
+        == 130
+    )
     assert detail(client, job)["run"]["status"] == "completed"
 
 

@@ -31,6 +31,16 @@ export function DocumentMetadataEditor({
   const [error, setError] = useState("");
   const pending = useRef(false);
   if (document.role === "secondary") return null;
+  if (document.source_scope === "system")
+    return (
+      <div className="tea-note">
+        系统法规总库 · 只读 ·{" "}
+        {document.metadata?.review_status === "published" &&
+        document.reviewed_at
+          ? "已记录审核，请核对适用期间。"
+          : "待审核，尚不能作为有效法规引用。"}
+      </div>
+    );
   async function save() {
     if (pending.current) return;
     pending.current = true;

@@ -1,0 +1,73 @@
+{
+  "data": [
+    {
+      "idperaturan": "P20489",
+      "no_peraturan": "21",
+      "tahun": "2025",
+      "tentang": "PENGELOLAAN RUANG UDARA",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 21 Tahun 2025.pdf",
+      "tgl_di": "2025-12-24T00:00:00.000Z",
+      "diundangkan": "2025-12-24T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    },
+    {
+      "idperaturan": "P20479",
+      "no_peraturan": "20",
+      "tahun": "2025",
+      "tentang": "KITAB UNDANG-UNDANG HUKUM ACARA PIDANA",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 20 Tahun 2025.pdf",
+      "tgl_di": "2025-12-17T00:00:00.000Z",
+      "diundangkan": "2025-12-17T00:00:00.000Z",
+      "status_hukum": "sebagian"
+    },
+    {
+      "idperaturan": "P20466",
+      "no_peraturan": "19",
+      "tahun": "2025",
+      "tentang": "PENGESAHAN PERJANJIAN ANTARA REPUBLIK INDONESIA DAN FEDERASI RUSIA TENTANG EKSTRADISI (TREATY BETWEEN TE REPUBLIC OF INDONESIA AND THE RUSSIAN FEDERATION ON EXTRADITION)",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 2,
+      "files": "1. Salinan UU Nomor 19 Tahun 2025.pdf",
+      "tgl_di": "2025-10-29T00:00:00.000Z",
+      "diundangkan": "2025-10-29T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    },
+    {
+      "idperaturan": "P20464",
+      "no_peraturan": "18",
+      "tahun": "2025",
+      "tentang": "PERUBAHAN KETIGA ATAS UNDANG-UNDANG NOMOR 10 TAHUN 2009 TENTANG KEPARIWISATAAN",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "Salinan UU Nomor 18 Tahun 2025.pdf",
+      "tgl_di": "2025-10-29T00:00:00.000Z",
+      "diundangkan": "2025-10-29T00:00:00.000Z",
+      "status_hukum": "sebagian"
+    },
+    {
+      "idperaturan": "P20477",
+      "no_peraturan": "17",
+      "tahun": "2025",
+      "tentang": "ANGGARAN PENDAPATAN DAN BELANJA NEGARA TAHUN ANGGARAN 2026",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 2,
+      "files": "1. Salinan UU Nomor 17 Tahun 2025.pdf",
+      "tgl_di": "2025-10-22T00:00:00.000Z",
+      "diundangkan": "2025-10-22T00:00:00.000Z",
+      "status_hukum": "berlaku"
+    }
+  ],
+  "jml": 901,
+  "jn": [
+    "UU"
+  ]
+}

@@ -2,6 +2,9 @@
 
 import json
 from contextlib import closing
+from pathlib import Path
+import sqlite3
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +24,9 @@ def client(tmp_path):
 
 
 def configure(client):
-    response = client.post(BASE + "/configure", json={"expected_version": 1})
+    response = client.post(
+        BASE + "/configure", json={"expected_version": client.get(BASE).json()["plan"]["version"]}
+    )
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -32,10 +37,10 @@ def discover(client, code="1.3", request="first"):
     return response.json()
 
 
-def test_catalog_is_indonesia_only_and_not_an_implicit_data_seed(client):
+def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(client):
     catalog = client.get("/api/tea/collection-plans")
     assert catalog.status_code == 200
-    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 29)]
+    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 29), ("SG", 16)]
     detail = client.get(BASE).json()
     assert len(detail["plan"]["chapters"]) == 5
     assert len(detail["items"]) == 29
@@ -44,13 +49,26 @@ def test_catalog_is_indonesia_only_and_not_an_implicit_data_seed(client):
         detail["plan"]["source_document"]["sha256"]
         == "eee5a9d8b42183dd4a3ad09ca53903ded3e47141ad9b187360b6d5a27a38e944"
     )
-    assert client.get(BASE.replace(PLAN, "singapore-demo-20261009")).status_code == 404
+    singapore = client.get(BASE.replace(PLAN, "singapore-demo-20261009")).json()
+    assert (
+        singapore["plan"]["source_document"]["sha256"]
+        == "cd3f72ba56c05b62c55a8dfe558a53fe84978613843d9712380cc5d01b5feb47"
+    )
+    assert len(singapore["plan"]["channels"]) == 6
+    assert [item["id"] for item in singapore["plan"]["items"] if item["conditional"]] == ["4.1", "4.2"]
+    assert singapore["plan"]["items"][3]["execution"] == "dataset_review"
+    assert all(item["source_id"] is None for item in singapore["items"])
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
     assert configure(client) == {"created": 29, "existing": 0}
     assert configure(client) == {"created": 0, "existing": 29}
-    assert client.post(BASE + "/configure", json={"expected_version": 2}).status_code == 409
+    assert (
+        client.post(
+            BASE + "/configure", json={"expected_version": client.get(BASE).json()["plan"]["version"] + 1}
+        ).status_code
+        == 409
+    )
     detail = client.get(BASE).json()
     source_id = detail["items"][0]["source_id"]
     service = Service(tmp_path)
@@ -89,6 +107,15 @@ def fake_web(monkeypatch):
     }
 
     def download(url, *, consume, **kwargs):
+        if "jdih.setneg.go.id/api/hukumproduk/produkhukum" in url:
+            body = b'{"data":[],"jml":0,"jn":["UU"]}'
+            return {
+                "url": url,
+                "filename": "produkhukum",
+                "mime_type": "application/json",
+                "request_method": "POST",
+                "blob": consume(iter([body])),
+            }
         body = pages.get(url, b"%PDF-1.4\n%%EOF")
         return {
             "url": url,
@@ -118,7 +145,7 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
     assert discover(client)["id"] == run["id"]
     drain_downloads(client)
     run = client.get(f"/api/tea/collection-runs/{run['id']}").json()["run"]
-    assert run["pages"] == 4 and run["stored"] == 0, run
+    assert run["pages"] == 5 and run["stored"] == 0, run
     with closing(client.app.state.service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM processing_jobs").fetchone()[0] == 0
@@ -126,7 +153,7 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
     assert candidates["total"] == 2
     assert all(c["url"].endswith(".pdf") and c["status"] == "pending" for c in candidates["items"])
     item = next(i for i in client.get(BASE).json()["items"] if i["item_id"] == "1.3")
-    assert item["counts"]["pages"] == 4 and item["counts"]["stored"] == 0
+    assert item["counts"]["pages"] == 5 and item["counts"]["stored"] == 0
     assert item["coverage"] != "completed"
 
 
@@ -203,12 +230,12 @@ def test_block_pages_do_not_create_candidates_or_documents(client, monkeypatch):
 def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_path):
     from app import checklists
 
-    monkeypatch.setattr(checklists, "PAGE_BATCH", 2)
+    monkeypatch.setattr(checklists, "PAGE_BATCH", 3)
     fake_web(monkeypatch)
     first = discover(client)
     drain_downloads(client)
     progress = client.get(f"/api/tea/collection-runs/{first['id']}").json()["run"]
-    assert progress["pages"] == 2 and progress["total"] == 2
+    assert progress["pages"] == 3 and progress["total"] == 3
     state = next(x for x in client.get(BASE).json()["items"] if x["item_id"] == "1.3")
     assert state["counts"]["remaining_pages"] > 0
     service = Service(tmp_path)
@@ -219,8 +246,8 @@ def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_pat
     drain_downloads(client)
     assert second["id"] != first["id"]
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM checklist_pages").fetchone()[0] == 4
-        assert conn.execute("SELECT COUNT(DISTINCT url) FROM checklist_pages").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM checklist_pages").fetchone()[0] == 5
+        assert conn.execute("SELECT COUNT(DISTINCT url) FROM checklist_pages").fetchone()[0] == 5
     assert client.get(BASE + "/items/1.3/candidates").json()["total"] == 2
 
 
@@ -257,7 +284,9 @@ def test_plan_snapshot_changes_require_a_new_definition_version(client):
     configure(client)
     service = client.app.state.service
     service.checklists.plans[PLAN]["items"][0]["title"] = "Changed after configuration"
-    response = client.post(BASE + "/configure", json={"expected_version": 1})
+    response = client.post(
+        BASE + "/configure", json={"expected_version": client.get(BASE).json()["plan"]["version"]}
+    )
     assert response.status_code == 409
     with closing(service.db.connect()) as conn:
         snapshot = json.loads(
@@ -298,6 +327,7 @@ def test_existing_v6_database_upgrades_without_seeding_or_rewriting_data(client,
     # Recreate the previous deployed schema shape, retaining its actual data.
     with service.db.transaction() as conn:
         for table in (
+            "checklist_page_evidence",
             "checklist_pages",
             "checklist_frontier",
             "checklist_candidates",
@@ -308,7 +338,7 @@ def test_existing_v6_database_upgrades_without_seeding_or_rewriting_data(client,
         conn.execute("ALTER TABLE sources DROP COLUMN checklist")
         for column in ("purpose", "depth", "candidate_id"):
             conn.execute(f"ALTER TABLE collection_items DROP COLUMN {column}")
-        conn.execute("DELETE FROM schema_migrations WHERE version=7")
+        conn.execute("DELETE FROM schema_migrations WHERE version IN (7,11)")
         old = dict(conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone())
     restarted = Service(tmp_path)
     with closing(restarted.db.connect()) as conn:
@@ -442,3 +472,100 @@ def test_checklist_document_type_is_only_a_draft_hint(client, monkeypatch, code,
     document = client.get(f"/api/tea/documents/{candidates['items'][0]['document_id']}").json()["document"]
     assert document["metadata"]["kind"] == kind
     assert document["metadata"]["review_status"] == "draft"
+
+
+def test_setneg_post_discovery_keeps_immutable_request_and_total_separate_from_documents(client, monkeypatch):
+    from app import ingestion
+
+    service = client.app.state.service
+    item = next(x for x in service.checklists.plans[PLAN]["items"] if x["id"] == "1.3")
+    item["entries"] = [
+        {
+            "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=1&start=0",
+            "purpose": "catalog",
+            "note": "Bounded fixture",
+        }
+    ]
+    detail = json.loads((Path(__file__).parent / "fixtures/discovery/setneg-detail.json").read_bytes())
+    row = detail["row"][0]
+    requests = []
+
+    def download(url, *, consume, json_body=None, accept_compressed_json=False, **kwargs):
+        requests.append((url, json_body, accept_compressed_json))
+        assert json_body is not None and accept_compressed_json
+        if urlsplit(url).path.endswith("produkhukum"):
+            assert json_body["start"] == int(parse_qs(urlsplit(url).query)["start"][0])
+            data = {"data": [row], "jml": 1, "jn": ["UU"]}
+        else:
+            assert json_body == {"jns": "UU", "no": "2", "thn": "2026", "k": ""}
+            data = detail
+        return {
+            "url": url,
+            "filename": "response.json",
+            "mime_type": "application/json",
+            "request_method": "POST",
+            "blob": consume(iter([json.dumps(data).encode()])),
+        }
+
+    monkeypatch.setattr(ingestion, "_download", download)
+    run = discover(client)
+    drain_downloads(client)
+    state = client.get(f"/api/tea/collection-runs/{run['id']}").json()["run"]
+    assert state["pages"] == 2 and state["failed"] == 0, state
+    assert len(requests) == 2  # A closed denominator must not enqueue a phantom next page.
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM processing_jobs").fetchone()[0] == 0
+        rows = conn.execute(
+            "SELECT p.*,e.evidence FROM checklist_pages p JOIN checklist_page_evidence e ON e.item_id=p.item_id ORDER BY p.purpose"
+        ).fetchall()
+        catalog = next(r for r in rows if r["purpose"] == "catalog")
+        evidence = json.loads(catalog["evidence"])
+        assert evidence["request"] == {
+            "method": "POST",
+            "url": catalog["final_url"],
+            "json_body": requests[0][1],
+        }
+        assert evidence["scope"] == {
+            "provider": "setneg",
+            "jns": "UU",
+            "total": 1,
+            "offset": 0,
+            "page_size": 1,
+            "returned": 1,
+        }
+        saved_blob = Path(catalog["storage_path"]).read_bytes()
+    # Each refresh stores a new response/request snapshot without rewriting evidence.
+    discover(client, request="second-evidence")
+    drain_downloads(client)
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM checklist_page_evidence").fetchone()[0] == 4
+        assert (
+            conn.execute(
+                "SELECT evidence FROM checklist_page_evidence WHERE item_id=?", (catalog["item_id"],)
+            ).fetchone()[0]
+            == catalog["evidence"]
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE checklist_page_evidence SET evidence='{}' WHERE item_id=?", (catalog["item_id"],)
+            )
+    assert Path(catalog["storage_path"]).read_bytes() == saved_blob
+
+
+def test_page_evidence_migrates_existing_database_without_rewriting_records(client, tmp_path):
+    doc = client.post(
+        "/api/tea/documents", files={"file": ("old.txt", b"keep old original", "text/plain")}
+    ).json()
+    service = client.app.state.service
+    with service.db.transaction() as conn:
+        before = dict(conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone())
+        conn.execute("DROP TABLE checklist_page_evidence")
+        conn.execute("DELETE FROM schema_migrations WHERE version=11")
+    restarted = Service(tmp_path)
+    with closing(restarted.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=11").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM checklist_page_evidence").fetchone()[0] == 0
+        assert len(conn.execute("PRAGMA table_info(checklist_pages)").fetchall()) == 10
+        assert dict(conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone()) == before
+    Service(tmp_path)

@@ -5,19 +5,31 @@ import json
 import logging
 import os
 import random
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
+from copy import deepcopy
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
 
 from .db import dump, now, uid
 from .models import CollectionPlan
+from .parsing import parse_worker_limit
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 MAX_ATTEMPTS = 3
+_PROCESSING_SOURCE_FIELDS = (
+    "owner_id",
+    "role",
+    "version",
+    "content_hash",
+    "size",
+    "storage_path",
+    "source_url",
+)
 
 
 def _setting(name, default, maximum):
@@ -27,12 +39,22 @@ def _setting(name, default, maximum):
     return value
 
 
+def _storage_busy(error):
+    code = getattr(error, "sqlite_errorcode", None)
+    return (
+        isinstance(error, sqlite3.OperationalError)
+        and isinstance(code, int)
+        and code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    )
+
+
 class CollectionService:
     def __init__(self, service):
         self.service, self.db = service, service.db
         self.download_workers = _setting("TEA_COLLECT_WORKERS", 8, 16)
         self.host_workers = min(_setting("TEA_COLLECT_PER_HOST", 2, 4), self.download_workers)
-        self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 2)
+        self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 32)
+        parse_worker_limit()  # Reject invalid parser capacity before claiming work.
         self.worker_health = {"status": "stopped", "last_error_at": None}
         self._migrate()
         with self.db.transaction() as conn:
@@ -42,6 +64,9 @@ class CollectionService:
                 )
                 conn.execute("CREATE INDEX network_leases_host ON collection_network_leases(host,expires_at)")
                 conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (6, now()))
+        from .transfers import CollectionTransfers
+
+        self.transfers = CollectionTransfers(self)
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -319,7 +344,12 @@ class CollectionService:
                 WHERE i.run_id=? ORDER BY i.created_at,i.id LIMIT ? OFFSET ?""",
                 (run_id, limit, offset),
             ).fetchall()
-            return {"run": run, "items": [dict(row) for row in rows], "total": run["total"]}
+            progress = self.transfers.progress(conn, [row["id"] for row in rows])
+            return {
+                "run": run,
+                "items": [dict(row) | progress.get(row["id"], {}) for row in rows],
+                "total": run["total"],
+            }
 
     def runs(self, owner, source_id, limit=20, offset=0):
         from .service import fail
@@ -409,11 +439,12 @@ class CollectionService:
                     "UPDATE collection_items SET status='queued',attempts=0,available_at=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE run_id=? AND status IN ('failed','cancelled')",
                     (run_id,),
                 )
-                conn.execute(
-                    """UPDATE processing_jobs SET status='queued',attempts=0,available_at=0,error=NULL,updated_at=?
-                    WHERE status='failed' AND document_id IN (SELECT document_id FROM collection_items WHERE run_id=?)""",
-                    (now(), run_id),
-                )
+                for job in conn.execute(
+                    """SELECT document_id FROM processing_jobs WHERE status='failed' AND owner_id=?
+                    AND document_id IN (SELECT document_id FROM collection_items WHERE run_id=?)""",
+                    (owner, run_id),
+                ).fetchall():
+                    self.queue_processing(conn, job["document_id"], owner, retry_ocr=True)
                 status = "queued"
             conn.execute(
                 "UPDATE collection_runs SET status=?,revision=revision+1,updated_at=? WHERE id=?",
@@ -422,7 +453,35 @@ class CollectionService:
             self._update_source(conn, run_id)
             return self.run_dict(conn, self.own_run(conn, owner, run_id))
 
-    def queue_processing(self, conn, document_id, owner):
+    def queue_processing(self, conn, document_id, owner, *, retry_ocr=False):
+        if retry_ocr:
+            from .ingestion import pdf_quality
+            from .native_asset_ocr import apply_asset_checkpoint, assets
+
+            row = conn.execute(
+                "SELECT d.manifest FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND p.status='failed'",
+                (document_id, owner),
+            ).fetchone()
+            manifest = json.loads(row["manifest"]) if row else {}
+            pages = manifest.get("pages", [])
+            changed = False
+            if any(page.get("status") == "ocr_failed" for page in pages):
+                for page in pages:
+                    if page.get("status") == "ocr_failed":
+                        page["status"] = "pending_ocr"
+                        page.setdefault("ocr", {})["attempts"] = 0
+                manifest["quality"] = pdf_quality(pages)
+                changed = True
+            for asset in assets(manifest):
+                if asset["asset_status"] == "ocr_failed":
+                    asset["asset_status"] = "pending_vision"
+                    asset.setdefault("ocr", {})["attempts"] = 0
+                    asset.pop("error", None)
+                    apply_asset_checkpoint(manifest, asset)
+                    changed = True
+            if changed:
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document_id))
+                conn.execute("UPDATE processing_jobs SET phase='parse' WHERE document_id=?", (document_id,))
         conn.execute(
             """INSERT INTO processing_jobs(document_id,owner_id,phase,status,updated_at) VALUES(?,?,'parse','queued',?)
             ON CONFLICT(document_id) DO UPDATE SET status='queued',attempts=0,available_at=0,error=NULL,updated_at=excluded.updated_at
@@ -455,7 +514,9 @@ class CollectionService:
                 WHERE i.status='queued' AND i.available_at<=? AND r.status IN ('queued','running')
                 AND COALESCE(h.available_at,0)<=? AND (SELECT COUNT(*) FROM collection_items a
                     WHERE a.host=i.host AND a.status='fetching' AND a.lease_until>?)<?
-                ORDER BY i.created_at,i.id LIMIT 1""",
+                -- Rotate durable runs before taking another page/file from a
+                -- large category sharing the same host.
+                ORDER BY r.updated_at,i.created_at,i.id LIMIT 1""",
                 (timestamp, timestamp, timestamp, self.host_workers),
             ).fetchone()
             if not row:
@@ -466,15 +527,89 @@ class CollectionService:
                 (token, timestamp + LEASE_SECONDS, row["id"]),
             )
             conn.execute(
-                "UPDATE collection_runs SET status='running',updated_at=? WHERE id=? AND status='queued'",
+                "UPDATE collection_runs SET status='running',updated_at=? WHERE id=?",
                 (now(), row["run_id"]),
             )
             return dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
 
-    def claim_processing(self):
+    @staticmethod
+    def _processing_scope(owner_id, document_ids):
+        if owner_id is None and document_ids is None:
+            return "", ()
+        if (
+            not isinstance(owner_id, str)
+            or not owner_id
+            or len(owner_id) > 100
+            or not isinstance(document_ids, (list, tuple))
+            or not 1 <= len(document_ids) <= 20
+            or any(not isinstance(item, str) or not item or len(item) > 100 for item in document_ids)
+            or len(set(document_ids)) != len(document_ids)
+        ):
+            raise ValueError("处理范围需要账号和一至二十个不重复的文档标识。")
+        return " AND owner_id=? AND document_id IN (" + ",".join("?" for _ in document_ids) + ")", (
+            owner_id,
+            *document_ids,
+        )
+
+    @staticmethod
+    def _processing_policy_clause(policy):
+        if policy is None:
+            return ""
+        if policy != "draft_html_v3":
+            raise ValueError("正文处理授权策略无效。")
+        # Metadata and parser markers come from the current stored document,
+        # never from a prepare result or the worker's earlier document copy.
+        manifest = "CASE WHEN json_valid(d.manifest) THEN d.manifest ELSE '{}' END"
+        metadata = "CASE WHEN json_valid(m.payload) THEN m.payload ELSE '{}' END"
+        return f""" AND EXISTS (
+            SELECT 1 FROM documents d JOIN document_metadata m ON m.document_id=d.id
+            WHERE d.id=processing_jobs.document_id AND d.owner_id=processing_jobs.owner_id
+                AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
+                AND json_extract({metadata},'$.review_status')='draft'
+                AND json_extract({manifest},'$.parser')='html-basic'
+                AND json_extract({manifest},'$.parser_version')='3'
+                AND (json_extract({manifest},'$.pipeline_version')='html-source-mapping-v3'
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23)='html-source-mapping-v3+')
+                AND json_extract({manifest},'$.html_source.mapping_version')='html-source-mapping-v3'
+                AND json_extract({manifest},'$.source_hash')=d.content_hash
+                AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
+        )"""
+
+    def claim_processing(
+        self, *, owner_id=None, document_ids=None, processing_policy=None, expected_expired_claim=None
+    ):
+        scope, arguments = self._processing_scope(owner_id, document_ids)
+        policy = self._processing_policy_clause(processing_policy)
+        if policy and not scope:
+            raise ValueError("正文处理授权策略必须限定账号和文档范围。")
+        if expected_expired_claim is not None and (
+            not isinstance(expected_expired_claim, dict)
+            or owner_id != expected_expired_claim.get("owner_id")
+            or document_ids != [expected_expired_claim.get("document_id")]
+            or not expected_expired_claim.get("lease_token")
+            or not isinstance(expected_expired_claim.get("_processing_source_guard"), dict)
+        ):
+            raise ValueError("停止任务恢复必须限定一个已领取文档及其原件守卫。")
         timestamp = time.time()
         with self.db.transaction() as conn:
-            self._expire(conn, "processing_jobs", "processing", timestamp)
+            if expected_expired_claim is not None and (
+                not self._processing_source_matches(conn, expected_expired_claim)
+                or not conn.execute(
+                    """SELECT 1 FROM processing_jobs WHERE document_id=? AND owner_id=?
+                    AND status='processing' AND lease_token=? AND lease_until<=?""",
+                    (document_ids[0], owner_id, expected_expired_claim["lease_token"], timestamp),
+                ).fetchone()
+            ):
+                return None
+            self._expire(
+                conn,
+                "processing_jobs",
+                "processing",
+                timestamp,
+                owner_id=owner_id,
+                document_ids=document_ids,
+                processing_policy=processing_policy,
+            )
             if (
                 conn.execute(
                     "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND lease_until>?",
@@ -483,23 +618,133 @@ class CollectionService:
                 >= self.processing_workers
             ):
                 return None
+            # Long OCR should not occupy every slot while complete text waits
+            # for embeddings (or the reverse). Prefer the missing phase only
+            # when another phase is already active; preserve FIFO otherwise.
+            preferred = None
+            if self.processing_workers > 1:
+                active_phases = {
+                    item["phase"]
+                    for item in conn.execute(
+                        "SELECT DISTINCT phase FROM processing_jobs WHERE status='processing' AND lease_until>?",
+                        (timestamp,),
+                    )
+                }
+                if active_phases == {"parse"}:
+                    preferred = "embed"
+                elif active_phases == {"embed"}:
+                    preferred = "parse"
+            order = "CASE WHEN phase=? THEN 0 ELSE 1 END," if preferred else ""
             row = conn.execute(
-                "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=? ORDER BY updated_at,document_id LIMIT 1",
-                (timestamp,),
+                "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
+                + scope
+                + policy
+                + """ AND EXISTS(SELECT 1 FROM documents owned_source
+                    WHERE owned_source.id=processing_jobs.document_id
+                        AND owned_source.owner_id=processing_jobs.owner_id AND owned_source.role='primary')"""
+                + """ AND (phase!='parse' OR NOT EXISTS (
+                    SELECT 1 FROM documents candidate
+                    JOIN documents busy_document INDEXED BY documents_source
+                        ON busy_document.owner_id=candidate.owner_id
+                        AND busy_document.source_url IS candidate.source_url
+                        AND busy_document.content_hash=candidate.content_hash
+                        AND busy_document.version=candidate.version
+                    JOIN processing_jobs busy_job ON busy_job.document_id=busy_document.id
+                    WHERE candidate.id=processing_jobs.document_id
+                        AND candidate.owner_id=processing_jobs.owner_id
+                        AND busy_document.id!=candidate.id
+                        AND busy_job.owner_id=candidate.owner_id
+                        AND busy_job.status='processing' AND busy_job.phase='parse'
+                        AND busy_job.lease_until>?
+                ))"""
+                + " ORDER BY "
+                + order
+                + "updated_at,document_id LIMIT 1",
+                (timestamp, *arguments, timestamp, *((preferred,) if preferred else ())),
             ).fetchone()
             if not row:
                 return None
+            source = conn.execute(
+                "SELECT " + ",".join(_PROCESSING_SOURCE_FIELDS) + " FROM documents WHERE id=?",
+                (row["document_id"],),
+            ).fetchone()
             token = uid()
             conn.execute(
                 "UPDATE processing_jobs SET status='processing',attempts=attempts+1,lease_token=?,lease_until=? WHERE document_id=?",
                 (token, timestamp + LEASE_SECONDS, row["document_id"]),
             )
-            return dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
+            claim = dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
+            claim["_processing_source_guard"] = dict(source)
+            if processing_policy is not None:
+                claim.update(
+                    _processing_policy=processing_policy,
+                    _processing_document_ids=tuple(document_ids),
+                )
+            return claim
 
-    def _expire(self, conn, table, status, timestamp):
+    @staticmethod
+    def _processing_source_matches(conn, claim):
+        guard = claim.get("_processing_source_guard")
+        if guard is None:
+            return True  # Existing durable claims predate this optional in-memory fence.
+        if (
+            not isinstance(guard, dict)
+            or set(guard) != set(_PROCESSING_SOURCE_FIELDS)
+            or guard.get("owner_id") != claim.get("owner_id")
+            or guard.get("role") != "primary"
+        ):
+            return False
+        row = conn.execute(
+            "SELECT " + ",".join(_PROCESSING_SOURCE_FIELDS) + " FROM documents WHERE id=?",
+            (claim["document_id"],),
+        ).fetchone()
+        return row is not None and all(row[field] == guard[field] for field in _PROCESSING_SOURCE_FIELDS)
+
+    def recover_expired_processing_claim(self, claim):
+        """After our future has stopped, defer only its unchanged expired token.
+
+        Reuse scoped queue expiry/claim and failure handling. The transaction
+        compares the old token and immutable source before issuing a new token;
+        failure handling compares that new token/source again before releasing.
+        No page attempt, transcription, import guard or legal metadata changes.
+        """
+        from .parsing import ProcessingDeferred
+
+        recovered = self.claim_processing(
+            owner_id=claim["owner_id"],
+            document_ids=[claim["document_id"]],
+            processing_policy=claim.get("_processing_policy"),
+            expected_expired_claim=claim,
+        )
+        if recovered is None:
+            return False
+        self._failure(recovered, ProcessingDeferred("工作进程已停止，保存的检查点稍后继续"), processing=True)
+        with closing(self.db.connect()) as conn:
+            job = conn.execute(
+                "SELECT status,attempts,lease_token,lease_until FROM processing_jobs WHERE document_id=?",
+                (claim["document_id"],),
+            ).fetchone()
+            return bool(
+                job
+                and job["status"] == "queued"
+                and job["attempts"] == 0
+                and job["lease_token"] is None
+                and job["lease_until"] is None
+            )
+
+    def _expire(
+        self, conn, table, status, timestamp, *, owner_id=None, document_ids=None, processing_policy=None
+    ):
         # Table names come exclusively from the two internal queue implementations.
+        scope, arguments = self._processing_scope(owner_id, document_ids)
+        if scope and table != "processing_jobs":
+            raise ValueError("限定范围只适用于正文处理任务。")
+        policy = self._processing_policy_clause(processing_policy)
+        if policy and (not scope or table != "processing_jobs"):
+            raise ValueError("正文处理授权策略必须限定账号和文档范围。")
         rows = conn.execute(
-            f"SELECT * FROM {table} WHERE status=? AND lease_until<=? LIMIT 32", (status, timestamp)
+            f"SELECT * FROM {table} WHERE status=? AND lease_until<=?" + scope + policy + " LIMIT 32",
+            (status, timestamp, *arguments),
         ).fetchall()
         key = "id" if table == "collection_items" else "document_id"
         for row in rows:
@@ -529,18 +774,56 @@ class CollectionService:
             if processing
             else ("collection_items", "id", "fetching")
         )
-        return (
+        policy = self._processing_policy_clause(claim.get("_processing_policy")) if processing else ""
+        if policy and claim["document_id"] not in claim.get("_processing_document_ids", ()):
+            return False
+        valid = (
             conn.execute(
-                f"SELECT 1 FROM {table} WHERE {key}=? AND status=? AND lease_token=? AND lease_until>?",
-                (claim[key], state, claim["lease_token"], time.time()),
+                f"SELECT 1 FROM {table} WHERE {key}=? AND status=? AND lease_token=? AND lease_until>?"
+                + (" AND owner_id=?" if policy else "")
+                + policy,
+                (
+                    claim[key],
+                    state,
+                    claim["lease_token"],
+                    time.time(),
+                    *((claim["owner_id"],) if policy else ()),
+                ),
             ).fetchone()
             is not None
+        )
+        return valid and (not processing or self._processing_source_matches(conn, claim))
+
+    def _release_disallowed_policy_claim(self, conn, claim):
+        """Release only our live lease; do not modify the now-ineligible document."""
+        policy = self._processing_policy_clause(claim.get("_processing_policy"))
+        if not policy:
+            return
+        row = conn.execute(
+            """SELECT 1 FROM processing_jobs WHERE document_id=? AND owner_id=?
+            AND status='processing' AND lease_token=? AND lease_until>?
+            AND EXISTS(SELECT 1 FROM documents d
+                WHERE d.id=processing_jobs.document_id AND d.owner_id=processing_jobs.owner_id)""",
+            (claim["document_id"], claim["owner_id"], claim["lease_token"], time.time()),
+        ).fetchone()
+        if row is None or self._valid_claim(conn, claim, True):
+            return
+        conn.execute(
+            """UPDATE processing_jobs SET status='queued',attempts=MAX(attempts-1,0),
+            lease_token=NULL,lease_until=NULL,updated_at=? WHERE document_id=? AND lease_token=?""",
+            (now(), claim["document_id"], claim["lease_token"]),
         )
 
     def heartbeat(self, claims):
         with self.db.transaction() as conn:
             timestamp = time.time()
             for processing, claim in claims:
+                if (
+                    processing
+                    and claim.get("_processing_policy")
+                    and not self._valid_claim(conn, claim, True)
+                ):
+                    continue
                 table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
                 conn.execute(
                     f"UPDATE {table} SET lease_until=? WHERE {key}=? AND lease_token=? AND lease_until>?",
@@ -589,7 +872,8 @@ class CollectionService:
                     conn.execute("DELETE FROM collection_network_leases WHERE id=?", (token,))
 
     def fetch_item(self, claim):
-        from .ingestion import _download, discover_attachments
+        from .discovery import request_parameters
+        from .ingestion import discover_attachments
 
         if claim is None:
             return
@@ -604,16 +888,43 @@ class CollectionService:
                 ).fetchone()
             if cache and not Path(cache["storage_path"]).is_file():
                 cache = None
-            validators = {key: cache[key] for key in ("etag", "last_modified")} if cache else None
-            deadline = time.monotonic() + 90
-            fetched = _download(
-                claim["url"],
-                deadline=deadline,
-                required_host=claim["host"] if claim["level"] == "attachment" else None,
-                consume=lambda chunks: self.service.archive.blobs.put(claim["owner_id"], chunks),
-                validators=validators,
-                connection_slot=lambda host: self.network_slot(host, deadline),
+            plan = json.loads(claim["plan"])
+            request_options = (
+                request_parameters(claim["url"], plan["checklist"]["definition"])
+                if plan.get("checklist")
+                else {}
             )
+            validators = {key: cache[key] for key in ("etag", "last_modified")} if cache else None
+            if request_options.get("json_body") is not None:
+                validators = None
+            discovery = claim.get("purpose") in {"catalog", "detail"}
+            timeout_seconds = 90 if discovery else plan.get("download_timeout_seconds", 90)
+            if timeout_seconds > 90:
+                with self.db.transaction() as conn:
+                    if not self._valid_claim(conn, claim):
+                        return
+                    conn.execute(
+                        "UPDATE collection_items SET lease_until=? WHERE id=? AND lease_token=?",
+                        (time.time() + timeout_seconds + 30, claim["id"], claim["lease_token"]),
+                    )
+            fetched = self.transfers.download(
+                claim,
+                required_host=claim["host"] if claim["level"] == "attachment" else None,
+                validators=validators,
+                discovery=discovery,
+                timeout_seconds=timeout_seconds,
+                options={
+                    "accept_compressed_html": claim.get("purpose") in {"catalog", "detail"},
+                    "max_bytes": plan.get("max_original_bytes", 20 * 1024 * 1024),
+                    **request_options,
+                },
+            )
+            fetched["request_evidence"] = {
+                "method": fetched.get("request_method", "GET"),
+                "url": fetched["url"],
+            }
+            if "json_body" in request_options:
+                fetched["request_evidence"]["json_body"] = request_options["json_body"]
             if fetched.get("not_modified"):
                 if not cache:
                     raise ValueError("来源返回 304，但本地没有可复用原件")
@@ -626,7 +937,6 @@ class CollectionService:
                 if blob.digest != cache["content_hash"]:
                     raise ValueError("本地原件校验失败，请重新抓取")
                 fetched = dict(cache) | fetched | {"blob": blob}
-            plan = json.loads(claim["plan"])
             attachments = []
             blob = fetched["blob"]
             checklist_result = (
@@ -650,6 +960,7 @@ class CollectionService:
             with self.db.transaction() as conn:
                 if not self._valid_claim(conn, claim):
                     return
+                self.service.checklists.verify_wto_candidate_origin(conn, claim, plan, checklist_result)
                 doc = self.service.archive.store_original(
                     conn,
                     claim["owner_id"],
@@ -663,7 +974,7 @@ class CollectionService:
                     identity_key=claim["identity_key"],
                     parent_id=claim["parent_document_id"],
                     primary_document_ids=plan["primary_document_ids"]
-                    if claim["level"] == "secondary"
+                    if claim["level"] == "secondary" and not plan.get("checklist", {}).get("defer_relations")
                     else [],
                     kind_hint="law" if kind_hint == "treaty" else kind_hint,
                 )
@@ -713,74 +1024,465 @@ class CollectionService:
         except Exception as error:
             self._failure(claim, error, processing=False)
 
+    def _write_ocr_checkpoint(self, lock, validate, update):
+        # Only the guarded local transaction is retried: rendering, CAS and
+        # provider calls stay outside, so a paid response is not requested again.
+        with lock:
+            for attempt in range(3):
+                try:
+                    with self.db.transaction() as conn:
+                        validate(conn)
+                        return update(conn)
+                except sqlite3.OperationalError as error:
+                    if not _storage_busy(error) or attempt == 2:
+                        raise
+                    time.sleep(0.1 * (2**attempt))
+
+    def _persist_ocr_image(self, doc, rendered):
+        import base64
+
+        if rendered.get("source_hash") != doc["content_hash"]:
+            raise ValueError("识别图像与原件版本不一致")
+        image = base64.b64decode(rendered["image_base64"], validate=True)
+        if len(image) > 8 * 1024 * 1024:
+            raise ValueError("识别图像超过存储限制")
+        if hashlib.sha256(image).hexdigest() != rendered.get("image_sha256"):
+            raise ValueError("识别图像完整性校验失败")
+        if rendered.get("mime_type", "image/png") != "image/png":
+            raise ValueError("识别图像必须为受限转换的 PNG")
+        blob = self.service.archive.blobs.put_bytes(doc["owner_id"], image)
+        return {
+            "content_hash": blob.digest,
+            "size": blob.size,
+            "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
+            "mime_type": "image/png",
+        }
+
+    def _process_native_assets(self, doc, claim, manifest, content):
+        from .native_asset_ocr import apply_asset_checkpoint, ocr_native_assets_bounded
+        from .html_linked_asset_ocr import read_linked_images
+
+        checkpoint_lock = Lock()
+        with self.db.transaction() as conn:
+            if not self._valid_claim(conn, claim, True):
+                raise ValueError("处理任务已更新，请等待当前任务完成")
+            source_urls = [
+                row["final_url"]
+                for row in conn.execute(
+                    """SELECT final_url FROM collection_items
+                    WHERE owner_id=? AND document_id=? AND status='stored' AND final_url IS NOT NULL
+                    ORDER BY id LIMIT 50""",
+                    (doc["owner_id"], doc["id"]),
+                )
+            ]
+        image_contents = read_linked_images(
+            self.db.data_dir,
+            doc["owner_id"],
+            manifest,
+            source_url=doc["source_url"],
+            allowed_source_urls=source_urls,
+            pending_only=True,
+            max_assets=4,
+        )
+
+        def checkpoint(asset):
+            with checkpoint_lock, self.db.transaction() as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise ValueError("处理任务已更新，请等待当前任务完成")
+                apply_asset_checkpoint(manifest, asset)
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+
+        def store_image(rendered):
+            with closing(self.db.connect()) as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise ValueError("处理任务授权或资料已更新，请等待当前任务完成")
+            reference = self._persist_ocr_image(doc, rendered)
+            with checkpoint_lock, self.db.transaction() as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise ValueError("处理任务已更新，请等待当前任务完成")
+            # on_asset commits the exact mapping, sent pixels and attempt before
+            # invoking the provider; no physical PDF page identity is invented.
+            return reference
+
+        with closing(self.db.connect()) as conn:
+            if not self._valid_claim(conn, claim, True):
+                raise ValueError("处理任务授权或资料已更新，请等待当前任务完成")
+        return ocr_native_assets_bounded(
+            content,
+            manifest,
+            on_asset=checkpoint,
+            on_image=store_image,
+            archive_path=doc["storage_path"] if content is None else None,
+            archive_size=doc["size"] if content is None else None,
+            image_contents=image_contents,
+        )
+
+    def _process_pdf_ocr(self, doc, claim, manifest, content, archive_mode):
+        from .parsing import ocr_bounded
+        from .pdf_ocr_reuse import candidate_is_current, find_verified_reuse
+
+        checkpoint_lock = Lock()
+
+        def current_document(conn):
+            current = conn.execute(
+                "SELECT owner_id,role,version,content_hash,size,storage_path FROM documents WHERE id=?",
+                (doc["id"],),
+            ).fetchone()
+            if (
+                not self._valid_claim(conn, claim, True)
+                or current is None
+                or any(
+                    current[key] != doc[key]
+                    for key in ("owner_id", "role", "version", "content_hash", "size", "storage_path")
+                )
+            ):
+                raise ValueError("处理任务或原件版本已更新，请等待当前任务完成")
+
+        def store_image(rendered):
+            with closing(self.db.connect()) as conn:
+                current_document(conn)
+            reference = self._persist_ocr_image(doc, rendered)
+
+            def update(conn):
+                page = next(page for page in manifest["pages"] if page["page"] == rendered["page"])
+                page.setdefault("ocr", {})["image_blob"] = reference
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+
+            self._write_ocr_checkpoint(checkpoint_lock, current_document, update)
+            return reference
+
+        def store_region(rendered):
+            with closing(self.db.connect()) as conn:
+                current_document(conn)
+            reference = self._persist_ocr_image(doc, rendered)
+            with checkpoint_lock, self.db.transaction() as conn:
+                current_document(conn)
+            # The parser checkpoints the returned reference and the
+            # request attempt through on_page before any HTTP call.
+            return reference
+
+        def checkpoint(page):
+            # Each completed physical page is durable before another batch.
+            # The lease check prevents a stale worker from replacing new work.
+            def update(conn):
+                manifest["pages"] = [
+                    page if previous["page"] == page["page"] else previous for previous in manifest["pages"]
+                ]
+                conn.execute(
+                    "UPDATE documents SET manifest=? WHERE id=?",
+                    (dump(manifest), doc["id"]),
+                )
+
+            self._write_ocr_checkpoint(checkpoint_lock, current_document, update)
+
+        def reuse(page, rendered):
+            with closing(self.db.connect()) as conn:
+                current_document(conn)
+            candidate = find_verified_reuse(self.service, doc, page, rendered)
+            if candidate is None:
+                return None
+            with checkpoint_lock, self.db.transaction() as conn:
+                current_document(conn)
+                if not candidate_is_current(conn, doc, candidate):
+                    return None
+                completed = candidate["page"]
+                manifest["pages"] = [
+                    completed if previous["page"] == completed["page"] else previous
+                    for previous in manifest["pages"]
+                ]
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+            return completed
+
+        return ocr_bounded(
+            doc["filename"],
+            content,
+            doc["mime_type"],
+            manifest,
+            on_page=checkpoint,
+            on_image=store_image,
+            on_region=store_region,
+            on_reuse=reuse,
+            archive_path=doc["storage_path"] if archive_mode else None,
+            archive_size=doc["size"] if archive_mode else None,
+        )
+
     def process_item(self, claim):
-        from .ingestion import embed_texts
+        from .ingestion import embed_texts, embedding_claim_size
         from .parsing import parse_bounded
+        from .ingestion_quality import (
+            OCR_VALIDATION_VERSION,
+            has_mapped_source_objects,
+            ocr_work_pending,
+            quality_warning,
+            text_complete,
+        )
+        from .native_asset_ocr import assets, rebuild_native_asset_text_bounded
+        from .vision import vision_ocr_configured
 
         if claim is None:
             return
         try:
             with closing(self.db.connect()) as conn:
                 if not self._valid_claim(conn, claim, True):
+                    with self.db.transaction() as write:
+                        self._release_disallowed_policy_claim(write, claim)
                     return
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
+            import_present = "collection_import" in manifest
+            import_origin = deepcopy(manifest.get("collection_import"))
+
+            def preserve_import_origin(result):
+                # Parsers rebuild derived content. Keep the stored import identity,
+                # including its original guard, without granting it legal authority.
+                # Recomputing that guard would allow an older source snapshot to
+                # replace paid OCR or vectors already committed in this database.
+                if import_present:
+                    result["collection_import"] = deepcopy(import_origin)
+                else:
+                    result.pop("collection_import", None)
+                return result
+
             fingerprint = self.service.embedding_fingerprint()
+            batch, vectors, reuse_plan = [], None, None
             if claim["phase"] == "parse":
-                if not manifest.get("elements"):
+                content = None
+                is_pdf = (
+                    doc["mime_type"] == "application/pdf" or Path(doc["filename"]).suffix.lower() == ".pdf"
+                )
+                from .archive_parsing import needs_native
+
+                archive_mode = is_pdf and (
+                    doc["size"] > 20 * 1024 * 1024
+                    or manifest.get("archive_pdf")
+                    or len(manifest.get("pages", [])) > 300
+                    or any(needs_native(page) for page in manifest.get("pages", []))
+                )
+                archive_docx_mode = Path(doc["filename"]).suffix.lower() == ".docx" and (
+                    doc["size"] > 20 * 1024 * 1024 or manifest.get("archive_docx")
+                )
+                if archive_mode:
+                    from .archive_parsing import parse_archive_pdf_bounded
+
+                    manifest = parse_archive_pdf_bounded(
+                        doc["storage_path"],
+                        source_hash=doc["content_hash"],
+                        size=doc["size"],
+                        filename=doc["filename"],
+                        manifest=manifest if manifest.get("pages") else None,
+                    )
+                elif (
+                    archive_docx_mode
+                    and not manifest.get("elements")
+                    and not has_mapped_source_objects(manifest)
+                ):
+                    from .docx_archive_parsing import parse_archive_docx_bounded
+
+                    manifest = parse_archive_docx_bounded(
+                        doc["storage_path"],
+                        source_hash=doc["content_hash"],
+                        size=doc["size"],
+                        filename=doc["filename"],
+                    )
+                elif (
+                    not manifest.get("elements")
+                    and not manifest.get("pages")
+                    and not has_mapped_source_objects(manifest)
+                ):
                     content = Path(doc["storage_path"]).read_bytes()
                     if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
                         raise ValueError("原件完整性校验失败")
-                    manifest = parse_bounded(
-                        doc["filename"], content, doc["mime_type"], parser=os.getenv("TEA_PARSER", "basic")
-                    )
-                    if not manifest.get("elements"):
+                    try:
+                        manifest = parse_bounded(
+                            doc["filename"],
+                            content,
+                            doc["mime_type"],
+                            parser=os.getenv("TEA_PARSER", "basic"),
+                        )
+                    except ValueError as exc:
+                        if not is_pdf or str(exc) != "PDF 不能超过 300 页。":
+                            raise
+                        from .archive_parsing import parse_archive_pdf_bounded
+
+                        content = None
+                        archive_mode = True
+                        manifest = parse_archive_pdf_bounded(
+                            doc["storage_path"],
+                            source_hash=doc["content_hash"],
+                            size=doc["size"],
+                            filename=doc["filename"],
+                        )
+                    if (
+                        not manifest.get("elements")
+                        and not manifest.get("pages")
+                        and not has_mapped_source_objects(manifest)
+                    ):
                         raise ValueError("文件没有可提取的正文；扫描件需要 OCR")
-            elif should_index and fingerprint:
-                if manifest.get("embedding_fingerprint") != fingerprint:
-                    for chunk in manifest.get("chunks", []):
-                        chunk.pop("embedding", None)
-                    manifest["embedding_fingerprint"] = fingerprint
-                batch = [chunk for chunk in manifest.get("chunks", []) if not chunk.get("embedding")][:64]
+                manifest = preserve_import_origin(manifest)
+                restore_pages = any(
+                    page.get("status", "").startswith("ocr_")
+                    and (
+                        not text_complete(manifest)
+                        or page.get("ocr", {}).get("validation_version") != OCR_VALIDATION_VERSION
+                    )
+                    for page in manifest.get("pages", [])
+                )
+                if not is_pdf and assets(manifest):
+                    # The last asset checkpoint can precede derived text when
+                    # a process stops. Rebuild without repeating its model call.
+                    manifest = preserve_import_origin(rebuild_native_asset_text_bounded(manifest))
+                if not manifest.get("quality", {}).get("pending_parse_pages") and (
+                    restore_pages or (ocr_work_pending(manifest) and vision_ocr_configured())
+                ):
+                    if content is None and not archive_mode and not archive_docx_mode:
+                        content = Path(doc["storage_path"]).read_bytes()
+                        if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
+                            raise ValueError("原件完整性校验失败")
+                    if not is_pdf:
+                        manifest = preserve_import_origin(
+                            self._process_native_assets(doc, claim, manifest, content)
+                        )
+                    else:
+                        manifest = preserve_import_origin(
+                            self._process_pdf_ocr(doc, claim, manifest, content, archive_mode)
+                        )
+            elif should_index and fingerprint and text_complete(manifest):
+                from .embedding_reuse import prepare_batch, verify_originals
+
+                with self.db.transaction() as conn:
+                    if not self._valid_claim(conn, claim, True):
+                        self._release_disallowed_policy_claim(conn, claim)
+                        return
+                    if conn.execute(
+                        "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
+                    ).fetchone():
+                        self.service.index.sync_document(conn, doc["id"])
+                    current = self.service.own_document(conn, claim["owner_id"], doc["id"])
+                    if any(
+                        current[key] != doc[key]
+                        for key in (
+                            "owner_id",
+                            "role",
+                            "version",
+                            "content_hash",
+                            "source_url",
+                            "size",
+                            "storage_path",
+                        )
+                    ):
+                        raise ValueError("向量处理原件版本已变更")
+                    doc = current
+                    manifest = json.loads(doc["manifest"])
+                    batch = self.service.index.pending(
+                        conn, doc["id"], fingerprint, limit=embedding_claim_size()
+                    )
+                    if batch:
+                        reuse_plan = prepare_batch(self.service, conn, doc, fingerprint, batch)
                 if batch:
-                    vectors = embed_texts([chunk["text"] for chunk in batch])
-                    if vectors is None:
-                        raise ValueError("向量配置已变更，请重试处理")
-                    for chunk, vector in zip(batch, vectors, strict=True):
-                        chunk["embedding"] = vector
+                    # CAS hashes are streamed once outside the short write transaction.
+                    verify_originals(self.service, reuse_plan)
+                    with closing(self.db.connect()) as conn:
+                        if not self._valid_claim(conn, claim, True):
+                            with self.db.transaction() as write:
+                                self._release_disallowed_policy_claim(write, claim)
+                            return
+                    misses = reuse_plan["misses"]
+                    generated = embed_texts([batch[n]["retrieval_text"] for n in misses]) if misses else []
+                    if generated is None or len(generated) != len(misses):
+                        raise ValueError("向量配置已变更或返回数量无效，请重试处理")
+                    resolved = {n: hit["values"] for n, hit in reuse_plan["hits"].items()}
+                    resolved.update(zip(misses, generated, strict=True))
+                    vectors = [resolved[n] for n in range(len(batch))]
+            manifest = preserve_import_origin(manifest)
             warning = "；".join(str(item) for item in manifest.get("warnings", []))[:500] or None
+            warning = quality_warning(manifest) or warning
             with self.db.transaction() as conn:
                 if not self._valid_claim(conn, claim, True):
+                    self._release_disallowed_policy_claim(conn, claim)
                     return
                 # Classification may change while parsing or calling the provider. Decide
                 # follow-up work from current state in the same transaction as completion.
                 current_fingerprint = self.service.embedding_fingerprint()
+                if reuse_plan is not None:
+                    from .embedding_reuse import assert_current
+
+                    assert_current(self.service, conn, reuse_plan)
+                if claim["phase"] == "parse":
+                    conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+                    self.service.index.sync_document(conn, doc["id"], manifest)
+                elif conn.execute(
+                    "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
+                ).fetchone():
+                    self.service.index.sync_document(conn, doc["id"])
+                indexable = self.service.archive.can_index(conn, doc["id"])
+                if vectors is not None and fingerprint == current_fingerprint and indexable:
+                    self.service.index.store_vectors(conn, doc["id"], fingerprint, batch, vectors)
+                    if reuse_plan is not None:
+                        from .embedding_reuse import record_commit
+
+                        checkpoint = record_commit(conn, reuse_plan, manifest)
+                        manifest["embedding_reuse"] = checkpoint
+                        conn.execute(
+                            "UPDATE documents SET manifest=json_set(manifest,'$.embedding_reuse',json(?)) WHERE id=?",
+                            (dump(checkpoint), doc["id"]),
+                        )
+                        # Only derived provenance changed; source/text/index fences
+                        # were checked in this same transaction before vector commit.
+                        conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (doc["id"],))
                 needs_index = (
-                    self.service.archive.can_index(conn, doc["id"])
+                    indexable
                     and current_fingerprint
-                    and manifest.get("chunks")
-                    and (
-                        manifest.get("embedding_fingerprint") != current_fingerprint
-                        or any(not chunk.get("embedding") for chunk in manifest["chunks"])
+                    and text_complete(manifest)
+                    and self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
+                )
+                needs_parse = bool(manifest.get("quality", {}).get("pending_parse_pages"))
+                needs_ocr = bool(not needs_parse and ocr_work_pending(manifest) and vision_ocr_configured())
+                deferred = needs_ocr and (
+                    manifest.get("quality", {}).get("deferred_pages")
+                    or manifest.get("native_asset_ocr", {}).get("deferred_assets")
+                )
+                next_phase = "parse" if needs_parse or needs_ocr else ("embed" if needs_index else None)
+                incomplete = not text_complete(manifest) and not next_phase
+                conn.execute(
+                    "UPDATE documents SET status=?,error=? WHERE id=?",
+                    ("processing" if needs_parse or needs_ocr else "ready", warning, doc["id"]),
+                )
+                if not needs_index and current_fingerprint and indexable and text_complete(manifest):
+                    conn.execute(
+                        "UPDATE documents SET manifest=json_set(manifest,'$.embedding_fingerprint',?) WHERE id=?",
+                        (current_fingerprint, doc["id"]),
                     )
-                )
-                next_phase = "embed" if needs_index else None
+                    # Only the model marker changed; the text checkpoint is already current.
+                    conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (doc["id"],))
                 conn.execute(
-                    "UPDATE documents SET manifest=?,status='ready',error=? WHERE id=?",
-                    (dump(manifest), warning, doc["id"]),
-                )
-                conn.execute(
-                    "UPDATE processing_jobs SET phase=?,status=?,attempts=0,available_at=0,lease_token=NULL,lease_until=NULL,error=NULL,updated_at=? WHERE document_id=?",
-                    (next_phase or claim["phase"], "queued" if next_phase else "completed", now(), doc["id"]),
+                    "UPDATE processing_jobs SET phase=?,status=?,attempts=0,available_at=?,lease_token=NULL,lease_until=NULL,error=?,updated_at=? WHERE document_id=?",
+                    (
+                        next_phase or claim["phase"],
+                        "queued" if next_phase else ("failed" if incomplete else "completed"),
+                        time.time()
+                        + max(
+                            manifest.get("quality", {}).get("retry_after_seconds", 5),
+                            manifest.get("native_asset_ocr", {}).get("retry_after_seconds", 5),
+                        )
+                        if deferred
+                        else 0,
+                        warning if incomplete else None,
+                        now(),
+                        doc["id"],
+                    ),
                 )
                 self._refresh_document(conn, doc["id"])
         except Exception as error:
             self._failure(claim, error, processing=True)
 
     def _failure(self, claim, error, *, processing):
+        from .parsing import ProcessingDeferred
+        from .transfers import TransferPending
         from .service import AppError
+        from .ingestion import EmbeddingProviderDeferred, EmbeddingServiceError
 
+        storage_wait = _storage_busy(error)
         # Unexpected exceptions/paths/provider response bodies never become public error text.
         safe = (
             str(error)[:450]
@@ -789,21 +1491,45 @@ class CollectionService:
         )
         retryable = getattr(error, "retryable", not isinstance(error, (ValueError, AppError)))
         # Model/network failures may be transient; deterministic parse failures are not.
-        if processing and claim["phase"] == "embed":
-            retryable = True
+        if processing and claim["phase"] == "embed" and not storage_wait:
+            retryable = error.retryable if isinstance(error, EmbeddingServiceError) else True
             safe = "向量服务暂不可用，原件和正文已保留"
-        exhausted = claim["attempts"] >= MAX_ATTEMPTS or not retryable
-        delay = min(
-            300, max(2 ** claim["attempts"] + random.random(), getattr(error, "retry_after", None) or 0)
+        if storage_wait:
+            safe = "本地资料存储繁忙，任务稍后继续处理"
+        transfer_progress = not processing and isinstance(error, TransferPending)
+        provider_wait = processing and isinstance(error, EmbeddingProviderDeferred)
+        deferred = (
+            (processing and isinstance(error, ProcessingDeferred))
+            or transfer_progress
+            or provider_wait
+            or storage_wait
         )
+        exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
+        # Bound our own exponential backoff, but never shorten a server's
+        # Retry-After. Long waits remain queue timestamps, not worker sleeps.
+        delay = max(
+            min(300, 2 ** claim["attempts"] + random.random()),
+            getattr(error, "retry_after", None) or 0,
+        )
+        if deferred:
+            delay = max(1, error.retry_after) if provider_wait else (0 if transfer_progress else 5)
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):
+                if processing:
+                    self._release_disallowed_policy_claim(conn, claim)
                 return
             conn.execute(
                 f"UPDATE {table} SET status=?,available_at=?,error=?,lease_token=NULL,lease_until=NULL WHERE {key}=?",
-                ("failed" if exhausted else "queued", time.time() + delay, safe, claim[key]),
+                (
+                    "failed" if exhausted else "queued",
+                    time.time() + delay,
+                    None if transfer_progress else safe,
+                    claim[key],
+                ),
             )
+            if deferred:
+                conn.execute(f"UPDATE {table} SET attempts=0 WHERE {key}=?", (claim[key],))
             if processing:
                 conn.execute(
                     "UPDATE documents SET error=?,status=CASE WHEN ? AND status='processing' THEN 'failed' ELSE status END WHERE id=?",
@@ -820,7 +1546,7 @@ class CollectionService:
                     )
                 self._refresh(conn, claim["run_id"])
         logger.info(
-            "collection_item_failed",
+            "collection_item_deferred" if deferred else "collection_item_failed",
             extra={"queue": table, "item_id": claim[key], "error_type": type(error).__name__},
         )
 
@@ -875,10 +1601,24 @@ class CollectionService:
 class CollectionWorkers:
     """Fixed-size executors with at most one claimed future per available worker."""
 
-    def __init__(self, collection):
+    def __init__(self, collection, *, processing_scope=None, processing_policy=None, fetch_enabled=True):
         self.collection = collection
+        if processing_scope is not None:
+            if not isinstance(processing_scope, (tuple, list)) or len(processing_scope) != 2:
+                raise ValueError("处理范围需要账号与文档列表。")
+            collection._processing_scope(*processing_scope)
+            processing_scope = (processing_scope[0], tuple(processing_scope[1]))
+        collection._processing_policy_clause(processing_policy)
+        if processing_policy is not None and processing_scope is None:
+            raise ValueError("正文处理授权策略必须限定账号和文档范围。")
+        self.processing_scope = processing_scope
+        self.processing_policy = processing_policy
+        self.fetch_enabled = fetch_enabled
         self.stop_event = Event()
         self.thread = None
+        # Scoped campaigns have at most 20 IDs. Retain only the latest token per
+        # ID; a server-wide worker does not accumulate an unbounded history.
+        self.owned_processing_claims = {}
 
     def start(self):
         if self.thread is None:
@@ -907,18 +1647,30 @@ class CollectionWorkers:
                                 logger.exception("Collection worker failed; its durable lease will expire")
                     if not self.stop_event.is_set():
                         for is_processing, executor, maximum in (
-                            (False, downloads, self.collection.download_workers),
+                            (False, downloads, self.collection.download_workers if self.fetch_enabled else 0),
                             (True, processing, self.collection.processing_workers),
                         ):
                             free = maximum - sum(kind == is_processing for kind, _ in active.values())
                             for _ in range(free):
                                 claim = (
-                                    self.collection.claim_processing()
+                                    self.collection.claim_processing(
+                                        **(
+                                            {
+                                                "owner_id": self.processing_scope[0],
+                                                "document_ids": self.processing_scope[1],
+                                                "processing_policy": self.processing_policy,
+                                            }
+                                            if self.processing_scope is not None
+                                            else {}
+                                        )
+                                    )
                                     if is_processing
                                     else self.collection.claim_fetch()
                                 )
                                 if not claim:
                                     break
+                                if is_processing and self.processing_scope is not None:
+                                    self.owned_processing_claims[claim["document_id"]] = deepcopy(claim)
                                 future = executor.submit(
                                     self.collection.process_item
                                     if is_processing
@@ -941,6 +1693,11 @@ class CollectionWorkers:
         finally:
             downloads.shutdown(wait=True, cancel_futures=True)
             processing.shutdown(wait=True, cancel_futures=True)
+            for claim in self.owned_processing_claims.values():
+                try:
+                    self.collection.recover_expired_processing_claim(claim)
+                except Exception:
+                    logger.exception("Stopped scoped worker could not defer its expired processing claim")
             self.collection.worker_health["status"] = "stopped"
 
     def stop(self, timeout=5):

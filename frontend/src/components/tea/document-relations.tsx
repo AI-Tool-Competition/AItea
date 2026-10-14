@@ -160,11 +160,17 @@ export function DocumentRelations({
     <div className="ta-relation-list">
       <div className="ta-subheading">
         <span>{loading ? "读取中…" : `${data.total} 条关联`}</span>
-        <Button variant="outline" size="sm" onClick={() => setAdding(!adding)}>
-          {adding ? "收起" : "添加关联"}
-        </Button>
+        {document.source_scope !== "system" && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAdding(!adding)}
+          >
+            {adding ? "收起" : "添加关联"}
+          </Button>
+        )}
       </div>
-      {adding && (
+      {adding && document.source_scope !== "system" && (
         <form
           className="ta-relation-form"
           onSubmit={(event) => {
@@ -205,6 +211,7 @@ export function DocumentRelations({
                 {secondary ? "引用本法规的一级资料" : "引用或关联的法规"}
               </legend>
               <DocumentChooser
+                sourceScope="personal"
                 selected={target}
                 onChange={(target) => update({ target })}
                 primaryOnly={secondary}

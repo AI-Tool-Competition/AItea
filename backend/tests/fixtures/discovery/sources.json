@@ -1,0 +1,138 @@
+{
+  "badilum-detail.html": {
+    "source_url": "https://badilum.mahkamahagung.go.id/publik/peraturan/kebijakan-dirjen-badilum/5143-keputusan-direkurjenderal-badan-peradilan-umum-nomor-1344-dju-sk-hm1-1-iii-20264-tentang-perubahan-keputusan-direktur-jenderal-badan-peradilan-umum-nomor-1084-dju-sk-hm-1-1-x-2024.html",
+    "captured_at": "2026-10-13T06:19:34.377798+00:00",
+    "response_sha256": "710a6df0754fe6ea9ece354ed2d80c5debfc4cb32c4955f9fe3f129fa00cf7b6",
+    "note": "Unchanged selected public anchors and title; UTF-8 fixture omits unrelated navigation/scripts."
+  },
+  "lkpp-detail.html": {
+    "source_url": "https://jdih.lkpp.go.id/regulation/peraturan-lkpp/peraturan-lkpp-nomor-3-tahun-2026",
+    "captured_at": "2026-10-13T06:19:34.380121+00:00",
+    "response_sha256": "76b90311e40939de2e7ee83ccde1d51e2a0b4aa5643256bd7517aeb5f95eebee",
+    "note": "Unchanged selected public anchors and title; UTF-8 fixture omits unrelated navigation/scripts."
+  },
+  "wto-legal-detail.html": {
+    "source_url": "https://www.wto.org/english/docs_e/legal_e/marag_e.htm",
+    "captured_at": "2026-10-13T06:28:44.436367+00:00",
+    "response_sha256": "1c5de0a01b77f8acf95bd5b2f001a67fe708c5a25edce120c5d5818a70c00997",
+    "note": "Unchanged selected public anchors and title; UTF-8 fixture omits unrelated navigation/scripts."
+  },
+  "wto-goods-member.html": {
+    "source_url": "https://goods-schedules.wto.org/member/indonesia",
+    "captured_at": "2026-10-13T06:17:30.530534+00:00",
+    "response_sha256": "b0eb1f2c28eaced1e0194ca853d3f5c5b7aaa591d681bf572be52d925d12eed3",
+    "note": "Unchanged selected public anchors and title; UTF-8 fixture omits unrelated navigation/scripts."
+  },
+  "wto-goods-files.html": {
+    "source_url": "https://goods-schedules.wto.org/browse/43339/file_browser",
+    "captured_at": "2026-10-13T06:28:44.438073+00:00",
+    "response_sha256": "54e0a21d674f97638c1dfef6f2a384ee27e305535adc48c50f668b19860b46e7",
+    "note": "Unchanged selected public anchors and title; UTF-8 fixture omits unrelated navigation/scripts."
+  },
+  "bandung-catalog.html": {
+    "source_url": "https://jdih.bandung.go.id/home/produk-hukum/peraturan-perundang-undangan-daerah",
+    "captured_at": "2026-10-13T06:39:38.763277+00:00",
+    "response_sha256": "16b28dd2e1f99fa1ad4a34e86cd40b4344c4153ccff420bc72048150347add0a",
+    "note": "Unchanged selected public anchors/title; no complete legal text."
+  },
+  "bandung-detail.html": {
+    "source_url": "https://jdih.bandung.go.id/home/produk-hukum/peraturan-perundang-undangan-daerah/30394",
+    "captured_at": "2026-10-13T06:41:31.643660+00:00",
+    "response_sha256": "9afeff1b6dee453a34642827c9329ecfb83a25078729358c67e8fe392717f4ca",
+    "note": "Unchanged selected public anchors/title; no complete legal text."
+  },
+  "setneg-catalog.json": {
+    "source_url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum",
+    "method": "POST",
+    "json_body": {
+      "tentang": "",
+      "p_lihan": "semua",
+      "jns": [
+        "UU"
+      ],
+      "thn": [],
+      "status": "",
+      "terx": "All",
+      "sortOrder": "desc",
+      "length": 5,
+      "start": 0
+    },
+    "captured_at": "2026-10-13T06:50:53.376371+00:00",
+    "response_sha256": "2cf095236f84b0e7c10a54e1a563b2e04c81fe7d61dc62ee30634fbbeadb18c8",
+    "note": "Public API response; omitted only unrelated viewing/download counters. No complete legal text."
+  },
+  "setneg-page2.json": {
+    "source_url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum",
+    "method": "POST",
+    "json_body": {
+      "tentang": "",
+      "p_lihan": "semua",
+      "jns": [
+        "UU"
+      ],
+      "thn": [],
+      "status": "",
+      "terx": "All",
+      "sortOrder": "desc",
+      "length": 5,
+      "start": 5
+    },
+    "captured_at": "2026-10-13T06:50:53.376685+00:00",
+    "response_sha256": "4092c22d9a4b54e07f5c43c89b00097f20cc4e28fd335710d84a60ea9caa1aec",
+    "note": "Public API response; omitted only unrelated viewing/download counters. No complete legal text."
+  },
+  "setneg-detail.json": {
+    "source_url": "https://jdih.setneg.go.id/api/hukumproduk/detaildata",
+    "method": "POST",
+    "json_body": {
+      "jns": "UU",
+      "no": "2",
+      "thn": "2026",
+      "k": ""
+    },
+    "captured_at": "2026-10-13T06:50:55.376614+00:00",
+    "response_sha256": "ff1b6fa7e43601d932f99ec1b5604a2985fe9789b3d1c6bb0e60e2f97f8a04fb",
+    "note": "Public API response; omitted only unrelated viewing/download counters. No complete legal text."
+  },
+  "setneg-last-page.json": {
+    "source_url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum",
+    "method": "POST",
+    "json_body": {
+      "tentang": "",
+      "p_lihan": "semua",
+      "jns": [
+        "UU"
+      ],
+      "thn": [],
+      "status": "",
+      "terx": "All",
+      "sortOrder": "desc",
+      "length": 5,
+      "start": 900
+    },
+    "captured_at": "2026-10-13T06:56:07.350632+00:00",
+    "response_sha256": "fe4ccf948ae08671fad8c7d53b74f980a32e9d57a814b9ae253cd06a18f39b88",
+    "note": "Public API response; omitted only unrelated viewing/download counters. No complete legal text."
+  },
+  "setneg-files.json": {
+    "source_url": "https://jdih.setneg.go.id/api/hukumproduk/detaildata",
+    "method": "POST",
+    "json_body": {
+      "jns": "UU",
+      "no": "19",
+      "thn": "2025",
+      "k": ""
+    },
+    "captured_at": "2026-10-13T06:56:10.986173+00:00",
+    "response_sha256": "9e7a1ace96fb5b61e37838d26d4f6816ccef840abcbb1559d44af6cc0cd0f4b6",
+    "note": "Public API response; omitted only unrelated viewing/download counters. No complete legal text."
+  },
+  "bkpm-investment.json": {
+    "source_url": "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=10&page=1",
+    "method": "GET",
+    "captured_at": "2026-10-13T15:08:18.417015+00:00",
+    "response_sha256": "628963a998cc62bea4e6a7966ac935837fdf6a4bf5459c6623d39e0cd75dbeb4",
+    "fixture_sha256": "8de6bc469b33c64ae6eb7b62f7e15753f8902baf98aa30327f04e7bab2794ae5",
+    "note": "Structural projection: first two official rows and unchanged total/theme/metadata; constructed two-row page for bounded pagination tests. topDocuments is retained only to verify it is ignored."
+  }
+}

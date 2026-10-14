@@ -1,0 +1,472 @@
+{
+  "plan_id": "indonesia-20261003",
+  "source_document_sha256": "eee5a9d8b42183dd4a3ad09ca53903ded3e47141ad9b187360b6d5a27a38e944",
+  "materials": [
+    {
+      "key": "rcep-chapter-1",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-1.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 1"
+    },
+    {
+      "key": "rcep-chapter-2",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-2.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 2"
+    },
+    {
+      "key": "rcep-chapter-3",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 3"
+    },
+    {
+      "key": "rcep-chapter-4",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-4.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 4"
+    },
+    {
+      "key": "rcep-chapter-5",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-5.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 5"
+    },
+    {
+      "key": "rcep-chapter-6",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-6.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 6"
+    },
+    {
+      "key": "rcep-chapter-7",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-7.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 7"
+    },
+    {
+      "key": "rcep-chapter-8",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-8.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 8"
+    },
+    {
+      "key": "rcep-chapter-9",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-9.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 9"
+    },
+    {
+      "key": "rcep-chapter-10",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-10.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 10"
+    },
+    {
+      "key": "rcep-chapter-11",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-11.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 11"
+    },
+    {
+      "key": "rcep-chapter-12",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-12.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 12"
+    },
+    {
+      "key": "rcep-chapter-13",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-13.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 13"
+    },
+    {
+      "key": "rcep-chapter-14",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-14.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 14"
+    },
+    {
+      "key": "rcep-chapter-15",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-15.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 15"
+    },
+    {
+      "key": "rcep-chapter-16",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-16.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 16"
+    },
+    {
+      "key": "rcep-chapter-17",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-17.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 17"
+    },
+    {
+      "key": "rcep-chapter-18",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-18.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 18"
+    },
+    {
+      "key": "rcep-chapter-19",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-19.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 19"
+    },
+    {
+      "key": "rcep-chapter-20",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-20.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Text of RCEP / Chapter 20"
+    },
+    {
+      "key": "rcep-preamble",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/00-Title-page-Table-of-Contents-and-Preamble.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-1"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Preamble & Table of Contents"
+    },
+    {
+      "key": "rcep-annex-3b",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3B.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-3"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 3B: Minimum Information Requirements"
+    },
+    {
+      "key": "mk-puu-164-2026",
+      "item_id": "3.1",
+      "url": "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU",
+      "locator": "PUU / official original; review operative part and affected provisions"
+    },
+    {
+      "key": "mk-puu-38-2026",
+      "item_id": "3.1",
+      "url": "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14258_1778572852.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU",
+      "locator": "PUU / official original; review operative part and affected provisions"
+    },
+    {
+      "key": "wto-air-34",
+      "item_id": "5.4",
+      "url": "https://docs.wto.org/gattdocs/q/TR/AIR/34.PDF",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://www.wto.org/english/docs_e/legal_e/legal_e.htm",
+      "locator": "AIR/34 historical legal-text family; membership and current force require review"
+    },
+    {
+      "key": "rcep-annex-3a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 3A: Product-Specific Rules"
+    },
+    {
+      "key": "rcep-annex-4a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-4-Annex-4A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-4"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 4A: Period of Time to Implement the Commitments"
+    },
+    {
+      "key": "rcep-annex-7a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-7-Annex-7A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-7"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 7A: Practices Relating to Anti-Dumping and Countervailing Duty Proceedings"
+    },
+    {
+      "key": "rcep-annex-8a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-8-Annex-8A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-8"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 8A: Financial Services"
+    },
+    {
+      "key": "rcep-annex-8b",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-8-Annex-8B.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-8"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 8B: Telecommunications Services"
+    },
+    {
+      "key": "rcep-annex-8c",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-8-Annex-8C.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-8"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 8C: Professional Services"
+    },
+    {
+      "key": "rcep-annex-10a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-10-Annex-10A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-10"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 10A: Customary International Law"
+    },
+    {
+      "key": "rcep-annex-10b",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-10-Annex-10B.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-10"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 10B: Expropriation"
+    },
+    {
+      "key": "rcep-annex-11a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-11-Annex-11A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-11"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 11A: Party-Specific Transition Periods"
+    },
+    {
+      "key": "rcep-annex-11b",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-11-Annex-11B.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-11"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 11B: List of Technical Assistance Requests"
+    },
+    {
+      "key": "rcep-annex-13a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-13-Annex-13A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-13"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 13A: Application of Article 13.3 and Article 13.4 to Brunei Darussalam"
+    },
+    {
+      "key": "rcep-annex-13b",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-13-Annex-13B.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-13"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 13B: Application of Article 13.3 and Article 13.4 to Cambodia"
+    },
+    {
+      "key": "rcep-annex-13c",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-13-Annex-13C.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-13"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 13C: Application of Article 13.3 and Article 13.4 to Lao PDR"
+    },
+    {
+      "key": "rcep-annex-13d",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-13-Annex-13D.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-13"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 13D: Application of Article 13.3 and Article 13.4 to Myanmar"
+    },
+    {
+      "key": "rcep-annex-16a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-16-Annex-16A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-16"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 16A: Paper or Electronic Means Utilised by Parties for the Publication of Transparency Information"
+    },
+    {
+      "key": "rcep-annex-18a",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-18-Annex-18A.pdf",
+      "level": "secondary",
+      "primary_keys": [
+        "rcep-chapter-18"
+      ],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Annex 18A: Functions of the Subsidiary Bodies of the RCEP Joint Committee"
+    },
+    {
+      "key": "rcep-anx-i-00-general-notes-schedules-of-tariff-commitments",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-I-00-General-Notes-Schedules-of-Tariff-Commitments.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "General Notes"
+    },
+    {
+      "key": "rcep-anx-i-05-headnotes-to-schedule-of-indonesia",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-I-05-Headnotes-to-Schedule-of-Indonesia.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Indonesia’s Schedule of Tariff Commitments: Headnotes"
+    },
+    {
+      "key": "rcep-anx-i-05c-schedule-of-indonesia-for-china",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-I-05c-Schedule-of-Indonesia-for-China.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Indonesia’s Schedule for China"
+    },
+    {
+      "key": "rcep-anx-i-05g-appendix-to-schedule-of-indonesia",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-I-05g-Appendix-to-Schedule-of-Indonesia.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Appendix to Indonesia’s Schedule in Relation to Paragraph 3 of Article 2.6 (Tariff Differentials)"
+    },
+    {
+      "key": "rcep-anx-iii-05a-indonesias-schedule-of-reservations-and-ncm-for-services",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-III-05a-Indonesias-Schedule-of-Reservations-and-NCM-for-Services.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Indonesia’s Schedule of Reservations and NCM for Services"
+    },
+    {
+      "key": "rcep-anx-iii-05b-indonesias-schedule-of-reservations-and-ncm-for-investment",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-III-05b-Indonesias-Schedule-of-Reservations-and-NCM-for-Investment.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Indonesia’s Schedule of Reservations and NCM for Investment"
+    },
+    {
+      "key": "rcep-anx-iv-05-indonesias-schedule-on-tmnp",
+      "item_id": "5.3",
+      "url": "https://rcepsec.org/wp-content/uploads/2026/06/Anx-IV-05-Indonesias-Schedule-on-TMNP.pdf",
+      "level": "primary",
+      "primary_keys": [],
+      "evidence_url": "https://rcepsec.org/rcep-agreements/",
+      "locator": "Indonesia’s Schedule of Specific Commitments on TMNP"
+    }
+  ]
+}

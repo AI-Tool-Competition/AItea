@@ -107,6 +107,7 @@ class ParsedDocument:
     elements: list[ParsedElement]
     assets: list[ParsedAsset]
     warnings: list[str]
+    pages: list[dict[str, Any]] = field(default_factory=list)
 
 
 def validate_document_manifest_capacity(document: ParsedDocument) -> None:
@@ -830,8 +831,8 @@ def _split_text_for_budget(
                 max_tokens=max_tokens,
                 max_chars=max_chars,
             )
-            units.append(remainder[:prefix_length].strip())
-            remainder = remainder[prefix_length:].strip()
+            units.append(remainder[:prefix_length])
+            remainder = remainder[prefix_length:]
         if remainder:
             units.append(remainder)
     if not units:
@@ -916,10 +917,15 @@ def _largest_fitting_prefix(
 
 
 def _semantic_units(text: str) -> list[str]:
+    # Keep separators with the following span. Stripping individual units and
+    # then joining them fused words/paragraphs and invalidated verbatim citations.
+    boundaries = [
+        0,
+        *(match.end() for match in re.finditer(r"[。！？.!?](?=\s)|(?=\n{2,})", text)),
+        len(text),
+    ]
     return [
-        unit.strip()
-        for unit in re.split(r"(?<=[。！？.!?])|\n{2,}", text)
-        if unit.strip()
+        text[start:end] for start, end in zip(boundaries, boundaries[1:]) if end > start
     ]
 
 
@@ -1305,15 +1311,17 @@ def _same_locator_anchor(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if left.get("kind") != right.get("kind"):
         return False
     keys_by_kind = {
+        "conversion_artifact": ("source_hash", "artifact_sha256", "xpath"),
         "pdf": ("page",),
-        "docx": ("section_path",),
+        "docx": ("section_path", "source_hash", "package_part", "part_hash"),
         "pptx": ("slide",),
         "spreadsheet": ("sheet",),
         "image": (),
         "text": ("heading_path",),
         "html": ("heading_path",),
     }
-    return all(left.get(key) == right.get(key) for key in keys_by_kind[left["kind"]])
+    keys = keys_by_kind.get(left["kind"])
+    return keys is not None and all(left.get(key) == right.get(key) for key in keys)
 
 
 def _merge_locators(locators: list[dict[str, Any]]) -> dict[str, Any]:

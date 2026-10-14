@@ -10,6 +10,7 @@ from urllib.parse import urldefrag
 from .blob_store import BlobStore
 from .countries import country_from_collection, document_country, resolve_country
 from .db import dump, now, uid
+from .system_library import SYSTEM_OWNER_ID, public_document_sql, register_source_guard, require_admission
 
 
 def family_key(
@@ -39,7 +40,7 @@ def _country_family(base, country):
 class LegalArchive:
     def __init__(self, service):
         self.service, self.db = service, service.db
-        self.blobs = BlobStore(self.db.files_dir)
+        self.blobs = BlobStore(self.db.files_dir, max_bytes=128 * 1024 * 1024)
         with self.db.transaction() as conn:
             if conn.execute("SELECT 1 FROM schema_migrations WHERE version=4").fetchone():
                 return
@@ -314,13 +315,16 @@ class LegalArchive:
         from .service import DOCUMENT_SUMMARY
 
         with closing(self.db.connect()) as conn:
-            doc = self.service.own_document(conn, owner, document_id)
+            doc = self.service.read_document(conn, owner, document_id)
+            actual_owner = doc["owner_id"]
+            scope = public_document_sql() if actual_owner == SYSTEM_OWNER_ID else "1"
             rows = conn.execute(
-                f"SELECT {DOCUMENT_SUMMARY} FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC,id DESC LIMIT ? OFFSET ?",
-                (owner, doc["family_id"], limit, offset),
+                f"SELECT {DOCUMENT_SUMMARY} FROM documents WHERE owner_id=? AND family_id=? AND {scope} ORDER BY version DESC,id DESC LIMIT ? OFFSET ?",
+                (actual_owner, doc["family_id"], limit, offset),
             ).fetchall()
             total = conn.execute(
-                "SELECT COUNT(*) FROM documents WHERE owner_id=? AND family_id=?", (owner, doc["family_id"])
+                f"SELECT COUNT(*) FROM documents WHERE owner_id=? AND family_id=? AND {scope}",
+                (actual_owner, doc["family_id"]),
             ).fetchone()[0]
             return {"items": self.service.document_summaries(rows, conn), "total": total}
 
@@ -347,8 +351,14 @@ class LegalArchive:
         )
         if source_country != target_country or (country and source_country != country):
             fail(422, "country_mismatch", "关联法规必须已归属同一国家，不能通过其他采集组跨国关联")
-        # Explicitly selecting an uploaded primary as an anchor adds it to the collection.
-        self.classify(conn, owner, source, collection, "primary", json.loads(source["tags"]))
+        # Associations describe exact originals without changing an existing
+        # legal tier. Independent secondary regulations also cite and amend
+        # one another; linking them must not grant indexing eligibility.
+        if not conn.execute(
+            "SELECT 1 FROM legal_classifications WHERE document_id=? AND collection=?",
+            (source_id, collection),
+        ).fetchone():
+            self.classify(conn, owner, source, collection, "primary", json.loads(source["tags"]))
         if not conn.execute(
             "SELECT 1 FROM legal_classifications WHERE document_id=? AND collection=?",
             (target["id"], collection),
@@ -381,18 +391,25 @@ class LegalArchive:
 
     def relations(self, owner, document_id, limit=20, offset=0):
         with closing(self.db.connect()) as conn:
-            self.service.own_document(conn, owner, document_id)
-            params = (owner, document_id, document_id)
+            doc = self.service.read_document(conn, owner, document_id)
+            params = (doc["owner_id"], document_id, document_id)
             where = "r.owner_id=? AND (r.source_document_id=? OR r.target_document_id=?)"
+            if doc["owner_id"] == SYSTEM_OWNER_ID:
+                where += f" AND {public_document_sql('s')} AND {public_document_sql('t')}"
+                where += """ AND (SELECT country FROM document_countries WHERE document_id=COALESCE(s.parent_id,s.id))
+                    =(SELECT country FROM document_countries WHERE document_id=COALESCE(t.parent_id,t.id))"""
             rows = conn.execute(
                 f"""SELECT r.*,s.title source_title,t.title target_title,s.version source_version,t.version target_version
                 FROM legal_relations r JOIN documents s ON s.id=r.source_document_id JOIN documents t ON t.id=r.target_document_id
                 WHERE {where} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?""",
                 (*params, limit, offset),
             ).fetchall()
-            total = conn.execute(f"SELECT COUNT(*) FROM legal_relations r WHERE {where}", params).fetchone()[
-                0
-            ]
+            total = conn.execute(
+                f"""SELECT COUNT(*) FROM legal_relations r
+                JOIN documents s ON s.id=r.source_document_id JOIN documents t ON t.id=r.target_document_id
+                WHERE {where}""",
+                params,
+            ).fetchone()[0]
             return {"items": [dict(row) for row in rows], "total": total}
 
     def store_original(
@@ -415,6 +432,7 @@ class LegalArchive:
         from .service import fail
 
         country = country_from_collection(collection)
+        require_admission(owner, source_url, country)
         filename = (
             re.sub(r"[\x00-\x1f\x7f]", "", Path(filename.replace("\\", "/")).name)[:180] or "source.bin"
         )
@@ -483,7 +501,10 @@ class LegalArchive:
                 and fingerprint
                 and (
                     manifest.get("embedding_fingerprint") != fingerprint
-                    or any(not chunk.get("embedding") for chunk in manifest.get("chunks", []))
+                    or self.service.index.pending(conn, doc["id"], fingerprint, limit=1)
+                    or conn.execute(
+                        "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
+                    ).fetchone()
                 )
             )
             if not unchanged or (self.can_index(conn, doc["id"]) and not was_indexable) or needs_index:
@@ -502,11 +523,23 @@ class LegalArchive:
                 )
         return doc
 
-    def retrieval_rows(
-        self, conn, owner, case_id, collection, as_of, historical, country=None, document_ids=None
+    def eligibility_sql(
+        self,
+        conn,
+        owner,
+        case_id,
+        collection,
+        as_of,
+        historical,
+        country=None,
+        document_ids=None,
+        *,
+        require_current=True,
     ):
-        """Choose applicable versions before loading bounded manifests; lists stay body-free."""
+        """One scope/version gate shared by lexical and dense persistent retrieval."""
         from .catalog import DocumentMetadata
+
+        register_source_guard(conn)
 
         business = dump(DocumentMetadata().model_dump(mode="json"))
         law = dump(DocumentMetadata(kind="law", review_status="draft").model_dump(mode="json"))
@@ -519,6 +552,7 @@ class LegalArchive:
                 fail(422, "country_mismatch", "检索国家与采集组不一致")
         membership = """(NOT EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id)
             OR EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.level='primary'))"""
+        shared = public_document_sql("d") if country else "0"
         parameters = [business, law, owner, case_id]
         business_material = """(v.country IS NULL AND v.case_id IS NOT NULL
             AND json_extract(v.metadata_payload,'$.kind')='business')"""
@@ -541,6 +575,10 @@ class LegalArchive:
             AND (json_extract(v.metadata_payload,'$.effective_from') IS NULL OR json_extract(v.metadata_payload,'$.effective_from')<=?)
             AND (json_extract(v.metadata_payload,'$.effective_to') IS NULL OR json_extract(v.metadata_payload,'$.effective_to')>=?)"""
         parameters.extend([as_of.isoformat(), as_of.isoformat()])
+        system_review = f"""(v.owner_id<>'{SYSTEM_OWNER_ID}' OR
+            (v.reviewed_by IS NOT NULL AND v.reviewed_by<>'{SYSTEM_OWNER_ID}' AND v.reviewed_at IS NOT NULL
+             AND EXISTS(SELECT 1 FROM users reviewer WHERE reviewer.id=v.reviewed_by AND reviewer.is_demo=0)
+             AND json_extract(v.metadata_payload,'$.effective_from') IS NOT NULL))"""
         history = "v.family_rank=1"
         if historical:
             history = """(json_extract(v.metadata_payload,'$.kind')!='law' OR
@@ -549,49 +587,44 @@ class LegalArchive:
         selected_scope = ""
         if document_ids is not None:
             if not document_ids:
-                return [], {}, False
-            selected_scope = " AND id IN (" + ",".join("?" for _ in document_ids) + ")"
+                selected_scope = " AND 0"
+            else:
+                selected_scope = " AND id IN (" + ",".join("?" for _ in document_ids) + ")"
             parameters.extend(document_ids)
-        candidates = conn.execute(
-            f"""WITH versions AS (
-            SELECT d.id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,dc.country,length(d.manifest) manifest_size,
+        index_gate = "AND text_complete=1 AND index_current=1" if require_current else ""
+        query = f"""WITH versions AS (
+            SELECT d.id,d.owner_id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,dc.country,
                 COALESCE(m.payload,CASE WHEN d.source_url IS NULL THEN ? ELSE ? END) metadata_payload,
-                COALESCE(m.revision,0) metadata_revision,m.reviewed_at,
+                COALESCE(m.revision,0) metadata_revision,m.reviewed_at,m.reviewed_by,
+                COALESCE(rx.complete,0) text_complete,COALESCE(rx.revision,0) index_revision,
+                (rx.source_hash=d.content_hash AND NOT EXISTS(
+                    SELECT 1 FROM retrieval_dirty q WHERE q.document_id=d.id)) index_current,
                 ROW_NUMBER() OVER(PARTITION BY d.family_id ORDER BY d.version DESC,d.created_at DESC,d.id DESC) family_rank
             FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
             LEFT JOIN document_countries dc ON dc.document_id=d.id
-            WHERE d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?) AND d.role='primary'
+            LEFT JOIN retrieval_documents rx ON rx.document_id=d.id
+            WHERE ((d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?)) OR {shared}) AND d.role='primary'
         ), applicable AS (
             SELECT v.*,ROW_NUMBER() OVER(PARTITION BY v.family_id ORDER BY v.version DESC,v.id DESC) selected
-            FROM versions v WHERE {scope} AND {membership} AND {period} AND {history} AND v.status='ready'
-        ) SELECT * FROM applicable WHERE selected=1 {selected_scope} ORDER BY created_at DESC,id DESC LIMIT 501""",
-            parameters,
-        ).fetchall()
-        selected, size = [], 0
-        limited = len(candidates) > 500
-        for row in candidates[:500]:
-            if size + row["manifest_size"] > 64 * 1024 * 1024:
-                limited = True
-                continue
-            selected.append(row)
-            size += row["manifest_size"]
-        if not selected:
-            return [], {}, limited
-        placeholders = ",".join("?" for _ in selected)
-        manifests = {
-            row["id"]: row["manifest"]
-            for row in conn.execute(
-                f"SELECT id,manifest FROM documents WHERE id IN ({placeholders})",
-                [row["id"] for row in selected],
-            )
-        }
-        rows = [dict(row) | {"manifest": manifests[row["id"]]} for row in selected]
+            FROM versions v WHERE {scope} AND {membership} AND {period} AND {system_review} AND {history}
+                AND v.status='ready'
+        ) SELECT * FROM applicable WHERE selected=1 {index_gate} {selected_scope} ORDER BY created_at DESC,id DESC"""
+        return query, parameters
+
+    def retrieval_rows(
+        self, conn, owner, case_id, collection, as_of, historical, country=None, document_ids=None
+    ):
+        """Compatibility metadata listing; retrieval itself joins this scope inside SQLite."""
+        query, parameters = self.eligibility_sql(
+            conn, owner, case_id, collection, as_of, historical, country, document_ids
+        )
+        rows = conn.execute(query, parameters).fetchall()
         metadata = {
             row["id"]: {
                 "metadata": json.loads(row["metadata_payload"]),
                 "metadata_revision": row["metadata_revision"],
                 "reviewed_at": row["reviewed_at"],
             }
-            for row in selected
+            for row in rows
         }
-        return rows, metadata, limited
+        return rows, metadata, False

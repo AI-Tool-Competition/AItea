@@ -222,15 +222,20 @@ class IngestionTests(unittest.TestCase):
         self.assertIn("Tea product 250 grams", result["chunks"][0]["text"])
         self.assertEqual(result["chunks"][0]["locator"], {"kind": "pdf", "page": 1})
 
-    def test_pdf_without_text_requires_ocr(self):
+    def test_blank_pdf_requires_full_page_pixel_proof_before_completion(self):
         from pypdf import PdfWriter
 
         writer = PdfWriter()
         writer.add_blank_page(width=100, height=100)
         output = io.BytesIO()
         writer.write(output)
-        with self.assertRaisesRegex(ValueError, "OCR"):
-            self.ingestion.parse_file("scan.pdf", output.getvalue())
+        result = self.ingestion.parse_file("scan.pdf", output.getvalue())
+        self.assertEqual(result["chunks"], [])
+        self.assertTrue(result["quality"]["complete"])
+        self.assertEqual(result["quality"]["pending_pages"], [])
+        proof = result["pages"][0]["native_blank"]
+        self.assertEqual(proof["proof_kind"], "verified_full_page_opaque_white_pixels")
+        self.assertEqual(proof["model_calls"], 0)
 
     def test_only_same_origin_direct_attachments_are_fetched(self):
         fetched = []
@@ -273,7 +278,11 @@ class IngestionTests(unittest.TestCase):
             def getresponse(self):
                 from types import SimpleNamespace
 
-                return SimpleNamespace(status=302, getheader=lambda name: "https://127.0.0.1/secret")
+                return SimpleNamespace(
+                    status=302,
+                    getheader=lambda name: "https://127.0.0.1/secret",
+                    close=lambda: None,
+                )
 
             def close(self):
                 pass
@@ -303,6 +312,9 @@ class IngestionTests(unittest.TestCase):
 
             def read1(self, limit):
                 return self.body.read(limit)
+
+            def close(self):
+                self.body.close()
 
         class Connection:
             sock = None

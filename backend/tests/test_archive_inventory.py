@@ -176,6 +176,68 @@ def test_export_filters_account_and_country_including_inherited_attachments(arch
     assert len(list(report["path"].glob("*/ID/documents.jsonl"))) == 1
 
 
+def test_region_catalog_preserves_source_page_and_crop_without_exporting_readings(archive):
+    original = document(archive, "main")
+    image = archive.archive.blobs.put_bytes("owner-a", b"region pixels")
+    with archive.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id='main'",
+            (
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "page": 2,
+                                "source_hash": original.digest,
+                                "status": "ocr_complete",
+                                "ocr": {
+                                    "model": "vision-model",
+                                    "recovery": {
+                                        "status": "complete",
+                                        "regions": [
+                                            {
+                                                "region_id": "a" * 64,
+                                                "source_hash": original.digest,
+                                                "page": 2,
+                                                "region_bbox": [10, 20, 40, 60],
+                                                "image_sha256": image.digest,
+                                                "render_version": "bounded-region-png-v1",
+                                                "dpi": 400,
+                                                "image_blob": {
+                                                    "storage_path": str(image.path),
+                                                    "size": image.size,
+                                                    "content_hash": image.digest,
+                                                },
+                                                "pass_number": 1,
+                                                "reading_hash": "b" * 64,
+                                                "reading": {
+                                                    "text": "PRIVATE_REGION_READING",
+                                                    "api_key": "PRIVATE_REGION_KEY",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ),
+            ),
+        )
+    report = export(archive, owner="owner-a", country="ID")
+    rows = records(report, filename="ocr-regions.jsonl")
+    assert len(rows) == 1
+    region = rows[0]
+    assert region["document_id"] == "main" and region["document_version"] == 1
+    assert region["source_hash"] == original.digest and region["page"] == 2
+    assert region["region_bbox"] == [10, 20, 40, 60] and region["pass_number"] == 1
+    assert region["image_hash"] == image.digest and region["reading_hash"] == "b" * 64
+    assert region["original"]["exists"] and region["anomalies"] == []
+    assert report["summary"]["ocr_regions"] == 1
+    serialized = json.dumps(rows)
+    assert "PRIVATE_REGION_READING" not in serialized and "PRIVATE_REGION_KEY" not in serialized
+
+
 def test_relations_retain_exact_versions_and_country_level_wins(archive):
     document(archive, "main-v1", family="main", version=1)
     document(archive, "main-v2", family="main", version=2)
@@ -231,6 +293,335 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
         "DO_NOT_EXPORT_KEY",
     ):
         assert secret not in text
+
+
+def test_ocr_images_are_cataloged_by_source_version_and_physical_page_without_transcripts(archive):
+    original = document(archive, "scan-v1")
+    image = archive.archive.blobs.put_bytes("owner-a", b"rendered page bytes")
+    with archive.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id='scan-v1'",
+            (
+                json.dumps(
+                    {
+                        "elements": [],
+                        "chunks": [],
+                        "quality": {
+                            "status": "partial",
+                            "complete": False,
+                            "page_count": 2,
+                            "pending_pages": [],
+                            "failed_pages": [2],
+                            "review_pages": [],
+                        },
+                        "pages": [
+                            {
+                                "page": 1,
+                                "source_hash": original.digest,
+                                "printed_page": "iii",
+                                "status": "ocr_complete",
+                                "text": "PRIVATE_TRANSCRIPT",
+                                "ocr": {
+                                    "model": "test-vision",
+                                    "prompt_version": "v1",
+                                    "image_sha256": image.digest,
+                                    "image_blob": {
+                                        "storage_path": str(image.path.relative_to(archive.db.data_dir)),
+                                        "size": image.size,
+                                        "content_hash": image.digest,
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ),
+            ),
+        )
+    report = export(archive)
+    assert report["summary"]["ocr_pages"] == 1
+    row = records(report, filename="ocr-pages.jsonl")[0]
+    assert row["document_id"] == "scan-v1" and row["document_version"] == 1
+    assert row["source_hash"] == original.digest and row["image_hash"] == image.digest
+    assert row["page"] == 1 and row["printed_page"] == "iii"
+    assert row["original"]["exists"] is True
+    quality = records(report)[0]["parsing"]
+    assert quality["complete"] is False and quality["failed_pages"] == 1
+    exported = "".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
+    assert "PRIVATE_TRANSCRIPT" not in exported and "rendered page bytes" not in exported
+
+
+def test_official_api_request_evidence_retains_pagination_without_arbitrary_secrets(archive):
+    page(archive)
+    with archive.db.transaction() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS checklist_page_evidence(
+            item_id TEXT PRIMARY KEY REFERENCES checklist_pages(item_id), evidence TEXT NOT NULL)""")
+        conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES(11,?)", (AT,))
+        conn.execute(
+            "INSERT INTO checklist_page_evidence VALUES('page-item',?)",
+            (
+                json.dumps(
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum",
+                            "json_body": {"jns": ["UU"], "length": 5, "start": 900, "api_key": "PRIVATE_KEY"},
+                            "headers": {"Authorization": "PRIVATE_TOKEN"},
+                        },
+                        "scope": {
+                            "provider": "setneg",
+                            "jns": "UU",
+                            "total": 901,
+                            "offset": 900,
+                            "page_size": 5,
+                            "returned": 1,
+                            "raw": "PRIVATE_BODY",
+                        },
+                    }
+                ),
+            ),
+        )
+    report = export(archive)
+    row = records(report, filename="discovery-pages.jsonl")[0]
+    assert row["evidence"]["request"]["json_body"] == {"jns": ["UU"], "length": 5, "start": 900}
+    assert row["evidence"]["scope"]["total"] == 901
+    assert row["evidence"]["scope"]["returned"] == 1
+    assert "PRIVATE_" not in json.dumps(row)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://PRIVATE_PASSWORD@official.example/list",
+        "https://official.example/list?api_key=PRIVATE_KEY",
+        "https://official.example/list\x00PRIVATE_CONTROL",
+        "javascript:PRIVATE_INSTRUCTION",
+    ],
+)
+def test_generic_evidence_does_not_export_request_credentials_or_controls(url):
+    from app.archive_inventory import _page_evidence
+
+    anomalies = []
+    evidence = _page_evidence(json.dumps({"request": {"method": "GET", "url": url}, "scope": {}}), anomalies)
+    assert evidence["request"] == {"method": "GET"}
+    assert anomalies == ["unsafe_discovery_request_url"]
+    assert "PRIVATE_" not in json.dumps(evidence)
+
+
+def treaty_page(archive, *, country="ID", owner="owner-a", mutate=None):
+    from app.discovery import discover_page, recipe_for
+    from app.treaty_room_discovery import catalog_url
+
+    page(archive, owner=owner, country=country)
+    url = catalog_url()
+    data = {
+        "success": True,
+        "total": 40,
+        "current_page": 1,
+        "last_page": 1,
+        "length": 1,
+        "data": [
+            {
+                "id_perjanjian": identifier,
+                "judul": f"Agreement on trade and taxation {identifier}",
+                "mulaiBerlaku": "Published article " + "x" * 900,
+                "masaBerlaku": "Published paragraph " + "y" * 800,
+                "berlakuSetelah": "Article 14",
+                "catatan": "Unknown legal force",
+                "file": {
+                    "id_konten": identifier + 100,
+                    "teks_perjanjian": "-",
+                    "file": f"1-TREATY.{identifier}",
+                    "file2": f"2-TREATY.{identifier}",
+                    "file3": None,
+                    "file4": None,
+                },
+            }
+            for identifier in range(1, 41)
+        ],
+    }
+    body = json.dumps(data).encode()
+    _, definition = archive.checklists.definition("indonesia-20261003", "5.1")
+    result = discover_page(url, body, "application/json", recipe_for(definition))
+    assert result["matched"] is True
+    evidence = {"request": {"method": "GET", "url": url}, "scope": result["scope"]}
+    if mutate:
+        mutate(evidence)
+    blob = archive.archive.blobs.put_bytes(owner, body)
+    with archive.db.transaction() as conn:
+        conn.execute("UPDATE sources SET url=? WHERE id='source'", (url,))
+        conn.execute("UPDATE checklist_bindings SET version=5,item_id='5.1' WHERE id='binding'")
+        conn.execute(
+            "UPDATE collection_items SET url=?,host='api-treaty-room.kemlu.go.id',status='discovered' WHERE id='page-item'",
+            (url,),
+        )
+        conn.execute(
+            "UPDATE checklist_pages SET url=?,final_url=?,content_hash=?,storage_path=?,size=? WHERE item_id='page-item'",
+            (url, url, blob.digest, str(blob.path), blob.size),
+        )
+        conn.execute("INSERT INTO checklist_page_evidence VALUES('page-item',?)", (json.dumps(evidence),))
+    return blob, evidence
+
+
+def test_large_treaty_page_exports_all_bounded_records_and_scalar_provenance_without_rag(archive):
+    blob, evidence = treaty_page(archive)
+    assert len(json.dumps(evidence).encode()) > 16384
+    report = export(archive, owner="owner-a", country="ID")
+    page_record = records(report, filename="discovery-pages.jsonl")[0]
+    scope = page_record["evidence"]["scope"]
+    assert {key: scope[key] for key in ("total", "page", "last_page", "page_size", "returned")} == {
+        "total": 40,
+        "page": 1,
+        "last_page": 1,
+        "page_size": 40,
+        "returned": 40,
+    }
+    assert scope["filters"] == evidence["scope"]["filters"]
+    assert scope["legal_status_inferred"] is scope["exhaustive_content_verified"] is False
+    rows = records(report, filename="catalog-documents.jsonl")
+    assert len(rows) == 40
+    for index, row in enumerate(rows):
+        original = evidence["scope"]["documents"][index]
+        assert row["source_metadata"] == original["source_metadata"]
+        assert row["originals"] == original["originals"]
+        assert row["missing_verified_fields"] == original["missing_verified_fields"]
+        assert row["priority_topics"] == original["priority_topics"]
+        assert (
+            row["source_record_sha256"]
+            == hashlib.sha256(
+                json.dumps(original, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        )
+        assert row["source_hash"] == blob.digest
+        assert row["source_page_id"] == "page-item" and row["source_row_index"] == index
+        assert row["plan_id"] == "indonesia-20261003" and row["plan_version"] == 5
+        assert row["owner_sha256"] == hashlib.sha256(b"owner-a").hexdigest()
+        assert row["source_url"] == page_record["final_url"]
+        assert row["source_original"] == page_record["original"]
+        assert row["retrieval_eligible"] is False and row["export_status"] == "exported"
+    assert report["summary"]["format_version"] == 4
+    assert report["summary"]["catalog_documents"] == 40
+    assert report["summary"]["catalog_document_gaps"] == report["summary"]["anomalies"] == 0
+    assert report["summary"]["countries"]["ID"]["catalog_documents"] == 40
+    with archive.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_chunks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] == 0
+    for path in report["path"].rglob("*"):
+        assert path.stat().st_mode & 0o777 == (0o700 if path.is_dir() else 0o600)
+
+
+def test_treaty_projection_drops_arbitrary_headers_metadata_and_file_fields(archive):
+    def mutate(value):
+        value["request"]["headers"] = {"Authorization": "PRIVATE_TOKEN"}
+        value["scope"]["secret"] = "PRIVATE_SCOPE"
+        document = value["scope"]["documents"][0]
+        document["secret"] = "PRIVATE_RECORD"
+        document["source_metadata"]["api_key"] = "PRIVATE_KEY"
+        document["source_metadata"]["file"]["password"] = "PRIVATE_PASSWORD"
+
+    treaty_page(archive, mutate=mutate)
+    report = export(archive)
+    row = records(report, filename="catalog-documents.jsonl")[0]
+    assert "treaty_metadata_fields_omitted" in row["anomalies"]
+    assert row["export_status"] == "exported"
+    assert "PRIVATE_" not in "".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
+
+
+@pytest.mark.parametrize(
+    "failure", ["metadata", "oversize", "control", "title", "file", "original", "duplicate"]
+)
+def test_invalid_treaty_record_has_explicit_gap_and_raw_source_pointer(archive, failure):
+    def mutate(value):
+        documents = value["scope"]["documents"]
+        record = documents[7]
+        if failure == "metadata":
+            record["source_metadata"] = ["PRIVATE_BAD_METADATA"]
+        elif failure == "oversize":
+            record["source_metadata"]["mulaiBerlaku"] = "PRIVATE_OVERSIZE" * 500
+        elif failure == "control":
+            record["source_metadata"]["catatan"] = "PRIVATE_CONTROL\x00"
+        elif failure == "title":
+            record["title"] = "PRIVATE_MISMATCHED_TITLE"
+        elif failure == "file":
+            record["source_metadata"]["file"]["file2"] = {"secret": "PRIVATE_FILE"}
+        elif failure == "original":
+            record["originals"] = []
+        else:
+            documents[7] = documents[0]
+
+    blob, _ = treaty_page(archive, mutate=mutate)
+    report = export(archive)
+    rows = records(report, filename="catalog-documents.jsonl")
+    assert len(rows) == 40
+    gap = next(row for row in rows if row["export_status"] == "invalid_record")
+    assert gap["source_row_index"] == 7 and gap["source_hash"] == blob.digest
+    assert gap["source_original"]["exists"] is True
+    assert "invalid_treaty_catalog_record" in gap["anomalies"]
+    assert "source_metadata" not in gap and gap["retrieval_eligible"] is False
+    assert report["summary"]["catalog_document_gaps"] == 1
+    assert report["summary"]["catalog_documents"] == 39
+    assert records(report, filename="discovery-pages.jsonl")[0]["evidence"]["scope"]["returned"] == 40
+    assert "PRIVATE_" not in "".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
+
+
+@pytest.mark.parametrize("failure", ["count", "pagination", "filters", "oversize"])
+def test_invalid_treaty_page_exports_one_gap_instead_of_quiet_partial_records(archive, failure):
+    def mutate(value):
+        if failure == "count":
+            value["scope"]["documents"].append(value["scope"]["documents"][0])
+        elif failure == "pagination":
+            value["scope"]["last_page"] = 100
+        elif failure == "filters":
+            value["scope"]["filters"]["Authorization"] = "PRIVATE_FILTER"
+        else:
+            value["secret"] = "PRIVATE_OVERSIZE" * (4 * 1024 * 1024 // 10)
+
+    blob, _ = treaty_page(archive, mutate=mutate)
+    report = export(archive)
+    rows = records(report, filename="catalog-documents.jsonl")
+    assert len(rows) == 1 and rows[0]["export_status"] == "invalid_page"
+    assert rows[0]["source_hash"] == blob.digest and rows[0]["source_original"]["exists"] is True
+    assert report["summary"]["catalog_documents"] == 0
+    assert report["summary"]["catalog_document_gaps"] == 1
+    assert "invalid_treaty_catalog_page" in records(report, filename="discovery-pages.jsonl")[0]["anomalies"]
+    assert "PRIVATE_" not in "".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
+
+
+@pytest.mark.parametrize(
+    "failure", ["country", "account", "source", "source_account", "url", "source_hash", "provider"]
+)
+def test_adapter_name_cannot_expand_exports_across_provenance_boundaries(archive, failure):
+    country = "SG" if failure == "country" else "ID"
+
+    def mutate(value):
+        if failure == "provider":
+            value["scope"]["provider"] = "PRIVATE_FAKE_PROVIDER"
+        value["scope"]["documents"][0]["source_metadata"]["api_key"] = "PRIVATE_KEY"
+
+    treaty_page(archive, country=country, mutate=mutate)
+    with archive.db.transaction() as conn:
+        if failure == "account":
+            conn.execute("UPDATE collection_runs SET owner_id='owner-b' WHERE id='run'")
+        elif failure == "source_account":
+            conn.execute("UPDATE sources SET owner_id='owner-b' WHERE id='source'")
+        elif failure == "source":
+            conn.execute(
+                """INSERT INTO sources(id,owner_id,name,url,enabled,interval_hours,tags,status,created_at,updated_at)
+                VALUES('other-source','owner-a','Other source','https://official.example/list',0,24,'[]','idle',?,?)""",
+                (AT, AT),
+            )
+            conn.execute("UPDATE collection_runs SET source_id='other-source' WHERE id='run'")
+        elif failure == "url":
+            conn.execute(
+                "UPDATE checklist_pages SET final_url='https://api-treaty-room.kemlu.go.id/login' WHERE item_id='page-item'"
+            )
+        elif failure == "source_hash":
+            conn.execute("UPDATE checklist_pages SET content_hash=? WHERE item_id='page-item'", ("a" * 64,))
+    report = export(archive)
+    assert report["summary"]["catalog_documents"] == 0
+    assert report["summary"]["anomalies"] > 0
+    assert records(report, country=country, filename="discovery-pages.jsonl")[0]["evidence"] == {}
+    assert "PRIVATE_" not in "".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
 
 
 def test_missing_and_unsafe_originals_are_counted_without_accessing_outside_data(archive, tmp_path):
@@ -357,9 +748,37 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-@pytest.mark.parametrize("version", [7, 8, 9])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14, 15])
 def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
     document(archive, "law")
+    with archive.db.transaction() as conn:
+        conn.execute("DELETE FROM schema_migrations WHERE version>?", (version,))
+        if version < 12:
+            conn.execute("DROP TABLE collection_transfer_parts")
+            conn.execute("DROP TABLE collection_transfers")
+            conn.execute("DELETE FROM schema_migrations WHERE version=12")
+        if version < 11:
+            conn.execute("DROP TABLE IF EXISTS checklist_page_evidence")
+            conn.execute("DELETE FROM schema_migrations WHERE version=11")
+        else:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checklist_page_evidence(item_id TEXT PRIMARY KEY,evidence TEXT NOT NULL)"
+            )
+            conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES(11,?)", (AT,))
+    if version < 10:
+        with archive.db.transaction() as conn:
+            for trigger in ("retrieval_document_insert", "retrieval_document_update"):
+                conn.execute("DROP TRIGGER " + trigger)
+            for table in (
+                "retrieval_fts",
+                "retrieval_vectors",
+                "retrieval_models",
+                "retrieval_chunks",
+                "retrieval_dirty",
+                "retrieval_documents",
+            ):
+                conn.execute("DROP TABLE " + table)
+            conn.execute("DELETE FROM schema_migrations WHERE version=10")
     if version < 9:
         with archive.db.transaction() as conn:
             for table in (
@@ -383,7 +802,7 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
     assert archive.db.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", [6, 10])
+@pytest.mark.parametrize("version", [6, 16])
 def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, version):
     from app.archive_inventory import InventoryError, export_inventory
 

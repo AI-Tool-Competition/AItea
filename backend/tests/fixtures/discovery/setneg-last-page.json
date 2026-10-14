@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "idperaturan": "P00850",
+      "no_peraturan": "7",
+      "tahun": "1983",
+      "tentang": "PAJAK PENGHASILAN",
+      "jns": "UU",
+      "nama_jenis": "Undang-Undang",
+      "file_jj": 1,
+      "files": "UU0071983.pdf",
+      "tgl_di": null,
+      "diundangkan": null,
+      "status_hukum": "sebagian"
+    }
+  ],
+  "jml": 901,
+  "jn": [
+    "UU"
+  ]
+}

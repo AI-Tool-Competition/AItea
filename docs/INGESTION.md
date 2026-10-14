@@ -179,7 +179,8 @@ PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制
 | --- | --- |
 | `TEA_COLLECT_WORKERS` | 8 个下载任务，范围 1–16 |
 | `TEA_COLLECT_PER_HOST` | 每域 2 个真实连接，范围 1–4，且不超过下载数 |
-| `TEA_PROCESS_WORKERS` | 2 个处理任务，范围 1–2；解析仍经受限子进程 |
+| `TEA_PROCESS_WORKERS` | 2 个处理任务，范围 1–8；同库有效处理租约共同占用此额度 |
+| `TEA_PARSE_WORKERS` | 每个服务进程 2 个受限解析子进程，范围 1–8；正文解析、归档 PDF 窗口、渲染、校验和重组装共同限流 |
 | 下载待处理队列 | 全库最多 2000 项、单账号最多 1000 项，提交/重试/附件发现均检查 |
 | 解析背压 | 待处理正文达到 200 项时暂停领取下载任务 |
 | 单次计划 | 默认最多 200 文件，可配置至 500；触顶会显示未收齐提示 |
@@ -188,6 +189,10 @@ PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制
 | 租约 | 120 秒，运行协调器每 10 秒续约；过期可被新进程认领 |
 
 SQLite `BEGIN IMMEDIATE` 保护领取和状态转移；下载/解析/模型调用不持有写事务。租约 token 加有效期在提交前复核，旧工作线程不能覆盖重新领取、取消或重试后的结果。网络连接另有数据库名额，每一重定向目的域都取得名额；取消领取并不提前释放仍活跃的物理连接。长截止原件领取时延长本次租约，协调器继续心跳。进程强制终止后，旧租约到期再恢复。
+
+本机资源充足时，可在启动所属 worker 前明确设置 `TEA_PROCESS_WORKERS=8 TEA_PARSE_WORKERS=8`。解析额度在本服务进程首次使用后固定，运行中改变配置会拒绝新解析，需重启所属 worker。普通解析保持默认 45 秒截止，归档 PDF 保持固定 45 秒截止；各自的单次内存、CPU 和 40 MB 结果限制不变，Docling 保持其原有 4 GiB/110 秒 CPU 边界；并发增加会累加资源占用。两个配置各自限制持久任务与本进程物理解析，多个服务 PID 的解析额度分别计算，不能称为跨进程全局解析上限；同库 worker 必须采用一致的处理任务配置。同账号、来源 URL、原件 SHA 与版本相同的有效 parse 租约继续串行，避免同原件两国副本同时识别；另一阶段待处理时继续优先填补阶段，OCR 和 embedding 请求仍有独立的原有名额，增加本机解析并发不增加这些外部请求上限。
+
+共享槽使用线程安全的 [BoundedSemaphore](https://docs.python.org/3/library/threading.html#threading.BoundedSemaphore)，实际解析继续使用独立的 [spawn 子进程](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods)。本管线全部受限子进程的启动与回收共用生命周期锁，避免当前 [CPython 的 waitpid 轮询](https://github.com/python/cpython/blob/v3.14.7/Lib/multiprocessing/popen_fork.py)在多线程 start/cleanup 与 join/close 之间竞争；正文计算和管道等待位于锁外。该锁不保证第三方另行创建的子进程封装或 `multiprocessing.active_children()` 线程安全。超时或进程中断只清理本次创建的子进程，确认回收后才归还槽；无法确认退出时保留所占额度，防止超发。暂时满额沿用 `ProcessingDeferred` 与 5 秒后重试。
 
 HTTP ETag/Last-Modified 保存在账号内缓存，304 仅复用匹配最终地址且通过哈希校验的原件；转向不同 URL 不转发条件头。Retry-After 按秒数或 HTTP 日期解析，保留服务器要求的最短等待时间，不能将 900 秒提前截为 300 秒；字段仍限制 128 字符并拒绝控制字符。自身指数退避最多 300 秒，服务器较长等待通过持久队列时间戳落实到实际响应域；向量服务的同进程、同配置请求也共享等待，不占工作线程睡眠。依据 [RFC 9110 §10.2.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3) 和 [RFC 6585 §4](https://www.rfc-editor.org/rfc/rfc6585.html#section-4)。安全检查失败、非法地址、超限、确定性解析失败不自动反复重试。
 

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from .db import dump, now, uid
 from .models import CollectionPlan
+from .parsing import parse_worker_limit
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
@@ -32,7 +33,8 @@ class CollectionService:
         self.service, self.db = service, service.db
         self.download_workers = _setting("TEA_COLLECT_WORKERS", 8, 16)
         self.host_workers = min(_setting("TEA_COLLECT_PER_HOST", 2, 4), self.download_workers)
-        self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 2)
+        self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 8)
+        parse_worker_limit()  # Reject invalid parser capacity before claiming work.
         self.worker_health = {"status": "stopped", "last_error_at": None}
         self._migrate()
         with self.db.transaction() as conn:

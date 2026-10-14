@@ -13,9 +13,8 @@ import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 
-_SLOTS = BoundedSemaphore(2)
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
 _OCR_SLOTS = BoundedSemaphore(2)
@@ -27,6 +26,53 @@ class ProcessingDeferred(ValueError):
 
     retryable = True
     retry_after = 5
+
+
+def parse_worker_limit() -> int:
+    """Explicit per-process capacity; each child retains its own resource limits."""
+    try:
+        value = int(os.getenv("TEA_PARSE_WORKERS", "2"))
+    except ValueError as exc:
+        raise ValueError("TEA_PARSE_WORKERS must be between 1 and 8") from exc
+    if not 1 <= value <= 8:
+        raise ValueError("TEA_PARSE_WORKERS must be between 1 and 8")
+    return value
+
+
+class _ParserSlots:
+    """One immutable semaphore shared by every parser entry in this process.
+
+    Resolve configuration on first use so command-line setup can precede work.
+    Replacing a live semaphore would lose outstanding permits and overcommit.
+    """
+
+    def __init__(self):
+        self._lock = Lock()
+        self._semaphore = None
+        self._limit = None
+
+    def acquire(self, *, timeout):
+        limit = parse_worker_limit()
+        with self._lock:
+            if self._semaphore is None:
+                self._limit = limit
+                self._semaphore = BoundedSemaphore(limit)
+            elif limit != self._limit:
+                raise ValueError("TEA_PARSE_WORKERS changed; restart this worker before processing.")
+            semaphore = self._semaphore
+        return semaphore.acquire(timeout=timeout)
+
+    def release(self):
+        # Never reread configuration while returning an already acquired slot.
+        with self._lock:
+            semaphore = self._semaphore
+        if semaphore is None:
+            raise ValueError("Parser capacity was not acquired.")
+        semaphore.release()
+
+
+_SLOTS = _ParserSlots()
+_PROCESS_LIFECYCLE_LOCK = Lock()
 
 
 def _parse_worker(connection, filename: str, content: bytes, mime_type: str, parser: str) -> None:
@@ -77,11 +123,17 @@ def _run_bounded(worker: Callable, args: tuple, timeout: float) -> dict:
     if not _SLOTS.acquire(timeout=5):
         raise ProcessingDeferred("文档处理队列繁忙，已延后处理。")
     receive = send = process = None
+    release_slot = True
     try:
         context = multiprocessing.get_context("spawn")
         receive, send = context.Pipe(duplex=False)
         process = context.Process(target=worker, args=(send, *args), daemon=True)
-        process.start()
+        # Process.start() also polls other children via multiprocessing._cleanup.
+        # Serialize lifecycle polling with joins/closes to avoid concurrent waitpid
+        # races; child work and pipe waiting remain outside this lock.
+        with _PROCESS_LIFECYCLE_LOCK:
+            process.start()
+            release_slot = False
         send.close()
         if not receive.poll(timeout):
             raise ValueError("文档解析超时，原件已保留；请拆分文件或更换格式后重试。")
@@ -94,21 +146,29 @@ def _run_bounded(worker: Callable, args: tuple, timeout: float) -> dict:
         return payload["result"]
     finally:
         try:
-            if receive is not None:
-                receive.close()
-            if send is not None:
-                send.close()
-            if process is not None and process.pid is not None:
-                process.join(timeout=0.5)
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=2)
-                if process.is_alive():
-                    process.kill()
-                    process.join(timeout=2)
-                process.close()
+            try:
+                if receive is not None:
+                    receive.close()
+            finally:
+                if send is not None:
+                    send.close()
         finally:
-            _SLOTS.release()
+            try:
+                if process is not None and process.pid is not None:
+                    release_slot = False  # An unreaped child must keep its physical slot.
+                    with _PROCESS_LIFECYCLE_LOCK:
+                        process.join(timeout=0.5)
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=2)
+                        if process.is_alive():
+                            process.kill()
+                            process.join(timeout=2)
+                        process.close()
+                        release_slot = True
+            finally:
+                if release_slot:
+                    _SLOTS.release()
 
 
 def _auxiliary_worker(connection, operation: str, payload) -> None:

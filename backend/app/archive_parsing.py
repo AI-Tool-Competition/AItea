@@ -18,7 +18,6 @@ import stat
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from threading import BoundedSemaphore
 
 from .parsing import ProcessingDeferred, _MAX_RESULT_BYTES, _run_bounded
 
@@ -30,7 +29,6 @@ _MAX_TEXT = 4_000_000
 _MAX_ELEMENTS = 20_000
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _HASH_BLOCK_BYTES = 1024 * 1024
-_ARCHIVE_SLOTS = BoundedSemaphore(1)
 _KNOWN_STATUSES = {"pending_parse", "native", "pending_ocr", "ocr_complete", "ocr_failed", "ocr_uncertain"}
 _NATIVE_WARNING = "PDF 原生文本不保证扫描页或复杂表格准确；页状态保留待识别和待核对项。"
 
@@ -160,12 +158,10 @@ def _validate_original_request(path, source_hash, size) -> str:
 
 
 def _run_archive_bounded(worker, args: tuple) -> dict:
-    if not _ARCHIVE_SLOTS.acquire(timeout=5):
-        raise ProcessingDeferred("大型 PDF 处理队列繁忙，已延后处理。")
     try:
         return _run_bounded(worker, args, 45)
-    finally:
-        _ARCHIVE_SLOTS.release()
+    except ProcessingDeferred as exc:
+        raise ProcessingDeferred("大型 PDF 处理队列繁忙，已延后处理。") from exc
 
 
 def _checkpoint_payload(manifest: dict | None, source_hash: str) -> dict | None:

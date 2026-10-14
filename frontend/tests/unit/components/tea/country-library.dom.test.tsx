@@ -10,8 +10,8 @@ import {
 
 import { AdminLibrary } from "@/components/tea/admin-library";
 import { DocumentClassificationEditor } from "@/components/tea/document-classification";
-import { DocumentRelations } from "@/components/tea/document-relations";
 import { DocumentMetadataEditor } from "@/components/tea/document-metadata";
+import { DocumentRelations } from "@/components/tea/document-relations";
 import { Library, UploadDialog } from "@/components/tea/library";
 import {
   clearCollectionDrafts,

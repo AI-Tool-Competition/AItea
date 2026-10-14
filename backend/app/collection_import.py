@@ -428,15 +428,17 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
             or ident in source["dirty"]
         ):
             continue
-        candidates = [v for v in source["vectors"] if v["document_id"] == ident]
+        candidates = [
+            v for v in source["vectors"] if v["document_id"] == ident and v["fingerprint"] == fingerprint
+        ]
         chunks = {
             str(c.get("id", "")): c
             for c in doc["parsed_manifest"].get("chunks", [])
             if str(c.get("text", "")).strip()
         }
-        if not fingerprint or doc["parsed_manifest"].get("embedding_fingerprint") != fingerprint:
-            continue
-        if len(candidates) != len(chunks) or not chunks:
+        # A paid batch can be committed before the whole-document model marker.
+        # Its index BLOBs are still reusable when every saved input is current.
+        if not fingerprint or not candidates or not chunks:
             continue
         validated = {}
         for row in candidates:
@@ -475,6 +477,15 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
             d["role"] == "primary" and text_complete(d["parsed_manifest"]) for d in documents
         ),
         "reusable_vectors": sum(len(v) for v in vectors.values()),
+        "partial_vector_cache_documents": sum(
+            bool(vectors.get(doc["id"]))
+            and (
+                len(vectors[doc["id"]])
+                != sum(bool(str(c.get("text", "")).strip()) for c in doc["parsed_manifest"].get("chunks", []))
+                or doc["parsed_manifest"].get("embedding_fingerprint") != fingerprint
+            )
+            for doc in documents
+        ),
         "verified_owner_blobs": len(paths),
         "relations": len(source["relations"]),
         "blockers": blockers,
@@ -743,7 +754,14 @@ def import_collected_resources(
             for chunk in manifest.get("chunks", []):
                 chunk.pop("embedding", None)
                 chunk.pop("embedding_input_hash", None)
-            if ident not in vectors:
+            embedding_complete = (
+                ident in vectors
+                and len(vectors[ident])
+                == sum(bool(str(c.get("text", "")).strip()) for c in manifest.get("chunks", []))
+                and manifest.get("embedding_fingerprint") == _fingerprint()
+            )
+            cache_pending = ident in vectors and not embedding_complete
+            if not embedding_complete:
                 manifest.pop("embedding_fingerprint", None)
             origin.update(
                 snapshot_hash=snapshot_hash,
@@ -759,18 +777,17 @@ def import_collected_resources(
                     dump(manifest),
                     "stored"
                     if doc["role"] == "secondary"
-                    else ("ready" if text_complete(manifest) else "processing"),
+                    else ("ready" if text_complete(manifest) and not cache_pending else "processing"),
                     doc["error"],
                     target["id"],
                 ),
             )
             if doc["role"] == "primary":
                 service.index.sync_document(conn, target["id"], manifest, strict_vectors=True)
-                if ident not in vectors:
-                    conn.execute(
-                        "DELETE FROM retrieval_vectors WHERE chunk_rowid IN (SELECT rowid FROM retrieval_chunks WHERE document_id=?)",
-                        (target["id"],),
-                    )
+                conn.execute(
+                    "DELETE FROM retrieval_vectors WHERE chunk_rowid IN (SELECT rowid FROM retrieval_chunks WHERE document_id=?)",
+                    (target["id"],),
+                )
                 if ident in vectors:
                     chunks = [
                         dict(r)
@@ -778,6 +795,7 @@ def import_collected_resources(
                             "SELECT rowid,chunk_id,input_hash FROM retrieval_chunks WHERE document_id=? ORDER BY ordinal",
                             (target["id"],),
                         )
+                        if r["chunk_id"] in vectors[ident]
                     ]
                     service.index.store_vectors(
                         conn,
@@ -787,6 +805,13 @@ def import_collected_resources(
                         [vectors[ident][r["chunk_id"]] for r in chunks],
                     )
                 service.collection.queue_processing(conn, target["id"], target_owner)
+                if cache_pending:
+                    # Complete text needs only its missing vector inputs, not
+                    # another parsing/OCR pass or another paid cached batch.
+                    conn.execute(
+                        "UPDATE processing_jobs SET phase='embed' WHERE document_id=? AND status='queued'",
+                        (target["id"],),
+                    )
             else:
                 conn.execute("DELETE FROM processing_jobs WHERE document_id=?", (target["id"],))
                 conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (target["id"],))

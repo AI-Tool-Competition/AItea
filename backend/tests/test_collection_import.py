@@ -501,3 +501,157 @@ def test_dirty_source_index_does_not_transfer_cached_vectors(pair):
     assert transfer(src, dst)["reusable_vectors"] == 0
     assert transfer(src, dst, apply=True)["reusable_vectors"] == 0
     assert not facts(dst)["vectors"]
+
+
+def partial_original(src, *, remove_vector=True):
+    body = "\n\n".join(
+        f"Section {number}. Source obligations require accurate original context. "
+        + "Applicable clauses and original context. " * 25
+        for number in range(10)
+    )
+    doc = original(src, content=body.encode())
+    with src.db.transaction() as conn:
+        chunks = list(
+            conn.execute(
+                "SELECT rowid,chunk_id,retrieval_text FROM retrieval_chunks WHERE document_id=? ORDER BY ordinal",
+                (doc["id"],),
+            )
+        )
+        assert len(chunks) > 1
+        if remove_vector:
+            conn.execute("DELETE FROM retrieval_vectors WHERE chunk_rowid=?", (chunks[-1]["rowid"],))
+        manifest = json.loads(src.own_document(conn, "source", doc["id"])["manifest"])
+        manifest.pop("embedding_fingerprint", None)
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+        src.index.sync_document(conn, doc["id"], manifest)
+    return doc, chunks
+
+
+@pytest.mark.parametrize("remove_vector", [True, False])
+def test_partial_paid_cache_is_transferred_and_worker_requests_only_missing_inputs(
+    pair, monkeypatch, remove_vector
+):
+    src, dst = pair
+    doc, chunks = partial_original(src, remove_vector=remove_vector)
+    source_before = facts(src)
+    result = transfer(src, dst, apply=True)
+    target = result["document_versions"][doc["id"]]["document_id"]
+    assert result["partial_vector_cache_documents"] == 1
+    assert result["reusable_vectors"] == len(chunks) - int(remove_vector)
+    with closing(dst.db.connect()) as conn:
+        row = dst.own_document(conn, "target", target)
+        assert row["status"] == "processing" and row["version"] == 1
+        assert "embedding_fingerprint" not in json.loads(row["manifest"])
+        job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (target,)).fetchone()
+        assert job["phase"] == "embed" and job["status"] == "queued"
+        pending = dst.index.pending(conn, target, dst.embedding_fingerprint())
+        assert [r["chunk_id"] for r in pending] == ([chunks[-1]["chunk_id"]] if remove_vector else [])
+
+    requests = []
+
+    def embed(texts):
+        requests.append(texts)
+        return [[0.6, 0.8] for _ in texts]
+
+    def parsing_not_needed(*args, **kwargs):
+        pytest.fail("A complete imported text checkpoint must not be parsed or OCRed again")
+
+    monkeypatch.setattr("app.ingestion.embed_texts", embed)
+    monkeypatch.setattr("app.parsing.parse_bounded", parsing_not_needed)
+    claim = dst.collection.claim_processing(owner_id="target", document_ids=[target])
+    assert claim and claim["phase"] == "embed"
+    dst.collection.process_item(claim)
+    assert requests == ([[chunks[-1]["retrieval_text"]]] if remove_vector else [])
+    assert facts(src) == source_before
+    with closing(dst.db.connect()) as conn:
+        row = dst.own_document(conn, "target", target)
+        assert row["status"] == "ready"
+        assert json.loads(row["manifest"])["embedding_fingerprint"] == dst.embedding_fingerprint()
+        assert not dst.index.pending(conn, target, dst.embedding_fingerprint())
+        assert (
+            conn.execute("SELECT status FROM processing_jobs WHERE document_id=?", (target,)).fetchone()[0]
+            == "completed"
+        )
+    assert dst.search("target", "Source obligations", country="ID")["items"] == []
+    with pytest.raises(CollectionImportError, match="target_changed_since_import"):
+        transfer(src, dst, apply=True, refresh=True)
+
+
+@pytest.mark.parametrize("gate", ["incomplete", "secondary", "dirty", "model_mismatch"])
+def test_partial_cache_cannot_bypass_text_purpose_index_or_model_gates(pair, monkeypatch, gate):
+    src, dst = pair
+    doc, _ = partial_original(src)
+    with src.db.transaction() as conn:
+        if gate == "incomplete":
+            manifest = json.loads(src.own_document(conn, "source", doc["id"])["manifest"])
+            manifest["quality"] = {"complete": False, "pending_pages": [1]}
+            conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+        elif gate == "secondary":
+            conn.execute(
+                "UPDATE legal_classifications SET level='secondary' WHERE document_id=?", (doc["id"],)
+            )
+        elif gate == "dirty":
+            conn.execute("INSERT OR IGNORE INTO retrieval_dirty VALUES(?)", (doc["id"],))
+    if gate == "model_mismatch":
+        monkeypatch.setenv("EMBEDDING_MODEL", "another-test-model")
+    result = transfer(src, dst, apply=True)
+    assert result["reusable_vectors"] == 0
+    assert result["partial_vector_cache_documents"] == 0
+    assert not facts(dst)["vectors"]
+
+
+@pytest.mark.parametrize("stale_marker", [False, True])
+def test_mixed_model_partial_cache_reuses_only_exact_current_model_inputs(pair, stale_marker):
+    src, dst = pair
+    doc, chunks = partial_original(src)
+    previous_fingerprint = "a" * 64
+    with src.db.transaction() as conn:
+        conn.execute("INSERT INTO retrieval_models VALUES(?,2)", (previous_fingerprint,))
+        conn.execute(
+            "UPDATE retrieval_vectors SET fingerprint=? WHERE chunk_rowid=?",
+            (previous_fingerprint, chunks[0]["rowid"]),
+        )
+        if stale_marker:
+            manifest = json.loads(src.own_document(conn, "source", doc["id"])["manifest"])
+            manifest["embedding_fingerprint"] = previous_fingerprint
+            conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+            src.index.sync_document(conn, doc["id"], manifest)
+    result = transfer(src, dst, apply=True)
+    assert result["reusable_vectors"] == len(chunks) - 2
+    assert result["partial_vector_cache_documents"] == 1
+    target = result["document_versions"][doc["id"]]["document_id"]
+    with closing(dst.db.connect()) as conn:
+        assert {r["chunk_id"] for r in dst.index.pending(conn, target, dst.embedding_fingerprint())} == {
+            chunks[0]["chunk_id"],
+            chunks[-1]["chunk_id"],
+        }
+        assert "embedding_fingerprint" not in json.loads(dst.own_document(conn, "target", target)["manifest"])
+
+
+@pytest.mark.parametrize("corruption", ["input", "dimension", "nonfinite", "nonunit"])
+def test_partial_cache_corruption_is_rejected_before_any_target_copy(pair, corruption):
+    import numpy as np
+
+    src, dst = pair
+    partial_original(src)
+    with src.db.transaction() as conn:
+        rowid = conn.execute("SELECT chunk_rowid FROM retrieval_vectors LIMIT 1").fetchone()[0]
+        if corruption == "input":
+            conn.execute("UPDATE retrieval_vectors SET input_hash='wrong' WHERE chunk_rowid=?", (rowid,))
+        elif corruption == "dimension":
+            conn.execute(
+                "UPDATE retrieval_vectors SET dimension=3,vector=? WHERE chunk_rowid=?",
+                (np.asarray([0.6, 0.8, 0], dtype="float32").tobytes(), rowid),
+            )
+        else:
+            values = [float("nan"), 0.8] if corruption == "nonfinite" else [0.6, 0.3]
+            conn.execute(
+                "UPDATE retrieval_vectors SET vector=? WHERE chunk_rowid=?",
+                (np.asarray(values, dtype="float32").tobytes(), rowid),
+            )
+    before = facts(dst)
+    blobs_before = set(dst.db.files_dir.rglob("*"))
+    with pytest.raises(CollectionImportError, match="vector"):
+        transfer(src, dst, apply=True)
+    assert facts(dst) == before
+    assert set(dst.db.files_dir.rglob("*")) == blobs_before

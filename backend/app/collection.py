@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -26,6 +27,15 @@ def _setting(name, default, maximum):
     if not 1 <= value <= maximum:
         raise ValueError(f"{name} must be between 1 and {maximum}")
     return value
+
+
+def _storage_busy(error):
+    code = getattr(error, "sqlite_errorcode", None)
+    return (
+        isinstance(error, sqlite3.OperationalError)
+        and isinstance(code, int)
+        and code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    )
 
 
 class CollectionService:
@@ -926,6 +936,20 @@ class CollectionService:
         except Exception as error:
             self._failure(claim, error, processing=False)
 
+    def _write_ocr_checkpoint(self, lock, validate, update):
+        # Only the guarded local transaction is retried: rendering, CAS and
+        # provider calls stay outside, so a paid response is not requested again.
+        with lock:
+            for attempt in range(3):
+                try:
+                    with self.db.transaction() as conn:
+                        validate(conn)
+                        return update(conn)
+                except sqlite3.OperationalError as error:
+                    if not _storage_busy(error) or attempt == 2:
+                        raise
+                    time.sleep(0.1 * (2**attempt))
+
     def _persist_ocr_image(self, doc, rendered):
         import base64
 
@@ -1030,11 +1054,13 @@ class CollectionService:
             with closing(self.db.connect()) as conn:
                 current_document(conn)
             reference = self._persist_ocr_image(doc, rendered)
-            with checkpoint_lock, self.db.transaction() as conn:
-                current_document(conn)
+
+            def update(conn):
                 page = next(page for page in manifest["pages"] if page["page"] == rendered["page"])
                 page.setdefault("ocr", {})["image_blob"] = reference
                 conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+
+            self._write_ocr_checkpoint(checkpoint_lock, current_document, update)
             return reference
 
         def store_region(rendered):
@@ -1050,8 +1076,7 @@ class CollectionService:
         def checkpoint(page):
             # Each completed physical page is durable before another batch.
             # The lease check prevents a stale worker from replacing new work.
-            with checkpoint_lock, self.db.transaction() as conn:
-                current_document(conn)
+            def update(conn):
                 manifest["pages"] = [
                     page if previous["page"] == page["page"] else previous for previous in manifest["pages"]
                 ]
@@ -1059,6 +1084,8 @@ class CollectionService:
                     "UPDATE documents SET manifest=? WHERE id=?",
                     (dump(manifest), doc["id"]),
                 )
+
+            self._write_ocr_checkpoint(checkpoint_lock, current_document, update)
 
         def reuse(page, rendered):
             with closing(self.db.connect()) as conn:
@@ -1347,6 +1374,7 @@ class CollectionService:
         from .service import AppError
         from .ingestion import EmbeddingProviderDeferred, EmbeddingServiceError
 
+        storage_wait = _storage_busy(error)
         # Unexpected exceptions/paths/provider response bodies never become public error text.
         safe = (
             str(error)[:450]
@@ -1355,13 +1383,18 @@ class CollectionService:
         )
         retryable = getattr(error, "retryable", not isinstance(error, (ValueError, AppError)))
         # Model/network failures may be transient; deterministic parse failures are not.
-        if processing and claim["phase"] == "embed":
+        if processing and claim["phase"] == "embed" and not storage_wait:
             retryable = error.retryable if isinstance(error, EmbeddingServiceError) else True
             safe = "向量服务暂不可用，原件和正文已保留"
+        if storage_wait:
+            safe = "本地资料存储繁忙，任务稍后继续处理"
         transfer_progress = not processing and isinstance(error, TransferPending)
         provider_wait = processing and isinstance(error, EmbeddingProviderDeferred)
         deferred = (
-            (processing and isinstance(error, ProcessingDeferred)) or transfer_progress or provider_wait
+            (processing and isinstance(error, ProcessingDeferred))
+            or transfer_progress
+            or provider_wait
+            or storage_wait
         )
         exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
         # Bound our own exponential backoff, but never shorten a server's

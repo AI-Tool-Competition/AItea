@@ -9,6 +9,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
+from copy import deepcopy
 from pathlib import Path
 from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
@@ -20,6 +21,15 @@ from .parsing import parse_worker_limit
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 MAX_ATTEMPTS = 3
+_PROCESSING_SOURCE_FIELDS = (
+    "owner_id",
+    "role",
+    "version",
+    "content_hash",
+    "size",
+    "storage_path",
+    "source_url",
+)
 
 
 def _setting(name, default, maximum):
@@ -565,13 +575,32 @@ class CollectionService:
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""
 
-    def claim_processing(self, *, owner_id=None, document_ids=None, processing_policy=None):
+    def claim_processing(
+        self, *, owner_id=None, document_ids=None, processing_policy=None, expected_expired_claim=None
+    ):
         scope, arguments = self._processing_scope(owner_id, document_ids)
         policy = self._processing_policy_clause(processing_policy)
         if policy and not scope:
             raise ValueError("正文处理授权策略必须限定账号和文档范围。")
+        if expected_expired_claim is not None and (
+            not isinstance(expected_expired_claim, dict)
+            or owner_id != expected_expired_claim.get("owner_id")
+            or document_ids != [expected_expired_claim.get("document_id")]
+            or not expected_expired_claim.get("lease_token")
+            or not isinstance(expected_expired_claim.get("_processing_source_guard"), dict)
+        ):
+            raise ValueError("停止任务恢复必须限定一个已领取文档及其原件守卫。")
         timestamp = time.time()
         with self.db.transaction() as conn:
+            if expected_expired_claim is not None and (
+                not self._processing_source_matches(conn, expected_expired_claim)
+                or not conn.execute(
+                    """SELECT 1 FROM processing_jobs WHERE document_id=? AND owner_id=?
+                    AND status='processing' AND lease_token=? AND lease_until<=?""",
+                    (document_ids[0], owner_id, expected_expired_claim["lease_token"], timestamp),
+                ).fetchone()
+            ):
+                return None
             self._expire(
                 conn,
                 "processing_jobs",
@@ -610,6 +639,9 @@ class CollectionService:
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope
                 + policy
+                + """ AND EXISTS(SELECT 1 FROM documents owned_source
+                    WHERE owned_source.id=processing_jobs.document_id
+                        AND owned_source.owner_id=processing_jobs.owner_id AND owned_source.role='primary')"""
                 + """ AND (phase!='parse' OR NOT EXISTS (
                     SELECT 1 FROM documents candidate
                     JOIN documents busy_document INDEXED BY documents_source
@@ -632,18 +664,73 @@ class CollectionService:
             ).fetchone()
             if not row:
                 return None
+            source = conn.execute(
+                "SELECT " + ",".join(_PROCESSING_SOURCE_FIELDS) + " FROM documents WHERE id=?",
+                (row["document_id"],),
+            ).fetchone()
             token = uid()
             conn.execute(
                 "UPDATE processing_jobs SET status='processing',attempts=attempts+1,lease_token=?,lease_until=? WHERE document_id=?",
                 (token, timestamp + LEASE_SECONDS, row["document_id"]),
             )
             claim = dict(row) | {"lease_token": token, "attempts": row["attempts"] + 1}
+            claim["_processing_source_guard"] = dict(source)
             if processing_policy is not None:
                 claim.update(
                     _processing_policy=processing_policy,
                     _processing_document_ids=tuple(document_ids),
                 )
             return claim
+
+    @staticmethod
+    def _processing_source_matches(conn, claim):
+        guard = claim.get("_processing_source_guard")
+        if guard is None:
+            return True  # Existing durable claims predate this optional in-memory fence.
+        if (
+            not isinstance(guard, dict)
+            or set(guard) != set(_PROCESSING_SOURCE_FIELDS)
+            or guard.get("owner_id") != claim.get("owner_id")
+            or guard.get("role") != "primary"
+        ):
+            return False
+        row = conn.execute(
+            "SELECT " + ",".join(_PROCESSING_SOURCE_FIELDS) + " FROM documents WHERE id=?",
+            (claim["document_id"],),
+        ).fetchone()
+        return row is not None and all(row[field] == guard[field] for field in _PROCESSING_SOURCE_FIELDS)
+
+    def recover_expired_processing_claim(self, claim):
+        """After our future has stopped, defer only its unchanged expired token.
+
+        Reuse scoped queue expiry/claim and failure handling. The transaction
+        compares the old token and immutable source before issuing a new token;
+        failure handling compares that new token/source again before releasing.
+        No page attempt, transcription, import guard or legal metadata changes.
+        """
+        from .parsing import ProcessingDeferred
+
+        recovered = self.claim_processing(
+            owner_id=claim["owner_id"],
+            document_ids=[claim["document_id"]],
+            processing_policy=claim.get("_processing_policy"),
+            expected_expired_claim=claim,
+        )
+        if recovered is None:
+            return False
+        self._failure(recovered, ProcessingDeferred("工作进程已停止，保存的检查点稍后继续"), processing=True)
+        with closing(self.db.connect()) as conn:
+            job = conn.execute(
+                "SELECT status,attempts,lease_token,lease_until FROM processing_jobs WHERE document_id=?",
+                (claim["document_id"],),
+            ).fetchone()
+            return bool(
+                job
+                and job["status"] == "queued"
+                and job["attempts"] == 0
+                and job["lease_token"] is None
+                and job["lease_until"] is None
+            )
 
     def _expire(
         self, conn, table, status, timestamp, *, owner_id=None, document_ids=None, processing_policy=None
@@ -690,7 +777,7 @@ class CollectionService:
         policy = self._processing_policy_clause(claim.get("_processing_policy")) if processing else ""
         if policy and claim["document_id"] not in claim.get("_processing_document_ids", ()):
             return False
-        return (
+        valid = (
             conn.execute(
                 f"SELECT 1 FROM {table} WHERE {key}=? AND status=? AND lease_token=? AND lease_until>?"
                 + (" AND owner_id=?" if policy else "")
@@ -705,6 +792,7 @@ class CollectionService:
             ).fetchone()
             is not None
         )
+        return valid and (not processing or self._processing_source_matches(conn, claim))
 
     def _release_disallowed_policy_claim(self, conn, claim):
         """Release only our live lease; do not modify the now-ineligible document."""
@@ -1142,6 +1230,20 @@ class CollectionService:
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
+            import_present = "collection_import" in manifest
+            import_origin = deepcopy(manifest.get("collection_import"))
+
+            def preserve_import_origin(result):
+                # Parsers rebuild derived content. Keep the stored import identity,
+                # including its original guard, without granting it legal authority.
+                # Recomputing that guard would allow an older source snapshot to
+                # replace paid OCR or vectors already committed in this database.
+                if import_present:
+                    result["collection_import"] = deepcopy(import_origin)
+                else:
+                    result.pop("collection_import", None)
+                return result
+
             fingerprint = self.service.embedding_fingerprint()
             batch, vectors, reuse_plan = [], None, None
             if claim["phase"] == "parse":
@@ -1217,6 +1319,7 @@ class CollectionService:
                         and not has_mapped_source_objects(manifest)
                     ):
                         raise ValueError("文件没有可提取的正文；扫描件需要 OCR")
+                manifest = preserve_import_origin(manifest)
                 restore_pages = any(
                     page.get("status", "").startswith("ocr_")
                     and (
@@ -1228,7 +1331,7 @@ class CollectionService:
                 if not is_pdf and assets(manifest):
                     # The last asset checkpoint can precede derived text when
                     # a process stops. Rebuild without repeating its model call.
-                    manifest = rebuild_native_asset_text_bounded(manifest)
+                    manifest = preserve_import_origin(rebuild_native_asset_text_bounded(manifest))
                 if not manifest.get("quality", {}).get("pending_parse_pages") and (
                     restore_pages or (ocr_work_pending(manifest) and vision_ocr_configured())
                 ):
@@ -1237,9 +1340,13 @@ class CollectionService:
                         if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
                             raise ValueError("原件完整性校验失败")
                     if not is_pdf:
-                        manifest = self._process_native_assets(doc, claim, manifest, content)
+                        manifest = preserve_import_origin(
+                            self._process_native_assets(doc, claim, manifest, content)
+                        )
                     else:
-                        manifest = self._process_pdf_ocr(doc, claim, manifest, content, archive_mode)
+                        manifest = preserve_import_origin(
+                            self._process_pdf_ocr(doc, claim, manifest, content, archive_mode)
+                        )
             elif should_index and fingerprint and text_complete(manifest):
                 from .embedding_reuse import prepare_batch, verify_originals
 
@@ -1287,6 +1394,7 @@ class CollectionService:
                     resolved = {n: hit["values"] for n, hit in reuse_plan["hits"].items()}
                     resolved.update(zip(misses, generated, strict=True))
                     vectors = [resolved[n] for n in range(len(batch))]
+            manifest = preserve_import_origin(manifest)
             warning = "；".join(str(item) for item in manifest.get("warnings", []))[:500] or None
             warning = quality_warning(manifest) or warning
             with self.db.transaction() as conn:
@@ -1508,6 +1616,9 @@ class CollectionWorkers:
         self.fetch_enabled = fetch_enabled
         self.stop_event = Event()
         self.thread = None
+        # Scoped campaigns have at most 20 IDs. Retain only the latest token per
+        # ID; a server-wide worker does not accumulate an unbounded history.
+        self.owned_processing_claims = {}
 
     def start(self):
         if self.thread is None:
@@ -1558,6 +1669,8 @@ class CollectionWorkers:
                                 )
                                 if not claim:
                                     break
+                                if is_processing and self.processing_scope is not None:
+                                    self.owned_processing_claims[claim["document_id"]] = deepcopy(claim)
                                 future = executor.submit(
                                     self.collection.process_item
                                     if is_processing
@@ -1580,6 +1693,11 @@ class CollectionWorkers:
         finally:
             downloads.shutdown(wait=True, cancel_futures=True)
             processing.shutdown(wait=True, cancel_futures=True)
+            for claim in self.owned_processing_claims.values():
+                try:
+                    self.collection.recover_expired_processing_claim(claim)
+                except Exception:
+                    logger.exception("Stopped scoped worker could not defer its expired processing claim")
             self.collection.worker_health["status"] = "stopped"
 
     def stop(self, timeout=5):

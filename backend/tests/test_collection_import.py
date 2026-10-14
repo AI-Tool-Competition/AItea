@@ -288,6 +288,7 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, re
             "height": 3,
             "source_original_path": doc["storage_path"],
             "source_PNG_path": "/old/private/scan.png",
+            "PNG_CAS_path": "/old/verification-owner/files/blobs/" + png.digest,
         }
         proof = src.archive.blobs.put_bytes("source", dump(mapping).encode())
         references.append(
@@ -353,6 +354,9 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, re
             mapping = (dst.db.path.parent / ref["mapping_path"]).read_bytes()
             assert hashlib.sha256(mapping).hexdigest() == ref["mapping_sha256"]
             assert b"/old/private" not in mapping and str(src.db.path.parent).encode() not in mapping
+            mapped = json.loads(mapping)
+            assert mapped["PNG_CAS_path"] == ref["full_page_PNG"]
+            assert b"verification-owner" not in mapping
     before = facts(dst)
     assert transfer(src, dst, apply=True)["unchanged_documents"] == 2
     assert facts(dst) == before

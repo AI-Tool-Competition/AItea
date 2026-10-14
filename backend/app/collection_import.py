@@ -282,6 +282,8 @@ def _registry_assets(value, found, aliases):
             ("full_page_PNG", "PNG_sha256"),
             ("full_page_PNG_path", "full_page_PNG_sha256"),
             ("mapping_path", "mapping_sha256"),
+            ("PNG_CAS_path", "image_sha256"),
+            ("source_PNG_path", "image_sha256"),
         ):
             if isinstance(value.get(path_key), str) and _DIGEST.fullmatch(str(value.get(hash_key, ""))):
                 found.add(value[hash_key])
@@ -388,6 +390,13 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
             raise CollectionImportError("registry_owner_mismatch")
         _registry_assets(registry, found, aliases)
         _path_refs(registry, source_dir, source_owner, found, aliases)
+        for ref in _mapping_records(registry):
+            mapping_raw = _blob(source_dir, source_owner, ref["mapping_sha256"]).read_bytes()
+            if len(mapping_raw) > MAX_PROVENANCE_BYTES:
+                raise CollectionImportError("mapping_too_large")
+            # Old proof paths are aliases, not read authority. Paired image
+            # hashes still resolve exclusively through verified source-owner CAS.
+            _registry_assets(json.loads(mapping_raw), found, aliases)
         found.add(_sha(raw))
     if len(found) > MAX_ASSETS:
         raise CollectionImportError("asset_scope_exceeded")

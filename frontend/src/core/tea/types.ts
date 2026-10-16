@@ -358,10 +358,12 @@ export interface CollectionBlueprint extends CollectionBlueprintSummary {
   principles: string[];
   chapters: { id: string; title: string; notes: string[] }[];
   channels: {
-    id: string;
-    title: string;
-    questions: string[];
-    item_ids: string[];
+    id?: string;
+    title?: string;
+    name?: string;
+    questions: string[] | string;
+    item_ids?: string[];
+    sources?: string;
   }[];
   limits: Record<string, unknown>;
   items: ChecklistItem[];

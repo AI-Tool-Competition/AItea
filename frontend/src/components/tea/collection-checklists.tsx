@@ -30,6 +30,15 @@ const coverageLabels: Record<ChecklistItemState["coverage"], string> = {
   blocked: "需处理",
 };
 
+function requirementItems(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) return value;
+  if (!value?.trim()) return [];
+  return value
+    .split(/[、，,；;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export function CollectionChecklists({ ownerId }: { ownerId?: string }) {
   const [plans, setPlans] = useState<CollectionBlueprintSummary[]>([]);
   const [selected, setSelected] = useState("");
@@ -288,26 +297,41 @@ function ChecklistPlan({ id, ownerId }: { id: string; ownerId?: string }) {
         <summary>清单说明与适用范围</summary>
         <p>{plan.description}</p>
         <RequirementList title="通用要求" items={plan.principles} />
-        {plan.channels.map((channel) => (
-          <section key={channel.id}>
-            <RequirementList title={channel.title} items={channel.questions} />
-            <div className="ta-checklist-channel-items">
-              {channel.item_ids.map((code) => (
-                <Button
-                  key={code}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setQuery("");
-                    setOpen(code);
-                  }}
-                >
-                  {code}
-                </Button>
-              ))}
-            </div>
-          </section>
-        ))}
+        {plan.channels.map((channel, index) => {
+          const title = channel.title ?? channel.name ?? `渠道 ${index + 1}`;
+          const itemIds = channel.item_ids ?? [];
+          return (
+            <section key={channel.id ?? channel.name ?? `${title}-${index}`}>
+              <RequirementList
+                title={title}
+                items={requirementItems(channel.questions)}
+              />
+              {channel.sources && (
+                <RequirementList
+                  title="资料来源"
+                  items={requirementItems(channel.sources)}
+                />
+              )}
+              {itemIds.length > 0 && (
+                <div className="ta-checklist-channel-items">
+                  {itemIds.map((code) => (
+                    <Button
+                      key={code}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setQuery("");
+                        setOpen(code);
+                      }}
+                    >
+                      {code}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })}
         <p className="ta-hint">
           依据：{plan.source_document.filename} · {plan.source_document.date} ·
           第 {plan.version} 版

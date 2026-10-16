@@ -8,6 +8,8 @@ __pycache__/
 *.pyc
 .env
 data/
+/backups/
+/restores/
 node_modules/
 .next/
 *.tsbuildinfo

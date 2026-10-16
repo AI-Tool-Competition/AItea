@@ -42,22 +42,40 @@ import { Busy, dateLabel, Empty, ErrorNotice } from "./shared";
 
 const PAGE_SIZE = 20;
 const PART_SIZE = 40;
-export function AdminLibrary({
-  cases,
-  revision,
-  onUpload,
-  samples = false,
-  ownerId,
-}: {
+interface AdminLibraryProps {
   cases: CaseSummary[];
   revision: number;
   onUpload: (scope?: string, parent?: string, country?: string) => void;
   samples?: boolean;
   ownerId?: string;
-}) {
+  uploadedDocument?: Document;
+}
+
+export function AdminLibrary(props: AdminLibraryProps) {
+  return (
+    <AdminLibraryWorkspace
+      key={`${props.ownerId ?? "session"}:${!!props.samples}`}
+      {...props}
+    />
+  );
+}
+
+function AdminLibraryWorkspace({
+  cases,
+  revision,
+  onUpload,
+  samples = false,
+  ownerId,
+  uploadedDocument,
+}: AdminLibraryProps) {
   const countries = useCollectionCountries(ownerId, !samples);
+  const [sourceScope, setSourceScope] = useState<"personal" | "system">(
+    "system",
+  );
   const [countrySelection, setCountrySelection] = useState("");
-  const country = countrySelection || countries.defaultCountry;
+  const country =
+    countrySelection ||
+    (sourceScope === "personal" ? "all" : countries.defaultCountry);
   const [scope, setScope] = useState("");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -71,6 +89,17 @@ export function AdminLibrary({
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState<Document>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!uploadedDocument || samples) return;
+    setSourceScope("personal");
+    setScope(uploadedDocument.case_id ?? "");
+    setCountrySelection("all");
+    setQuery("");
+    setSearch("");
+    setOffset(0);
+    setExpanded(new Set());
+    setSelected(uploadedDocument);
+  }, [uploadedDocument, samples]);
   useEffect(() => {
     if (samples) {
       const items = librarySamples
@@ -94,9 +123,10 @@ export function AdminLibrary({
       role: "primary",
       limit: String(PAGE_SIZE),
       offset: String(offset),
+      source_scope: sourceScope,
     });
     if (scope) params.set("case_id", scope);
-    else params.set("country", country);
+    else if (country !== "all") params.set("country", country);
     if (search) params.set("q", search);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
       signal: abort.signal,
@@ -114,6 +144,7 @@ export function AdminLibrary({
   }, [
     scope,
     country,
+    sourceScope,
     countries.ready,
     offset,
     search,
@@ -154,6 +185,37 @@ export function AdminLibrary({
     );
   return (
     <div className="ta-library">
+      {!samples && (
+        <div className="tea-form-row" role="group" aria-label="资料来源">
+          {(["system", "personal"] as const).map((value) => (
+            <Button
+              key={value}
+              variant={sourceScope === value ? "default" : "outline"}
+              aria-pressed={sourceScope === value}
+              onClick={() => {
+                if (sourceScope === value) return;
+                setSourceScope(value);
+                setCountrySelection("");
+                setQuery("");
+                setSearch("");
+                setOffset(0);
+                setExpanded(new Set());
+                setData({ items: [], total: 0 });
+                setSelected(undefined);
+              }}
+            >
+              {value === "system" ? "法规总库" : "我的资料"}
+            </Button>
+          ))}
+        </div>
+      )}
+      {!samples && (
+        <p className="tea-note">
+          {sourceScope === "system"
+            ? "法规总库由所有用户共享，仅供查阅。"
+            : "仅当前账号可见，包含个人与业务上传资料。"}
+        </p>
+      )}
       <div className="ta-library-toolbar">
         <form
           className="ta-file-search"
@@ -184,9 +246,15 @@ export function AdminLibrary({
               setCountrySelection(event.target.value);
               setOffset(0);
               setExpanded(new Set());
+              setQuery("");
+              setSearch("");
+              setData({ items: [], total: 0 });
             }}
           >
             {!!scope && <option value="case">按业务目的地</option>}
+            {sourceScope === "personal" && !scope && (
+              <option value="all">全部国家（含未分国）</option>
+            )}
             {!countries.ready && <option value="">读取国家…</option>}
             {countries.countries.map((code) => (
               <option value={code} key={code}>
@@ -203,9 +271,15 @@ export function AdminLibrary({
             onChange={(e) => {
               setScope(e.target.value);
               setOffset(0);
+              setQuery("");
+              setSearch("");
+              setExpanded(new Set());
+              setData({ items: [], total: 0 });
             }}
           >
-            <option value="">公共资料</option>
+            <option value="">
+              {sourceScope === "system" ? "全部法规" : "账号全部资料"}
+            </option>
             {cases.map((item) => (
               <option key={item.id} value={item.id}>
                 {item.title}
@@ -216,7 +290,7 @@ export function AdminLibrary({
         {!samples && (
           <Button onClick={() => onUpload(scope || undefined)}>
             <Upload size={14} />
-            上传资料
+            {scope ? "上传到本业务" : "上传到我的资料"}
           </Button>
         )}
       </div>
@@ -301,6 +375,8 @@ export function AdminLibrary({
                               {documentLevel(doc)} ·{" "}
                               {countryLabel(doc.country ?? "unassigned")} · v
                               {doc.version} · {sizeLabel(doc.size)}
+                              {doc.case_id &&
+                                ` · ${cases.find((item) => item.id === doc.case_id)?.title ?? "业务资料"}`}
                             </small>
                           </button>
                         </div>
@@ -334,7 +410,7 @@ export function AdminLibrary({
                     {expanded.has(doc.id) && (
                       <tr className="ta-children-row">
                         <td colSpan={5}>
-                          <Attachments
+                          <DocumentAttachments
                             parent={doc}
                             samples={samples}
                             revision={revision}
@@ -449,7 +525,7 @@ function Pagination({
     </div>
   );
 }
-function Attachments({
+export function DocumentAttachments({
   parent,
   revision,
   onSelect,
@@ -484,6 +560,7 @@ function Attachments({
     setError("");
     const params = new URLSearchParams({
       parent_id: parent.id,
+      source_scope: parent.source_scope ?? "personal",
       role: "secondary",
       limit: "10",
       offset: String(offset),
@@ -502,7 +579,15 @@ function Attachments({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [parent.id, parent.case_id, offset, retry, revision, samples]);
+  }, [
+    parent.id,
+    parent.case_id,
+    parent.source_scope,
+    offset,
+    retry,
+    revision,
+    samples,
+  ]);
   return (
     <div className="ta-secondary-list">
       <div className="ta-subheading">
@@ -812,7 +897,7 @@ function DocumentInspector({
               ))}
           </div>
           {tab === "attachments" ? (
-            <Attachments
+            <DocumentAttachments
               parent={document}
               samples={samples}
               revision={revision}

@@ -30,6 +30,7 @@ import { clearCollectionDrafts } from "@/core/tea/collection-drafts";
 import {
   type Bootstrap,
   type CaseDetail,
+  type Document,
   type Template,
   type User,
 } from "@/core/tea/types";
@@ -377,6 +378,10 @@ export function TeaApp({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadScope, setUploadScope] = useState<string>();
   const [libraryRevision, setLibraryRevision] = useState(0);
+  const [uploadedDocument, setUploadedDocument] = useState<{
+    ownerId: string;
+    document: Document;
+  }>();
   const [libraryCaseId, setLibraryCaseId] = useState("");
   const [logoutBusy, setLogoutBusy] = useState(false);
   useEffect(() => {
@@ -549,6 +554,7 @@ export function TeaApp({
         stageId={stageId}
         libraryCaseId={libraryCaseId}
         onNavigate={(next) => {
+          setUploadedDocument(undefined);
           if (next === "studio") router.push("/tea/admin/workflow");
           else {
             if (next === "library") setLibraryCaseId("");
@@ -561,6 +567,7 @@ export function TeaApp({
           setView("workspace");
         }}
         onLibrary={(id) => {
+          setUploadedDocument(undefined);
           selectCase(id);
           setLibraryCaseId(id);
           setView("library");
@@ -587,7 +594,7 @@ export function TeaApp({
                   {view === "account"
                     ? "账号管理"
                     : view === "library"
-                      ? "公共资料库"
+                      ? "资料库"
                       : teaNavigationItems.find((n) => n.id === view)?.label}
                 </strong>
               )}
@@ -634,6 +641,11 @@ export function TeaApp({
             revision={libraryRevision}
             cases={bootstrap.cases}
             initialCaseId={libraryCaseId}
+            uploadedDocument={
+              uploadedDocument?.ownerId === bootstrap.user.id
+                ? uploadedDocument.document
+                : undefined
+            }
             scopeLocked
             onUpload={(scope) => {
               setUploadScope(scope);
@@ -689,11 +701,14 @@ export function TeaApp({
         }}
       />
       <UploadDialog
+        key={bootstrap.user.id}
         open={uploadOpen}
         onOpenChange={setUploadOpen}
         caseId={view === "workspace" ? caseId : uploadScope}
         cases={bootstrap.cases}
-        onDone={() => {
+        onDone={(document) => {
+          setUploadedDocument({ ownerId: bootstrap.user.id, document });
+          if (view === "library") setLibraryCaseId(document.case_id ?? "");
           setLibraryRevision((r) => r + 1);
           setRecordReload((r) => r + 1);
         }}

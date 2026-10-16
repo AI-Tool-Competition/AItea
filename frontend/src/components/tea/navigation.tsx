@@ -288,7 +288,7 @@ export function TeaNavigation({
                   onSelect={() => navigate(() => onNavigate("library"))}
                 >
                   <BookOpen />
-                  公共资料库
+                  法规与我的资料
                 </DropdownMenuItem>
                 {teaNavigationItems.slice(2).map((item) => (
                   <DropdownMenuItem

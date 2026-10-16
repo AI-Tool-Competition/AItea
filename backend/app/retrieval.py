@@ -146,6 +146,7 @@ class RetrievalIndex:
         country=None,
         document_ids=None,
         limit=BACKFILL_BATCH,
+        source_scope=None,
     ):
         """Backfill at most one batch in the query's actual legal/account scope."""
         with closing(self.db.connect()) as conn:
@@ -159,6 +160,7 @@ class RetrievalIndex:
                 country,
                 document_ids,
                 require_current=False,
+                source_scope=source_scope,
             )
         return self._backfill(sql, parameters, limit=limit)
 
@@ -442,7 +444,20 @@ class RetrievalIndex:
         finally:
             _DENSE_SLOTS.release()
 
-    def search(self, owner, query, case_id, limit, as_of, collection, country, document_ids, historical):
+    def search(
+        self,
+        owner,
+        query,
+        case_id,
+        limit,
+        as_of,
+        collection,
+        country,
+        document_ids,
+        historical,
+        *,
+        source_scope=None,
+    ):
         from .ingestion import embed_texts
         from .reranking import rerank_texts
 
@@ -457,6 +472,7 @@ class RetrievalIndex:
             historical=historical,
             country=country,
             document_ids=document_ids,
+            source_scope=source_scope,
         )
         if backfill["remaining"]:
             warnings.append(
@@ -466,7 +482,15 @@ class RetrievalIndex:
         with closing(self.db.connect()) as conn:
             conn.execute("BEGIN")
             sql, parameters = self.service.archive.eligibility_sql(
-                conn, owner, case_id, collection, as_of, historical, country, document_ids
+                conn,
+                owner,
+                case_id,
+                collection,
+                as_of,
+                historical,
+                country,
+                document_ids,
+                source_scope=source_scope,
             )
             conn.execute("CREATE TEMP TABLE retrieval_eligible AS " + sql, parameters)
             conn.execute("CREATE UNIQUE INDEX retrieval_eligible_id ON retrieval_eligible(id)")
@@ -532,7 +556,15 @@ class RetrievalIndex:
                 if case_id:
                     self.service.own_case(conn, owner, case_id)
                 sql, parameters = self.service.archive.eligibility_sql(
-                    conn, owner, case_id, collection, as_of, historical, country, document_ids
+                    conn,
+                    owner,
+                    case_id,
+                    collection,
+                    as_of,
+                    historical,
+                    country,
+                    document_ids,
+                    source_scope=source_scope,
                 )
                 conn.execute("CREATE TEMP TABLE retrieval_eligible AS " + sql, parameters)
                 current = {

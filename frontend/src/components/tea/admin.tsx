@@ -14,7 +14,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { type Bootstrap, type Template } from "@/core/tea/types";
+import { type Bootstrap, type Document, type Template } from "@/core/tea/types";
 
 import { AdminLibrary } from "./admin-library";
 import { UploadDialog } from "./library";
@@ -70,6 +70,10 @@ export function Admin({
     country?: string;
   }>();
   const [libraryRevision, setLibraryRevision] = useState(0);
+  const [uploadedDocument, setUploadedDocument] = useState<{
+    ownerId: string;
+    document: Document;
+  }>();
   const navigationPage = page === "sources" ? "library" : page;
   const current = pages[navigationPage];
   return (
@@ -215,6 +219,11 @@ export function Admin({
               ownerId={bootstrap.user.id}
               cases={bootstrap.cases}
               revision={libraryRevision}
+              uploadedDocument={
+                uploadedDocument?.ownerId === bootstrap.user.id
+                  ? uploadedDocument.document
+                  : undefined
+              }
               samples={samples}
               onUpload={(scope, parent, country) =>
                 setUpload({ scope, parent, country })
@@ -231,6 +240,7 @@ export function Admin({
         </main>
       </div>
       <UploadDialog
+        key={bootstrap.user.id}
         open={!!upload}
         onOpenChange={(open) => {
           if (!open) setUpload(undefined);
@@ -239,7 +249,10 @@ export function Admin({
         initialParentId={upload?.parent}
         initialCountry={upload?.country}
         cases={bootstrap.cases}
-        onDone={() => setLibraryRevision((value) => value + 1)}
+        onDone={(document) => {
+          setUploadedDocument({ ownerId: bootstrap.user.id, document });
+          setLibraryRevision((value) => value + 1);
+        }}
       />
     </div>
   );

@@ -1343,6 +1343,7 @@
   border: 0;
   background: transparent;
   flex: 1;
+  min-width: 0;
   padding: 4px;
   font-size: 14px;
 }

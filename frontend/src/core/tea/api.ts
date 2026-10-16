@@ -406,6 +406,21 @@ export function post<T>(
     signal,
   });
 }
+export interface DocumentSearchInput {
+  query: string;
+  limit?: number;
+  case_id?: string;
+  country?: string;
+  source_scope?: "personal" | "system";
+}
+
+export function searchDocuments(
+  input: DocumentSearchInput,
+  signal?: AbortSignal,
+) {
+  return post<SearchResult>("/search", input, signal);
+}
+
 export function patch<T>(path: string, body: unknown, signal?: AbortSignal) {
   return teaRequest<T>(path, {
     method: "PATCH",
@@ -450,6 +465,7 @@ import type {
   MessageStreamEvent,
   TraceStep,
   StageAnalysis,
+  SearchResult,
 } from "./types";
 
 const legalPath = (caseId: string) =>

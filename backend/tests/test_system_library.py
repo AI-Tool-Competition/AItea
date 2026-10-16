@@ -406,3 +406,281 @@ def test_http_authenticated_reads_download_and_anonymous_boundary(tmp_path):
             )
         client.cookies.set(COOKIE, token)
         assert client.get("/api/tea/auth/me").status_code == 401
+
+
+def test_personal_inventory_includes_all_own_countries_and_case_uploads(service, tmp_path):
+    from app.defaults import DEFAULT_TEMPLATE
+
+    def make_case(owner, title):
+        return service.create_case(
+            owner,
+            {
+                "title": title,
+                "company": "",
+                "product": "tea",
+                "mode_id": next(mode["id"] for mode in DEFAULT_TEMPLATE["modes"] if mode["enabled"]),
+                "template_id": DEFAULT_TEMPLATE["id"],
+            },
+        )
+
+    first, second = make_case("alice", "first"), make_case("alice", "second")
+    foreign_case = make_case("bob", "foreign")
+    id_doc = original(service, "own-id", owner="alice")
+    sg_doc = original(service, "own-sg", owner="alice", country="SG")
+    loose = service.store_document("alice", "loose.txt", b"private unassigned")
+    attached = service.store_document("alice", "case.txt", b"private case", case_id=first["id"])
+    other_case = service.store_document("alice", "other.txt", b"differentcaseneedle42", case_id=second["id"])
+    annex = service.store_document(
+        "alice",
+        "annex.bin",
+        b"private annex",
+        role="secondary",
+        parent_id=attached["id"],
+        case_id=first["id"],
+    )
+    original(service, "bob-private", owner="bob")
+    service.store_document("bob", "foreign.txt", b"foreign case", case_id=foreign_case["id"])
+    original(service, "system-shared")
+    expected = {item["id"] for item in (id_doc, sg_doc, loose, attached, other_case, annex)}
+    listed = service.documents("alice", source_scope="personal")
+    assert ids(listed) == expected and listed["total"] == len(expected)
+    pages = [service.documents("alice", source_scope="personal", limit=2, offset=i) for i in (0, 2, 4)]
+    assert {item["id"] for page in pages for item in page["items"]} == expected
+    assert all(page["total"] == len(expected) for page in pages)
+    assert ids(service.documents("alice", source_scope="personal", country="ID")) == {id_doc["id"]}
+    assert ids(service.documents("alice", source_scope="personal", country="SG")) == {sg_doc["id"]}
+    assert ids(service.documents("alice", source_scope="personal", country="unassigned")) == {
+        loose["id"],
+        attached["id"],
+        other_case["id"],
+        annex["id"],
+    }
+    assert ids(service.documents("alice", source_scope="personal", case_id=first["id"])) == {
+        attached["id"],
+        annex["id"],
+    }
+    assert ids(service.documents("alice", source_scope="personal", parent_id=attached["id"])) == {annex["id"]}
+    assert ids(service.documents("alice")) == {loose["id"]}  # Legacy library callers keep their scope.
+    library_ids = {id_doc["id"], sg_doc["id"], loose["id"]}
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        client.cookies.set(COOKIE, client.app.state.auth.session("alice"))
+        candidates = [
+            client.get(
+                "/api/tea/documents",
+                params={
+                    "source_scope": "personal",
+                    "library_only": "true",
+                    "limit": 1,
+                    "offset": offset,
+                },
+            ).json()
+            for offset in range(3)
+        ]
+        assert all(page["total"] == 3 and len(page["items"]) == 1 for page in candidates)
+        assert {item["id"] for page in candidates for item in page["items"]} == library_ids
+        assert (
+            client.get(
+                "/api/tea/documents",
+                params={
+                    "case_id": first["id"],
+                    "library_only": "true",
+                    "source_scope": "personal",
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            client.get(
+                "/api/tea/documents",
+                params={
+                    "parent_id": attached["id"],
+                    "library_only": "true",
+                    "source_scope": "personal",
+                },
+            ).status_code
+            == 404
+        )
+    assert not service.search("alice", "differentcaseneedle42", case_id=first["id"], source_scope="personal")[
+        "items"
+    ]
+
+
+@pytest.mark.parametrize("scope", [None, "personal", "system"])
+def test_search_scope_filters_backfill_lexical_dense_and_rerank_before_candidates(
+    service, monkeypatch, scope
+):
+    from app import ingestion, reranking
+
+    docs = [
+        original(service, key, owner=owner)
+        for key, owner in (
+            ("shared-candidate", SYSTEM_OWNER_ID),
+            ("private-candidate", "alice"),
+            ("foreign-candidate", "bob"),
+        )
+    ]
+    for doc in docs:
+        approve(service, doc)
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+    monkeypatch.setenv("EMBEDDING_MODEL", "scope-test")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "test-only")
+    fingerprint = service.embedding_fingerprint()
+    with service.db.transaction() as conn:
+        for doc in docs:
+            chunks = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT rowid,input_hash FROM retrieval_chunks WHERE document_id=?", (doc["id"],)
+                )
+            ]
+            service.index.store_vectors(conn, doc["id"], fingerprint, chunks, [[1.0, 0.0]])
+            conn.execute("INSERT INTO retrieval_dirty VALUES(?)", (doc["id"],))
+    allowed = {
+        doc["id"]
+        for doc in docs[:2]
+        if scope is None or (doc["owner_id"] == SYSTEM_OWNER_ID) == (scope == "system")
+    }
+    seen = []
+    lexical, dense = service.index._lexical, service.index._dense
+
+    def checked_lexical(conn, query):
+        seen.append({row[0] for row in conn.execute("SELECT id FROM retrieval_eligible")})
+        return lexical(conn, query)
+
+    def checked_dense(conn, model, vector):
+        seen.append({row[0] for row in conn.execute("SELECT id FROM retrieval_eligible")})
+        return dense(conn, model, vector)
+
+    candidates = []
+    gates = []
+    eligibility_sql = service.archive.eligibility_sql
+
+    def checked_gate(*args, **kwargs):
+        gates.append(kwargs.get("source_scope"))
+        return eligibility_sql(*args, **kwargs)
+
+    monkeypatch.setattr(service.archive, "eligibility_sql", checked_gate)
+    monkeypatch.setattr(service.index, "_lexical", checked_lexical)
+    monkeypatch.setattr(service.index, "_dense", checked_dense)
+    monkeypatch.setattr(ingestion, "embed_texts", lambda texts: [[1.0, 0.0]])
+    monkeypatch.setattr(reranking, "rerank_texts", lambda query, texts, **kw: candidates.extend(texts))
+    result = service.search("alice", "tea lawful", country="ID", limit=10, source_scope=scope)
+    assert ids(result) == allowed and result["mode"] == "hybrid"
+    assert seen == [allowed, allowed]
+    assert gates == [scope, scope, scope]  # Backfill, candidate snapshot, post-provider revalidation.
+    assert len(candidates) == len(allowed) and not any("foreign-candidate" in text for text in candidates)
+    with closing(service.db.connect()) as conn:
+        assert {row[0] for row in conn.execute("SELECT document_id FROM retrieval_dirty")} == {
+            doc["id"] for doc in docs if doc["id"] not in allowed
+        }
+
+
+def test_http_regular_users_share_system_reads_but_never_each_others_uploads(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        service = client.app.state.service
+        with service.db.transaction() as conn:
+            ensure_principal(conn)
+            conn.execute(
+                "INSERT INTO users VALUES(?,?,?,?,?,?)", ("reviewer", "Reviewer", None, None, 0, now())
+            )
+        shared = original(service, "visible-every-user")
+        secondary = original(service, "secondary-evidence", level="secondary")
+        annex = original(service, "source-annex", level="attachment", parent=shared["id"])
+        approve(service, shared)
+        approve(service, secondary)
+        registered = client.post(
+            "/api/tea/auth/register",
+            json={"name": "Alice", "email": "alice@example.test", "password": "test-password-123"},
+        )
+        assert registered.status_code == 201, registered.text
+        alice = registered.json()["id"]
+        alice_cookies = dict(client.cookies)
+        uploaded = client.post(
+            "/api/tea/documents",
+            data={"owner_id": SYSTEM_OWNER_ID, "source_scope": "system"},
+            files={"file": ("own.txt", b"accountunique42 private upload", "text/plain")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        private = uploaded.json()
+        client.cookies.clear()
+        registered = client.post(
+            "/api/tea/auth/register",
+            json={"name": "Bob", "email": "bob@example.test", "password": "test-password-123"},
+        )
+        assert registered.status_code == 201, registered.text
+        bob = registered.json()["id"]
+        assert bob != alice
+        bob_cookies = dict(client.cookies)
+        bob_doc = client.post(
+            "/api/tea/documents", files={"file": ("bob.txt", b"bobneedle42 private upload", "text/plain")}
+        ).json()
+        public_ids = {shared["id"], secondary["id"], annex["id"]}
+        for cookies, own, other in ((alice_cookies, private, bob_doc), (bob_cookies, bob_doc, private)):
+            client.cookies.clear()
+            client.cookies.update(cookies)
+            assert ids(client.get("/api/tea/documents", params={"source_scope": "personal"}).json()) == {
+                own["id"]
+            }
+            assert (
+                ids(
+                    client.get(
+                        "/api/tea/documents", params={"source_scope": "system", "country": "ID"}
+                    ).json()
+                )
+                == public_ids
+            )
+            for document in (shared, secondary, annex, own):
+                for suffix in ("", "/download", "/versions", "/relations"):
+                    response = client.get(f"/api/tea/documents/{document['id']}{suffix}")
+                    assert response.status_code == 200, response.text
+            for suffix in ("", "/download", "/versions", "/relations"):
+                assert client.get(f"/api/tea/documents/{other['id']}{suffix}").status_code == 404
+            assert client.get(f"/api/tea/documents/{other['content_hash']}/download").status_code == 404
+            assert (
+                client.get(
+                    "/api/tea/documents", params={"source_scope": "personal", "q": other["title"]}
+                ).json()["total"]
+                == 0
+            )
+            assert ids(
+                client.post(
+                    "/api/tea/search", json={"query": "tea lawful", "country": "ID", "source_scope": "system"}
+                ).json()
+            ) == {shared["id"]}
+            assert not client.post(
+                "/api/tea/search", json={"query": "tea lawful", "country": "ID", "source_scope": "personal"}
+            ).json()["items"]
+            needle = "accountunique42" if own["id"] == private["id"] else "bobneedle42"
+            other_needle = "bobneedle42" if own["id"] == private["id"] else "accountunique42"
+            assert ids(
+                client.post("/api/tea/search", json={"query": needle, "source_scope": "personal"}).json()
+            ) == {own["id"]}
+            assert not client.post(
+                "/api/tea/search", json={"query": other_needle, "source_scope": "personal"}
+            ).json()["items"]
+            assert (
+                client.post(
+                    "/api/tea/documents",
+                    data={"role": "secondary", "parent_id": shared["id"]},
+                    files={"file": ("forbidden.txt", b"private", "text/plain")},
+                ).status_code
+                == 404
+            )
+            assert (
+                client.patch(
+                    f"/api/tea/documents/{other['id']}/metadata",
+                    json={"expected_revision": 1, "review_status": "published"},
+                ).status_code
+                == 404
+            )
+        assert client.post("/api/tea/search", json={"query": "tea", "source_scope": "all"}).status_code == 422
+        assert client.get("/api/tea/documents", params={"source_scope": "all"}).status_code == 422
+        # A client cannot choose the privileged corpus owner when uploading.
+        assert private["source_scope"] == bob_doc["source_scope"] == "personal"
+        with closing(service.db.connect()) as conn:
+            assert (
+                conn.execute("SELECT owner_id FROM documents WHERE id=?", (private["id"],)).fetchone()[0]
+                == alice
+            )
+        client.cookies.clear()
+        assert client.get(f"/api/tea/documents/{shared['id']}/download").status_code == 401

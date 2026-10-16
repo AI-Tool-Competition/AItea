@@ -1021,9 +1021,12 @@ class Service:
         collection=None,
         country=None,
         source_scope=None,
+        library_only=False,
     ):
         from .countries import country_from_collection, document_country, resolve_country
 
+        if library_only and case_id:
+            fail(422, "invalid_document_scope", "业务资料与库外资料范围不能同时选择")
         scope = country_from_collection(collection) if collection else None
         if country and scope and country != scope:
             fail(422, "country_mismatch", "采集组与所选国家不一致")
@@ -1043,23 +1046,34 @@ class Service:
             shared = public_document_sql() if country and country != "unassigned" else "0"
             if source_scope == "personal":
                 shared = "0"
-            conditions = [f"((owner_id=? AND case_id IS ?) OR {shared})"]
-            parameters = [owner, case_id]
+            # An explicit personal directory is the account's upload inventory,
+            # including case files. Case views and legacy callers keep their
+            # existing scope; this does not widen the evidence search gate.
+            account_inventory = source_scope == "personal" and not case_id and not library_only
+            personal = "owner_id=?" if account_inventory else "owner_id=? AND case_id IS ?"
+            conditions = [f"(({personal}) OR {shared})"]
+            parameters = [owner] if account_inventory else [owner, case_id]
             if source_scope == "system":
                 conditions.append(shared)
             if country and country != "unassigned":
+                scoped_business = (
+                    """OR (documents.case_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM document_countries dc
+                    WHERE dc.document_id=COALESCE(documents.parent_id,documents.id)))"""
+                    if case_id
+                    else ""
+                )
                 conditions.append(
-                    """(EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id) AND dc.country=?)
-                    OR (documents.case_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM document_countries dc
-                        WHERE dc.document_id=COALESCE(documents.parent_id,documents.id))))"""
+                    f"""(EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id) AND dc.country=?)
+                    {scoped_business})"""
                 )
                 parameters.append(country)
-            else:
+            elif country == "unassigned" or source_scope != "personal":
                 conditions.append(
                     "NOT EXISTS(SELECT 1 FROM document_countries dc WHERE dc.document_id=COALESCE(documents.parent_id,documents.id))"
                 )
             if parent_id:
-                if parent["case_id"] != case_id or parent["role"] != "primary":
+                account_directory = account_inventory and parent["owner_id"] == owner
+                if (parent["case_id"] != case_id and not account_directory) or parent["role"] != "primary":
                     fail(404, "not_found", "当前资料库中未找到一级资料")
                 if role == "primary":
                     fail(422, "invalid_role", "一级资料下只能查询二级附件")
@@ -1129,6 +1143,8 @@ class Service:
         collection=None,
         country=None,
         document_ids=None,
+        *,
+        source_scope=None,
     ):
         historical = as_of is not None
         as_of = as_of or datetime.now(timezone.utc).date()
@@ -1147,7 +1163,16 @@ class Service:
                         fail(422, "country_mismatch", "业务只能检索目标国家的法规")
                     country = destination
         return self.search_eligible(
-            owner, query, case_id, limit, as_of, collection, country, document_ids, historical=historical
+            owner,
+            query,
+            case_id,
+            limit,
+            as_of,
+            collection,
+            country,
+            document_ids,
+            historical=historical,
+            source_scope=source_scope,
         )
 
     def search_eligible(
@@ -1162,6 +1187,7 @@ class Service:
         document_ids=None,
         *,
         historical=False,
+        source_scope=None,
     ):
         """Shared eligible-document search; callers resolve their allowed country scope first."""
         with closing(self.db.connect()) as conn:
@@ -1177,6 +1203,7 @@ class Service:
             None if country == "unassigned" else country,
             document_ids,
             historical,
+            source_scope=source_scope,
         )
 
     def insert_message(self, conn, case_id, stage_id, task_id, role, content, citations, trace):

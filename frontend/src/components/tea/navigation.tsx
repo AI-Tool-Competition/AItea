@@ -1,19 +1,18 @@
 "use client";
 
 import {
-  BookOpen,
   Check,
   ChevronDown,
-  ChevronRight,
-  ChevronsUpDown,
   FolderClosed,
   FolderOpen,
-  Globe2,
   LockKeyhole,
   MessageSquare,
   Plus,
   Settings2,
   UserRound,
+  BookOpen,
+  Globe2,
+  FileText,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -29,17 +28,20 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { type CaseDetail, type CaseSummary, type User } from "@/core/tea/types";
+import type {
+  CaseDetail,
+  CaseSummary,
+  NodeConversation,
+  User,
+} from "@/core/tea/types";
 
 import { Brand } from "./shared";
 
@@ -49,7 +51,6 @@ export type TeaView =
   | "studio"
   | "sources"
   | "account";
-
 export const teaNavigationItems = [
   { id: "workspace", icon: MessageSquare, label: "出口业务" },
   { id: "library", icon: BookOpen, label: "资料库" },
@@ -57,6 +58,26 @@ export const teaNavigationItems = [
   { id: "sources", icon: Globe2, label: "来源管理" },
 ] as const;
 
+type Props = {
+  view: TeaView;
+  user: User;
+  cases: CaseSummary[];
+  caseId: string;
+  record?: CaseDetail;
+  recordLoading: boolean;
+  stageId: string;
+  libraryCaseId?: string;
+  conversations?: NodeConversation[];
+  conversationId?: string;
+  conversationBusy?: boolean;
+  onNavigate: (view: TeaView) => void;
+  onCase: (id: string) => void;
+  onStage: (id: string) => void;
+  onLibrary?: (id: string) => void;
+  onCreate: () => void;
+  onConversation?: (stage: string, id: string) => void;
+  onCreateConversation?: (stage: string) => void;
+};
 export function TeaNavigation({
   view,
   user,
@@ -65,35 +86,31 @@ export function TeaNavigation({
   record,
   recordLoading,
   stageId,
-  libraryCaseId,
   onNavigate,
   onCase,
   onStage,
-  onLibrary,
   onCreate,
-}: {
-  view: TeaView;
-  user: User;
-  cases: CaseSummary[];
-  caseId: string;
-  record?: CaseDetail;
-  recordLoading: boolean;
-  stageId: string;
-  libraryCaseId: string;
-  onNavigate: (view: TeaView) => void;
-  onCase: (id: string) => void;
-  onStage: (id: string) => void;
-  onLibrary: (id: string) => void;
-  onCreate: () => void;
-}) {
+  conversations = [],
+  conversationId = "guide",
+  conversationBusy = false,
+  onConversation,
+  onCreateConversation,
+}: Props) {
   const { open, isMobile, setOpenMobile } = useSidebar();
-  const [expandedCaseId, setExpandedCaseId] = useState<string | null>(caseId);
-  useEffect(() => setExpandedCaseId(caseId), [caseId]);
+  const [more, setMore] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set([stageId]),
+  );
+  useEffect(() => {
+    setExpanded((previous) => new Set([...previous, stageId]));
+  }, [stageId]);
+  const business = cases.find((item) => item.id === caseId);
+  const stages =
+    record?.stages.filter((stage) => more || stage.id === stageId) ?? [];
   function navigate(action: () => void) {
     action();
     setOpenMobile(false);
   }
-
   return (
     <Sidebar variant="sidebar" collapsible="icon" className="tea-navigation">
       <SidebarHeader className="py-0">
@@ -109,143 +126,199 @@ export function TeaNavigation({
         </div>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="新建出口业务"
-              aria-label="新建出口业务"
-              onClick={() => navigate(onCreate)}
-            >
-              <Plus />
-              <span>新建出口业务</span>
-            </SidebarMenuButton>
+            <DropdownMenu modal={!isMobile}>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton
+                  className="tea-business-switch"
+                  tooltip={business?.title ?? "选择出口业务"}
+                  aria-label="切换业务"
+                >
+                  <FolderOpen />
+                  <span className="tea-business-switch-name">
+                    {business?.title ?? "选择出口业务"}
+                  </span>
+                  <ChevronDown className="ml-auto shrink-0" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                sideOffset={5}
+                className="tea-business-switch-menu"
+              >
+                {cases.map((item) => (
+                  <DropdownMenuItem
+                    key={item.id}
+                    onSelect={() => navigate(() => onCase(item.id))}
+                  >
+                    <span className="tea-business-option">{item.title}</span>
+                    {item.id === caseId && <Check size={14} />}
+                  </DropdownMenuItem>
+                ))}
+                {cases.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuItem onSelect={() => navigate(onCreate)}>
+                  <Plus size={15} />
+                  新建业务
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        {!open && !isMobile && caseId && (
-          <SidebarGroup className="pt-1">
-            <SidebarMenu>
-              {teaNavigationItems.slice(0, 2).map((item) => (
-                <SidebarMenuItem key={item.id}>
-                  <SidebarMenuButton
-                    isActive={
-                      view === item.id &&
-                      (item.id !== "library" || libraryCaseId === caseId)
-                    }
-                    tooltip={item.label}
-                    aria-label={item.label}
-                    onClick={() =>
-                      navigate(() =>
-                        item.id === "library"
-                          ? onLibrary(caseId)
-                          : onCase(caseId),
-                      )
-                    }
-                  >
-                    <item.icon />
-                    <span>{item.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroup>
-        )}
-        {(open || isMobile) && (
-          <SidebarGroup className="tea-business-group">
-            <SidebarGroupLabel>我的出口业务</SidebarGroupLabel>
-            <SidebarMenu className="tea-businesses">
-              {cases.map((business) => (
-                <SidebarMenuItem className="tea-business" key={business.id}>
-                  <SidebarMenuButton
-                    isActive={
-                      caseId === business.id &&
-                      (view === "workspace" ||
-                        (view === "library" && libraryCaseId === business.id))
-                    }
-                    className="tea-business-title"
-                    title={business.title}
-                    onClick={() => {
-                      setExpandedCaseId(business.id);
-                      navigate(() => onCase(business.id));
-                    }}
-                  >
-                    {caseId === business.id ? <FolderOpen /> : <FolderClosed />}
-                    <span>{business.title}</span>
-                  </SidebarMenuButton>
-                  <SidebarMenuAction
-                    aria-label={`${expandedCaseId === business.id ? "收起" : "展开"}业务：${business.title}`}
-                    aria-expanded={expandedCaseId === business.id}
-                    aria-controls={`tea-business-${business.id}`}
-                    onClick={() => {
-                      const expanding = expandedCaseId !== business.id;
-                      setExpandedCaseId(expanding ? business.id : null);
-                      if (expanding && caseId !== business.id)
-                        onCase(business.id);
-                    }}
-                  >
-                    {expandedCaseId === business.id ? (
-                      <ChevronDown />
-                    ) : (
-                      <ChevronRight />
-                    )}
-                  </SidebarMenuAction>
-                  {expandedCaseId === business.id && caseId === business.id && (
-                    <div
-                      className="tea-subconversations"
-                      id={`tea-business-${business.id}`}
-                      role="group"
-                      aria-label={`${business.title}的对话与资料库`}
+        {open || isMobile ? (
+          <SidebarGroup className="tea-node-folders" aria-label="当前业务节点">
+            {recordLoading && (
+              <p role="status" className="tea-business-loading">
+                正在读取节点…
+              </p>
+            )}
+            {stages.map((stage) => {
+              const current = stage.id === stageId && view === "workspace";
+              const opened = expanded.has(stage.id);
+              return (
+                <section
+                  key={stage.id}
+                  className="tea-node-folder"
+                  data-current={current}
+                >
+                  <div className="tea-node-folder-heading">
+                    <button
+                      className="tea-node-folder-toggle"
+                      aria-label={`${opened ? "收起" : "展开"}节点：${stage.name}`}
+                      aria-expanded={opened}
+                      aria-controls={`node-${stage.id}`}
+                      onClick={() =>
+                        setExpanded((previous) => {
+                          const next = new Set(previous);
+                          if (next.has(stage.id)) next.delete(stage.id);
+                          else next.add(stage.id);
+                          return next;
+                        })
+                      }
                     >
-                      {record?.id === business.id &&
-                        record.stages.map((stage) => (
+                      <ChevronDown
+                        size={13}
+                        className={opened ? "" : "-rotate-90"}
+                      />
+                    </button>
+                    <button
+                      className="tea-node-folder-name"
+                      title={stage.name}
+                      onClick={() => {
+                        setExpanded(
+                          (previous) => new Set([...previous, stage.id]),
+                        );
+                        navigate(() => onStage(stage.id));
+                      }}
+                    >
+                      {opened ? (
+                        <FolderOpen size={15} />
+                      ) : (
+                        <FolderClosed size={15} />
+                      )}
+                      <span>{stage.name}</span>
+                      {stage.status === "locked" ? (
+                        <LockKeyhole size={12} />
+                      ) : stage.status === "completed" ? (
+                        <Check size={12} />
+                      ) : (
+                        <i className="tea-node-active-dot" />
+                      )}
+                    </button>
+                  </div>
+                  {opened && (
+                    <div
+                      id={`node-${stage.id}`}
+                      className="tea-node-entries"
+                      role="group"
+                      aria-label={`${stage.name}的会话`}
+                    >
+                      <button
+                        className={
+                          current && conversationId === "guide" ? "active" : ""
+                        }
+                        aria-current={
+                          current && conversationId === "guide"
+                            ? "page"
+                            : undefined
+                        }
+                        onClick={() => navigate(() => onStage(stage.id))}
+                      >
+                        <FileText size={14} />
+                        <span>引导会话</span>
+                      </button>
+                      {conversations
+                        .filter(
+                          (item) =>
+                            item.stage_id === stage.id && item.kind !== "guide",
+                        )
+                        .map((item) => (
                           <button
-                            key={stage.id}
+                            key={item.id}
+                            title={item.title}
                             className={
-                              stageId === stage.id && view === "workspace"
+                              current && conversationId === item.id
                                 ? "active"
                                 : ""
                             }
                             aria-current={
-                              stageId === stage.id && view === "workspace"
+                              current && conversationId === item.id
                                 ? "page"
                                 : undefined
                             }
-                            onClick={() => navigate(() => onStage(stage.id))}
+                            onClick={() =>
+                              navigate(() =>
+                                onConversation?.(stage.id, item.id),
+                              )
+                            }
                           >
-                            <span className={`tea-tree-dot ${stage.status}`} />
-                            <span>{stage.name}</span>
-                            {stage.status === "locked" && (
-                              <LockKeyhole size={12} />
-                            )}
-                            {stage.status === "completed" && (
-                              <Check size={12} />
-                            )}
+                            <MessageSquare size={13} />
+                            <span>{item.title}</span>
                           </button>
                         ))}
-                      {recordLoading && (
-                        <span className="tea-business-loading" role="status">
-                          正在读取对话…
-                        </span>
-                      )}
                       <button
-                        className={
-                          view === "library" && libraryCaseId === business.id
-                            ? "tea-business-library active"
-                            : "tea-business-library"
+                        className="tea-new-conversation"
+                        disabled={stage.status === "locked" || conversationBusy}
+                        onClick={() =>
+                          navigate(() => onCreateConversation?.(stage.id))
                         }
-                        aria-current={
-                          view === "library" && libraryCaseId === business.id
-                            ? "page"
-                            : undefined
-                        }
-                        onClick={() => navigate(() => onLibrary(business.id))}
                       >
-                        <BookOpen size={14} />
-                        <span>资料库</span>
+                        <Plus size={14} />
+                        <span>
+                          {conversationBusy && current
+                            ? "正在新建…"
+                            : "新建会话"}
+                        </span>
                       </button>
                     </div>
                   )}
-                </SidebarMenuItem>
-              ))}
+                </section>
+              );
+            })}
+            {(record?.stages.length ?? 0) > 1 && (
+              <button
+                className="tea-more-nodes"
+                aria-expanded={more}
+                onClick={() => setMore((value) => !value)}
+              >
+                <ChevronDown size={14} className={more ? "rotate-180" : ""} />
+                {more ? "收起其他节点" : "查看更多节点"}
+              </button>
+            )}
+          </SidebarGroup>
+        ) : (
+          <SidebarGroup>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip="当前业务"
+                  aria-label="当前业务"
+                  onClick={() => navigate(() => onNavigate("workspace"))}
+                >
+                  <FolderOpen />
+                  <span>当前业务</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroup>
         )}
@@ -253,54 +326,15 @@ export function TeaNavigation({
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            {/* The mobile sidebar already owns the modal pointer lock. */}
-            <DropdownMenu modal={!isMobile}>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  isActive={
-                    view === "account" ||
-                    view === "studio" ||
-                    view === "sources"
-                  }
-                  tooltip="账号与管理"
-                  aria-label="账号与管理"
-                  className="data-[state=open]:bg-sidebar-accent"
-                >
-                  <UserRound />
-                  <span>{user.name}</span>
-                  <ChevronsUpDown className="ml-auto" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
-                side={isMobile || open ? "top" : "right"}
-                align="end"
-                sideOffset={4}
-              >
-                <DropdownMenuItem
-                  onSelect={() => navigate(() => onNavigate("account"))}
-                >
-                  <UserRound />
-                  账号管理
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={() => navigate(() => onNavigate("library"))}
-                >
-                  <BookOpen />
-                  法规与我的资料
-                </DropdownMenuItem>
-                {teaNavigationItems.slice(2).map((item) => (
-                  <DropdownMenuItem
-                    key={item.id}
-                    onSelect={() => navigate(() => onNavigate(item.id))}
-                  >
-                    <item.icon />
-                    {item.label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <SidebarMenuButton
+              isActive={view === "account"}
+              tooltip="账号管理"
+              aria-label="账号管理"
+              onClick={() => navigate(() => onNavigate("account"))}
+            >
+              <UserRound />
+              <span>{user.name}</span>
+            </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

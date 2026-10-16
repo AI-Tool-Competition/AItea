@@ -25,7 +25,7 @@ from .db import now, uid
 from .system_corpus_migration import SystemCorpusMigrationError, _cas_reference
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 15
+SUPPORTED_SCHEMA_VERSION = 18
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024

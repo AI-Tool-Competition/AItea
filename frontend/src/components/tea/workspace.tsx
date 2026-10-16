@@ -1,13 +1,13 @@
 "use client";
+
 import {
-  Check,
+  ArrowLeft,
   CheckCheck,
   ChevronRight,
-  FolderOpen,
+  FileText,
   LockKeyhole,
   PanelRightClose,
   PanelRightOpen,
-  ShieldCheck,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
@@ -26,213 +26,162 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { teaRequest } from "@/core/tea/api";
-import {
-  type Artifact,
-  type Capabilities,
-  type CaseDetail,
+import { errorMessage, post, teaRequest } from "@/core/tea/api";
+import type {
+  Artifact,
+  Capabilities,
+  CaseDetail,
+  NodeConversation,
 } from "@/core/tea/types";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 import { ArtifactPanel } from "./artifact-panel";
-import { dateLabel, ErrorNotice } from "./shared";
+import { Library } from "./library";
+import { Busy, dateLabel, Empty, ErrorNotice } from "./shared";
 import { StageChat } from "./stage-chat";
-export { clearChatDrafts } from "@/core/tea/use-stage-chat";
 import { TaskPanel } from "./task-panel";
-type PanelTab = "flow" | "task" | "document" | "facts";
+export { clearChatDrafts } from "@/core/tea/use-stage-chat";
 
-function Flow({
-  record,
-  stageId,
-  onStage,
-  onTask,
-}: {
-  record: CaseDetail;
-  stageId: string;
-  onStage: (stage: string) => void;
-  onTask: (stage: string, task: string) => void;
-}) {
-  const percent = record.total_tasks
-    ? Math.round((record.completed_tasks / record.total_tasks) * 100)
-    : 0;
-  return (
-    <div className="tea-flow">
-      <div className="tea-flow-intro">
-        <div>
-          <h3>办理进度</h3>
-        </div>
-        <span className="tea-progress-value">
-          {percent}
-          <small>%</small>
-        </span>
-      </div>
-      <div
-        className="tea-progress-track"
-        role="progressbar"
-        aria-label="业务完成进度"
-        aria-valuenow={percent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <span style={{ transform: `scaleX(${percent / 100})` }} />
-      </div>
-      <div className="tea-flow-count">
-        {record.completed_tasks} / {record.total_tasks} 项任务完成
-        <span>模板 v{record.template_version}</span>
-      </div>
-      <div className="tea-flow-stages">
-        {record.stages.map((stage, i) => (
-          <section
-            key={stage.id}
-            className={`tea-flow-stage ${stage.status} ${stageId === stage.id ? "selected" : ""}`}
-          >
-            <div className="tea-flow-rail">
-              <span>
-                {stage.status === "completed" ? (
-                  <Check size={15} />
-                ) : stage.status === "locked" ? (
-                  <LockKeyhole size={12} />
-                ) : (
-                  String(i + 1).padStart(2, "0")
-                )}
-              </span>
-            </div>
-            <div className="tea-stage-body">
-              <button
-                className="tea-stage-title"
-                onClick={() => onStage(stage.id)}
-              >
-                <div>
-                  <small>面向{stage.actor}</small>
-                  <h4>{stage.name}</h4>
-                </div>
-                <span>
-                  {stage.status === "active"
-                    ? "进行中"
-                    : stage.status === "completed"
-                      ? "已完成"
-                      : stage.status === "follow_up"
-                        ? "待收尾"
-                        : "待解锁"}
-                </span>
-              </button>
-              <div className="tea-flow-tasks">
-                {stage.tasks.map((task) => (
-                  <button
-                    key={task.id}
-                    onClick={() => onTask(stage.id, task.id)}
-                  >
-                    {task.status === "completed" && !task.needs_review ? (
-                      <CheckCheck size={15} />
-                    ) : (
-                      <span className={`tea-task-dot ${task.status}`} />
-                    )}
-                    <span>{task.title}</span>
-                    {task.needs_review && <small>复核</small>}
-                    <ChevronRight size={12} />
-                  </button>
-                ))}
-              </div>
-              <p>
-                {stage.status === "locked"
-                  ? "前一阶段完成后解锁"
-                  : stage.status === "follow_up"
-                    ? "后续阶段可继续；本阶段仍有必办收尾任务，完成后才能结案。"
-                    : stage.description}
-              </p>
-            </div>
-          </section>
-        ))}
-      </div>
-      <div className="tea-flow-footnote">
-        <ShieldCheck size={16} />
-        <span>
-          逐项核验后推进
-          <br />
-          <small>办理记录与依据始终保留</small>
-        </span>
-      </div>
-    </div>
-  );
-}
-
+type PanelTab = "task" | "library" | "document";
 export function Workspace({
   accountId,
   record,
   stageId,
-  setStageId,
+  conversationId = "guide",
   capabilities,
   onUpdate,
   onUpload,
 }: {
-  record: CaseDetail;
   accountId: string;
+  record: CaseDetail;
   stageId: string;
   setStageId: (id: string) => void;
+  conversationId?: string;
+  onConversation?: (id: string) => void;
   capabilities: Capabilities;
   onUpdate: (record: CaseDetail) => void;
   onUpload: () => void;
 }) {
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [tab, setTab] = useState<PanelTab>("flow");
+  const [narrow, setNarrow] = useState(false);
+  const [tab, setTab] = useState<PanelTab>("task");
   const [taskId, setTaskId] = useState("");
   const [artifactId, setArtifactId] = useState("");
+  const [guide, setGuide] = useState<{
+    stageId: string;
+    conversation: NodeConversation;
+  }>();
+  const [guideError, setGuideError] = useState<{
+    stageId: string;
+    message: string;
+  }>();
+  const [guideAttempt, setGuideAttempt] = useState(0);
   const isMobile = useIsMobile();
+  const overlay = isMobile || narrow;
   const panelRef = usePanelRef();
   const panelOpenRef = useRef(false);
-  const openPanelSize = useRef("40%");
-  const stage = record.stages.find((s) => s.id === stageId) ?? record.stages[0];
-  const task = stage?.tasks.find((t) => t.id === taskId);
-  const selectedArtifact =
-    record.artifacts.find((a) => a.id === artifactId) ?? record.artifacts[0];
+  const previousDetailSize = useRef(0);
+  const openPanelSize = useRef("360px");
+  const stage =
+    record.stages.find((item) => item.id === stageId) ?? record.stages[0];
+  const task = stage?.tasks.find((item) => item.id === taskId);
+  const artifact = record.artifacts.find((item) => item.id === artifactId);
+  const isGuide = conversationId === "guide";
+  const guideStageId = stage?.id;
+  const guideStageStatus = stage?.status;
   useEffect(() => {
-    panelOpenRef.current = !isMobile && panelOpen;
-    if (!isMobile && panelOpen) panelRef.current?.resize(openPanelSize.current);
+    const media = window.matchMedia("(max-width: 1100px)");
+    const update = () => setNarrow(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    panelOpenRef.current = !overlay && panelOpen;
+    if (!overlay && panelOpen) panelRef.current?.resize(openPanelSize.current);
     else panelRef.current?.collapse();
-  }, [panelOpen, isMobile, panelRef]);
+  }, [overlay, panelOpen, panelRef]);
+  useEffect(() => {
+    if (!guideStageId || !isGuide || guideStageStatus === "locked") return;
+    const abort = new AbortController();
+    setGuideError(undefined);
+    post<NodeConversation>(
+      `/cases/${encodeURIComponent(record.id)}/stages/${encodeURIComponent(guideStageId)}/guide-conversation`,
+      {},
+      abort.signal,
+    )
+      .then((value) => {
+        if (!abort.signal.aborted)
+          setGuide({ stageId: guideStageId, conversation: value });
+      })
+      .catch((reason) => {
+        if (!abort.signal.aborted)
+          setGuideError({
+            stageId: guideStageId,
+            message: errorMessage(reason),
+          });
+      });
+    return () => abort.abort();
+  }, [
+    accountId,
+    record.id,
+    guideStageId,
+    guideStageStatus,
+    isGuide,
+    guideAttempt,
+  ]);
   function openPanel(next: PanelTab) {
     setTab(next);
-    setPanelOpen(true);
-    if (isMobile) setMobileOpen(true);
+    if (overlay) setMobileOpen(true);
+    else setPanelOpen(true);
   }
-  function selectTask(id: string, targetStage?: string) {
-    if (targetStage) setStageId(targetStage);
+  function selectTask(id: string) {
     setTaskId(id);
     if (id) openPanel("task");
   }
-  async function updateArtifact(artifact: Artifact) {
-    setArtifactId(artifact.id);
-    const refreshed = await teaRequest<CaseDetail>(`/cases/${record.id}`);
-    onUpdate(refreshed);
-  }
-
-  if (!stage)
-    return (
-      <div className="tea-page">
-        <ErrorNotice message="业务模板没有可用节点，请检查配置。" />
-      </div>
+  async function updateArtifact(value: Artifact) {
+    setArtifactId(value.id);
+    const updated = await teaRequest<CaseDetail>(
+      `/cases/${encodeURIComponent(record.id)}`,
     );
+    onUpdate(updated);
+  }
+  if (!stage)
+    return <ErrorNotice message="业务模板没有可用节点，请检查配置。" />;
+  const currentConversation = isGuide
+    ? guide?.stageId === stage.id
+      ? guide.conversation.id
+      : undefined
+    : conversationId;
+  const completed = stage.tasks.filter(
+    (item) => item.status === "completed" && !item.needs_review,
+  ).length;
   const panel = (
     <div className="tea-sidepanel">
       <div className="tea-sidepanel-header">
-        <div className="tea-panel-tabs">
+        <div className="tea-panel-tabs" role="tablist" aria-label="业务工作区">
           {(
             [
-              ["flow", "办理流程"],
               ["task", "当前任务"],
+              ["library", "资料库"],
               ["document", "文稿"],
-              ["facts", "档案"],
             ] as const
           ).map(([id, label]) => (
             <button
+              role="tab"
+              aria-selected={tab === id}
+              aria-controls={`workspace-${id}`}
               className={tab === id ? "active" : ""}
               key={id}
-              onClick={() => {
-                setTab(id);
-              }}
+              onClick={() => setTab(id)}
             >
               {label}
+              {id === "document" && record.artifacts.length > 0 && (
+                <span className="tea-panel-count">
+                  {record.artifacts.length}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -244,193 +193,280 @@ export function Workspace({
             setMobileOpen(false);
           }}
           aria-label="收起右侧面板"
-          title="收起流程"
         >
           <PanelRightClose size={17} />
         </Button>
       </div>
       <div className="tea-sidepanel-scroll">
-        <div hidden={tab !== "flow"}>
-          <Flow
-            record={record}
-            stageId={stage.id}
-            onStage={(id) => {
-              setStageId(id);
-              setTaskId("");
-              if (isMobile) setMobileOpen(false);
-            }}
-            onTask={(s, t) => selectTask(t, s)}
-          />
-        </div>
-        <div hidden={tab !== "task"}>
+        <div
+          id="workspace-task"
+          role="tabpanel"
+          aria-label="当前任务"
+          hidden={tab !== "task"}
+        >
           {task ? (
-            <TaskPanel
-              key={task.id}
-              task={task}
-              record={record}
-              locked={stage.status === "locked"}
-              onUpdate={onUpdate}
-              onUpload={onUpload}
-              onArtifact={async (artifact) => {
-                await updateArtifact(artifact);
-                openPanel("document");
-              }}
-            />
-          ) : (
-            <div className="tea-empty">
-              <ShieldCheck size={28} />
-              <h3>选择一项任务</h3>
-              <p>在流程或对话上方打开任务，填报信息并申请核验。</p>
-              <Button variant="outline" onClick={() => setTab("flow")}>
-                查看办理流程
+            <>
+              <Button
+                className="tea-panel-back"
+                variant="ghost"
+                onClick={() => setTaskId("")}
+              >
+                <ArrowLeft size={14} />
+                返回节点任务
               </Button>
+              <TaskPanel
+                key={task.id}
+                task={task}
+                record={record}
+                locked={stage.status === "locked"}
+                onUpdate={onUpdate}
+                onUpload={onUpload}
+                onArtifact={async (value) => {
+                  await updateArtifact(value);
+                  openPanel("document");
+                }}
+              />
+            </>
+          ) : (
+            <div className="tea-current-node-tasks">
+              <div className="tea-node-task-intro">
+                <p>当前节点</p>
+                <h3>{stage.name}</h3>
+                <span>
+                  {completed} / {stage.tasks.length} 项完成
+                </span>
+              </div>
+              <div
+                className="tea-progress-track"
+                role="progressbar"
+                aria-label="当前节点进度"
+                aria-valuemin={0}
+                aria-valuemax={stage.tasks.length}
+                aria-valuenow={completed}
+              >
+                <span
+                  style={{
+                    transform: `scaleX(${stage.tasks.length ? completed / stage.tasks.length : 0})`,
+                  }}
+                />
+              </div>
+              <p className="tea-small-note">
+                {stage.status === "locked"
+                  ? "完成前序节点的必办任务后解锁。"
+                  : "各会话共用这里的办理进度。任务通过核验后，引导会话会追加分析。"}
+              </p>
+              <div className="tea-node-task-list">
+                {stage.tasks.map((item) => (
+                  <button key={item.id} onClick={() => selectTask(item.id)}>
+                    {item.status === "completed" && !item.needs_review ? (
+                      <CheckCheck size={17} />
+                    ) : (
+                      <span className={`tea-task-dot ${item.status}`} />
+                    )}
+                    <span>
+                      <strong>{item.title}</strong>
+                      <small>
+                        {item.needs_review
+                          ? "需要复核"
+                          : item.status === "completed"
+                            ? "已完成"
+                            : item.status === "needs_input"
+                              ? "待补充"
+                              : item.status === "in_progress"
+                                ? "进行中"
+                                : "待办理"}
+                      </small>
+                    </span>
+                    <ChevronRight size={14} />
+                  </button>
+                ))}
+              </div>
+              <details className="tea-shared-facts">
+                <summary>本业务共享信息 · {record.facts.length} 项</summary>
+                {record.facts.map((fact) => (
+                  <div className="tea-fact" key={fact.key}>
+                    <span>
+                      {fact.label}
+                      <small>{fact.confirmed ? "已确认" : "待确认"}</small>
+                    </span>
+                    <strong>{String(fact.value)}</strong>
+                    <p>来源：{fact.source}</p>
+                  </div>
+                ))}
+              </details>
             </div>
           )}
         </div>
-        <div hidden={tab !== "document"}>
-          {record.artifacts.length > 1 && (
-            <label className="tea-artifact-picker">
-              <span className="sr-only">选择文稿</span>
-              <select
-                value={selectedArtifact?.id ?? ""}
-                onChange={(e) => {
-                  setArtifactId(e.target.value);
-                }}
-              >
-                {record.artifacts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <ArtifactPanel
-            key={`${selectedArtifact?.id}-${selectedArtifact?.version}`}
-            artifact={selectedArtifact}
-            onSaved={updateArtifact}
+        <div
+          id="workspace-library"
+          role="tabpanel"
+          aria-label="业务资料库"
+          hidden={tab !== "library"}
+        >
+          <Library
+            ownerId={accountId}
+            cases={[record]}
+            initialCaseId={record.id}
+            scopeLocked
+            businessOnly
+            revision={record.revision + record.documents.length}
+            onUpload={onUpload}
           />
         </div>
-        <div hidden={tab !== "facts"} className="tea-facts-panel">
-          <div className="tea-panel-label">
-            <FolderOpen size={17} />
-            本次业务共享档案
-          </div>
-          <p className="tea-small-note">
-            节点之间共享已记录的信息，关键事实保留来源。
-          </p>
-          {record.facts.length ? (
-            record.facts.map((fact) => (
-              <div className="tea-fact" key={fact.key}>
-                <span>
-                  {fact.label}
-                  <small>{fact.confirmed ? "已确认" : "待确认"}</small>
-                </span>
-                <strong>{String(fact.value)}</strong>
-                <p>来源：{fact.source}</p>
-              </div>
-            ))
+        <div
+          id="workspace-document"
+          role="tabpanel"
+          aria-label="业务文稿"
+          hidden={tab !== "document"}
+        >
+          {artifact ? (
+            <>
+              <Button
+                variant="ghost"
+                className="tea-panel-back"
+                onClick={() => setArtifactId("")}
+              >
+                <ArrowLeft size={14} />
+                返回文稿列表
+              </Button>
+              <ArtifactPanel
+                key={artifact.id}
+                artifact={artifact}
+                onSaved={updateArtifact}
+              />
+            </>
           ) : (
-            <p className="tea-small-note">
-              完成任务填报后，业务事实会在这里汇总。
-            </p>
+            <div className="tea-business-artifacts">
+              <h3>业务文稿</h3>
+              <p className="tea-small-note">
+                在会话中告诉助手要新建什么文稿，生成后会保存在这里。
+              </p>
+              {record.artifacts.length ? (
+                record.artifacts.map((item) => (
+                  <button
+                    className="tea-artifact-list-item"
+                    key={item.id}
+                    onClick={() => setArtifactId(item.id)}
+                  >
+                    <FileText size={18} />
+                    <span>
+                      <strong>{item.title}</strong>
+                      <small>
+                        {item.confirmed ? "已确认" : "草稿"} · v{item.version} ·{" "}
+                        {dateLabel(item.updated_at)}
+                      </small>
+                    </span>
+                    <ChevronRight size={14} />
+                  </button>
+                ))
+              ) : (
+                <Empty icon={<FileText size={28} />} title="还没有文稿">
+                  例如在会话中说“帮我新建一份出口资料清单”。
+                </Empty>
+              )}
+            </div>
           )}
-          <div className="tea-panel-label tea-record-label">办理记录</div>
-          {record.events
-            .slice()
-            .reverse()
-            .map((event) => (
-              <div className="tea-event" key={event.id}>
-                <span />
-                <div>
-                  <strong>{event.title}</strong>
-                  <p>{event.detail}</p>
-                  <small>{dateLabel(event.created_at)}</small>
-                </div>
-              </div>
-            ))}
         </div>
       </div>
     </div>
   );
   return (
-    <div className="tea-workspace">
-      <SidebarTrigger
-        className="tea-workspace-navigation md:hidden"
-        aria-label="展开导航"
-      />
-      {(!panelOpen || isMobile) && (
-        <div className="tea-workspace-panel-actions">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="tea-workspace-panel-toggle"
-            aria-label="展开流程"
-            title="展开流程"
-            aria-expanded={isMobile ? mobileOpen : panelOpen}
-            onClick={() => {
-              if (isMobile) setMobileOpen(true);
-              else setPanelOpen(true);
-            }}
-          >
-            <PanelRightOpen size={17} />
-          </Button>
+    <div className="tea-workspace tea-node-workspace">
+      <header className="tea-workspace-topbar">
+        <SidebarTrigger className="md:hidden" aria-label="展开导航" />
+        <div>
+          <span>{stage.name}</span>
+          <strong>{isGuide ? "引导会话" : "节点会话"}</strong>
         </div>
-      )}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="展开业务工作区"
+          aria-expanded={overlay ? mobileOpen : panelOpen}
+          onClick={() => {
+            if (overlay) setMobileOpen(true);
+            else setPanelOpen((value) => !value);
+          }}
+        >
+          <PanelRightOpen size={17} />
+        </Button>
+      </header>
       <ResizablePanelGroup
         orientation="horizontal"
         className="tea-workspace-panels"
         onLayoutChanged={(layout) => {
-          // A completed drag can collapse the panel; resize callbacks only
-          // remember its width and must not reverse a requested close.
-          if (panelOpenRef.current && layout["tea-details"] === 0)
+          const previous = previousDetailSize.current;
+          previousDetailSize.current = layout["tea-details"] ?? 0;
+          if (
+            panelOpenRef.current &&
+            previous > 0 &&
+            layout["tea-details"] === 0
+          )
             setPanelOpen(false);
         }}
       >
-        <ResizablePanel id="conversation" minSize="30%" defaultSize="100%">
-          <StageChat
-            accountId={accountId}
-            key={stage.id}
-            record={record}
-            stage={stage}
-            taskId={taskId}
-            onTask={selectTask}
-            onUpdate={onUpdate}
-            onUpload={onUpload}
-            capabilities={capabilities}
-          />
+        <ResizablePanel
+          id="conversation"
+          minSize={overlay ? "100%" : "340px"}
+          defaultSize="70%"
+        >
+          {guideError?.stageId === stage.id && isGuide ? (
+            <ErrorNotice
+              message={guideError.message}
+              onRetry={() => setGuideAttempt((value) => value + 1)}
+            />
+          ) : stage.status === "locked" ? (
+            <Empty icon={<LockKeyhole size={28} />} title="这个节点尚未解锁">
+              先完成当前节点的必办任务，进度通过核验后会自动共享。
+            </Empty>
+          ) : currentConversation ? (
+            <StageChat
+              key={`${stage.id}:${currentConversation}`}
+              accountId={accountId}
+              record={record}
+              stage={stage}
+              conversationId={currentConversation}
+              guide={isGuide}
+              taskId={taskId}
+              onTask={selectTask}
+              onUpdate={onUpdate}
+              onUpload={onUpload}
+              capabilities={capabilities}
+            />
+          ) : (
+            <Busy label="正在打开引导会话…" />
+          )}
         </ResizablePanel>
         <ResizableHandle
           withHandle
-          disabled={!panelOpen || isMobile}
-          className={`tea-resize-handle ${panelOpen && !isMobile ? "" : "pointer-events-none opacity-0"}`}
+          disabled={!panelOpen || overlay}
+          className={`tea-resize-handle ${panelOpen && !overlay ? "" : "pointer-events-none opacity-0"}`}
         />
         <ResizablePanel
           id="tea-details"
           panelRef={panelRef}
           collapsible
           collapsedSize={0}
-          minSize="20%"
-          maxSize="70%"
-          defaultSize="0%"
+          minSize="280px"
+          maxSize="55%"
+          defaultSize="360px"
           onResize={(size) => {
-            if (panelOpenRef.current && size.asPercentage > 0) {
+            if (panelOpenRef.current && size.asPercentage > 0)
               openPanelSize.current = `${size.asPercentage}%`;
-            }
           }}
         >
-          <div className="tea-details-content" hidden={!panelOpen || isMobile}>
-            {!isMobile && panel}
+          <div className="tea-details-content" hidden={!panelOpen || overlay}>
+            {!overlay && panel}
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
-      {isMobile && (
+      {overlay && (
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetContent className="tea-theme tea-mobile-panel">
             <SheetHeader className="sr-only">
-              <SheetTitle>办理流程与资料</SheetTitle>
+              <SheetTitle>业务工作区</SheetTitle>
               <SheetDescription>
-                查看任务、核验进度、编辑文稿和业务档案。
+                查看节点任务、业务资料与文稿。
               </SheetDescription>
             </SheetHeader>
             {panel}

@@ -216,7 +216,7 @@ def export_system_corpus(source_dir, snapshot_dir):
     with closing(_readonly(snapshot_dir / "tea.sqlite3")) as conn:
         scope = _scope(conn)
     _principal(scope, required=True)
-    _require(scope["schema_version"] == 15, "source_schema15_required")
+    _require(scope["schema_version"] in (15, 16, 17, 18), "source_schema15_to18_required")
     inventory = _inventory(source_dir)
     report = {
         "protocol": PROTOCOL,

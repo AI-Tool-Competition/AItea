@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import {
-  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
-  within,
 } from "@testing-library/react";
 
 import { TeaApp } from "@/components/tea/tea-app";
@@ -15,7 +13,9 @@ import type { CaseDetail, Document } from "@/core/tea/types";
 rs.mock("next/navigation", () => ({ useRouter: () => ({ push: rs.fn() }) }));
 rs.mock("@/components/tea/admin", () => ({ Admin: () => null }));
 rs.mock("@/components/tea/workspace", () => ({
-  Workspace: () => null,
+  Workspace: ({ conversationId }: { conversationId: string }) => (
+    <output data-testid="selected-conversation">{conversationId}</output>
+  ),
   clearChatDrafts: () => undefined,
 }));
 rs.mock("@/components/tea/studio", () => ({
@@ -105,6 +105,18 @@ function read(input: RequestInfo | URL) {
   if (url.pathname.endsWith("/cases/second")) return response(second);
   if (url.pathname.endsWith("/collection-plans"))
     return response({ items: [{ country: "ID" }], total: 1 });
+  if (url.pathname.endsWith("/conversations"))
+    return response({
+      items: [
+        {
+          id: "chat-one",
+          stage_id: "prepare",
+          title: "产品包装讨论",
+          kind: "chat",
+        },
+      ],
+      total: 1,
+    });
   const scope = url.searchParams.get("case_id");
   return response({
     items: [
@@ -117,173 +129,99 @@ function read(input: RequestInfo | URL) {
     total: 1,
   });
 }
-function group(title: string) {
-  return within(screen.getByRole("button", { name: title }).closest("li")!);
-}
 afterEach(() => {
   cleanup();
   rs.restoreAllMocks();
 });
 
-describe("business navigation", () => {
-  it("opens the current business with its node conversations and one library", async () => {
+describe("business node navigation", () => {
+  it("focuses the current folder, reveals other nodes in order, and collapses independently", async () => {
     rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
       read(input),
     );
     render(<TeaApp />);
     await screen.findByRole("button", { name: "业务资料" });
-    const current = group(first.title);
-    expect(current.getByRole("button", { name: "对接准备" })).toBeTruthy();
-    expect(current.getAllByRole("button", { name: "资料库" })).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "出口业务" })).toBeNull();
     expect(
-      group(second.title).queryByRole("button", { name: "资料库" }),
-    ).toBeNull();
+      screen
+        .getByRole("button", { name: "引导会话" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "资料库" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看更多节点" }));
+    expect(screen.getByRole("button", { name: "对接准备" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "收起节点：业务资料" }));
+    expect(screen.queryByRole("button", { name: "引导会话" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "展开节点：业务资料" }));
+    expect(screen.getByRole("button", { name: "引导会话" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "收起其他节点" }));
+    expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
   });
 
-  it("opens the business library and defaults uploads to that business", async () => {
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (input) => read(input));
-    render(<TeaApp />);
-    await screen.findByRole("button", { name: first.title });
-    fireEvent.click(screen.getByRole("button", { name: first.title }));
-    fireEvent.click(group(first.title).getByRole("button", { name: "资料库" }));
-    await screen.findByRole("button", { name: /乌龙茶业务文件/ });
-    expect(screen.queryByLabelText("资料范围")).toBeNull();
-    expect(screen.queryByLabelText("资料国家")).toBeNull();
-    expect(
-      fetcher.mock.calls.some(
-        ([input]) => urlOf(input).searchParams.get("case_id") === first.id,
-      ),
-    ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "上传到本业务" }));
-    expect(screen.getByLabelText<HTMLSelectElement>("资料归属").value).toBe(
-      first.id,
-    );
-  });
-
-  it("switches libraries and cancels a search from the previous business", async () => {
-    let finish!: (value: Response) => void;
-    let signal: AbortSignal | null | undefined;
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
-      if (urlOf(input).pathname.endsWith("/search")) {
-        signal = options?.signal;
-        return new Promise<Response>((resolve) => {
-          finish = resolve;
-        });
-      }
-      return read(input);
-    });
-    render(<TeaApp />);
-    await screen.findByRole("button", { name: first.title });
-    fireEvent.click(screen.getByRole("button", { name: first.title }));
-    fireEvent.click(group(first.title).getByRole("button", { name: "资料库" }));
-    await screen.findByRole("button", { name: /乌龙茶业务文件/ });
-    fireEvent.change(screen.getByLabelText("搜索资料"), {
-      target: { value: "出口规则" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "检索" }));
-    await waitFor(() => expect(signal).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: second.title }));
-    fireEvent.click(
-      group(second.title).getByRole("button", { name: "资料库" }),
-    );
-    await screen.findByRole("button", { name: /红茶业务文件/ });
-    expect(signal?.aborted).toBe(true);
-    await act(async () =>
-      finish(
-        response({
-          items: [
-            { document_id: "old", title: "旧业务搜索结果", excerpt: "旧资料" },
-          ],
-        }),
-      ),
-    );
-    expect(screen.queryByText("旧业务搜索结果")).toBeNull();
-    expect(screen.queryByRole("button", { name: /乌龙茶业务文件/ })).toBeNull();
-    expect(screen.getByLabelText<HTMLInputElement>("搜索资料").value).toBe("");
-  });
-
-  it("keeps the business library accessible if conversations fail to load", async () => {
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
-      urlOf(input).pathname.endsWith("/cases/first")
-        ? response({ error: { message: "读取业务失败" } }, 503)
-        : read(input),
-    );
-    render(<TeaApp />);
-    await screen.findByText("读取业务失败");
-    fireEvent.click(screen.getByRole("button", { name: first.title }));
-    fireEvent.click(group(first.title).getByRole("button", { name: "资料库" }));
-    await screen.findByRole("button", { name: /乌龙茶业务文件/ });
-  });
-
-  it("drops the previous account's library scope after session expiration", async () => {
-    let nextAccount = false;
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (input) => {
-        const url = urlOf(input);
-        if (url.pathname.endsWith("/auth/demo")) {
-          nextAccount = true;
-          return response({});
-        }
-        if (nextAccount && url.pathname.endsWith("/bootstrap"))
-          return response({
-            user: { id: "next-owner", name: "另一账号", is_demo: true },
-            cases: [second],
-            templates: [],
-            capabilities: {},
-          });
-        return read(input);
-      });
-    render(<TeaApp />);
-    await screen.findByRole("button", { name: first.title });
-    fireEvent.click(group(first.title).getByRole("button", { name: "资料库" }));
-    await screen.findByRole("button", { name: /乌龙茶业务文件/ });
-    await act(async () => {
-      window.dispatchEvent(new Event("tea:session-expired"));
-    });
-    fireEvent.click(
-      await screen.findByRole("button", { name: /进入演示工作台/ }),
-    );
-    await screen.findByRole("button", { name: second.title });
-    await waitFor(() =>
-      expect(
-        group(second.title).getByRole("button", { name: "业务资料" }),
-      ).toBeTruthy(),
-    );
-    const newAccountReads = fetcher.mock.calls.slice(
-      fetcher.mock.calls.findIndex(([input]) =>
-        urlOf(input).pathname.endsWith("/auth/demo"),
-      ),
-    );
-    expect(
-      newAccountReads.some(
-        ([input]) => urlOf(input).searchParams.get("case_id") === first.id,
-      ),
-    ).toBe(false);
-    expect(screen.queryByRole("button", { name: /乌龙茶业务文件/ })).toBeNull();
-  });
-
-  it("distinguishes the public library from the collapsed business shortcut", async () => {
+  it("switches business from the dropdown and leaves new business last", async () => {
     rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
       read(input),
     );
     render(<TeaApp />);
-    await screen.findByRole("button", { name: first.title });
-    fireEvent.keyDown(screen.getByRole("button", { name: "账号与管理" }), {
-      key: "ArrowDown",
-    });
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "法规与我的资料" }),
+    const selector = await screen.findByRole("button", { name: "切换业务" });
+    expect(selector.textContent).toContain(first.title);
+    fireEvent.keyDown(selector, { key: "ArrowDown" });
+    await screen.findByRole("menuitem", { name: second.title });
+    expect(screen.getAllByRole("menuitem").at(-1)?.textContent).toContain(
+      "新建业务",
     );
-    await screen.findByRole("heading", { name: "资料库" });
-    fireEvent.click(screen.getAllByRole("button", { name: "切换侧栏" })[0]!);
-    const shortcut = screen.getByRole("button", { name: "资料库" });
-    expect(shortcut.getAttribute("data-active")).toBe("false");
-    fireEvent.click(shortcut);
-    await screen.findByRole("button", { name: /乌龙茶业务文件/ });
-    expect(shortcut.getAttribute("data-active")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitem", { name: second.title }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "切换业务" }).textContent,
+      ).toContain(second.title),
+    );
+    expect(screen.getByTestId("selected-conversation").textContent).toBe(
+      "guide",
+    );
+  });
+
+  it("opens real chats and returns to the same node guide", async () => {
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      read(input),
+    );
+    render(<TeaApp />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "产品包装讨论" }),
+    );
+    expect(screen.getByTestId("selected-conversation").textContent).toBe(
+      "chat-one",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "引导会话" }));
+    expect(screen.getByTestId("selected-conversation").textContent).toBe(
+      "guide",
+    );
+  });
+
+  it("keeps the workspace usable when the chat list fails and supports retry", async () => {
+    let failed = true;
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      failed && urlOf(input).pathname.endsWith("/conversations")
+        ? response({ error: { message: "会话暂时不可用" } }, 503)
+        : read(input),
+    );
+    render(<TeaApp />);
+    await screen.findByText("会话暂时不可用");
+    expect(screen.getByTestId("selected-conversation")).toBeTruthy();
+    failed = false;
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByRole("button", { name: "产品包装讨论" });
+    expect(screen.queryByText("会话暂时不可用")).toBeNull();
+  });
+
+  it("opens account management directly without exposing public regulations", async () => {
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      read(input),
+    );
+    render(<TeaApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "账号管理" }));
+    await screen.findByRole("heading", { name: "账号管理" });
+    expect(screen.queryByText("法规与我的资料")).toBeNull();
+    expect(screen.queryByRole("button", { name: "管理后台" })).toBeNull();
   });
 });

@@ -31,6 +31,8 @@ import {
   type Bootstrap,
   type CaseDetail,
   type Document,
+  type ListResult,
+  type NodeConversation,
   type Template,
   type User,
 } from "@/core/tea/types";
@@ -374,6 +376,18 @@ export function TeaApp({
   const [recordError, setRecordError] = useState("");
   const [recordReload, setRecordReload] = useState(0);
   const [stageId, setStageId] = useState("");
+  const [conversationId, setConversationId] = useState("guide");
+  const [conversationData, setConversationData] = useState<{
+    scope: string;
+    items: NodeConversation[];
+  }>({ scope: "", items: [] });
+  const [conversationBusy, setConversationBusy] = useState(false);
+  const [conversationError, setConversationError] = useState("");
+  const [conversationReload, setConversationReload] = useState(0);
+  const creatingConversation = useRef<AbortController | undefined>(undefined);
+  const conversationScope = `${bootstrap?.user.id ?? ""}:${caseId}`;
+  const currentConversationScope = useRef("");
+  currentConversationScope.current = `${conversationScope}:${stageId}`;
   const [createOpen, setCreateOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadScope, setUploadScope] = useState<string>();
@@ -390,6 +404,8 @@ export function TeaApp({
       clearLegalDrafts();
       clearCollectionDrafts();
       setBootstrap(undefined);
+      setConversationId("guide");
+      setConversationError("");
       setLibraryCaseId("");
       setView("workspace");
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
@@ -427,6 +443,90 @@ export function TeaApp({
     return () => abort.abort();
   }, [sessionKey]);
   const userId = bootstrap?.user.id;
+  useEffect(() => {
+    if (!userId || !caseId || !stageId || record?.id !== caseId) return;
+    const abort = new AbortController();
+    const read = async () => {
+      const items: NodeConversation[] = [];
+      let total = 1;
+      while (items.length < total && !abort.signal.aborted) {
+        const result = await teaRequest<ListResult<NodeConversation>>(
+          `/cases/${encodeURIComponent(caseId)}/conversations?limit=200&offset=${items.length}`,
+          { signal: abort.signal },
+        );
+        items.push(...result.items);
+        total = result.total;
+        if (!result.items.length) break;
+      }
+      if (!abort.signal.aborted) {
+        setConversationData((previous) => ({
+          scope: conversationScope,
+          items: [
+            ...new Map(
+              [
+                ...(previous.scope === conversationScope ? previous.items : []),
+                ...items,
+              ].map((item) => [item.id, item]),
+            ).values(),
+          ],
+        }));
+        setConversationError("");
+      }
+    };
+    void read().catch((reason) => {
+      if (!abort.signal.aborted) setConversationError(errorMessage(reason));
+    });
+    return () => abort.abort();
+  }, [
+    caseId,
+    userId,
+    stageId,
+    record?.id,
+    record?.updated_at,
+    conversationScope,
+    conversationReload,
+  ]);
+  useEffect(() => {
+    setConversationBusy(false);
+    return () => {
+      creatingConversation.current?.abort();
+      creatingConversation.current = undefined;
+    };
+  }, [conversationScope]);
+  async function createConversation(targetStage: string) {
+    if (!record || creatingConversation.current) return;
+    const abort = new AbortController();
+    creatingConversation.current = abort;
+    const target = `${conversationScope}:${targetStage}`;
+    setStageId(targetStage);
+    setConversationBusy(true);
+    try {
+      const conversation = await post<NodeConversation>(
+        `/cases/${encodeURIComponent(record.id)}/stages/${encodeURIComponent(targetStage)}/conversations`,
+        { client_request_id: crypto.randomUUID() },
+        abort.signal,
+      );
+      if (abort.signal.aborted || currentConversationScope.current !== target)
+        return;
+      setConversationData((previous) => ({
+        scope: conversationScope,
+        items: [
+          ...(previous.scope === conversationScope ? previous.items : []),
+          conversation,
+        ],
+      }));
+      setConversationId(conversation.id);
+      setView("workspace");
+    } catch (reason) {
+      if (!abort.signal.aborted && currentConversationScope.current === target)
+        setError(errorMessage(reason));
+    } finally {
+      if (creatingConversation.current === abort) {
+        creatingConversation.current = undefined;
+        setConversationBusy(false);
+      }
+    }
+  }
   useEffect(() => {
     if (!caseId || !userId) {
       setRecord(undefined);
@@ -469,6 +569,7 @@ export function TeaApp({
     );
   }, []);
   function selectCase(id: string) {
+    setConversationId("guide");
     if (id !== caseId) {
       setRecord(undefined);
       setStageId("");
@@ -490,6 +591,8 @@ export function TeaApp({
       setBootstrap(undefined);
       setRecord(undefined);
       setCaseId("");
+      setConversationId("guide");
+      setConversationError("");
       setLibraryCaseId("");
       setError("");
       setView("workspace");
@@ -545,6 +648,7 @@ export function TeaApp({
   return (
     <SidebarProvider className="tea-theme tea-app">
       <TeaNavigation
+        key={`${bootstrap.user.id}:${caseId}`}
         view={view}
         user={bootstrap.user}
         cases={bootstrap.cases}
@@ -552,6 +656,19 @@ export function TeaApp({
         record={record}
         recordLoading={recordLoading}
         stageId={stageId}
+        conversations={
+          conversationData.scope === conversationScope
+            ? conversationData.items
+            : []
+        }
+        conversationId={conversationId}
+        conversationBusy={conversationBusy}
+        onConversation={(nodeId, id) => {
+          setStageId(nodeId);
+          setConversationId(id);
+          setView("workspace");
+        }}
+        onCreateConversation={(id) => void createConversation(id)}
         libraryCaseId={libraryCaseId}
         onNavigate={(next) => {
           setUploadedDocument(undefined);
@@ -563,6 +680,7 @@ export function TeaApp({
         }}
         onCase={selectCase}
         onStage={(id) => {
+          setConversationId("guide");
           setStageId(id);
           setView("workspace");
         }}
@@ -602,6 +720,12 @@ export function TeaApp({
           </header>
         )}
         {error && <ErrorNotice message={error} />}
+        {view === "workspace" && conversationError && (
+          <ErrorNotice
+            message={conversationError}
+            onRetry={() => setConversationReload((value) => value + 1)}
+          />
+        )}
         {view === "workspace" ? (
           recordLoading ? (
             <Busy label="正在读取业务与办理进度…" />
@@ -618,7 +742,12 @@ export function TeaApp({
               accountId={bootstrap.user.id}
               record={record}
               stageId={stageId}
-              setStageId={setStageId}
+              setStageId={(id) => {
+                if (id !== stageId) setConversationId("guide");
+                setStageId(id);
+              }}
+              conversationId={conversationId}
+              onConversation={(id) => setConversationId(id)}
               capabilities={bootstrap.capabilities}
               onUpdate={updateRecord}
               onUpload={() => setUploadOpen(true)}
@@ -680,6 +809,16 @@ export function TeaApp({
                 onUpdated={() => setSessionKey((key) => key + 1)}
               />
             )}
+            {"is_admin" in bootstrap.user &&
+              bootstrap.user.is_admin === true && (
+                <Button
+                  variant="outline"
+                  onClick={() => router.push("/tea/admin/workflow")}
+                >
+                  <ShieldCheck size={15} />
+                  管理后台
+                </Button>
+              )}
             <ActionButton variant="outline" busy={logoutBusy} onClick={logout}>
               <LogOut size={15} />
               退出登录
@@ -696,6 +835,7 @@ export function TeaApp({
           setBootstrap((b) => (b ? { ...b, cases: [next, ...b.cases] } : b));
           setRecord(next);
           setCaseId(next.id);
+          setConversationId("guide");
           setStageId(next.current_stage_id);
           setView("workspace");
         }}

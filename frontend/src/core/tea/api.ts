@@ -258,6 +258,10 @@ export function streamMessage(
           onEvent({ event, data: { label: data.label } });
         else if (event === "start" && typeof data.step_id === "string")
           onEvent({ event, data: { step_id: data.step_id } });
+        else if (event === "step") {
+          if (!isTraceStep(data)) throw invalidStream();
+          onEvent({ event, data });
+        }
       },
     },
   );

@@ -149,7 +149,7 @@ class AdminStudio:
             include(dict(row))
         return digest.hexdigest()
 
-    def analyze(self, owner, case_id, stage_id, payload, *, emit=None, check_cancelled=None):
+    def analyze(self, owner, case_id, stage_id, payload, *, emit=None, check_cancelled=None, guide_id=None):
         from .countries import resolve_country
         from .service import AppError, fail
         from .streaming import StreamCancelled
@@ -224,7 +224,11 @@ class AdminStudio:
                 cached = json.loads(existing["payload"])
                 same_inputs = previous and previous.get("_snapshot") == legal.snapshot(conn, owner, case)
                 if same_inputs and (previous["status"] not in ("failed", "cancelled") or not payload.retry):
-                    return cached | self.node_result(stage_id, previous)
+                    result = cached | self.node_result(stage_id, previous)
+                    self.service.node_workspace.save_guide(
+                        conn, case, stage_id, result, fingerprint, guide_id
+                    )
+                    return result
             analysis_id = uid()
             expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
             link = {"legal_analysis_id": previous["id"]} if previous else {}
@@ -298,6 +302,7 @@ class AdminStudio:
                     "UPDATE stage_analyses SET status=?,payload=? WHERE id=?",
                     (result["status"], dump(result), analysis_id),
                 )
+                self.service.node_workspace.save_guide(conn, case, stage_id, result, fingerprint, guide_id)
         if stale:
             fail(409, "analysis_stale", "分析期间资料已有更新，请基于当前资料重新分析")
         return result

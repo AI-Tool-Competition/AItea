@@ -714,6 +714,11 @@ class LegalService:
                     "error": None,
                     "_owner": owner,
                     "_snapshot": snapshot,
+                    **(
+                        {"_chat_context": payload["_chat_context"]}
+                        if payload.get("_chat_context") is not None
+                        else {}
+                    ),
                 }
                 self.save(conn, analysis, initial=True)
             analysis["_run_snapshot"] = snapshot
@@ -906,6 +911,7 @@ class LegalService:
                 analysis["question"],
                 prepared["facts"],
                 case_id=case_id,
+                context={**prepared["case"], "conversation": analysis.get("_chat_context")},
                 previous=prepared["previous"],
                 affected_issue_ids=prepared["affected"],
                 resume=prepared["resume"],

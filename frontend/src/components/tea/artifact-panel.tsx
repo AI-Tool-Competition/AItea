@@ -2,17 +2,21 @@
 import { Check, Download, FileText, History, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { ClipboardSafeStreamdown } from "@/components/ai-elements/streamdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
 import {
   downloadUrl,
   errorMessage,
   patch,
   post,
   teaRequest,
+  TeaApiError,
 } from "@/core/tea/api";
 import { type Artifact, type ListResult } from "@/core/tea/types";
 
+import { ConfirmAction } from "./admin-shared";
 import { ActionButton, dateLabel, Empty, ErrorNotice } from "./shared";
 
 const draftCache = new Map<
@@ -44,6 +48,7 @@ export function ArtifactPanel({
   const pending = useRef(false);
   const [versions, setVersions] = useState<Artifact[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [mode, setMode] = useState<"preview" | "edit">("preview");
   const dirty =
     !!artifact && (title !== artifact.title || content !== artifact.content);
   useEffect(() => {
@@ -66,7 +71,7 @@ export function ArtifactPanel({
   if (!artifact)
     return (
       <Empty icon={<FileText size={30} />} title="让资料成为一份好文稿">
-        从任务中选择“起草文稿”，在这里编辑、确认和下载。
+        在会话中让助手新建文稿，或从任务中起草，然后在这里预览、编辑和下载。
       </Empty>
     );
   async function action(kind: "save" | "confirm" | "history") {
@@ -98,6 +103,16 @@ export function ArtifactPanel({
       }
     } catch (e) {
       setError(errorMessage(e));
+      if (e instanceof TeaApiError && e.status === 409 && artifact) {
+        try {
+          const latest = await teaRequest<Artifact>(
+            `/artifacts/${artifact.id}`,
+          );
+          await onSaved(latest);
+        } catch {
+          /* Keep both the conflict message and local input. */
+        }
+      }
     } finally {
       setBusy("");
       pending.current = false;
@@ -123,7 +138,39 @@ export function ArtifactPanel({
           onChange={(e) => setTitle(e.target.value)}
         />
       </label>
-      <label className="tea-field tea-editor-label">
+      <div
+        className="tea-artifact-view-tabs"
+        role="group"
+        aria-label="文稿显示方式"
+      >
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={mode === "preview"}
+          onClick={() => setMode("preview")}
+        >
+          预览
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={mode === "edit"}
+          onClick={() => setMode("edit")}
+        >
+          编辑
+        </Button>
+      </div>
+      {mode === "preview" && (
+        <div className="tea-artifact-preview" aria-label="文稿预览">
+          <ClipboardSafeStreamdown
+            {...streamdownPluginsWithoutRawHtml}
+            mode="static"
+          >
+            {content || "暂无正文。"}
+          </ClipboardSafeStreamdown>
+        </div>
+      )}
+      <label className="tea-field tea-editor-label" hidden={mode !== "edit"}>
         <span>正文 · 支持 Markdown</span>
         <textarea
           className="tea-document-editor"
@@ -135,25 +182,42 @@ export function ArtifactPanel({
       {baseVersion !== artifact.version && (
         <div className="tea-note">
           服务器已有第 {artifact.version} 版，你的修改基于第 {baseVersion}{" "}
-          版。请先复制自己的内容，再载入最新版本进行核对。
-          <button
-            type="button"
-            onClick={() => {
+          版。你的输入已保留，请先核对服务器内容。
+          <details>
+            <summary>查看服务器最新内容</summary>
+            <pre className="tea-version-content">{artifact.content}</pre>
+          </details>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setBaseVersion(artifact.version)}
+          >
+            核对后采用最新版本号
+          </Button>
+          <ConfirmAction
+            title="使用服务器版本？"
+            description="这会放弃当前未保存的本地输入，改用服务器保存的正文。"
+            onConfirm={() => {
               draftCache.delete(artifact.id);
               setTitle(artifact.title);
               setContent(artifact.content);
               setBaseVersion(artifact.version);
             }}
           >
-            载入最新版本
-          </button>
+            使用服务器版本
+          </ConfirmAction>
         </div>
       )}
       {error && <ErrorNotice message={error} />}
       <div className="tea-artifact-actions">
         <ActionButton
           busy={busy === "save"}
-          disabled={!!busy || !dirty || !title.trim()}
+          disabled={
+            !!busy ||
+            !dirty ||
+            !title.trim() ||
+            baseVersion !== artifact.version
+          }
           onClick={() => action("save")}
         >
           <Save size={14} />

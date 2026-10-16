@@ -391,6 +391,7 @@ interface LibraryProps {
   cases: CaseSummary[];
   initialCaseId?: string;
   scopeLocked?: boolean;
+  businessOnly?: boolean;
   ownerId?: string;
   uploadedDocument?: Document;
 }
@@ -401,6 +402,7 @@ function LibraryWorkspace({
   cases,
   initialCaseId,
   scopeLocked = false,
+  businessOnly = false,
   ownerId,
   uploadedDocument,
 }: LibraryProps) {
@@ -578,36 +580,38 @@ function LibraryWorkspace({
           {scope ? "上传到本业务" : "上传到我的资料"}
         </Button>
       </SectionHeading>
-      <div className="tea-form-row" role="group" aria-label="资料来源">
-        <Button
-          variant={sourceScope === "system" ? "default" : "outline"}
-          aria-pressed={sourceScope === "system"}
-          onClick={() => {
-            if (sourceScope === "system") return;
-            resetReads();
-            setSourceScope("system");
-            setCountrySelection("");
-            setQuery("");
-            setNameQuery("");
-          }}
-        >
-          {scope ? "对应国家法规" : "法规总库"}
-        </Button>
-        <Button
-          variant={sourceScope === "personal" ? "default" : "outline"}
-          aria-pressed={sourceScope === "personal"}
-          onClick={() => {
-            if (sourceScope === "personal") return;
-            resetReads();
-            setSourceScope("personal");
-            setCountrySelection("");
-            setQuery("");
-            setNameQuery("");
-          }}
-        >
-          {scope ? "本业务资料" : "我的资料"}
-        </Button>
-      </div>
+      {!businessOnly && (
+        <div className="tea-form-row" role="group" aria-label="资料来源">
+          <Button
+            variant={sourceScope === "system" ? "default" : "outline"}
+            aria-pressed={sourceScope === "system"}
+            onClick={() => {
+              if (sourceScope === "system") return;
+              resetReads();
+              setSourceScope("system");
+              setCountrySelection("");
+              setQuery("");
+              setNameQuery("");
+            }}
+          >
+            {scope ? "对应国家法规" : "法规总库"}
+          </Button>
+          <Button
+            variant={sourceScope === "personal" ? "default" : "outline"}
+            aria-pressed={sourceScope === "personal"}
+            onClick={() => {
+              if (sourceScope === "personal") return;
+              resetReads();
+              setSourceScope("personal");
+              setCountrySelection("");
+              setQuery("");
+              setNameQuery("");
+            }}
+          >
+            {scope ? "本业务资料" : "我的资料"}
+          </Button>
+        </div>
+      )}
       <p className="tea-note">
         {sourceScope === "system"
           ? "法规总库由所有用户共享，仅供查阅。上传资料将保存到你的私人资料或业务。"

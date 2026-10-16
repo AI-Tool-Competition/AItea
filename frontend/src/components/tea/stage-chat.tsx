@@ -10,7 +10,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { memo, useLayoutEffect, useRef } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import type { StickToBottomContext } from "use-stick-to-bottom";
 
 import {
@@ -23,15 +23,19 @@ import { Button } from "@/components/ui/button";
 import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
 import type {
   Capabilities,
+  ChatSkill,
   CaseDetail,
   Message,
   StageState,
 } from "@/core/tea/types";
 import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
 
+import { AnalysisProcess } from "./analysis-process";
+import { ChatSkills } from "./chat-skills";
+import { GuideHistory } from "./guide-history";
+import { LegalResultView } from "./legal-result";
 import { CitationCard } from "./library";
-import { Busy, dateLabel, ErrorNotice, Trace } from "./shared";
-import { StageAnalysisPanel } from "./stage-analysis";
+import { Busy, dateLabel, ErrorNotice } from "./shared";
 
 const Answer = memo(function Answer({
   content,
@@ -71,14 +75,31 @@ const SavedMessage = memo(function SavedMessage({
         >
           {message.role === "assistant" ? "茶渡助手" : "你"}
         </div>
+        {message.trace?.length > 0 && <AnalysisProcess steps={message.trace} />}
         <div className="tea-message-content">
           {message.role === "user" ? (
             message.content
+          ) : message.guide_result ? (
+            <div className="tea-chat-report">
+              <h3>分析结论与下一步</h3>
+              <p className="tea-small-note">
+                {message.guide_result.assistant_mode === "demo"
+                  ? "演示模式 · 未调用大模型"
+                  : "结合当前情况与资料整理"}
+              </p>
+              <LegalResultView result={message.guide_result} compact />
+              <details className="tea-chat-full-report">
+                <summary>完整报告与原文依据</summary>
+                <LegalResultView
+                  result={message.guide_result}
+                  showTrace={false}
+                />
+              </details>
+            </div>
           ) : (
             <Answer content={message.content} />
           )}
         </div>
-        {message.trace?.length > 0 && <Trace steps={message.trace} />}
         {message.citations?.length > 0 && (
           <details className="tea-message-citations">
             <summary>
@@ -121,6 +142,12 @@ function PendingTurn({
         </div>
         <div className="tea-message-body">
           <div className="tea-message-label">茶渡助手</div>
+          {!!turn.steps?.length && (
+            <AnalysisProcess
+              steps={turn.steps}
+              running={turn.state === "sending"}
+            />
+          )}
           {turn.text && (
             <div className="tea-message-content">
               <Answer
@@ -167,6 +194,8 @@ export function StageChat({
   onUpdate,
   onUpload,
   capabilities,
+  conversationId,
+  guide = false,
 }: {
   record: CaseDetail;
   stage: StageState;
@@ -176,16 +205,23 @@ export function StageChat({
   onUpdate: (record: CaseDetail) => void;
   onUpload: () => void;
   capabilities: Capabilities;
+  conversationId?: string;
+  guide?: boolean;
 }) {
+  const [skills, setSkills] = useState<ChatSkill[]>([]);
+  const [legal, setLegal] = useState(false);
   const chat = useStageChat({
     accountId,
     caseId: record.id,
     stageId: stage.id,
+    conversationId,
+    skills,
+    mode: legal ? "legal" : "auto",
     onUpdate,
   });
   const input = useRef<HTMLTextAreaElement>(null);
   const conversation = useRef<StickToBottomContext>(null);
-  const followMessages = useRef(false);
+  const followMessages = useRef(true);
   const focusedTask = stage.tasks.find((task) => task.id === taskId);
   const hasConversation = chat.messages.length > 0 || chat.turns.length > 0;
   const sendingId = chat.turns.find((turn) => turn.state === "sending")?.request
@@ -215,6 +251,13 @@ export function StageChat({
       onTouchMoveCapture={releaseEntryPosition}
       onKeyDownCapture={releaseEntryPosition}
     >
+      {guide && (
+        <GuideHistory
+          caseId={record.id}
+          stageId={stage.id}
+          revision={record.revision}
+        />
+      )}
       <Conversation
         contextRef={conversation}
         initial={false}
@@ -224,12 +267,6 @@ export function StageChat({
         aria-label="与茶渡助手的对话"
       >
         <ConversationContent className="tea-conversation-content">
-          <StageAnalysisPanel
-            accountId={accountId}
-            record={record}
-            stage={stage}
-            onUpdate={onUpdate}
-          />
           {chat.hasEarlier && (
             <Button
               variant="ghost"
@@ -262,11 +299,11 @@ export function StageChat({
               )}
               {!hasConversation && !chat.historyError && (
                 <div className="tea-chat-welcome">
-                  <h2>继续聊聊这个节点</h2>
+                  <h2>{guide ? "一起梳理这个节点" : "新的会话"}</h2>
                   <p>
                     {stage.status === "locked"
                       ? "可以先了解这一阶段的准备要求，完成前一阶段后继续办理。"
-                      : "可以接着上面的分析提问，或上传资料一起核对。"}
+                      : "这里与本节点其他会话共享资料和进度，可以选择需要的能力一起办理。"}
                   </p>
                   <div className="tea-chat-suggestions">
                     {[
@@ -297,6 +334,28 @@ export function StageChat({
         />
       </Conversation>
       <div className="tea-composer-area">
+        {guide && (
+          <div className="tea-guide-actions">
+            <Button type="button" size="sm" variant="ghost" onClick={onUpload}>
+              <Paperclip size={14} />
+              上传材料
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={chat.sending || chat.loading || !!chat.historyError}
+              onClick={() =>
+                chat.send(
+                  taskId,
+                  "现有情况和资料就这些，请开始分析，给出结论与下一步；缺少的材料请明确列出。",
+                )
+              }
+            >
+              开始分析并生成报告
+            </Button>
+          </div>
+        )}
         {chat.historyError && (
           <ErrorNotice message={chat.historyError} onRetry={chat.reload} />
         )}
@@ -343,6 +402,12 @@ export function StageChat({
             }}
           />
           <div className="tea-composer-toolbar">
+            <ChatSkills
+              skills={skills}
+              onSkills={setSkills}
+              legal={legal}
+              onLegal={setLegal}
+            />
             <Button
               variant="ghost"
               size="icon"

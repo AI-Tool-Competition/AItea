@@ -4,7 +4,14 @@ import { useEffect, useRef, useState } from "react";
 
 import { errorMessage, streamMessage, teaRequest } from "./api";
 import { clearNodeAnalyses } from "./node-analysis";
-import type { CaseDetail, ListResult, Message, MessageInput } from "./types";
+import type {
+  CaseDetail,
+  ChatSkill,
+  ListResult,
+  Message,
+  MessageInput,
+  TraceStep,
+} from "./types";
 
 export interface ChatTurn {
   request: MessageInput;
@@ -13,6 +20,7 @@ export interface ChatTurn {
   label: string;
   state: "sending" | "failed" | "stopped";
   error?: string;
+  steps?: TraceStep[];
 }
 type Draft = { text: string; turns: ChatTurn[] };
 type ChatEntry =
@@ -31,14 +39,21 @@ export function useStageChat({
   accountId,
   caseId,
   stageId,
+  conversationId,
+  mode = "auto",
+  skills = [],
   onUpdate,
 }: {
   accountId: string;
   caseId: string;
   stageId: string;
+  conversationId?: string;
+  mode?: "auto" | "legal";
+  skills?: ChatSkill[];
   onUpdate: (record: CaseDetail) => void;
 }) {
-  const scope = `${accountId}:${caseId}:${stageId}`;
+  const scope = `${accountId}:${caseId}:${stageId}${conversationId ? ":" + conversationId : ""}`;
+  const query = `stage_id=${encodeURIComponent(stageId)}${conversationId ? "&conversation_id=" + encodeURIComponent(conversationId) : ""}`;
   const [draft] = useState<Draft>(() => {
     const value = drafts.get(scope) ?? { text: "", turns: [] };
     drafts.set(scope, value);
@@ -92,7 +107,7 @@ export function useStageChat({
     setLoading(true);
     setHistoryError("");
     teaRequest<ListResult<Message>>(
-      `/cases/${encodeURIComponent(caseId)}/messages?stage_id=${encodeURIComponent(stageId)}`,
+      `/cases/${encodeURIComponent(caseId)}/messages?${query}`,
       { signal: abort.signal },
     )
       .then((result) => {
@@ -105,7 +120,7 @@ export function useStageChat({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, [caseId, stageId, reload]);
+  }, [caseId, stageId, query, reload]);
   useEffect(() => {
     if (!text && !turns.length) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -115,6 +130,57 @@ export function useStageChat({
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [text, turns]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    const abort = new AbortController();
+    let reading = false;
+    const refresh = async () => {
+      if (reading || active.current || document.visibilityState === "hidden")
+        return;
+      reading = true;
+      try {
+        const result = await teaRequest<ListResult<Message>>(
+          `/cases/${encodeURIComponent(caseId)}/messages?${query}`,
+          { signal: abort.signal },
+        );
+        if (!abort.signal.aborted && mounted.current) {
+          setHistory((previous) => ({
+            items: [
+              ...new Map(
+                [...previous.items, ...result.items].map((item) => [
+                  item.id,
+                  item,
+                ]),
+              ).values(),
+            ].sort(
+              (a, b) =>
+                a.created_at.localeCompare(b.created_at) ||
+                a.id.localeCompare(b.id),
+            ),
+            total: result.total,
+          }));
+          setHistoryError("");
+        }
+      } catch {
+        /* Keep the current conversation visible until an explicit retry or focus refresh. */
+      } finally {
+        reading = false;
+      }
+    };
+    const timer = setInterval(() => {
+      void refresh();
+    }, 5000);
+    const onFocus = () => {
+      void refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      abort.abort();
+    };
+  }, [caseId, conversationId, query]);
 
   async function submit(request: MessageInput) {
     if (active.current || loading || historyError) return;
@@ -157,6 +223,11 @@ export function useStageChat({
           if (!current()) return;
           if (event.event === "start") turn.text = "";
           else if (event.event === "delta") turn.text += event.data.text;
+          else if (event.event === "step")
+            turn.steps = [
+              ...(turn.steps ?? []).filter((step) => step.id !== event.data.id),
+              event.data,
+            ];
           else turn.label = event.data.label;
           frame ??= setTimeout(publish, 16);
         },
@@ -196,13 +267,16 @@ export function useStageChat({
       if (active.current?.controller === controller) active.current = undefined;
     }
   }
-  function send(taskId: string) {
-    const content = text.trim();
+  function send(taskId: string, suppliedContent?: string) {
+    const content = (suppliedContent ?? text).trim();
     if (!content || active.current || loading || historyError) return;
     edit("");
     void submit({
       stage_id: stageId,
       ...(taskId ? { task_id: taskId } : {}),
+      ...(conversationId
+        ? { conversation_id: conversationId, mode, skills }
+        : {}),
       content,
       client_message_id: crypto.randomUUID(),
     });
@@ -214,7 +288,7 @@ export function useStageChat({
     setMoreBusy(true);
     try {
       const result = await teaRequest<ListResult<Message>>(
-        `/cases/${encodeURIComponent(caseId)}/messages?stage_id=${encodeURIComponent(stageId)}&limit=100&offset=${history.items.length}`,
+        `/cases/${encodeURIComponent(caseId)}/messages?${query}&limit=100&offset=${history.items.length}`,
         { signal: abort.signal },
       );
       if (!abort.signal.aborted)

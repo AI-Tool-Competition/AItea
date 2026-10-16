@@ -150,7 +150,7 @@ def test_complete_backup_restores_private_and_shared_without_reinterpreting_proo
     backup = tmp_path / "backup"
     created = module.create_backup(source.db.data_dir, backup)
     assert created["status"] == "complete"
-    assert created["schema_version"] == 15
+    assert created["schema_version"] == module.SUPPORTED_SCHEMA_VERSION
     assert module.verify_backup(backup)["status"] == "verified"
     restored = tmp_path / "relocated"
     receipt = module.restore_backup(backup, restored)
@@ -217,9 +217,23 @@ def test_online_backup_includes_live_committed_WAL_and_does_not_change_source(po
 def test_empty_and_legacy_schema_snapshots_are_preserved_without_upgrade(tmp_path, schema):
     source = tmp_path / "source"
     if schema == 1:
-        Database(source)
+        old_db = Database(source)
+        with old_db.transaction() as conn:
+            conn.execute("DROP TABLE IF EXISTS user_access")
+            conn.execute("DELETE FROM schema_migrations WHERE version>1")
     elif schema == 15:
-        Service(source)
+        old_service = Service(source)
+        with old_service.db.transaction() as conn:
+            for table in (
+                "guide_messages",
+                "node_memories",
+                "conversation_messages",
+                "stage_guide_runs",
+                "stage_conversations",
+                "user_access",
+            ):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.execute("DELETE FROM schema_migrations WHERE version>15")
     else:
         # Use the deployed pre-retrieval service migrations, not a fake version
         # number over newer tables; upgrade remains the normal service's job.

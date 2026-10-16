@@ -265,6 +265,8 @@ class _LegalRunner:
             "origin": template.get("origin"),
             "destination": template.get("destination"),
         }
+        if supplied_context.get("conversation") is not None:
+            self.case_context["conversation"] = supplied_context["conversation"]
         self.allowed = _unique(
             filter(
                 None,

@@ -8,7 +8,7 @@ from urllib.parse import quote, urlparse
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -454,13 +454,19 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"},
         )
 
+    from .node_workspace_routes import install_node_workspace_routes
+
+    install_node_workspace_routes(app, service, user)
+
     @app.patch("/api/tea/cases/{case_id}/tasks/{task_id}")
     def patch_task(case_id: str, task_id: str, payload: models.TaskPatch, current=Depends(user)):
         return service.patch_task(current["id"], case_id, task_id, payload.model_dump())
 
     @app.post("/api/tea/cases/{case_id}/tasks/{task_id}/verify")
-    def verify(case_id: str, task_id: str, payload: models.Verify, current=Depends(user)):
-        return service.verify_task(current["id"], case_id, task_id, payload.model_dump())
+    def verify(case_id: str, task_id: str, payload: models.Verify, background_tasks: BackgroundTasks, current=Depends(user)):
+        result = service.verify_task(current["id"], case_id, task_id, payload.model_dump())
+        background_tasks.add_task(service.node_workspace.process_pending, current["id"], case_id)
+        return result
 
     @app.get("/api/tea/cases/{case_id}/events")
     def events(case_id: str, current=Depends(user)):
@@ -470,12 +476,16 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     @app.get("/api/tea/cases/{case_id}/messages")
     def messages(
         case_id: str,
+        background_tasks: BackgroundTasks,
         stage_id: str | None = None,
+        conversation_id: str | None = Query(None, min_length=1, max_length=100),
         limit: int = Query(100, ge=1, le=200),
         offset: int = Query(0, ge=0),
         current=Depends(user),
     ):
-        return service.messages(current["id"], case_id, stage_id, limit, offset)
+        result = service.messages(current["id"], case_id, stage_id, limit, offset, conversation_id)
+        background_tasks.add_task(service.node_workspace.process_pending, current["id"], case_id)
+        return result
 
     @app.post("/api/tea/cases/{case_id}/messages")
     def post_message(case_id: str, payload: models.MessageInput, current=Depends(user)):

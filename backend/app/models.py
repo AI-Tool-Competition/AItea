@@ -260,14 +260,26 @@ class Verify(StrictModel):
 class MessageInput(StrictModel):
     stage_id: str = Field(min_length=1, max_length=64)
     task_id: str | None = Field(default=None, max_length=64)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
+    mode: Literal["auto", "legal"] = "auto"
+    skills: list[Literal["guidance", "materials", "legal", "draft", "handoff"]] = Field(default_factory=list, max_length=5)
     content: str = Field(min_length=1, max_length=20000)
     client_message_id: str = Field(min_length=1, max_length=100)
+
+
+class ConversationCreate(StrictModel):
+    client_request_id: str = Field(min_length=1, max_length=100)
+    title: str = Field(default="", max_length=160)
+
+
+class GuideRetry(StrictModel):
+    client_request_id: str = Field(min_length=1, max_length=100)
 
 
 class MessageStreamEvent(StrictModel):
     """SSE envelope; `done` carries the same result as POST /messages."""
 
-    event: Literal["status", "start", "delta", "done", "error"]
+    event: Literal["status", "start", "delta", "step", "done", "error"]
     data: dict
 
     def encode(self):

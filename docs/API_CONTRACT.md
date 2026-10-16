@@ -218,3 +218,16 @@ Schema 13 marks existing derived indexes dirty once so the current PDF completen
 ## Local configuration
 
 The startup catalog `config/workflows/liubao-export.json` supplies exactly four built-in country/channel routes. `TEA_TEMPLATE_FILE` may override one of these IDs with an exported template. Empty settings load the built-ins; the retired default path `config/workflows/china-indonesia.json` is explicitly treated as the new default for existing `.env` compatibility. Other invalid files or unknown override IDs fail startup. A user's published versions take priority for that user's new cases; frozen case snapshots remain unchanged. File changes are loaded on service restart. The retired `china-indonesia-demo` ID is excluded from template, draft and case lists (including pagination totals), cannot be republished or saved as a draft, and returns 404 on direct template/draft/case access. No automatic deletion of underlying records or files occurs.
+
+
+## 节点会话与引导报告
+
+- `GET /cases/{case_id}/conversations?stage_id=&limit=100&offset=0`：账号内业务的会话元数据，稳定按创建时间、ID 排序，limit 最大 200；可按节点过滤。
+- `POST /cases/{case_id}/stages/{stage_id}/conversations`：`{client_request_id, title?}`，幂等创建真实会话；每节点最多 100 个会话，未解锁节点拒绝创建。返回含 `id, stage_id, title, kind, created_at, updated_at`。
+- `POST /cases/{case_id}/stages/{stage_id}/guide-conversation`：确保节点唯一引导会话与首次提问消息，重复调用不重复提问；返回 `kind=guide`。
+- `GET /cases/{case_id}/messages` 新增可选 `conversation_id`；提供时只读取该会话，校验其业务与节点归属。未提供时保留旧版节点历史行为。
+- 消息 JSON 与流式接口新增可选 `conversation_id`、`mode: auto|legal`、`skills: (guidance|materials|legal|draft|handoff)[]`。流式事件新增 `step`，数据为实际 TraceStep；最终响应格式不变，消息可含 `conversation_id`，引导报告消息附带 `guide_result` 快照（步骤仍由 `trace` 提供）。文稿起草与消息使用同一幂等请求保存，重复提交不重复创建文稿。
+- `GET /cases/{case_id}/stages/{stage_id}/guides?limit=20&offset=0`：不可变分析快照列表，最新优先，limit 最大 100，含状态、真实步骤、结果及失败原因。
+- `POST /cases/{case_id}/stages/{stage_id}/guides/{guide_id}/retry`：`{client_request_id}`，新建重试记录并返回 `{id}`，保留旧记录。
+
+任务通过核验后登记去重的自动分析任务，后台追加报告；读取会话及引导记录会恢复待执行任务。未配置模型时保持演示说明。完整边界见 [节点工作区](NODE_WORKSPACE.md)。

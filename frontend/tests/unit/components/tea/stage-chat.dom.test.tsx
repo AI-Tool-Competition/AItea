@@ -218,6 +218,7 @@ describe("stage chat experience", () => {
       <Workspace
         accountId="owner"
         record={record}
+        conversationId="chat-test"
         stageId="stage"
         setStageId={() => undefined}
         capabilities={capabilities}
@@ -228,7 +229,13 @@ describe("stage chat experience", () => {
     const mounted = render(workspace);
     const input = await send();
     fireEvent.change(input, { target: { value: "正在编辑下一条" } });
-    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        stream.fetcher.mock.calls.filter(
+          ([, options]) => options?.method === "POST",
+        ),
+      ).toHaveLength(1),
+    );
     await act(async () => {
       stream.event("delta", { text: "正在流式接收" });
     });
@@ -237,6 +244,7 @@ describe("stage chat experience", () => {
       <Workspace
         accountId="owner"
         record={record}
+        conversationId="chat-test"
         stageId="stage"
         setStageId={() => undefined}
         capabilities={capabilities}
@@ -244,7 +252,11 @@ describe("stage chat experience", () => {
         onUpload={() => undefined}
       />,
     );
-    expect(stream.fetcher.mock.calls[1]![1]!.signal?.aborted).toBe(false);
+    expect(
+      stream.fetcher.mock.calls.find(
+        ([, options]) => options?.method === "POST",
+      )?.[1]?.signal?.aborted,
+    ).toBe(false);
     expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe(
       "正在编辑下一条",
     );

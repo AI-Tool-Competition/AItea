@@ -132,11 +132,19 @@ describe("Draft and revision safety", () => {
     expect(
       screen.getByLabelText<HTMLTextAreaElement>("正文 · 支持 Markdown").value,
     ).toBe("用户尚未保存的文字");
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "保存版本" })
+        .disabled,
+    ).toBe(true);
+    expect(fetcher).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "核对后采用最新版本号" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
-    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetcher).toHaveBeenCalled());
     expect(
       JSON.parse(fetcher.mock.calls[0]![1]!.body as string).expected_version,
-    ).toBe(1);
+    ).toBe(2);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("版本冲突"),
     );

@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import logging
@@ -79,6 +80,9 @@ class Service:
         from .retrieval import RetrievalIndex
 
         self.index = RetrievalIndex(self)
+        from .node_workspace import NodeWorkspace
+
+        self.node_workspace = NodeWorkspace(self)
 
     @property
     def capabilities(self):
@@ -673,6 +677,16 @@ class Service:
                 "任务核验通过" if passed else "核验发现待补充事项",
                 f"「{task['title']}」：" + "；".join(c["reason"] for c in checks if c["status"] != "passed"),
             )
+            if passed:
+                current = self.case_detail(owner, case_id, conn)
+                stage, _ = self.get_task(current, task_id)
+                self.node_workspace.queue_guide(
+                    conn,
+                    current,
+                    stage["id"],
+                    f"task:{task_id}:{revision}",
+                    f"完成「{task['title']}」后的分析",
+                )
             return self.case_detail(owner, case_id, conn)
 
     def own_document(self, conn, owner, id):
@@ -1233,21 +1247,31 @@ class Service:
         )
         return message
 
-    def messages(self, owner, case_id, stage_id=None, limit=100, offset=0):
+    def messages(self, owner, case_id, stage_id=None, limit=100, offset=0, conversation_id=None):
         with closing(self.db.connect()) as conn:
             self.own_case(conn, owner, case_id)
+            if conversation_id:
+                self.node_workspace.own_conversation(conn, owner, case_id, conversation_id, stage_id)
             rows = conn.execute(
-                "SELECT * FROM messages WHERE case_id=? AND (? IS NULL OR stage_id=?) ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (case_id, stage_id, stage_id, limit, offset),
+                """SELECT m.*,cm.conversation_id,gr.result guide_result FROM messages m LEFT JOIN conversation_messages cm ON cm.message_id=m.id
+                LEFT JOIN guide_messages gm ON gm.message_id=m.id LEFT JOIN stage_guide_runs gr ON gr.id=gm.guide_id
+                WHERE m.case_id=? AND (? IS NULL OR m.stage_id=?) AND (? IS NULL OR cm.conversation_id=?)
+                ORDER BY m.created_at DESC,m.id DESC LIMIT ? OFFSET ?""",
+                (case_id, stage_id, stage_id, conversation_id, conversation_id, limit, offset),
             ).fetchall()
             total = conn.execute(
-                "SELECT COUNT(*) n FROM messages WHERE case_id=? AND (? IS NULL OR stage_id=?)",
-                (case_id, stage_id, stage_id),
+                """SELECT COUNT(*) n FROM messages m LEFT JOIN conversation_messages cm ON cm.message_id=m.id
+                WHERE m.case_id=? AND (? IS NULL OR m.stage_id=?) AND (? IS NULL OR cm.conversation_id=?)""",
+                (case_id, stage_id, stage_id, conversation_id, conversation_id),
             ).fetchone()["n"]
             return {
                 "items": [
                     {
-                        key: json.loads(row[key]) if key in ("citations", "trace") else row[key]
+                        key: self.node_workspace.public_report(row[key])
+                        if key == "guide_result"
+                        else json.loads(row[key])
+                        if key in ("citations", "trace")
+                        else row[key]
                         for key in (
                             "id",
                             "role",
@@ -1257,6 +1281,8 @@ class Service:
                             "created_at",
                             "citations",
                             "trace",
+                            "conversation_id",
+                            "guide_result",
                         )
                     }
                     for row in reversed(rows)
@@ -1324,9 +1350,22 @@ class Service:
         return run_workflow(self, owner, template, stage, content, tasks, **options)
 
     def prepare_message(self, owner, case_id, payload):
+        # Retain historical request hashes for legacy clients.
+        if not payload.get("conversation_id"):
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in ("conversation_id", "mode", "skills")
+            }
         payload_hash = hashlib.sha256(dump(payload).encode()).hexdigest()
         with closing(self.db.connect()) as conn:
             case = self.case_detail(owner, case_id, conn)
+            conversation_id = payload.get("conversation_id")
+            conversation = None
+            if conversation_id:
+                conversation = self.node_workspace.own_conversation(
+                    conn, owner, case_id, conversation_id, payload["stage_id"]
+                )
             existing = conn.execute(
                 "SELECT * FROM message_requests WHERE case_id=? AND client_id=?",
                 (case_id, payload["client_message_id"]),
@@ -1338,18 +1377,34 @@ class Service:
             stage = next((s for s in case["stages"] if s["id"] == payload["stage_id"]), None)
             if stage is None:
                 fail(422, "invalid_stage", "无效的对话节点")
+            if conversation_id and stage["status"] == "locked":
+                fail(409, "stage_locked", "节点解锁后才能继续对话")
             task_id = payload.get("task_id")
             if task_id and not any(t["id"] == task_id for t in stage["tasks"]):
                 fail(422, "invalid_task", "所选任务不属于当前节点")
             selected = next((t for t in stage["tasks"] if t["id"] == task_id), stage["tasks"][0])
             recent = conn.execute(
-                "SELECT role,content FROM messages WHERE case_id=? AND stage_id=? ORDER BY created_at DESC LIMIT 12",
-                (case_id, stage["id"]),
+                """SELECT m.role,m.content FROM messages m LEFT JOIN conversation_messages cm ON cm.message_id=m.id
+                WHERE m.case_id=? AND m.stage_id=? AND (? IS NULL OR cm.conversation_id=?)
+                ORDER BY m.created_at DESC,m.id DESC LIMIT 12""",
+                (case_id, stage["id"], conversation_id, conversation_id),
             ).fetchall()
             history = [
                 {"role": message["role"], "content": message["content"][:3000]}
                 for message in reversed(recent)
             ]
+            memory = (
+                self.node_workspace.memory(
+                    conn, owner, case, stage["id"], conversation_id, payload["content"]
+                )
+                if conversation_id
+                else None
+            )
+            guide_phase = (
+                self.node_workspace.guide_phase(conn, conversation_id)
+                if conversation and conversation["kind"] == "guide"
+                else None
+            )
         return {
             "case": case,
             "stage": stage,
@@ -1357,6 +1412,8 @@ class Service:
             "history": history,
             "task_id": task_id,
             "payload_hash": payload_hash,
+            "memory": memory,
+            "guide_phase": guide_phase,
         }
 
     def post_message(self, owner, case_id, payload, *, emit=None, check_cancelled=None):
@@ -1389,8 +1446,67 @@ class Service:
             check_cancelled()
         agent = stage.get("analysis") or case["template"]["agent"]
         legal_enabled = bool((agent.get("legal") or {}).get("enabled"))
+        conversation_id = payload.get("conversation_id")
+        skills = []
+        collecting = False
+        if conversation_id:
+            from .node_workspace import SKILLS, select_skills
+
+            skills = select_skills(payload["content"], payload.get("skills", []), payload.get("mode", "auto"))
+            legal_enabled = "legal" in skills
+            phase = prepared.get("guide_phase")
+            start_report = (
+                bool(
+                    re.search(
+                        r"开始分析|进行分析|先分析|直接分析|生成.{0,6}报告|就这些|没有.{0,5}(?:材料|资料)|先继续",
+                        payload["content"],
+                    )
+                )
+                or payload.get("mode") == "legal"
+            )
+            collecting = bool(
+                phase
+                and not phase["has_report"]
+                and phase["answers"] < 2
+                and not start_report
+                and "draft" not in skills
+            )
+            if phase and not collecting and (not phase["has_report"] or start_report):
+                legal_enabled = True
+                if "legal" not in skills:
+                    skills.append("legal")
+            if collecting:
+                legal_enabled = False
+                skills = ["guidance"]
+            if emit:
+                emit("status", {"label": "正在调用" + "、".join(SKILLS[key] for key in skills) + "…"})
         if legal_enabled:
             question = payload["content"]
+            chat_context = None
+            if conversation_id and len(question) < 12000:
+                memory = prepared["memory"]
+                shared = {
+                    "recent_messages": [
+                        {"role": item["role"], "content": item["content"][:500]}
+                        for item in prepared["history"][-6:]
+                    ],
+                    "node_discussions": [
+                        {
+                            "message_id": item["message_id"],
+                            "question": item["question"][:300],
+                            "summary": item["summary"][:400],
+                            "status": item["status"],
+                        }
+                        for item in memory["other_conversations"][:3]
+                    ],
+                    "shared_facts": [
+                        {**fact, "value": str(fact["value"])[:200]} for fact in memory["shared_facts"][:15]
+                    ],
+                    "node_progress": memory["node_progress"],
+                }
+                context_text = dump(shared)
+                if len(question) + len(context_text) < 19000:
+                    chat_context = shared
             with closing(self.db.connect()) as conn:
                 retry = conn.execute(
                     """SELECT a.payload FROM legal_requests r JOIN legal_analyses a ON a.id=r.analysis_id
@@ -1402,8 +1518,10 @@ class Service:
                     (owner, case_id, stage["id"]),
                 ).fetchone()
             if retry:
-                question = json.loads(retry["payload"])["question"]
-            elif prior:
+                stored = json.loads(retry["payload"])
+                question = stored["question"]
+                chat_context = stored.get("_chat_context")
+            elif prior and not conversation_id:
                 prior = json.loads(prior["payload"])
                 if prior["status"] == "needs_input":
                     question = prior["question"] + "\n\n用户补充说明：" + question
@@ -1411,7 +1529,7 @@ class Service:
                 fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在本节点分析中整理事实后继续")
 
             def legal_emit(event, data):
-                if emit and event in ("status", "delta"):
+                if emit and (event in ("status", "delta") or (conversation_id and event == "step")):
                     emit(event, data)
 
             analysis = self.legal.analyze(
@@ -1422,6 +1540,7 @@ class Service:
                     "question": question,
                     "client_request_id": "chat:" + payload["client_message_id"],
                     "_chat_content": payload["content"],
+                    **({"_chat_context": chat_context} if chat_context is not None else {}),
                 },
                 emit=legal_emit if emit else None,
                 check_cancelled=check_cancelled,
@@ -1430,23 +1549,82 @@ class Service:
             if emit:
                 emit("delta", {"text": result["output"]})
         else:
-            result = self.run_workflow(
-                owner,
-                case["template"],
-                stage,
-                payload["content"],
-                [prepared["selected"]],
-                case_id=case_id,
-                **({"emit": emit, "check_cancelled": check_cancelled} if emit else {}),
-                context={
-                    "facts": case["facts"],
-                    "mode": next(
-                        (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]), None
-                    ),
-                    "recent_messages": prepared["history"],
-                    "node_analysis": self.studio.node_context(owner, case, stage["id"]),
+            workflow_stage = stage
+            if conversation_id:
+                workflow_stage = copy.deepcopy(stage)
+                workflow_stage["analysis"] = copy.deepcopy(agent)
+                workflow_stage["analysis"]["legal"] = {
+                    **(workflow_stage["analysis"].get("legal") or {}),
+                    "enabled": False,
+                }
+                if "draft" in skills:
+                    for step in workflow_stage["analysis"]["steps"]:
+                        if step["type"] == "guide":
+                            step["instructions"] = (
+                                step.get("instructions", "")
+                                + "\n用户要求新建文稿，请直接输出完整 Markdown 文稿正文，缺少的事实标为待补充，不要声称文稿已审批或手续已办理。"
+                            )
+            if collecting:
+                result = self.node_workspace.intake(
+                    agent,
+                    payload["content"],
+                    {"node_memory": prepared["memory"], "recent_messages": prepared["history"]},
+                    emit,
+                    check_cancelled,
+                )
+            else:
+                result = self.run_workflow(
+                    owner,
+                    case["template"],
+                    workflow_stage,
+                    payload["content"],
+                    [prepared["selected"]],
+                    case_id=case_id,
+                    **({"emit": emit, "check_cancelled": check_cancelled} if emit else {}),
+                    context={
+                        "facts": prepared["memory"]["shared_facts"] if conversation_id else case["facts"],
+                        "guide_intake": prepared.get("guide_phase")
+                        if conversation_id and collecting
+                        else None,
+                        "mode": next(
+                            (mode for mode in case["template"]["modes"] if mode["id"] == case["mode_id"]),
+                            None,
+                        ),
+                        "recent_messages": prepared["history"],
+                        "node_analysis": self.studio.node_context(owner, case, stage["id"]),
+                        **(
+                            {"node_memory": prepared["memory"], "selected_skills": skills}
+                            if conversation_id
+                            else {}
+                        ),
+                    },
+                )
+        if (
+            conversation_id
+            and "draft" in skills
+            and legal_enabled
+            and self.capabilities["assistant_mode"] == "live"
+        ):
+            from .assistant import generate_guidance
+
+            if emit:
+                emit("start", {"step_id": "draft"})
+                emit("status", {"label": "正在起草 Markdown 文稿…"})
+            content = generate_guidance(
+                agent,
+                {
+                    "instructions": "用户明确要求新建文稿。请直接输出完整 Markdown 文稿正文；以法律核对结果为约束，未知内容标为待补充。"
                 },
+                payload["content"],
+                {"node_memory": prepared["memory"], "recent_messages": prepared["history"]},
+                result["citations"],
+                [],
+                result["output"],
+                on_delta=(lambda text: emit("delta", {"text": text})) if emit else None,
+                check_cancelled=check_cancelled,
+                max_tokens=4000,
             )
+            result = {**result, "output": content}
         if emit and any(step["status"] == "failed" for step in result["trace"]):
             fail(502, "assistant_failed", "回复未能完成，已收到的内容仅供参考。请重试。")
         output, trace, citations = result["output"], result["trace"], result["citations"]
@@ -1474,6 +1652,47 @@ class Service:
                     conn, case_id, stage["id"], task_id, "assistant", output, citations, trace
                 ),
             ]
+            if conversation_id:
+                if prepared.get("guide_phase") is not None and legal_enabled:
+                    guide_id = self.node_workspace.queue_guide(
+                        conn, current, stage["id"], "chat:" + payload["client_message_id"], "引导会话分析报告"
+                    )
+                    snapshot = {
+                        **result,
+                        "status": "completed",
+                        "legal_analysis_id": analysis["id"],
+                        "legal_revision": analysis["revision"],
+                        "case_revision": current["revision"],
+                        "created_at": now(),
+                    }
+                    self.node_workspace.save_guide(
+                        conn,
+                        current,
+                        stage["id"],
+                        snapshot,
+                        "chat:" + payload["client_message_id"],
+                        guide_id,
+                        messages[1]["id"],
+                    )
+                    messages[1]["guide_result"] = {**snapshot, "trace": []}
+                if "draft" in skills:
+                    title_match = re.search(r"[《「“]([^》」”\n]{1,100})[》」”]", payload["content"])
+                    title = title_match[1] if title_match else prepared["selected"]["title"] + " · 文稿"
+                    artifact = self.create_artifact(
+                        owner,
+                        case_id,
+                        {"task_id": prepared["selected"]["id"], "title": title},
+                        content=output if self.capabilities["assistant_mode"] == "live" else None,
+                        conn=conn,
+                    )
+                    messages[1]["content"] += (
+                        f"\n\n已新建文稿「{artifact['title']}」，可在右侧“文稿”中预览和编辑。"
+                    )
+                    conn.execute(
+                        "UPDATE messages SET content=? WHERE id=?",
+                        (messages[1]["content"], messages[1]["id"]),
+                    )
+                self.node_workspace.remember_turn(conn, current, conversation_id, messages)
             conn.execute(
                 "INSERT INTO message_requests VALUES (?,?,?,?)",
                 (case_id, payload["client_message_id"], payload_hash, dump(messages)),
@@ -1495,8 +1714,11 @@ class Service:
             fail(404, "not_found", "未找到文稿")
         return row
 
-    def create_artifact(self, owner, case_id, payload):
-        with self.db.transaction() as conn:
+    def create_artifact(self, owner, case_id, payload, *, content=None, conn=None):
+        if conn is None:
+            with self.db.transaction() as transaction:
+                return self.create_artifact(owner, case_id, payload, content=content, conn=transaction)
+        if conn is not None:
             case = self.case_detail(owner, case_id, conn)
             _, task = self.get_task(case, payload["task_id"])
             template = task.get("output_template") or "# " + task["title"] + "\n\n" + "\n\n".join(
@@ -1504,10 +1726,14 @@ class Service:
             )
             facts = {f["key"]: f["value"] for f in case["facts"]}
             facts.update(task["values"])
-            content = re.sub(
-                r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}",
-                lambda match: str(facts.get(match[1]) or f"【待填写：{match[1]}】"),
-                template,
+            content = (
+                content
+                if content is not None
+                else re.sub(
+                    r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}",
+                    lambda match: str(facts.get(match[1]) or f"【待填写：{match[1]}】"),
+                    template,
+                )
             )
             id, at = uid(), now()
             conn.execute(

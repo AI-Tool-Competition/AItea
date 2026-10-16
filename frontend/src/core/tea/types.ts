@@ -222,10 +222,42 @@ export interface Message {
   created_at: string;
   citations: Citation[];
   trace: TraceStep[];
+  conversation_id?: string | null;
+  guide_result?: LegalResult | null;
+}
+export type ChatSkill =
+  | "guidance"
+  | "materials"
+  | "legal"
+  | "draft"
+  | "handoff";
+export interface NodeConversation {
+  id: string;
+  case_id: string;
+  stage_id: string;
+  title: string;
+  kind: "guide" | "chat";
+  created_at: string;
+  updated_at: string;
+}
+export interface GuideRun {
+  id: string;
+  stage_id: string;
+  title: string;
+  status: "queued" | "running" | "completed" | "failed";
+  case_revision: number;
+  created_at: string;
+  completed_at: string | null;
+  result: (LegalResult & { status: string }) | null;
+  trace: TraceStep[];
+  error: string;
 }
 export interface MessageInput {
   stage_id: string;
   task_id?: string;
+  conversation_id?: string;
+  mode?: "auto" | "legal";
+  skills?: ChatSkill[];
   content: string;
   client_message_id: string;
 }
@@ -236,7 +268,8 @@ export interface MessageResult {
 export type MessageStreamEvent =
   | { event: "status"; data: { label: string; step_id?: string } }
   | { event: "start"; data: { step_id: string } }
-  | { event: "delta"; data: { text: string } };
+  | { event: "delta"; data: { text: string } }
+  | { event: "step"; data: TraceStep };
 export interface Capabilities {
   assistant_mode: "demo" | "live";
   retrieval_mode: "lexical" | "hybrid";

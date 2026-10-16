@@ -748,7 +748,7 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14, 15])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
 def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
     document(archive, "law")
     with archive.db.transaction() as conn:

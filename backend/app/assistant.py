@@ -7,12 +7,14 @@ import json
 import copy
 import asyncio
 import codecs
+import hashlib
 import logging
 import os
 import re
 import threading
 from contextlib import closing
 from time import monotonic, perf_counter
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -85,6 +87,48 @@ def guidance_inputs(content, context, citations, checks, previous_output):
     }
 
 
+def conversation_prompt_cache_key(owner, case_id, stage_id):
+    """Return a stable, opaque cache-routing key scoped to one user's stage chat."""
+    scope = "\x1f".join(str(value) for value in (owner, case_id, stage_id))
+    return "aitea-chat-v1-" + hashlib.sha256(scope.encode()).hexdigest()[:32]
+
+
+def _uses_openai_endpoint(base):
+    parsed = urlsplit(base)
+    return parsed.scheme == "https" and parsed.hostname == "api.openai.com"
+
+
+def _log_prompt_usage(usage):
+    if not isinstance(usage, dict):
+        return
+    details = usage.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    prompt_tokens = usage.get("prompt_tokens")
+    cached_tokens = details.get("cached_tokens", 0)
+    cache_write_tokens = details.get("cache_write_tokens", 0)
+    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens < 0:
+        return
+    cached_tokens = (
+        cached_tokens
+        if isinstance(cached_tokens, int) and not isinstance(cached_tokens, bool)
+        else 0
+    )
+    cache_write_tokens = (
+        cache_write_tokens
+        if isinstance(cache_write_tokens, int) and not isinstance(cache_write_tokens, bool)
+        else 0
+    )
+    cached_tokens, cache_write_tokens = max(0, cached_tokens), max(0, cache_write_tokens)
+    logger.info(
+        "provider_prompt_usage",
+        extra={
+            "prompt_tokens": prompt_tokens,
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+        },
+    )
+
+
 def generate_guidance(
     agent,
     step,
@@ -97,6 +141,7 @@ def generate_guidance(
     on_delta=None,
     check_cancelled=None,
     max_tokens=1500,
+    prompt_cache_key=None,
 ):
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or not 1 <= max_tokens <= 8000:
         raise ValueError("invalid provider token budget")
@@ -123,12 +168,16 @@ def generate_guidance(
     }
     if on_delta is not None:
         body["stream"] = True
+    base = (os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+    if prompt_cache_key and _uses_openai_endpoint(base):
+        body["prompt_cache_key"] = prompt_cache_key
+        if on_delta is not None:
+            body["stream_options"] = {"include_usage": True}
     if not _PROVIDER_SLOTS.acquire(blocking=False):
         raise RuntimeError("provider busy")
     try:
-        base = (os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
         if on_delta is not None:
-            output = asyncio.run(stream_guidance(base, body, on_delta, check_cancelled))
+            output = asyncio.run(stream_guidance(base, body, on_delta, check_cancelled, _log_prompt_usage))
         else:
             deadline = monotonic() + 45
             with httpx.Client(timeout=45, trust_env=False) as client:
@@ -148,7 +197,9 @@ def generate_guidance(
                         raw.extend(part)
                         if len(raw) > _MAX_PROVIDER_BYTES:
                             raise ValueError("provider response too large")
-            output = json.loads(raw)["choices"][0]["message"]["content"]
+            response_data = json.loads(raw)
+            _log_prompt_usage(response_data.get("usage"))
+            output = response_data["choices"][0]["message"]["content"]
         if not isinstance(output, str) or not output.strip() or len(output) > 20000:
             raise ValueError("invalid provider response")
         return output
@@ -156,10 +207,10 @@ def generate_guidance(
         _PROVIDER_SLOTS.release()
 
 
-async def stream_guidance(base, body, on_delta, check_cancelled):
+async def stream_guidance(base, body, on_delta, check_cancelled, on_usage=None):
     async def read():
         decoder = codecs.getincrementaldecoder("utf-8")()
-        buffer, output, size = "", "", 0
+        buffer, output, size, usage = "", "", 0, None
         async with asyncio.timeout(45), httpx.AsyncClient(timeout=45, trust_env=False) as client:
             async with client.stream(
                 "POST",
@@ -182,12 +233,16 @@ async def stream_guidance(base, body, on_delta, check_cancelled):
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":
+                            if usage is not None and on_usage:
+                                on_usage(usage)
                             return output
                         if not data:
                             continue
                         payload = json.loads(data)
                         if "error" in payload:
                             raise ValueError("provider stream error")
+                        if isinstance(payload.get("usage"), dict):
+                            usage = payload["usage"]
                         choices = payload.get("choices", [])
                         if not choices:
                             continue
@@ -246,6 +301,7 @@ def run_workflow(
     emit=None,
     check_cancelled=None,
     document_ids=None,
+    prompt_cache_key=None,
     capture_data=False,
     resume=None,
     on_checkpoint=None,
@@ -428,6 +484,7 @@ def run_workflow(
                             result["citations"],
                             result["checks"],
                             previous_output,
+                            prompt_cache_key=prompt_cache_key,
                             **stream_options,
                         )
                         trace["detail"] = (

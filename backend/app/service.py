@@ -1383,8 +1383,11 @@ class Service:
                 self._active_chats.discard(case_id)
 
     def finish_message(self, owner, case_id, payload, prepared, emit, check_cancelled):
+        from .assistant import conversation_prompt_cache_key
+
         case, stage = prepared["case"], prepared["stage"]
         task_id, payload_hash = prepared["task_id"], prepared["payload_hash"]
+        prompt_cache_key = conversation_prompt_cache_key(owner, case_id, stage["id"])
         if check_cancelled:
             check_cancelled()
         agent = stage.get("analysis") or case["template"]["agent"]
@@ -1425,6 +1428,7 @@ class Service:
                 },
                 emit=legal_emit if emit else None,
                 check_cancelled=check_cancelled,
+                prompt_cache_key=prompt_cache_key,
             )
             result = analysis["result"]
             if emit:
@@ -1437,6 +1441,7 @@ class Service:
                 payload["content"],
                 [prepared["selected"]],
                 case_id=case_id,
+                prompt_cache_key=prompt_cache_key,
                 **({"emit": emit, "check_cancelled": check_cancelled} if emit else {}),
                 context={
                     "facts": case["facts"],

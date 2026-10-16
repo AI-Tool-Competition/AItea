@@ -872,7 +872,17 @@ class LegalService:
             current[fact["key"]] = self.public(fact)
         result["facts"] = list(current.values())
 
-    def analyze(self, owner, case_id, payload, *, analysis_id=None, emit=None, check_cancelled=None):
+    def analyze(
+        self,
+        owner,
+        case_id,
+        payload,
+        *,
+        analysis_id=None,
+        emit=None,
+        check_cancelled=None,
+        prompt_cache_key=None,
+    ):
         from .legal_models import LegalResult
         from .service import AppError
         from .streaming import StreamCancelled
@@ -918,6 +928,7 @@ class LegalService:
                 emit=emit,
                 check_cancelled=check_cancelled,
                 on_checkpoint=checkpoint,
+                prompt_cache_key=prompt_cache_key,
             )
             result = LegalResult.model_validate(result).model_dump(mode="json")
             stale = False

@@ -221,7 +221,7 @@ class NodeWorkspace:
                 )
         return conversation
 
-    def intake(self, agent, question, context, emit=None, check_cancelled=None):
+    def intake(self, agent, question, context, emit=None, check_cancelled=None, prompt_cache_key=None):
         from .assistant import generate_guidance
 
         if self.service.capabilities["assistant_mode"] == "live":
@@ -237,6 +237,7 @@ class NodeWorkspace:
                 "",
                 on_delta=(lambda text: emit("delta", {"text": text})) if emit else None,
                 check_cancelled=check_cancelled,
+                prompt_cache_key=prompt_cache_key,
             )
         else:
             output = (

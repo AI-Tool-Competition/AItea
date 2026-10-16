@@ -67,6 +67,7 @@ def provider(monkeypatch, chunks):
 
     monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    sent = []
 
     class ProviderResponse:
         async def __aenter__(self):
@@ -94,9 +95,11 @@ def provider(monkeypatch, chunks):
 
         def stream(self, *args, **kwargs):
             assert kwargs["json"]["stream"] is True
+            sent.append(kwargs["json"])
             return ProviderResponse()
 
     monkeypatch.setattr(httpx, "AsyncClient", ProviderClient)
+    return sent
 
 
 def delta(text):
@@ -122,6 +125,68 @@ def test_provider_forwards_utf8_deltas_before_reading_next_chunk(monkeypatch):
     )
     assert output == "准备茶叶资料。"
     assert seen == ["准备茶叶", "资料。"]
+
+
+def test_chat_stream_reuses_opaque_openai_cache_key_and_logs_usage(chat, monkeypatch, caplog):
+    import logging
+
+    client, case, payload, owner = chat
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    caplog.set_level(logging.INFO, logger="app.assistant")
+
+    usage = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 1500,
+            "prompt_tokens_details": {"cached_tokens": 1024, "cache_write_tokens": 0},
+        },
+    }
+
+    def chunks():
+        yield delta("请先整理产品信息。")
+        yield ("data: " + json.dumps(usage) + "\n\n").encode()
+        yield b"data: [DONE]\n\n"
+
+    sent = provider(monkeypatch, chunks)
+    url = f"/api/tea/cases/{case['id']}/messages/stream"
+    first = client.post(url, json=payload)
+    second = client.post(
+        url,
+        json=payload | {"content": "还需要哪些材料？", "client_message_id": "stream-2"},
+    )
+
+    expected = assistant.conversation_prompt_cache_key(owner, case["id"], payload["stage_id"])
+    assert first.status_code == second.status_code == 200
+    assert sent[0]["prompt_cache_key"] == sent[1]["prompt_cache_key"] == expected
+    assert all(value not in expected for value in (owner, case["id"], payload["stage_id"]))
+    assert expected != assistant.conversation_prompt_cache_key(
+        "another-user", case["id"], payload["stage_id"]
+    )
+    assert expected != assistant.conversation_prompt_cache_key(owner, case["id"], "another-stage")
+    assert sent[0]["stream_options"] == {"include_usage": True}
+    usage_records = [record for record in caplog.records if record.getMessage() == "provider_prompt_usage"]
+    assert len(usage_records) == 2
+    assert usage_records[-1].cached_tokens == 1024
+    assert usage_records[-1].prompt_tokens == 1500
+
+
+def test_openai_specific_cache_fields_are_omitted_for_custom_provider(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "https://provider.invalid/v1")
+    sent = provider(monkeypatch, lambda: iter([delta("已收到。"), b"data: [DONE]\n\n"]))
+    output = assistant.generate_guidance(
+        {"language": "zh-CN", "instructions": ""},
+        {},
+        "",
+        {},
+        [],
+        [],
+        "",
+        on_delta=lambda _: None,
+        prompt_cache_key="aitea-chat-v1-test",
+    )
+    assert output == "已收到。"
+    assert "prompt_cache_key" not in sent[0]
+    assert "stream_options" not in sent[0]
 
 
 def test_truncated_provider_stream_fails_without_saving_a_reply(chat, monkeypatch):

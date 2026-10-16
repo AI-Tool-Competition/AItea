@@ -383,6 +383,7 @@ class _LegalRunner:
                     [],
                     "",
                     max_tokens=6000,
+                    prompt_cache_key=self.options.get("prompt_cache_key"),
                     on_delta=(lambda _: None) if self.options.get("check_cancelled") else None,
                     check_cancelled=self.cancel,
                 )
@@ -1234,6 +1235,7 @@ def run_legal_analysis(
     resume=None,
     on_checkpoint=None,
     context=None,
+    prompt_cache_key=None,
 ):
     return _LegalRunner(
         service,
@@ -1252,4 +1254,5 @@ def run_legal_analysis(
         resume=resume,
         on_checkpoint=on_checkpoint,
         context=context,
+        prompt_cache_key=prompt_cache_key,
     ).run()

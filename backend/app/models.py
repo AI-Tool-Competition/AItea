@@ -348,6 +348,7 @@ class Search(StrictModel):
     as_of: date | None = None
     collection: str | None = Field(default=None, min_length=1, max_length=100)
     country: str | None = Field(default=None, pattern=r"^(?:[A-Z]{2}|unassigned)$")
+    source_scope: Literal["personal", "system"] | None = None
 
 
 class SearchResult(StrictModel):

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,17 +9,7 @@ import { type Document, type ListResult } from "@/core/tea/types";
 
 import { Busy, ErrorNotice } from "./shared";
 
-export function DocumentChooser({
-  selected,
-  onChange,
-  scope,
-  collection,
-  country,
-  primaryOnly = false,
-  excludeId,
-  multiple = true,
-  sourceScope,
-}: {
+interface DocumentChooserProps {
   selected: string[];
   onChange: (ids: string[]) => void;
   scope?: string | null;
@@ -29,7 +19,48 @@ export function DocumentChooser({
   excludeId?: string;
   multiple?: boolean;
   sourceScope?: "personal" | "system";
-}) {
+  ownerId?: string;
+}
+
+export function DocumentChooser(props: DocumentChooserProps) {
+  const boundary = JSON.stringify([
+    props.ownerId ?? "session",
+    props.scope ?? "",
+    props.collection ?? "",
+    props.country ?? "",
+    props.sourceScope ?? "all",
+    !!props.primaryOnly,
+    props.excludeId ?? "",
+  ]);
+  const previous = useRef(boundary);
+  const onChange = useRef(props.onChange);
+  onChange.current = props.onChange;
+  const changed = previous.current !== boundary;
+  useEffect(() => {
+    if (previous.current === boundary) return;
+    previous.current = boundary;
+    onChange.current([]);
+  }, [boundary]);
+  return (
+    <ScopedDocumentChooser
+      key={boundary}
+      {...props}
+      selected={changed ? [] : props.selected}
+    />
+  );
+}
+
+function ScopedDocumentChooser({
+  selected,
+  onChange,
+  scope,
+  collection,
+  country,
+  primaryOnly = false,
+  excludeId,
+  multiple = true,
+  sourceScope,
+}: DocumentChooserProps) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
@@ -51,6 +82,7 @@ export function DocumentChooser({
       offset: String(offset),
     });
     if (scope) params.set("case_id", scope);
+    else if (sourceScope === "personal") params.set("library_only", "true");
     if (collection) params.set("collection", collection);
     if (country) params.set("country", country);
     if (sourceScope) params.set("source_scope", sourceScope);

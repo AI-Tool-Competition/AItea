@@ -41,7 +41,7 @@ make dev WEB_PORT=3001 API_PORT=8001
 
 资料库的采集清单按文档章节组织，当前提供印尼 5 章 29 项；条目详情可展开完整原始要求。先发现目录候选，再选择正文并指定一级／二级，二级关联同国主法规。目录记录、已取得原件、已解析和已审核分别显示；403、动态页面及缺件会保留待补记录。配置完成不代表 29 项已全部抓取。
 
-资料统一保存在实例的 `data/`，可用 `make archive-inventory COUNTRY=ID` 导出按账号、国家和版本整理的原件目录。布局与备份操作见 [资料存储与盘点](docs/STORAGE.md)。
+资料页分为所有登录用户可读的“法规总库”和账号隔离的“我的资料”，业务内可查看本业务上传及对应国家法规。上传只归当前账号所有。资料统一保存在实例的 `data/`，可用 `make archive-inventory COUNTRY=ID` 导出按账号、国家和版本整理的原件目录。权限及数据分层见 [数据体系](docs/DATA_PLATFORM.md)，完整实例备份与异地路径恢复见 [备份操作](docs/DATA_BACKUP.md)。
 
 ## 连接模型与真实资料
 
@@ -91,6 +91,8 @@ docker compose up --build
 
 - `docs/ARCHITECTURE.md`：模块边界、DeerFlow 接法与运行边界。
 - `docs/API_CONTRACT.md`：前后端接口与配置定义。
+- `docs/DATA_PLATFORM.md`：共享法规、私有资料、数据分层与迁移升级。
+- `docs/DATA_BACKUP.md`：完整实例备份、校验与恢复演练。
 - `docs/INGESTION.md`：解析器来源、格式支持、检索与采集限制。
 - `docs/plans/2026-10-11-tea-export-workbench.md`：已批准设计对应的实施与验收清单。
 

@@ -262,6 +262,8 @@ export function SourceForm({
           <fieldset className="ta-collection-fieldset">
             <legend>关联一级资料</legend>
             <DocumentChooser
+              ownerId={ownerId}
+              sourceScope="personal"
               primaryOnly
               selected={draft.plan.primary_document_ids}
               onChange={(ids) => plan({ primary_document_ids: ids })}

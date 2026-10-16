@@ -7,7 +7,7 @@ import {
   Search,
   Upload,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,11 +18,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   downloadUrl,
   errorMessage,
-  post,
   safeSourceUrl,
+  searchDocuments,
   teaRequest,
 } from "@/core/tea/api";
 import { countryLabel, useCollectionCountries } from "@/core/tea/countries";
@@ -32,10 +33,12 @@ import {
   type Document,
   type DocumentDetail,
   type ListResult,
-  type SearchResult,
 } from "@/core/tea/types";
 
+import { DocumentAttachments } from "./admin-library";
+import { DocumentHistory } from "./document-history";
 import { DocumentMetadataEditor } from "./document-metadata";
+import { DocumentRelations } from "./document-relations";
 import {
   ActionButton,
   Busy,
@@ -123,7 +126,7 @@ export function UploadDialog({
   initialParentId?: string;
   initialCountry?: string;
   cases: CaseSummary[];
-  onDone: () => void;
+  onDone: (document: Document) => void;
 }) {
   const [scope, setScope] = useState(caseId ?? "");
   const [role, setRole] = useState("primary");
@@ -142,12 +145,17 @@ export function UploadDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submitting = useRef(false);
+  const uploadRequest = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => uploadRequest.current?.abort(), []);
   useEffect(() => {
     if (!open) return;
     setScope(caseId ?? "");
     setRole(initialParentId ? "secondary" : "primary");
     setAttachmentCountry(initialCountry ?? "");
     setFile(null);
+    setTags("");
+    setParent("");
+    setDocs([]);
     setError("");
   }, [open, caseId, initialParentId, initialCountry]);
   useEffect(() => {
@@ -180,7 +188,9 @@ export function UploadDialog({
         role: "primary",
         limit: "100",
         offset: "0",
+        source_scope: "personal",
       });
+      if (!scope) params.set("library_only", "true");
       if (scope) params.set("case_id", scope);
       else
         params.set(
@@ -192,12 +202,17 @@ export function UploadDialog({
         { signal: controller.signal },
       );
       if (controller.signal.aborted) return;
+      if (original?.source_scope === "system") setParent("");
       const options = result.items.filter(
         (document) =>
-          document.role === "primary" && document.case_id === (scope || null),
+          document.role === "primary" &&
+          document.source_scope !== "system" &&
+          document.case_id === (scope || null),
       );
       setDocs(
-        original && !options.some((document) => document.id === original.id)
+        original &&
+          original.source_scope !== "system" &&
+          !options.some((document) => document.id === original.id)
           ? [original, ...options]
           : options,
       );
@@ -222,6 +237,8 @@ export function UploadDialog({
       setError("文件不能超过 20 MB。");
       return;
     }
+    const controller = new AbortController();
+    uploadRequest.current = controller;
     submitting.current = true;
     setBusy(true);
     setError("");
@@ -240,13 +257,18 @@ export function UploadDialog({
     if (scope) data.append("case_id", scope);
     if (role === "secondary") data.append("parent_id", parent);
     try {
-      await teaRequest<Document>("/documents", { method: "POST", body: data });
-      onDone();
+      const document = await teaRequest<Document>("/documents", {
+        method: "POST",
+        body: data,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      onDone(document);
       onOpenChange(false);
     } catch (e) {
-      setError(errorMessage(e));
+      if (!controller.signal.aborted) setError(errorMessage(e));
     } finally {
-      setBusy(false);
+      if (!controller.signal.aborted) setBusy(false);
       submitting.current = false;
     }
   }
@@ -256,7 +278,7 @@ export function UploadDialog({
         <DialogHeader>
           <DialogTitle>上传资料</DialogTitle>
           <DialogDescription>
-            主文件解析正文；关联附件保存原件。
+            资料仅当前账号可见。主文件解析正文；关联附件保存原件。
           </DialogDescription>
         </DialogHeader>
         <label className="tea-field">
@@ -266,7 +288,7 @@ export function UploadDialog({
             onChange={(e) => setScope(e.target.value)}
             disabled={busy}
           >
-            <option value="">公共资料库 · 当前账号</option>
+            <option value="">我的资料 · 仅当前账号</option>
             {cases.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title}
@@ -354,31 +376,50 @@ export function UploadDialog({
   );
 }
 
-export function Library({
-  onUpload,
-  revision,
-  cases,
-  initialCaseId,
-  scopeLocked = false,
-  ownerId,
-}: {
+export function Library(props: LibraryProps) {
+  return (
+    <LibraryWorkspace
+      key={`${props.ownerId ?? "session"}:${props.initialCaseId ?? "library"}`}
+      {...props}
+    />
+  );
+}
+
+interface LibraryProps {
   onUpload: (caseId?: string) => void;
   revision: number;
   cases: CaseSummary[];
   initialCaseId?: string;
   scopeLocked?: boolean;
   ownerId?: string;
-}) {
+  uploadedDocument?: Document;
+}
+
+function LibraryWorkspace({
+  onUpload,
+  revision,
+  cases,
+  initialCaseId,
+  scopeLocked = false,
+  ownerId,
+  uploadedDocument,
+}: LibraryProps) {
   const [scope, setScope] = useState(initialCaseId ?? "");
+  const [sourceScope, setSourceScope] = useState<"personal" | "system">(
+    initialCaseId ? "personal" : "system",
+  );
   const countries = useCollectionCountries(ownerId, !scope);
   const [countrySelection, setCountrySelection] = useState("");
-  const country = countrySelection || countries.defaultCountry;
+  const country =
+    countrySelection ||
+    (sourceScope === "personal" ? "all" : countries.defaultCountry);
   const [docs, setDocs] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
   const [moreBusy, setMoreBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [nameQuery, setNameQuery] = useState("");
   const [hits, setHits] = useState<Citation[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Document>();
@@ -386,10 +427,10 @@ export function Library({
   const requests = useRef<{ search?: AbortController; more?: AbortController }>(
     {},
   );
-  const scopeKey = `${ownerId ?? "session"}:${scope}:${country}`;
+  const scopeKey = `${ownerId ?? "session"}:${scope}:${sourceScope}:${country}:${nameQuery}`;
   const currentScope = useRef(scopeKey);
   currentScope.current = scopeKey;
-  function resetReads() {
+  const resetReads = useCallback(() => {
     requests.current.search?.abort();
     requests.current.more?.abort();
     requests.current = {};
@@ -397,21 +438,45 @@ export function Library({
     setSearching(false);
     setMoreBusy(false);
     setSelected(undefined);
-  }
+    setDocs([]);
+    setTotal(0);
+    setError("");
+    setLoading(true);
+  }, []);
   useEffect(() => {
     const active = requests.current;
     return () => {
       active.search?.abort();
       active.more?.abort();
     };
-  }, [scope, country, ownerId]);
+  }, [scope, country, sourceScope, nameQuery, ownerId]);
+  useEffect(() => {
+    if (
+      !uploadedDocument ||
+      (scopeLocked &&
+        (uploadedDocument.case_id ?? "") !== (initialCaseId ?? ""))
+    )
+      return;
+    resetReads();
+    setScope(uploadedDocument.case_id ?? "");
+    setSourceScope("personal");
+    setCountrySelection("all");
+    setQuery("");
+    setNameQuery("");
+    setSelected(uploadedDocument);
+  }, [uploadedDocument, initialCaseId, scopeLocked, resetReads]);
   useEffect(() => {
     if (!countries.ready) return;
     const controller = new AbortController();
     setLoading(true);
-    const params = new URLSearchParams({ limit: "100", offset: "0" });
+    const params = new URLSearchParams({
+      limit: "100",
+      offset: "0",
+      source_scope: sourceScope,
+    });
     if (scope) params.set("case_id", scope);
-    else params.set("country", country);
+    else if (country !== "all") params.set("country", country);
+    if (nameQuery) params.set("q", nameQuery);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
       signal: controller.signal,
     })
@@ -428,7 +493,16 @@ export function Library({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [revision, reload, scope, country, countries.ready, ownerId]);
+  }, [
+    revision,
+    reload,
+    scope,
+    country,
+    sourceScope,
+    nameQuery,
+    countries.ready,
+    ownerId,
+  ]);
   async function loadMore() {
     if (requests.current.more || !countries.ready) return;
     const abort = new AbortController();
@@ -439,9 +513,11 @@ export function Library({
       const params = new URLSearchParams({
         limit: "100",
         offset: String(docs.length),
+        source_scope: sourceScope,
       });
       if (scope) params.set("case_id", scope);
-      else params.set("country", country);
+      else if (country !== "all") params.set("country", country);
+      if (nameQuery) params.set("q", nameQuery);
       const data = await teaRequest<ListResult<Document>>(
         `/documents?${params}`,
         { signal: abort.signal },
@@ -462,16 +538,26 @@ export function Library({
     }
   }
   async function search() {
-    if (!query.trim() || requests.current.search || !countries.ready) return;
+    if (
+      !query.trim() ||
+      requests.current.search ||
+      !countries.ready ||
+      (!scope && country === "all")
+    )
+      return;
     const abort = new AbortController();
     const requestedScope = scopeKey;
     requests.current.search = abort;
     setSearching(true);
     setError("");
     try {
-      const data = await post<SearchResult>(
-        "/search",
-        { query, limit: 8, ...(scope ? { case_id: scope } : { country }) },
+      const data = await searchDocuments(
+        {
+          query,
+          limit: 8,
+          source_scope: sourceScope,
+          ...(scope ? { case_id: scope } : { country }),
+        },
         abort.signal,
       );
       if (!abort.signal.aborted && currentScope.current === requestedScope)
@@ -486,12 +572,47 @@ export function Library({
   }
   return (
     <div className="tea-page tea-library">
-      <SectionHeading title={scopeLocked && !scope ? "公共资料库" : "资料库"}>
+      <SectionHeading title={scope ? "业务资料" : "资料库"}>
         <Button onClick={() => onUpload(scope || undefined)}>
           <Upload size={15} />
-          上传资料
+          {scope ? "上传到本业务" : "上传到我的资料"}
         </Button>
       </SectionHeading>
+      <div className="tea-form-row" role="group" aria-label="资料来源">
+        <Button
+          variant={sourceScope === "system" ? "default" : "outline"}
+          aria-pressed={sourceScope === "system"}
+          onClick={() => {
+            if (sourceScope === "system") return;
+            resetReads();
+            setSourceScope("system");
+            setCountrySelection("");
+            setQuery("");
+            setNameQuery("");
+          }}
+        >
+          {scope ? "对应国家法规" : "法规总库"}
+        </Button>
+        <Button
+          variant={sourceScope === "personal" ? "default" : "outline"}
+          aria-pressed={sourceScope === "personal"}
+          onClick={() => {
+            if (sourceScope === "personal") return;
+            resetReads();
+            setSourceScope("personal");
+            setCountrySelection("");
+            setQuery("");
+            setNameQuery("");
+          }}
+        >
+          {scope ? "本业务资料" : "我的资料"}
+        </Button>
+      </div>
+      <p className="tea-note">
+        {sourceScope === "system"
+          ? "法规总库由所有用户共享，仅供查阅。上传资料将保存到你的私人资料或业务。"
+          : "资料仅当前账号可见；业务资料保存在对应业务中。"}
+      </p>
       {!scopeLocked && (
         <label className="tea-field">
           <span>资料范围</span>
@@ -501,9 +622,13 @@ export function Library({
               resetReads();
               setScope(e.target.value);
               setQuery("");
+              setNameQuery("");
+              setCountrySelection("");
             }}
           >
-            <option value="">系统总库与账号资料</option>
+            <option value="">
+              {sourceScope === "system" ? "全部法规" : "账号全部资料"}
+            </option>
             {cases.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title}
@@ -522,9 +647,14 @@ export function Library({
             onChange={(event) => {
               resetReads();
               setCountrySelection(event.target.value);
+              setQuery("");
+              setNameQuery("");
             }}
           >
             {!!scope && <option value="case">按业务目的地</option>}
+            {sourceScope === "personal" && !scope && (
+              <option value="all">全部国家（含未分国）</option>
+            )}
             {!countries.ready && <option value="">读取国家…</option>}
             {countries.countries.map((code) => (
               <option value={code} key={code}>
@@ -539,7 +669,9 @@ export function Library({
         className="tea-search-bar"
         onSubmit={(e) => {
           e.preventDefault();
-          void search();
+          resetReads();
+          setNameQuery(query.trim());
+          setReload((value) => value + 1);
         }}
       >
         <Search size={18} />
@@ -547,19 +679,34 @@ export function Library({
           aria-label="搜索资料"
           value={query}
           onChange={(e) => {
+            requests.current.search?.abort();
+            requests.current.search = undefined;
+            setSearching(false);
             setQuery(e.target.value);
-            if (!e.target.value) setHits(null);
+            setHits(null);
           }}
-          placeholder="搜索法规条款、材料内容或关键词…"
+          placeholder="输入资料名称或正文关键词…"
         />
+        <Button type="submit" variant="outline" disabled={!countries.ready}>
+          查找文件
+        </Button>
         <ActionButton
           busy={searching}
-          type="submit"
-          disabled={!query.trim() || !countries.ready}
+          title="按当前国家检索正文"
+          type="button"
+          disabled={
+            !query.trim() || !countries.ready || (!scope && country === "all")
+          }
+          onClick={() => void search()}
         >
           检索
         </ActionButton>
       </form>
+      {!scope && country === "all" && (
+        <p className="tea-note">
+          当前可按文件名称查找全部私人资料。检索正文请先选择资料国家。
+        </p>
+      )}
       {countries.error && (
         <ErrorNotice message={countries.error} onRetry={countries.retry} />
       )}
@@ -577,6 +724,7 @@ export function Library({
               onClick={() => {
                 setHits(null);
                 setQuery("");
+                setNameQuery("");
               }}
             >
               返回文件列表
@@ -611,8 +759,11 @@ export function Library({
                   <div>
                     <strong>{doc.title || doc.filename}</strong>
                     <p>
-                      {doc.role === "primary" ? "主文件" : "关联附件"} · v
+                      {doc.source_scope === "system" ? "共享法规" : "私人资料"}{" "}
+                      · {doc.role === "primary" ? "主文件" : "关联附件"} · v
                       {doc.version} · {dateLabel(doc.created_at)}
+                      {doc.case_id &&
+                        ` · ${cases.find((item) => item.id === doc.case_id)?.title ?? "业务资料"}`}
                     </p>
                   </div>
                   <span
@@ -630,8 +781,15 @@ export function Library({
               ))}
             </div>
           ) : (
-            <Empty icon={<BookOpen size={32} />} title="资料库准备好了">
-              上传第一份资料，让后续问答有据可查。
+            <Empty
+              icon={<BookOpen size={32} />}
+              title={nameQuery ? "没有找到匹配文件" : "资料库准备好了"}
+            >
+              {nameQuery
+                ? "调整资料名称或国家筛选后重试。"
+                : sourceScope === "system"
+                  ? "当前国家暂未收录法规，可切换国家查看。"
+                  : "上传私人资料，或切换业务查看已有材料。"}
             </Empty>
           )}
         </>
@@ -655,43 +813,102 @@ export function Library({
             </DialogDescription>
           </DialogHeader>
           {selected && (
-            <>
-              <div className="tea-document-meta">
-                <span>版本 {selected.version}</span>
-                <span>{(selected.size / 1024).toFixed(1)} KB</span>
-                <Button asChild size="sm" variant="outline">
-                  <a href={downloadUrl(selected.id)}>
-                    <ArrowDownToLine size={14} />
-                    下载原文
-                  </a>
-                </Button>
-              </div>
-              {selected.error && <ErrorNotice message={selected.error} />}
-              <DocumentMetadataEditor
-                key={`${selected.id}-${selected.metadata_revision}`}
-                document={selected}
-                onSaved={(next) => {
-                  setSelected(next);
-                  setDocs((current) =>
-                    current.map((doc) => (doc.id === next.id ? next : doc)),
-                  );
-                }}
-              />
-              {selected.role === "secondary" ? (
-                <div className="tea-note">
-                  该文件为关联附件，仅保存原文，不参与解析或检索。
-                </div>
-              ) : (
-                <DocumentExcerpts
-                  key={`${selected.id}:${selected.version}`}
-                  documentId={selected.id}
-                />
-              )}
-            </>
+            <LibraryDocumentDetails
+              key={`${selected.id}:${selected.version}`}
+              document={selected}
+              ownerId={ownerId}
+              revision={revision}
+              onSelect={setSelected}
+              onSaved={(next) => {
+                setSelected(next);
+                setDocs((current) =>
+                  current.map((doc) => (doc.id === next.id ? next : doc)),
+                );
+              }}
+            />
           )}
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function LibraryDocumentDetails({
+  document,
+  ownerId,
+  revision,
+  onSelect,
+  onSaved,
+}: {
+  document: Document;
+  ownerId?: string;
+  revision: number;
+  onSelect: (document: Document) => void;
+  onSaved: (document: Document) => void;
+}) {
+  const tabs = [
+    ["content", "正文"],
+    ["versions", "版本"],
+    ["attachments", "附件"],
+    ["relations", "法规关联"],
+  ] as const;
+  return (
+    <>
+      <div className="tea-document-meta">
+        <span>
+          {document.source_scope === "system" ? "共享法规 · 只读" : "私人资料"}
+        </span>
+        <span>版本 {document.version}</span>
+        <span>{(document.size / 1024).toFixed(1)} KB</span>
+        <Button asChild size="sm" variant="outline">
+          <a href={downloadUrl(document.id)}>
+            <ArrowDownToLine size={14} />
+            下载原文
+          </a>
+        </Button>
+      </div>
+      {document.error && <ErrorNotice message={document.error} />}
+      <DocumentMetadataEditor
+        key={`${document.id}-${document.metadata_revision}`}
+        document={document}
+        onSaved={onSaved}
+      />
+      <Tabs defaultValue="content">
+        <TabsList aria-label="资料内容" className="w-full">
+          {tabs.map(([id, label]) => (
+            <TabsTrigger key={id} value={id}>
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="content">
+          {document.role === "secondary" ? (
+            <div className="tea-note">
+              该文件为关联附件，仅保存原文，不参与解析或检索。
+            </div>
+          ) : (
+            <DocumentExcerpts documentId={document.id} />
+          )}
+        </TabsContent>
+        <TabsContent value="versions">
+          <DocumentHistory document={document} onSelect={onSelect} />
+        </TabsContent>
+        <TabsContent value="attachments">
+          <DocumentAttachments
+            parent={document}
+            revision={revision}
+            onSelect={onSelect}
+          />
+        </TabsContent>
+        <TabsContent value="relations">
+          <DocumentRelations
+            document={document}
+            ownerId={ownerId}
+            onSelect={onSelect}
+          />
+        </TabsContent>
+      </Tabs>
+    </>
   );
 }
 

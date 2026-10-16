@@ -505,6 +505,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         collection: str | None = Query(None, min_length=1, max_length=100),
         country: str | None = Query(None, pattern=r"^(?:[A-Z]{2}|unassigned)$"),
         source_scope: Literal["personal", "system"] | None = None,
+        library_only: bool = False,
         current=Depends(user),
     ):
         return service.documents(
@@ -519,6 +520,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             collection=collection,
             country=country,
             source_scope=source_scope,
+            library_only=library_only,
         )
 
     @app.post("/api/tea/documents", status_code=201)
@@ -614,6 +616,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             payload.as_of,
             payload.collection,
             payload.country,
+            source_scope=payload.source_scope,
         )
 
     @app.post("/api/tea/cases/{case_id}/artifacts", status_code=201)

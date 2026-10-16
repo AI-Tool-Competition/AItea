@@ -346,6 +346,8 @@ export function ChecklistItemDetail({
                 <div className="ta-checklist-primary">
                   <h5>关联本国一级法规</h5>
                   <DocumentChooser
+                    ownerId={ownerId}
+                    sourceScope="personal"
                     collection={collection}
                     primaryOnly
                     selected={draft.primaryIds}

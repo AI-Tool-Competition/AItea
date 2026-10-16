@@ -535,6 +535,7 @@ class LegalArchive:
         document_ids=None,
         *,
         require_current=True,
+        source_scope=None,
     ):
         """One scope/version gate shared by lexical and dense persistent retrieval."""
         from .catalog import DocumentMetadata
@@ -552,7 +553,8 @@ class LegalArchive:
                 fail(422, "country_mismatch", "检索国家与采集组不一致")
         membership = """(NOT EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id)
             OR EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=v.id AND c.level='primary'))"""
-        shared = public_document_sql("d") if country else "0"
+        shared = public_document_sql("d") if country and source_scope != "personal" else "0"
+        ownership = f"AND d.owner_id='{SYSTEM_OWNER_ID}'" if source_scope == "system" else ""
         parameters = [business, law, owner, case_id]
         business_material = """(v.country IS NULL AND v.case_id IS NOT NULL
             AND json_extract(v.metadata_payload,'$.kind')='business')"""
@@ -603,7 +605,7 @@ class LegalArchive:
             FROM documents d LEFT JOIN document_metadata m ON m.document_id=d.id
             LEFT JOIN document_countries dc ON dc.document_id=d.id
             LEFT JOIN retrieval_documents rx ON rx.document_id=d.id
-            WHERE ((d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?)) OR {shared}) AND d.role='primary'
+            WHERE ((d.owner_id=? AND (d.case_id IS NULL OR d.case_id=?)) OR {shared}) AND d.role='primary' {ownership}
         ), applicable AS (
             SELECT v.*,ROW_NUMBER() OVER(PARTITION BY v.family_id ORDER BY v.version DESC,v.id DESC) selected
             FROM versions v WHERE {scope} AND {membership} AND {period} AND {system_review} AND {history}

@@ -157,7 +157,7 @@ describe("business navigation", () => {
         ([input]) => urlOf(input).searchParams.get("case_id") === first.id,
       ),
     ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "上传资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "上传到本业务" }));
     expect(screen.getByLabelText<HTMLSelectElement>("资料归属").value).toBe(
       first.id,
     );
@@ -276,9 +276,9 @@ describe("business navigation", () => {
       key: "ArrowDown",
     });
     fireEvent.click(
-      await screen.findByRole("menuitem", { name: "公共资料库" }),
+      await screen.findByRole("menuitem", { name: "法规与我的资料" }),
     );
-    await screen.findByRole("heading", { name: "公共资料库" });
+    await screen.findByRole("heading", { name: "资料库" });
     fireEvent.click(screen.getAllByRole("button", { name: "切换侧栏" })[0]!);
     const shortcut = screen.getByRole("button", { name: "资料库" });
     expect(shortcut.getAttribute("data-active")).toBe("false");

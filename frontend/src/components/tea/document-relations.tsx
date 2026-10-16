@@ -211,6 +211,7 @@ export function DocumentRelations({
                 {secondary ? "引用本法规的一级资料" : "引用或关联的法规"}
               </legend>
               <DocumentChooser
+                ownerId={ownerId}
                 sourceScope="personal"
                 selected={target}
                 onChange={(target) => update({ target })}

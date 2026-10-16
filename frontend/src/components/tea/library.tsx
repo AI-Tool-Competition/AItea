@@ -781,10 +781,15 @@ function LibraryWorkspace({
               ))}
             </div>
           ) : (
-            <Empty icon={<BookOpen size={32} />} title="资料库准备好了">
-              {sourceScope === "system"
-                ? "当前国家暂未收录法规，可切换国家查看。"
-                : "上传第一份私人资料，或切换业务查看已有材料。"}
+            <Empty
+              icon={<BookOpen size={32} />}
+              title={nameQuery ? "没有找到匹配文件" : "资料库准备好了"}
+            >
+              {nameQuery
+                ? "调整资料名称或国家筛选后重试。"
+                : sourceScope === "system"
+                  ? "当前国家暂未收录法规，可切换国家查看。"
+                  : "上传私人资料，或切换业务查看已有材料。"}
             </Empty>
           )}
         </>

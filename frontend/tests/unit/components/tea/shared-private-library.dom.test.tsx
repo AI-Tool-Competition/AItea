@@ -156,6 +156,44 @@ describe("shared regulations and isolated private library", () => {
     );
   });
 
+  it("distinguishes an empty filename filter from an empty private library and recovers after clearing it", async () => {
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = urlOf(input);
+      if (url.searchParams.get("q") === "alice")
+        return response({ items: [], total: 0 });
+      return defaultRead(input);
+    });
+    render(
+      <Library
+        ownerId="bob"
+        cases={[]}
+        revision={0}
+        onUpload={() => undefined}
+      />,
+    );
+    await screen.findByRole("button", { name: /共享食品法规/ });
+    fireEvent.click(screen.getByRole("button", { name: "我的资料" }));
+    await screen.findByRole("button", { name: /我的未分国资料/ });
+    fireEvent.change(screen.getByLabelText("搜索资料"), {
+      target: { value: "alice" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查找文件" }));
+    await screen.findByRole("heading", { name: "没有找到匹配文件" });
+    expect(screen.getByText("调整资料名称或国家筛选后重试。")).toBeTruthy();
+    expect(screen.queryByText(/上传第一份私人资料/)).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "资料库准备好了" }),
+    ).toBeNull();
+    fireEvent.change(screen.getByLabelText("搜索资料"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查找文件" }));
+    await screen.findByRole("button", { name: /我的未分国资料/ });
+    expect(
+      screen.queryByRole("heading", { name: "没有找到匹配文件" }),
+    ).toBeNull();
+  });
+
   it("aborts a shared search and ignores its delayed response after switching to private files", async () => {
     let finish!: (value: Response) => void;
     let signal: AbortSignal | null | undefined;

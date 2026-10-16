@@ -730,6 +730,112 @@
   background: var(--muted);
   white-space: normal;
 }
+.ta-account-access-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+.ta-account-access-heading h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+.ta-account-access-heading p {
+  max-width: 680px;
+  margin: 7px 0 0;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+}
+.ta-account-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted-foreground);
+}
+.ta-account-counts > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 7px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ta-managed-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+}
+.ta-managed-account > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.ta-managed-account strong,
+.ta-managed-account small {
+  display: block;
+}
+.ta-managed-account strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ta-managed-account small {
+  margin-top: 4px;
+  color: var(--muted-foreground);
+}
+.ta-admin-denied {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.ta-admin-denied h1 {
+  margin: 16px 0 0;
+  font-size: 24px;
+}
+.ta-admin-denied p {
+  margin: 0 0 8px;
+  color: var(--muted-foreground);
+}
+.ta-admin-bootstrap {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 10px;
+  text-align: left;
+}
+.ta-admin-bootstrap > button {
+  justify-self: start;
+}
+.ta-admin-setup-card {
+  max-width: 700px;
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--background);
+}
+.ta-admin-setup-card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.ta-admin-setup-card > p {
+  color: var(--muted-foreground);
+}
 .ta-secondary-file {
   display: flex;
   width: 100%;
@@ -983,6 +1089,10 @@
   }
   .ta-file-search {
     flex-basis: 100%;
+  }
+  .ta-account-access-heading {
+    flex-direction: column;
+    gap: 14px;
   }
   .ta-library-toolbar > select {
     flex: 1;

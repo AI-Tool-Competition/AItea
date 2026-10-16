@@ -13,13 +13,22 @@ export default async function AdminPage({
   const page = section?.[0] ?? "workflow";
   if (
     (section?.length ?? 0) > 1 ||
-    !["workflow", "analysis", "library", "sources"].includes(page)
+    !["workflow", "analysis", "library", "sources", "accounts"].includes(
+      page,
+    )
   )
     notFound();
   const { stage } = await searchParams;
   return (
     <TeaApp
-      initialAdminPage={page as "workflow" | "analysis" | "library" | "sources"}
+      initialAdminPage={
+        page as
+          | "workflow"
+          | "analysis"
+          | "library"
+          | "sources"
+          | "accounts"
+      }
       requestedStage={stage}
     />
   );

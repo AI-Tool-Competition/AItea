@@ -120,6 +120,30 @@ class Database:
             with closing(self.connect()) as conn:
                 conn.executescript(SCHEMA)
                 conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES (?,?)", (1, now()))
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=16").fetchone():
+                        conn.execute(
+                            """CREATE TABLE user_access(
+                                user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                                can_login INTEGER NOT NULL CHECK(can_login IN (0,1)),
+                                is_admin INTEGER NOT NULL CHECK(is_admin IN (0,1)),
+                                revision INTEGER NOT NULL CHECK(revision>=1),
+                                CHECK(is_admin=0 OR can_login=1))"""
+                        )
+                        conn.execute(
+                            "INSERT INTO user_access(user_id,can_login,is_admin,revision) "
+                            "SELECT id,1,0,1 FROM users"
+                        )
+                        conn.execute("INSERT INTO schema_migrations VALUES (?,?)", (16, now()))
+                    elif not conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_access'"
+                    ).fetchone():
+                        raise RuntimeError("account access schema is incomplete")
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
 
     def connect(self):
         from .system_library import register_source_guard

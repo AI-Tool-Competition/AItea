@@ -1,8 +1,10 @@
 export interface User {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
   is_demo: boolean;
+  can_login: boolean;
+  is_admin: boolean;
 }
 export interface Mode {
   id: string;
@@ -286,6 +288,20 @@ export interface Bootstrap {
   templates: Template[];
   cases: CaseSummary[];
   capabilities: Capabilities;
+  admin_setup_required: boolean;
+}
+export interface ManagedUser {
+  id: string;
+  name: string;
+  email: string;
+  created_at: string;
+  can_login: boolean;
+  is_admin: boolean;
+  revision: number;
+}
+export interface ManagedUsersPage {
+  items: ManagedUser[];
+  total: number;
 }
 export interface Source {
   checklist?: {

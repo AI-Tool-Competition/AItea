@@ -30,6 +30,8 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         data_dir or os.getenv("TEA_DATA_DIR", str(Path(__file__).resolve().parents[2] / "data"))
     )
     auth = Auth(service)
+    if not is_test:
+        auth.ensure_default_admin()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -154,6 +156,11 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             fail(401, "unauthenticated", "请先登录或开始体验")
         return current
 
+    def admin_user(current=Depends(user)):
+        if not current["is_admin"]:
+            fail(403, "admin_required", "只有管理员可以进入管理后台")
+        return current
+
     def set_session(response, token):
         secure = (
             os.getenv(
@@ -188,7 +195,8 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     def register(payload: models.Register, request: Request, response: Response):
         throttle(request)
         current, token = auth.register(payload.model_dump(), request.cookies.get(COOKIE))
-        set_session(response, token)
+        if token:
+            set_session(response, token)
         return current
 
     @app.post("/api/tea/auth/login")
@@ -207,6 +215,27 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     def me(current=Depends(user)):
         return current
 
+    @app.get("/api/tea/admin/users")
+    def admin_users(
+        limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        q: str = Query("", max_length=160),
+        current=Depends(admin_user),
+    ):
+        return auth.list_users(limit=limit, offset=offset, query=q)
+
+    @app.patch("/api/tea/admin/users/{user_id}")
+    def admin_update_user(
+        user_id: str,
+        payload: models.UserAccessPatch,
+        current=Depends(admin_user),
+    ):
+        return auth.update_user_access(user_id, payload.model_dump(exclude_unset=True))
+
+    @app.post("/api/tea/admin/bootstrap")
+    def bootstrap_admin(payload: models.AdminBootstrapInput, current=Depends(user)):
+        return auth.bootstrap_admin(current["id"], payload.bootstrap_token)
+
     @app.get("/api/tea/bootstrap")
     def bootstrap(current=Depends(user)):
         return {
@@ -214,27 +243,28 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             "templates": service.templates(current["id"]),
             "cases": service.cases(current["id"])["items"],
             "capabilities": service.capabilities,
+            "admin_setup_required": auth.admin_setup_required(),
         }
 
     @app.get("/api/tea/templates")
-    def templates(current=Depends(user)):
+    def templates(current=Depends(admin_user)):
         items = service.templates(current["id"])
         return {"items": items, "total": len(items)}
 
     @app.post("/api/tea/templates/validate")
-    def validate(payload: models.TemplateInput, current=Depends(user)):
+    def validate(payload: models.TemplateInput, current=Depends(admin_user)):
         return service.validate_template(payload.template)
 
     @app.post("/api/tea/templates/publish")
-    def publish(payload: models.TemplatePublishInput, current=Depends(user)):
+    def publish(payload: models.TemplatePublishInput, current=Depends(admin_user)):
         return service.publish(current["id"], payload.template, payload.expected_draft_revision)
 
     @app.post("/api/tea/templates/debug")
-    def debug(payload: models.TemplateDebugInput, current=Depends(user)):
+    def debug(payload: models.TemplateDebugInput, current=Depends(admin_user)):
         return service.studio.debug(current["id"], payload)
 
     @app.post("/api/tea/templates/debug/stream")
-    def debug_stream(payload: models.TemplateDebugInput, current=Depends(user)):
+    def debug_stream(payload: models.TemplateDebugInput, current=Depends(admin_user)):
         from .streaming import debug_events
 
         return StreamingResponse(
@@ -248,12 +278,12 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         destination: str = Query(min_length=1, max_length=100),
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
-        current=Depends(user),
+        current=Depends(admin_user),
     ):
         return service.studio.debugger.documents(current["id"], destination, limit, offset)
 
     @app.get("/api/tea/templates/debug/runs/{run_id}")
-    def debug_run(run_id: str, current=Depends(user)):
+    def debug_run(run_id: str, current=Depends(admin_user)):
         return service.studio.debugger.run(current["id"], run_id)
 
     @app.get("/api/tea/templates/{template_id}/debug-runs")
@@ -262,7 +292,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         stage_id: str | None = Query(None, max_length=64),
         limit: int = Query(50, ge=1, le=100),
         offset: int = Query(0, ge=0),
-        current=Depends(user),
+        current=Depends(admin_user),
     ):
         return service.studio.debugger.runs(current["id"], template_id, stage_id, limit, offset)
 
@@ -272,42 +302,42 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         stage_id: str | None = Query(None, max_length=64),
         limit: int = Query(50, ge=1, le=100),
         offset: int = Query(0, ge=0),
-        current=Depends(user),
+        current=Depends(admin_user),
     ):
         return service.studio.debugger.samples(current["id"], template_id, stage_id, limit, offset)
 
     @app.get("/api/tea/templates/{template_id}/debug-samples/{sample_id}")
-    def debug_sample(template_id: str, sample_id: str, current=Depends(user)):
+    def debug_sample(template_id: str, sample_id: str, current=Depends(admin_user)):
         return service.studio.debugger.sample(current["id"], template_id, sample_id)
 
     @app.put("/api/tea/templates/{template_id}/debug-samples/{sample_id}")
     def save_debug_sample(
-        template_id: str, sample_id: str, payload: models.DebugSampleInput, current=Depends(user)
+        template_id: str, sample_id: str, payload: models.DebugSampleInput, current=Depends(admin_user)
     ):
         return service.studio.debugger.save_sample(current["id"], template_id, sample_id, payload)
 
     @app.delete("/api/tea/templates/{template_id}/debug-samples/{sample_id}", status_code=204)
     def delete_debug_sample(
-        template_id: str, sample_id: str, expected_revision: int = Query(ge=1), current=Depends(user)
+        template_id: str, sample_id: str, expected_revision: int = Query(ge=1), current=Depends(admin_user)
     ):
         service.studio.debugger.delete_sample(current["id"], template_id, sample_id, expected_revision)
 
     @app.get("/api/tea/templates/drafts")
     def template_drafts(
-        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)
     ):
         return service.studio.drafts(current["id"], limit, offset)
 
     @app.get("/api/tea/templates/{template_id}/draft")
-    def template_draft(template_id: str, current=Depends(user)):
+    def template_draft(template_id: str, current=Depends(admin_user)):
         return service.studio.draft(current["id"], template_id)
 
     @app.put("/api/tea/templates/{template_id}/draft")
-    def save_template_draft(template_id: str, payload: models.TemplateDraftInput, current=Depends(user)):
+    def save_template_draft(template_id: str, payload: models.TemplateDraftInput, current=Depends(admin_user)):
         return service.studio.save_draft(current["id"], template_id, payload)
 
     @app.get("/api/tea/templates/{template_id}")
-    def template(template_id: str, current=Depends(user)):
+    def template(template_id: str, current=Depends(admin_user)):
         return service.template(current["id"], template_id)
 
     @app.get("/api/tea/cases")
@@ -327,7 +357,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         return service.legal.policy()
 
     @app.post("/api/tea/templates/legal/preview")
-    def legal_preview(payload: models.LegalPreviewInput, current=Depends(user)):
+    def legal_preview(payload: models.LegalPreviewInput, current=Depends(admin_user)):
         return service.legal.preview(current["id"], payload.model_dump())
 
     @app.get("/api/tea/cases/{case_id}/legal")
@@ -665,15 +695,15 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         )
 
     @app.get("/api/tea/sources")
-    def sources(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)):
+    def sources(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)):
         return service.sources(current["id"], limit, offset)
 
     @app.post("/api/tea/sources", status_code=201)
-    def source_create(payload: models.SourceInput, current=Depends(user)):
+    def source_create(payload: models.SourceInput, current=Depends(admin_user)):
         return service.save_source(current["id"], payload.model_dump())
 
     @app.get("/api/tea/sources/{id}")
-    def source_detail(id: str, current=Depends(user)):
+    def source_detail(id: str, current=Depends(admin_user)):
         with closing(service.db.connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM sources WHERE id=? AND owner_id=?", (id, current["id"])
@@ -683,41 +713,41 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             return service.source_dict(row, conn)
 
     @app.patch("/api/tea/sources/{id}")
-    def source_update(id: str, payload: models.SourcePatch, current=Depends(user)):
+    def source_update(id: str, payload: models.SourcePatch, current=Depends(admin_user)):
         return service.save_source(current["id"], payload.model_dump(exclude_unset=True), id)
 
     @app.post("/api/tea/sources/{id}/fetch", status_code=202)
-    def source_fetch(id: str, payload: models.CollectionStart | None = None, current=Depends(user)):
+    def source_fetch(id: str, payload: models.CollectionStart | None = None, current=Depends(admin_user)):
         return service.fetch_source(current["id"], id, payload.model_dump() if payload else None)
 
     @app.post("/api/tea/sources/{id}/runs", status_code=202)
-    def source_run(id: str, payload: models.CollectionStart, current=Depends(user)):
+    def source_run(id: str, payload: models.CollectionStart, current=Depends(admin_user)):
         return service.collection.enqueue(current["id"], id, payload.model_dump())
 
     @app.get("/api/tea/sources/{id}/runs")
     def source_runs(
-        id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+        id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)
     ):
         return service.collection.runs(current["id"], id, limit, offset)
 
     @app.get("/api/tea/collection-plans")
-    def collection_plans(current=Depends(user)):
+    def collection_plans(current=Depends(admin_user)):
         return service.checklists.catalog()
 
     @app.get("/api/tea/collection-plans/{id}")
-    def collection_plan(id: str, current=Depends(user)):
+    def collection_plan(id: str, current=Depends(admin_user)):
         return service.checklists.detail(current["id"], id)
 
     @app.post("/api/tea/collection-plans/{id}/configure")
-    def configure_plan(id: str, payload: models.ChecklistConfigure, current=Depends(user)):
+    def configure_plan(id: str, payload: models.ChecklistConfigure, current=Depends(admin_user)):
         return service.checklists.configure(current["id"], id, payload.expected_version)
 
     @app.post("/api/tea/collection-plans/{id}/discover", status_code=202)
-    def discover_plan_all(id: str, payload: models.ChecklistDiscover, current=Depends(user)):
+    def discover_plan_all(id: str, payload: models.ChecklistDiscover, current=Depends(admin_user)):
         return service.checklists.discover_all(current["id"], id, payload.client_request_id)
 
     @app.post("/api/tea/collection-plans/{id}/items/{item_id}/discover", status_code=202)
-    def discover_plan(id: str, item_id: str, payload: models.ChecklistDiscover, current=Depends(user)):
+    def discover_plan(id: str, item_id: str, payload: models.ChecklistDiscover, current=Depends(admin_user)):
         return service.checklists.start(current["id"], id, item_id, payload.model_dump(), kind="discovery")
 
     @app.get("/api/tea/collection-plans/{id}/items/{item_id}/candidates")
@@ -727,30 +757,30 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         status: Literal["pending", "stored", "excluded"] = "pending",
         limit: int = Query(20, ge=1, le=100),
         offset: int = Query(0, ge=0),
-        current=Depends(user),
+        current=Depends(admin_user),
     ):
         return service.checklists.candidates(current["id"], id, item_id, status, limit, offset)
 
     @app.post("/api/tea/collection-plans/{id}/items/{item_id}/collect", status_code=202)
-    def collect_plan(id: str, item_id: str, payload: models.ChecklistCollect, current=Depends(user)):
+    def collect_plan(id: str, item_id: str, payload: models.ChecklistCollect, current=Depends(admin_user)):
         return service.checklists.start(current["id"], id, item_id, payload.model_dump(), kind="collection")
 
     @app.patch("/api/tea/collection-candidates/{id}")
-    def patch_candidate(id: str, payload: models.CandidatePatch, current=Depends(user)):
+    def patch_candidate(id: str, payload: models.CandidatePatch, current=Depends(admin_user)):
         return service.checklists.patch_candidate(current["id"], id, payload.model_dump(exclude_none=True))
 
     @app.get("/api/tea/collection-runs/{id}")
     def collection_run(
-        id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(user)
+        id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)
     ):
         return service.collection.run_detail(current["id"], id, limit, offset)
 
     @app.post("/api/tea/collection-runs/{id}/retry")
-    def retry_collection(id: str, payload: models.RevisionInput, current=Depends(user)):
+    def retry_collection(id: str, payload: models.RevisionInput, current=Depends(admin_user)):
         return service.collection.control(current["id"], id, "retry", payload.expected_revision)
 
     @app.post("/api/tea/collection-runs/{id}/cancel")
-    def cancel_collection(id: str, payload: models.RevisionInput, current=Depends(user)):
+    def cancel_collection(id: str, payload: models.RevisionInput, current=Depends(admin_user)):
         return service.collection.control(current["id"], id, "cancel", payload.expected_revision)
 
     app.add_middleware(RequestLimitMiddleware)

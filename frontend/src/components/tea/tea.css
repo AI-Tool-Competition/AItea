@@ -1843,6 +1843,15 @@
   font-size: 14px;
   color: var(--muted-foreground);
 }
+.ta-admin-bootstrap {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 10px;
+  text-align: left;
+}
+.ta-admin-bootstrap > button {
+  justify-self: start;
+}
 .tea-account-summary {
   display: flex;
   align-items: center;
@@ -4265,7 +4274,6 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
 }
-
 
 /* Business switcher, node folders and conversation workspace. */
 .tea-navigation .tea-business-switch {

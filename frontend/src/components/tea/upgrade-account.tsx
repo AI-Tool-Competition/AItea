@@ -13,7 +13,7 @@ export function UpgradeAccount({
   onUpdated,
 }: {
   user: User;
-  onUpdated: () => void;
+  onUpdated: (message?: string) => void;
 }) {
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState("");
@@ -27,8 +27,16 @@ export function UpgradeAccount({
     setBusy(true);
     setError("");
     try {
-      await post<User>("/auth/register", { name, email, password });
-      onUpdated();
+      const updated = await post<User>("/auth/register", {
+        name,
+        email,
+        password,
+      });
+      onUpdated(
+        updated.can_login
+          ? undefined
+          : "账号已创建，等待管理员开放登录。获准后可用此邮箱和密码登录。",
+      );
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -43,7 +51,7 @@ export function UpgradeAccount({
         注册账号，保留当前业务
       </div>
       <p className="tea-small-note">
-        直接将当前演示账号升级，业务、资料、文稿和办理记录一并保留。
+        直接将当前演示账号升级，业务、资料、文稿和办理记录一并保留。账号需经管理员开放后才能登录。
       </p>
       <form
         onSubmit={(e) => {

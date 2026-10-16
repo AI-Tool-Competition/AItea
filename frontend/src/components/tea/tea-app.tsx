@@ -39,6 +39,7 @@ import {
 import { clearLegalDrafts } from "@/core/tea/use-legal-workbench";
 
 import { Admin, type AdminPage } from "./admin";
+import { AdminBootstrap } from "./admin-bootstrap";
 import { clearArtifactDrafts } from "./artifact-panel";
 import { Library, UploadDialog } from "./library";
 import { TeaNavigation, teaNavigationItems, type TeaView } from "./navigation";
@@ -52,11 +53,17 @@ import { Workspace, clearChatDrafts } from "./workspace";
 function Welcome({
   onAuthenticated,
   initialError,
+  adminMode = false,
+  onBack,
 }: {
   onAuthenticated: () => void;
   initialError: string;
+  adminMode?: boolean;
+  onBack?: () => void;
 }) {
-  const [auth, setAuth] = useState<"login" | "register" | null>(null);
+  const [auth, setAuth] = useState<"login" | "register" | null>(
+    adminMode ? "login" : null,
+  );
   const [busy, setBusy] = useState("");
   const [error, setError] = useState(initialError);
   const [email, setEmail] = useState("");
@@ -69,12 +76,22 @@ function Welcome({
     setBusy(mode);
     setError("");
     try {
-      await post<User>(
+      const user = await post<User>(
         `/auth/${mode}`,
         mode === "demo"
           ? {}
-          : { email, password, ...(mode === "register" ? { name } : {}) },
+          : {
+              email,
+              password,
+              ...(mode === "register" ? { name } : {}),
+            },
       );
+      if (mode === "register" && !user.can_login) {
+        setError(
+          "账号已创建，等待管理员开放登录。获准后可用此邮箱和密码登录。",
+        );
+        return;
+      }
       onAuthenticated();
     } catch (e) {
       setError(errorMessage(e));
@@ -93,48 +110,63 @@ function Welcome({
       </header>
       <main>
         <div className="tea-welcome-copy">
-          <h1>茶叶出口工作台</h1>
-          <p>集中管理出口业务、材料与办理进度。</p>
-          <div className="tea-welcome-actions">
-            <ActionButton
-              size="lg"
-              busy={busy === "demo"}
-              disabled={!!busy}
-              onClick={() => login("demo")}
-            >
-              进入演示工作台
-              <ArrowRight size={17} />
-            </ActionButton>
-            <Button
-              variant="ghost"
-              disabled={!!busy}
-              onClick={() => setAuth("login")}
-            >
-              登录我的账号
-              <ChevronRight size={16} />
-            </Button>
-          </div>
-          <div className="tea-welcome-note">
-            <ShieldCheck size={14} />
-            体验业务独立保存 · 四条六堡茶出口流程
-          </div>
+          <h1>{adminMode ? "管理后台" : "茶叶出口工作台"}</h1>
+          {!adminMode && <p>集中管理出口业务、材料与办理进度。</p>}
+          {!adminMode ? (
+            <div className="tea-welcome-actions">
+              <ActionButton
+                size="lg"
+                busy={busy === "demo"}
+                disabled={!!busy}
+                onClick={() => login("demo")}
+              >
+                进入演示工作台
+                <ArrowRight size={17} />
+              </ActionButton>
+              <Button
+                variant="ghost"
+                disabled={!!busy}
+                onClick={() => setAuth("login")}
+              >
+                登录我的账号
+                <ChevronRight size={16} />
+              </Button>
+            </div>
+          ) : (
+            <p>请使用管理员账号登录。初始账号：admin，密码：admin123。</p>
+          )}
+          {!adminMode && (
+            <div className="tea-welcome-note">
+              <ShieldCheck size={14} />
+              体验业务独立保存 · 四条六堡茶出口流程
+            </div>
+          )}
           {error && <ErrorNotice message={error} />}
         </div>
       </main>
       <footer>茶渡 · 出口业务办理空间</footer>
       <Dialog
-        open={!!auth}
+        open={adminMode || !!auth}
         onOpenChange={(open) => {
-          if (!open) setAuth(null);
+          if (!open) {
+            if (adminMode) onBack?.();
+            else setAuth(null);
+          }
         }}
       >
         <DialogContent className="tea-theme tea-dialog">
           <DialogHeader>
             <DialogTitle>
-              {auth === "register" ? "创建你的茶渡账号" : "欢迎回到茶渡"}
+              {adminMode
+                ? "管理员登录"
+                : auth === "register"
+                  ? "创建你的茶渡账号"
+                  : "欢迎回到茶渡"}
             </DialogTitle>
             <DialogDescription>
-              业务、材料与办理记录保存在你的账号中。
+              {adminMode
+                ? "登录后进入茶渡管理后台。"
+                : "业务、材料与办理记录保存在你的账号中。"}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -155,20 +187,23 @@ function Welcome({
               </label>
             )}
             <label className="tea-field">
-              <span>邮箱</span>
+              <span>{auth === "register" ? "邮箱" : "邮箱或管理员账号"}</span>
               <Input
-                type="email"
-                autoComplete="email"
+                type={auth === "register" ? "email" : "text"}
+                autoComplete={auth === "register" ? "email" : "username"}
+                placeholder={auth === "login" ? "邮箱或 admin" : undefined}
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
             </label>
             <label className="tea-field">
-              <span>密码 · 至少 10 个字符</span>
+              <span>
+                {auth === "register" ? "密码 · 至少 10 个字符" : "密码"}
+              </span>
               <Input
                 type="password"
-                minLength={10}
+                minLength={auth === "register" ? 10 : 1}
                 autoComplete={
                   auth === "register" ? "new-password" : "current-password"
                 }
@@ -179,18 +214,35 @@ function Welcome({
             </label>
             {error && <ErrorNotice message={error} />}
             <ActionButton type="submit" busy={!!busy} className="tea-full">
-              {auth === "register" ? "创建账号" : "登录"}
+              {adminMode
+                ? "登录管理后台"
+                : auth === "register"
+                  ? "创建账号"
+                  : "登录"}
             </ActionButton>
-            <button
-              type="button"
-              className="tea-auth-switch"
-              onClick={() => {
-                setAuth(auth === "login" ? "register" : "login");
-                setError("");
-              }}
-            >
-              {auth === "login" ? "还没有账号？创建一个" : "已有账号？返回登录"}
-            </button>
+            {adminMode && onBack && (
+              <button
+                type="button"
+                className="tea-auth-switch"
+                onClick={onBack}
+              >
+                返回工作台
+              </button>
+            )}
+            {!adminMode && (
+              <button
+                type="button"
+                className="tea-auth-switch"
+                onClick={() => {
+                  setAuth(auth === "login" ? "register" : "login");
+                  setError("");
+                }}
+              >
+                {auth === "login"
+                  ? "还没有账号？创建一个"
+                  : "已有账号？返回登录"}
+              </button>
+            )}
           </form>
         </DialogContent>
       </Dialog>
@@ -606,7 +658,9 @@ export function TeaApp({
     return (
       <div className="tea-theme tea-loading-screen">
         <Brand />
-        <Busy label="正在打开你的工作台…" />
+        <Busy
+          label={initialAdminPage ? "正在打开管理后台…" : "正在打开你的工作台…"}
+        />
       </div>
     );
   if (!bootstrap)
@@ -615,7 +669,40 @@ export function TeaApp({
         <Welcome
           onAuthenticated={() => setSessionKey((k) => k + 1)}
           initialError={error}
+          adminMode={!!initialAdminPage}
+          onBack={initialAdminPage ? () => router.replace("/tea") : undefined}
         />
+      </div>
+    );
+  if (
+    initialAdminPage &&
+    !bootstrap.user.is_admin &&
+    !bootstrap.user.is_demo &&
+    bootstrap.admin_setup_required
+  )
+    return (
+      <div className="tea-theme tea-admin-denied">
+        <Brand />
+        <h1>首次设置管理后台</h1>
+        <p>请用管理员引导码将当前账号设为首位管理员。</p>
+        <AdminBootstrap onReady={() => setSessionKey((key) => key + 1)} />
+        <Button variant="ghost" onClick={() => router.replace("/tea")}>
+          返回工作台
+        </Button>
+      </div>
+    );
+  if (initialAdminPage && !bootstrap.user.is_admin)
+    return (
+      <div className="tea-theme tea-admin-denied">
+        <Brand />
+        <h1>仅管理员可进入管理后台</h1>
+        <p>当前账号没有管理员权限。可以切换到管理员账号，或返回工作台。</p>
+        <Button disabled={logoutBusy} onClick={logout}>
+          {logoutBusy ? "正在退出…" : "切换账号登录"}
+        </Button>
+        <Button variant="ghost" onClick={() => router.replace("/tea")}>
+          返回工作台
+        </Button>
       </div>
     );
   if (initialAdminPage || view === "studio")
@@ -806,7 +893,10 @@ export function TeaApp({
             {bootstrap.user.is_demo && (
               <UpgradeAccount
                 user={bootstrap.user}
-                onUpdated={() => setSessionKey((key) => key + 1)}
+                onUpdated={(message) => {
+                  if (message) setError(message);
+                  setSessionKey((key) => key + 1);
+                }}
               />
             )}
             {"is_admin" in bootstrap.user &&

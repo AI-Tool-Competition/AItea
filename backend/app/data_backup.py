@@ -162,6 +162,13 @@ def _database_check(path, *, primary=False):
         if primary:
             _require({"schema_migrations", "users", "documents"} <= tables, "application_database_required")
             _require(type(version) is int and 1 <= version <= SUPPORTED_SCHEMA_VERSION, "unsupported_schema")
+            if version >= 16:
+                try:
+                    conn.execute(
+                        "SELECT user_id,can_login,is_admin,revision FROM user_access LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("account_access_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")

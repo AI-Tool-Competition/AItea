@@ -8,6 +8,7 @@ import {
   LogOut,
   PanelLeft,
   Sparkles,
+  UsersRound,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -16,13 +17,19 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { type Bootstrap, type Document, type Template } from "@/core/tea/types";
 
+import { AdminAccounts } from "./admin-accounts";
 import { AdminLibrary } from "./admin-library";
 import { UploadDialog } from "./library";
 import { Brand } from "./shared";
 import { Sources } from "./sources";
 import { Studio } from "./studio";
 
-export type AdminPage = "workflow" | "analysis" | "library" | "sources";
+export type AdminPage =
+  | "workflow"
+  | "analysis"
+  | "library"
+  | "sources"
+  | "accounts";
 const pages = {
   workflow: {
     title: "办理流程",
@@ -38,6 +45,11 @@ const pages = {
     title: "资料库",
     icon: BookOpen,
     group: "内容管理",
+  },
+  accounts: {
+    title: "账号权限",
+    icon: UsersRound,
+    group: "系统管理",
   },
 };
 
@@ -96,7 +108,7 @@ export function Admin({
           <span className="ta-brand-tag">后台</span>
         </Link>
         <nav>
-          {["流程配置", "内容管理"].map((group) => (
+          {["流程配置", "内容管理", "系统管理"].map((group) => (
             <div className="ta-nav-group" key={group}>
               <span>{group}</span>
               {(
@@ -229,6 +241,8 @@ export function Admin({
                 setUpload({ scope, parent, country })
               }
             />
+          ) : page === "accounts" ? (
+            <AdminAccounts />
           ) : (
             <Sources
               key={`${bootstrap.user.id}:${samples}`}

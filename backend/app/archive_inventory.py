@@ -130,6 +130,8 @@ def _validate_schema(conn):
             conn.execute(
                 "SELECT transfer_id,start_byte,size,content_hash,storage_path FROM collection_transfer_parts LIMIT 0"
             )
+        if version >= 16:
+            conn.execute("SELECT user_id,can_login,is_admin,revision FROM user_access LIMIT 0")
         return version
     except sqlite3.DatabaseError as exc:
         raise InventoryError("archive inventory requires a complete schema 7–18 database") from exc

@@ -27,7 +27,12 @@ MAX_ASSETS = 4096
 MAX_BLOB_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_BLOB_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PROVENANCE_BYTES = 4 * 1024 * 1024
+MAX_RELATION_REGISTRIES = 32
+MAX_TOTAL_REGISTRY_BYTES = 32 * 1024 * 1024
 _DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+_ASSET_POINTER = re.compile(
+    r"/(?:html_source/linked_images|assets_pending|legacy/conversion/images)/(0|[1-9][0-9]{0,3})\Z"
+)
 _PATH_KEYS = {
     "path",
     "cas_path",
@@ -58,11 +63,32 @@ def _path_key(key):
     return key in _PATH_KEYS or key.endswith("_path")
 
 
+def _asset_pointer(key, value):
+    if key not in {"mapping_path", "asset_mapping_path"}:
+        return False
+    match = _ASSET_POINTER.fullmatch(value)
+    return match is not None and int(match[1]) < 2000
+
+
 def _sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def _read_db(directory, owner, *, target_only=False):
+def _selected_ids(document_ids):
+    if document_ids is None:
+        return None
+    if (
+        not isinstance(document_ids, (list, tuple))
+        or not 1 <= len(document_ids) <= MAX_DOCUMENTS
+        or any(not isinstance(ident, str) or not ident or len(ident) > 128 for ident in document_ids)
+        or len(set(document_ids)) != len(document_ids)
+    ):
+        raise CollectionImportError("document_selection_requires_1_to_200_unique_ids")
+    return list(document_ids)
+
+
+def _read_db(directory, owner, *, target_only=False, document_ids=None):
+    selected = _selected_ids(document_ids)
     path = Path(directory).resolve() / "tea.sqlite3"
     if not path.is_file():
         raise CollectionImportError("existing_database_required")
@@ -74,68 +100,105 @@ def _read_db(directory, owner, *, target_only=False):
             raise CollectionImportError("owner_not_found")
         if target_only:
             return {"as_of": now()}
+        scope, params = "d.owner_id=?", [owner]
+        if selected is not None:
+            scope += " AND d.id IN (" + ",".join("?" for _ in selected) + ")"
+            params += selected
+            count = conn.execute(f"SELECT COUNT(*) FROM documents d WHERE {scope}", params).fetchone()[0]
+            if count != len(selected):
+                raise CollectionImportError("selected_documents_not_owned_or_missing")
         size, largest = conn.execute(
-            "SELECT COALESCE(SUM(length(CAST(manifest AS BLOB))),0),COALESCE(MAX(length(CAST(manifest AS BLOB))),0) FROM documents WHERE owner_id=?",
-            (owner,),
+            f"SELECT COALESCE(SUM(length(CAST(d.manifest AS BLOB))),0),COALESCE(MAX(length(CAST(d.manifest AS BLOB))),0) FROM documents d WHERE {scope}",
+            params,
         ).fetchone()
         if size > MAX_TOTAL_MANIFEST_BYTES or largest > MAX_MANIFEST_BYTES:
             raise CollectionImportError("total_manifest_scope_exceeded")
         documents = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM documents WHERE owner_id=? ORDER BY role,family_id,version,id LIMIT ?",
-                (owner, MAX_DOCUMENTS + 1),
+                f"SELECT d.* FROM documents d WHERE {scope} ORDER BY d.role,d.family_id,d.version,d.id LIMIT ?",
+                [*params, MAX_DOCUMENTS + 1],
             )
         ]
         if len(documents) > MAX_DOCUMENTS:
             raise CollectionImportError("document_scope_exceeds_200")
         ids = [d["id"] for d in documents]
-        result = {"as_of": now(), "documents": documents}
+        result = {
+            "as_of": now(),
+            "documents": documents,
+            "family_counts": {
+                row["family_id"]: row["count"]
+                for row in conn.execute(
+                    f"""SELECT history.family_id,COUNT(*) count FROM documents history
+                    WHERE history.owner_id=? AND history.family_id IN
+                    (SELECT d.family_id FROM documents d WHERE {scope}) GROUP BY history.family_id""",
+                    [owner, *params],
+                )
+            },
+        }
         for table in ("document_metadata", "document_countries", "legal_classifications"):
             result[table] = [
                 dict(r)
                 for r in conn.execute(
-                    f"SELECT t.* FROM {table} t JOIN documents d ON d.id=t.document_id WHERE d.owner_id=?",
-                    (owner,),
+                    f"SELECT t.* FROM {table} t JOIN documents d ON d.id=t.document_id WHERE {scope}",
+                    params,
                 )
             ]
         result["relations"] = [
             dict(r)
             for r in conn.execute("SELECT * FROM legal_relations WHERE owner_id=? ORDER BY id", (owner,))
         ]
+        if selected is not None:
+            selected_set = set(selected)
+            relations = [
+                row
+                for row in result["relations"]
+                if row["source_document_id"] in selected_set or row["target_document_id"] in selected_set
+            ]
+            missing = sorted(
+                {row[key] for row in relations for key in ("source_document_id", "target_document_id")}
+                - selected_set
+            )
+            if missing:
+                raise CollectionImportError("selected_relation_dependencies_required:" + ",".join(missing))
+            result["relations"] = relations
         result["jobs"] = [
-            dict(r) for r in conn.execute("SELECT * FROM processing_jobs WHERE owner_id=?", (owner,))
+            dict(r)
+            for r in conn.execute(
+                f"SELECT t.* FROM processing_jobs t JOIN documents d ON d.id=t.document_id WHERE {scope}",
+                params,
+            )
         ]
         result["indices"] = {
             r["document_id"]: dict(r)
             for r in conn.execute(
-                "SELECT i.* FROM retrieval_documents i JOIN documents d ON d.id=i.document_id WHERE d.owner_id=?",
-                (owner,),
+                f"SELECT i.* FROM retrieval_documents i JOIN documents d ON d.id=i.document_id WHERE {scope}",
+                params,
             )
         }
         result["dirty"] = {
             r[0]
             for r in conn.execute(
-                "SELECT i.document_id FROM retrieval_dirty i JOIN documents d ON d.id=i.document_id WHERE d.owner_id=?",
-                (owner,),
+                f"SELECT i.document_id FROM retrieval_dirty i JOIN documents d ON d.id=i.document_id WHERE {scope}",
+                params,
             )
         }
         count, vector_bytes = conn.execute(
-            """SELECT count(*),COALESCE(sum(length(v.vector)+length(CAST(c.text AS BLOB))+length(CAST(c.retrieval_text AS BLOB))),0) FROM retrieval_chunks c
+            f"""SELECT count(*),COALESCE(sum(length(v.vector)+length(CAST(c.text AS BLOB))+length(CAST(c.retrieval_text AS BLOB))),0) FROM retrieval_chunks c
             JOIN retrieval_vectors v ON v.chunk_rowid=c.rowid JOIN documents d ON d.id=c.document_id
-            WHERE d.owner_id=?""",
-            (owner,),
+            WHERE {scope}""",
+            params,
         ).fetchone()
         if count > 100000 or vector_bytes > MAX_TOTAL_MANIFEST_BYTES:
             raise CollectionImportError("vector_scope_exceeded")
         result["vectors"] = [
             dict(r)
             for r in conn.execute(
-                """SELECT c.document_id,c.chunk_id,c.text,c.retrieval_text,c.input_hash,
+                f"""SELECT c.document_id,c.chunk_id,c.text,c.retrieval_text,c.input_hash,
                 v.fingerprint,v.dimension,v.vector,v.input_hash vector_input_hash
                 FROM retrieval_chunks c JOIN retrieval_vectors v ON v.chunk_rowid=c.rowid
-                JOIN documents d ON d.id=c.document_id WHERE d.owner_id=? ORDER BY c.document_id,c.ordinal""",
-                (owner,),
+                JOIN documents d ON d.id=c.document_id WHERE {scope} ORDER BY c.document_id,c.ordinal""",
+                params,
             )
         ]
         if len(result["vectors"]) > 100000:
@@ -169,13 +232,27 @@ def _fingerprint():
     return _sha(dump([*values[:2], EMBEDDING_RECIPE]).encode()) if all(values) else None
 
 
+def _add_alias(aliases, path, digest):
+    # Independent evidence packages may reuse local filenames. A path cannot
+    # identify two different verified blobs in the combined transfer scope.
+    if path in aliases and aliases[path] != digest:
+        raise CollectionImportError("ambiguous_blob_alias")
+    aliases[path] = digest
+
+
 def _asset_refs(value, found, aliases):
     if isinstance(value, dict):
-        if "cas_path" in value and isinstance(value.get("sha256"), str):
-            found.add(value["sha256"])
-            for key in ("cas_path", "source_path"):
-                if isinstance(value.get(key), str):
-                    aliases[value[key]] = value["sha256"]
+        for key in value:
+            if key != "cas_path" and not key.endswith("_cas_path"):
+                continue
+            prefix = key.removesuffix("cas_path")
+            digest = value.get(prefix + "sha256")
+            if not isinstance(digest, str):
+                continue
+            found.add(digest)
+            for path_key in (key, prefix + "path", prefix + "source_path"):
+                if isinstance(value.get(path_key), str):
+                    _add_alias(aliases, value[path_key], digest)
         for item in value.values():
             _asset_refs(item, found, aliases)
     elif isinstance(value, list):
@@ -194,7 +271,7 @@ def _path_refs(value, directory, owner, found, aliases):
                     absolute = Path(item) if Path(item).is_absolute() else Path(directory) / item
                     if absolute.absolute() == candidate:
                         found.add(digest)
-                        aliases[item] = digest
+                        _add_alias(aliases, item, digest)
             _path_refs(item, directory, owner, found, aliases)
     elif isinstance(value, list):
         for item in value:
@@ -221,6 +298,9 @@ def _rewrite(value, aliases, destinations, identities, *, bound_hash=None, targe
             result[key] = target_owner
             continue
         if _path_key(key) and isinstance(item, str):
+            if _asset_pointer(key, item):
+                result[key] = item  # A fixed JSON pointer, never a filesystem authority.
+                continue
             if item in destinations.values():
                 result[key] = item  # A second pass must preserve the exact target image CAS.
                 continue
@@ -246,7 +326,107 @@ def _rewrite(value, aliases, destinations, identities, *, bound_hash=None, targe
         result["source_version"] = identities[value["source_document_id"]]["version"]
     if "target_document_id" in value and value["target_document_id"] in identities:
         result["target_version"] = identities[value["target_document_id"]]["version"]
+    if value.get("protocol") == "physical-page-completeness-retry-v1":
+        from .ocr_page_retry import _encoded
+
+        digest = _sha(_encoded(result["previous_page"]))
+        if digest != value["previous_page_sha256"]:
+            result["source_previous_page_sha256"] = value.get(
+                "source_previous_page_sha256", value["previous_page_sha256"]
+            )
+            result["previous_page_sha256"] = digest
     return result
+
+
+def _rewrite_manifest(manifest, aliases, destinations, identities, *, bound_hash, target_owner):
+    """Rebind HTML image identities after account CAS paths change, preserving OCR."""
+    from .native_asset_ocr import assets, rebuild_native_asset_text
+
+    try:
+        source_assets = assets(manifest)
+    except ValueError as exc:
+        raise CollectionImportError("invalid_source_native_asset_checkpoint") from exc
+    result = _rewrite(
+        manifest, aliases, destinations, identities, bound_hash=bound_hash, target_owner=target_owner
+    )
+    if not source_assets or source_assets[0]["source_format"] != "html":
+        return result, {}
+    # Validate fresh binding identities without stale OCR identities preventing
+    # the calculation. No source bytes, locator, URL or OCR text is changed.
+    staged = copy.deepcopy(result)
+    for row in staged["html_source"]["linked_images"]:
+        for key in ("asset_key", "input_identity", "ocr"):
+            row.pop(key, None)
+        row["asset_status"] = "pending_vision"
+    try:
+        rebound = assets(staged)
+    except ValueError as exc:
+        raise CollectionImportError("invalid_transferred_native_asset_binding") from exc
+    chunk_ids = {}
+    for old, new, row in zip(source_assets, rebound, result["html_source"]["linked_images"], strict=True):
+        for key in ("input_identity", "asset_key", "mapping_path", "source_format", "source_hash"):
+            row[key] = new[key]
+        if isinstance(row.get("ocr"), dict):
+            row["ocr"].update(
+                {key: new[key] for key in ("input_identity", "asset_key", "mapping_path", "source_hash")}
+            )
+            blob = row["ocr"].get("image_blob")
+            if blob is not None and (
+                not isinstance(blob, dict)
+                or blob.get("content_hash") != row["ocr"].get("image_sha256")
+                or blob.get("size") != row["ocr"].get("image_size")
+                or destinations.get(blob.get("content_hash")) != blob.get("storage_path")
+            ):
+                raise CollectionImportError("invalid_transferred_native_asset_PNG")
+        row["collection_asset_import"] = {
+            "protocol": "native-asset-import-v1",
+            "source_input_identity": old["input_identity"],
+            "source_asset_key": old["asset_key"],
+            "source_mapping_pointer": old["mapping_path"],
+            "source_checkpoint_sha256": _sha(dump(old).encode()),
+            "target_input_identity": new["input_identity"],
+            "target_asset_key": new["asset_key"],
+            "source_hash": bound_hash,
+        }
+        chunk_ids["native-asset-ocr-" + old["input_identity"][:24]] = (
+            "native-asset-ocr-" + new["input_identity"][:24]
+        )
+    try:
+        result = rebuild_native_asset_text(result)
+    except ValueError as exc:
+        raise CollectionImportError("invalid_transferred_native_asset_checkpoint") from exc
+    original_chunks = {str(chunk.get("id")): chunk for chunk in manifest.get("chunks", [])}
+    target_chunks = {str(chunk.get("id")): chunk for chunk in result.get("chunks", [])}
+    for old_id, new_id in chunk_ids.items():
+        if old_id not in original_chunks:
+            continue
+        if new_id not in target_chunks or input_hash(embedding_text(original_chunks[old_id])) != input_hash(
+            embedding_text(target_chunks[new_id])
+        ):
+            raise CollectionImportError("transferred_native_asset_embedding_input_changed")
+    return result, chunk_ids
+
+
+def _validate_retry_evidence(value, source_hash):
+    """Validate immutable old OCR before any path or account is rewritten."""
+    if isinstance(value, list):
+        for item in value:
+            _validate_retry_evidence(item, source_hash)
+    elif isinstance(value, dict):
+        if value.get("protocol") == "physical-page-completeness-retry-v1":
+            from .ocr_page_retry import _encoded
+
+            previous = value.get("previous_page")
+            if (
+                not isinstance(previous, dict)
+                or value.get("source_hash") != source_hash
+                or previous.get("source_hash") != source_hash
+                or value.get("page") != previous.get("page")
+                or value.get("previous_page_sha256") != _sha(_encoded(previous))
+            ):
+                raise CollectionImportError("invalid_previous_OCR_checkpoint")
+        for item in value.values():
+            _validate_retry_evidence(item, source_hash)
 
 
 def _guard(conn, ident):
@@ -288,7 +468,7 @@ def _registry_assets(value, found, aliases):
         ):
             if isinstance(value.get(path_key), str) and _DIGEST.fullmatch(str(value.get(hash_key, ""))):
                 found.add(value[hash_key])
-                aliases[value[path_key]] = value[hash_key]
+                _add_alias(aliases, value[path_key], value[hash_key])
         for item in value.values():
             _registry_assets(item, found, aliases)
     elif isinstance(value, list):
@@ -296,11 +476,39 @@ def _registry_assets(value, found, aliases):
             _registry_assets(item, found, aliases)
 
 
-def _plan(source_dir, target_dir, source_owner, target_owner):
+def _selected_registry(registry, selected_ids, digest):
+    """Keep the selected relation closure without importing unrelated proofs."""
+    relations = registry.get("relations", [])
+    if not isinstance(relations, list) or any(not isinstance(row, dict) for row in relations):
+        raise CollectionImportError("invalid_registry_relations")
+    selected = set(selected_ids)
+    kept, missing = [], set()
+    for row in relations:
+        endpoints = {row.get("source_document_id"), row.get("target_document_id")}
+        if endpoints & selected:
+            if any(not isinstance(item, str) or not item for item in endpoints):
+                raise CollectionImportError("invalid_registry_endpoint")
+            missing.update(endpoints - selected)
+            kept.append(row)
+    if missing:
+        raise CollectionImportError("selected_registry_dependencies_required:" + ",".join(sorted(missing)))
+    return {
+        **registry,
+        "relations": kept,
+        "selection_provenance": {
+            "protocol": "selected-relation-registry-v1",
+            "source_registry_sha256": digest,
+            "source_relations": len(relations),
+            "selected_relations": len(kept),
+        },
+    }
+
+
+def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=None):
     source_dir, target_dir = Path(source_dir).resolve(), Path(target_dir).resolve()
     if source_dir == target_dir:
         raise CollectionImportError("source_and_target_must_differ")
-    source = _read_db(source_dir, source_owner)
+    source = _read_db(source_dir, source_owner, document_ids=document_ids)
     blockers = []
     try:
         _read_db(target_dir, target_owner, target_only=True)
@@ -312,19 +520,24 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
     for r in source["legal_classifications"]:
         classes.setdefault(r["document_id"], []).append(r)
     documents = source["documents"]
-    families = {}
-    for doc in documents:
-        families[doc["family_id"]] = families.get(doc["family_id"], 0) + 1
+    families = source["family_counts"]
     found, aliases, total = set(), {}, 0
     state_path = source_dir / "campaign.json"
+    if state_path.is_file() and state_path.stat().st_size > MAX_TOTAL_MANIFEST_BYTES:
+        raise CollectionImportError("campaign_evidence_too_large")
     state = json.loads(state_path.read_bytes()) if state_path.is_file() else {}
     if state and state.get("owner_id") != source_owner:
         raise CollectionImportError("campaign_owner_mismatch")
     evidence = {}
     for key, row in state.get("documents", {}).items():
         if row.get("document_id") in source["document_ids"]:
+            if len(dump(row).encode()) > MAX_PROVENANCE_BYTES:
+                raise CollectionImportError("document_evidence_too_large")
+            if row["document_id"] in evidence and evidence[row["document_id"]] != row:
+                raise CollectionImportError("ambiguous_document_evidence")
             evidence[row["document_id"]] = row
             _asset_refs(row, found, aliases)
+            _path_refs(row, source_dir, source_owner, found, aliases)
     for doc in documents:
         ident = doc["id"]
         if doc["case_id"] is not None:
@@ -346,6 +559,7 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
         if total > MAX_TOTAL_MANIFEST_BYTES:
             raise CollectionImportError("total_manifest_scope_exceeded")
         manifest = json.loads(doc["manifest"])
+        _validate_retry_evidence(manifest, doc["content_hash"])
         if "same-owner-pdf-page-reuse-v1" in doc["manifest"]:
             blockers.append("source_same_owner_OCR_reuse_unsupported:" + ident)
         if doc["role"] == "secondary" and (manifest.get("pages") or manifest.get("chunks")):
@@ -366,9 +580,9 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
         doc["country"] = country
         doc["parsed_manifest"] = manifest
         found.add(doc["content_hash"])
-        aliases[doc["storage_path"]] = doc["content_hash"]
+        _add_alias(aliases, doc["storage_path"], doc["content_hash"])
         _path_refs(manifest, source_dir, source_owner, found, aliases)
-    registry = None
+    registries = {}
     registry_hashes = set()
     for relation in source["relations"]:
         try:
@@ -376,19 +590,28 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(locator, dict):
-            digest = locator.get("registry_sha256") or locator.get("source_registry_sha256")
-            if digest:
-                registry_hashes.add(digest)
-    if len(registry_hashes) > 1:
-        raise CollectionImportError("multiple_relation_registries_not_supported")
-    if registry_hashes:
-        registry_digest = next(iter(registry_hashes))
+            for key in ("registry_sha256", "source_registry_sha256"):
+                if key in locator:
+                    digest = locator[key]
+                    if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+                        raise CollectionImportError("invalid_registry_digest")
+                    registry_hashes.add(digest)
+    if len(registry_hashes) > MAX_RELATION_REGISTRIES:
+        raise CollectionImportError("relation_registry_scope_exceeded")
+    registry_bytes = 0
+    for registry_digest in sorted(registry_hashes):
         raw = _blob(source_dir, source_owner, registry_digest).read_bytes()
-        if len(raw) > 4 * 1024 * 1024:
+        if len(raw) > MAX_PROVENANCE_BYTES:
             raise CollectionImportError("registry_too_large")
+        registry_bytes += len(raw)
+        if registry_bytes > MAX_TOTAL_REGISTRY_BYTES:
+            raise CollectionImportError("total_registry_scope_exceeded")
         registry = json.loads(raw)
         if registry.get("owner_id") != source_owner:
             raise CollectionImportError("registry_owner_mismatch")
+        if document_ids is not None:
+            registry = _selected_registry(registry, source["document_ids"], registry_digest)
+        registries[registry_digest] = registry
         _registry_assets(registry, found, aliases)
         _path_refs(registry, source_dir, source_owner, found, aliases)
         for ref in _mapping_records(registry):
@@ -406,7 +629,7 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
         raise CollectionImportError("total_blob_scope_exceeds_2GiB")
     for original, digest in list(aliases.items()):
         if not Path(original).is_absolute():
-            aliases[str(source_dir.parents[2] / original)] = digest
+            _add_alias(aliases, str(source_dir.parents[2] / original), digest)
     fingerprint = _fingerprint()
     vectors = {}
     for doc in documents:
@@ -465,6 +688,37 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
         if len({len(v) for v in validated.values()}) != 1:
             raise CollectionImportError("source_vector_dimension_drift")
         vectors[ident] = validated
+    # Validate transferred evidence during read-only preflight, before copying
+    # originals or beginning any destination transaction.
+    planned_destinations = {
+        digest: str(Path("files/blobs") / _sha(target_owner.encode()) / digest[:2] / digest[2:4] / digest)
+        for digest in paths
+    }
+    # Mapping derivation later registers these target CAS paths as aliases.
+    # Reserve them now so any collision is rejected before destination writes.
+    for digest, destination in planned_destinations.items():
+        _add_alias(aliases, destination, digest)
+    planned_identities = {
+        doc["id"]: {"document_id": doc["id"], "version": doc["version"]} for doc in documents
+    }
+    for doc in documents:
+        _rewrite_manifest(
+            doc["parsed_manifest"],
+            aliases,
+            planned_destinations,
+            planned_identities,
+            bound_hash=doc["content_hash"],
+            target_owner=target_owner,
+        )
+        if doc["id"] in evidence:
+            _rewrite(
+                evidence[doc["id"]],
+                aliases,
+                planned_destinations,
+                planned_identities,
+                bound_hash=doc["content_hash"],
+                target_owner=target_owner,
+            )
     public = {
         "protocol": PROTOCOL,
         "mode": "dry_run",
@@ -472,6 +726,7 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
         "source_owner_sha256": _sha(source_owner.encode()),
         "target_owner_sha256": _sha(target_owner.encode()),
         "documents": len(documents),
+        "selected_document_ids": source["document_ids"] if document_ids is not None else None,
         "ordinary_attachments": sum(d["role"] == "secondary" for d in documents),
         "complete_text_documents": sum(
             d["role"] == "primary" and text_complete(d["parsed_manifest"]) for d in documents
@@ -487,14 +742,16 @@ def _plan(source_dir, target_dir, source_owner, target_owner):
             for doc in documents
         ),
         "verified_owner_blobs": len(paths),
+        "source_evidence_documents": len(evidence),
         "relations": len(source["relations"]),
+        "relation_registries": len(registries),
         "blockers": blockers,
         "target_writes": 0,
         "model_calls": 0,
         "HTTP_calls": 0,
         "formal_RAG_published": False,
     }
-    return source, metadata, classes, paths, aliases, registry, vectors, public, evidence
+    return source, metadata, classes, paths, aliases, registries, vectors, public, evidence
 
 
 def _private_proof_paths(value, *, text=False):
@@ -603,12 +860,13 @@ def _validate_registry(registry, documents, paths):
 
 
 def import_collected_resources(
-    source_dir, target_dir, source_owner, target_owner, *, apply=False, refresh=False
+    source_dir, target_dir, source_owner, target_owner, *, apply=False, refresh=False, document_ids=None
 ):
     """Dry-run never creates target directories, databases, users or sessions."""
-    plan = _plan(source_dir, target_dir, source_owner, target_owner)
-    source, metadata, classes, paths, aliases, registry, vectors, report, evidence = plan
-    _validate_registry(registry, source["documents"], paths)
+    plan = _plan(source_dir, target_dir, source_owner, target_owner, document_ids=document_ids)
+    source, metadata, classes, paths, aliases, registries, vectors, report, evidence = plan
+    for registry in registries.values():
+        _validate_registry(registry, source["documents"], paths)
     if not apply:
         return report
     if report["blockers"]:
@@ -649,6 +907,7 @@ def import_collected_resources(
                         "metadata": metadata.get(ident),
                         "classes": classes.get(ident),
                         "origin": origin,
+                        **({"source_evidence": evidence[ident]} if ident in evidence else {}),
                         "vectors": {key: _sha(v.tobytes()) for key, v in vectors.get(ident, {}).items()},
                     }
                 ).encode()
@@ -742,7 +1001,7 @@ def import_collected_resources(
                         (target["id"], revision, dump(metadata[ident]), target_owner, at),
                     )
             identities[ident] = {"document_id": target["id"], "version": target["version"]}
-            manifest = _rewrite(
+            manifest, chunk_ids = _rewrite_manifest(
                 copy.deepcopy(doc["parsed_manifest"]),
                 aliases,
                 destinations,
@@ -750,6 +1009,23 @@ def import_collected_resources(
                 bound_hash=doc["content_hash"],
                 target_owner=target_owner,
             )
+            target_vectors = {
+                chunk_ids.get(key, key): vector for key, vector in vectors.get(ident, {}).items()
+            }
+            if ident in evidence:
+                manifest["collection_evidence"] = {
+                    "protocol": "collection-evidence-v1",
+                    "source_original_sha256": doc["content_hash"],
+                    "source_record_sha256": _sha(dump(evidence[ident]).encode()),
+                    "record": _rewrite(
+                        copy.deepcopy(evidence[ident]),
+                        aliases,
+                        destinations,
+                        identities,
+                        bound_hash=doc["content_hash"],
+                        target_owner=target_owner,
+                    ),
+                }
             # Inline vectors are untrusted; only validated index BLOBs transfer.
             for chunk in manifest.get("chunks", []):
                 chunk.pop("embedding", None)
@@ -795,22 +1071,36 @@ def import_collected_resources(
                             "SELECT rowid,chunk_id,input_hash FROM retrieval_chunks WHERE document_id=? ORDER BY ordinal",
                             (target["id"],),
                         )
-                        if r["chunk_id"] in vectors[ident]
+                        if r["chunk_id"] in target_vectors
                     ]
                     service.index.store_vectors(
                         conn,
                         target["id"],
                         _fingerprint(),
                         chunks,
-                        [vectors[ident][r["chunk_id"]] for r in chunks],
+                        [target_vectors[r["chunk_id"]] for r in chunks],
                     )
                 service.collection.queue_processing(conn, target["id"], target_owner)
-                if cache_pending:
-                    # Complete text needs only its missing vector inputs, not
-                    # another parsing/OCR pass or another paid cached batch.
+                if text_complete(manifest):
+                    # A validated text checkpoint is already the result of
+                    # parsing. Complete imports must never pay for OCR again.
+                    needs_embedding = bool(
+                        _fingerprint()
+                        and service.archive.can_index(conn, target["id"])
+                        and not embedding_complete
+                    )
                     conn.execute(
-                        "UPDATE processing_jobs SET phase='embed' WHERE document_id=? AND status='queued'",
-                        (target["id"],),
+                        "UPDATE processing_jobs SET phase=?,status=?,attempts=0,available_at=0,"
+                        "lease_token=NULL,lease_until=NULL,error=NULL WHERE document_id=? AND status='queued'",
+                        (
+                            "embed" if needs_embedding or embedding_complete else "parse",
+                            "queued" if needs_embedding else "completed",
+                            target["id"],
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE documents SET status=? WHERE id=?",
+                        ("processing" if needs_embedding else "ready", target["id"]),
                     )
             else:
                 conn.execute("DELETE FROM processing_jobs WHERE document_id=?", (target["id"],))
@@ -819,9 +1109,11 @@ def import_collected_resources(
             conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), target["id"]))
             conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (target["id"],))
         mapping_replacements = {}
-        if registry:
+        for registry in registries.values():
             for ref in _mapping_records(registry):
                 digest = ref["mapping_sha256"]
+                if digest in mapping_replacements:
+                    continue
                 mapping = json.loads(paths[digest].read_bytes())
                 derived = _rewrite(mapping, aliases, destinations, identities, target_owner=target_owner)
                 derived = _private_proof_paths(derived)
@@ -831,7 +1123,7 @@ def import_collected_resources(
                 if len(payload) > MAX_PROVENANCE_BYTES:
                     raise CollectionImportError("derived_mapping_too_large")
                 mapped = blobs.put_bytes(target_owner, payload)
-                aliases[destinations[digest]] = digest
+                _add_alias(aliases, destinations[digest], digest)
                 destinations[digest] = str(mapped.path.relative_to(Path(target_dir).resolve()))
                 mapping_replacements[digest] = mapped.digest
         # Forward document references and mapping paths resolve only after all IDs exist.
@@ -860,27 +1152,26 @@ def import_collected_resources(
             ):
                 service.index.sync_document(conn, identity["document_id"], current, strict_vectors=True)
             conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (identity["document_id"],))
-        transferred_registry = (
-            _rewrite(registry, aliases, destinations, identities, target_owner=target_owner)
-            if registry
-            else None
-        )
-        transferred_registry = _replace_mapping_hashes(transferred_registry, mapping_replacements)
-        if transferred_registry:
+        registry_blobs = {}
+        for source_digest, registry in registries.items():
+            transferred_registry = _rewrite(
+                registry, aliases, destinations, identities, target_owner=target_owner
+            )
+            transferred_registry = _replace_mapping_hashes(transferred_registry, mapping_replacements)
             transferred_registry["owner_id"] = target_owner
             transferred_registry["source_import"] = {
                 "protocol": PROTOCOL,
                 "source_owner_sha256": _sha(source_owner.encode()),
+                "source_registry_sha256": source_digest,
             }
             payload = dump(transferred_registry).encode()
             if len(payload) > MAX_PROVENANCE_BYTES:
                 raise CollectionImportError("derived_registry_too_large")
             registry_blob = blobs.put_bytes(target_owner, payload)
+            registry_blobs[source_digest] = registry_blob
             destinations[registry_blob.digest] = str(
                 registry_blob.path.relative_to(Path(target_dir).resolve())
             )
-        else:
-            registry_blob = None
         for relation in source["relations"]:
             if (
                 relation["source_document_id"] not in identities
@@ -895,13 +1186,14 @@ def import_collected_resources(
             if isinstance(parsed, dict) and (
                 "registry_sha256" in parsed or "source_registry_sha256" in parsed
             ):
-                if not registry_blob:
-                    raise CollectionImportError("typed_relation_registry_required")
                 for key, path_key in (
                     ("registry_sha256", "registry_path"),
                     ("source_registry_sha256", "source_registry_path"),
                 ):
                     if key in parsed:
+                        registry_blob = registry_blobs.get(parsed[key])
+                        if registry_blob is None:
+                            raise CollectionImportError("typed_relation_registry_required")
                         parsed[key] = registry_blob.digest
                         parsed[path_key] = str(registry_blob.path.relative_to(Path(target_dir).resolve()))
             parsed = _rewrite(parsed, aliases, destinations, identities)
@@ -942,5 +1234,6 @@ def import_collected_resources(
         "unchanged_documents": unchanged,
         "document_versions": identities,
         "provenance_sha256": provenance.digest,
-        "registry_sha256": registry_blob.digest if registry_blob else None,
+        "registry_sha256": next(iter(registry_blobs.values())).digest if len(registry_blobs) == 1 else None,
+        "registry_sha256_by_source": {digest: blob.digest for digest, blob in registry_blobs.items()},
     }

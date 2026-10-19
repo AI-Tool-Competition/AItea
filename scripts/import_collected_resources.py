@@ -20,6 +20,12 @@ def main():
     parser.add_argument("--models-env", type=Path)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument(
+        "--document-id",
+        action="append",
+        dest="document_ids",
+        help="Import only these source documents; repeat for dependencies and related originals",
+    )
     args = parser.parse_args()
     if args.models_env:
         from verify_ingestion import configure_models
@@ -35,6 +41,7 @@ def main():
             args.target_owner,
             apply=args.apply,
             refresh=args.refresh,
+            document_ids=args.document_ids,
         )
     except (CollectionImportError, sqlite3.Error) as exc:
         print(json.dumps({"status": "refused", "reason": str(exc)}, ensure_ascii=False))

@@ -1,6 +1,7 @@
 """Full provider pagination is proven independently of originals and legal scope."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -192,6 +193,145 @@ def test_resume_rejects_changed_plan_and_unapproved_external_location(tmp_path):
         collector.open_state(output, resume=True, definition_hash="second", storage_root=tmp_path)
 
 
+def reusable_response_journals(tmp_path):
+    """A new catalogue and a historical detail/original response share one identity."""
+    definition = next(
+        row for row in collector.load_blueprints()["indonesia-20261003"]["items"] if row["id"] == "1.3"
+    )
+    source, target = tmp_path / "historical", tmp_path / "current"
+    donor = collector.open_state(source, resume=False, definition_hash="historical", storage_root=tmp_path)
+    current = collector.open_state(target, resume=False, definition_hash="current", storage_root=tmp_path)
+    detail_url = "https://jdih.setneg.go.id/api/hukumproduk/detaildata?jns=UU&no=2&thn=2026"
+    detail = (ROOT / "backend/tests/fixtures/discovery/setneg-detail.json").read_bytes()
+    recipe = collector.recipe_for(definition)
+    discovery = collector.discover_page(detail_url, detail, "application/json", recipe)
+    assert discovery["matched"]
+    original_url = next(link["url"] for link in discovery["links"] if link["purpose"] == "document")
+    historical = []
+    for url, purpose, content, mime in (
+        (detail_url, "detail", detail, "application/json"),
+        (original_url, "document", b"%PDF-1.4\nHistorical original\n%%EOF", "application/pdf"),
+    ):
+        blob = collector.CorpusBlobs(source / "files", max_bytes=1024 * 1024).put("donor", [content])
+        result = {
+            "status": "downloaded",
+            "requested_url": url,
+            "configured_purpose": purpose,
+            "final_url": url,
+            "mime_type": mime,
+            "size": blob.size,
+            "content_hash": blob.digest,
+            "evidence_path": str(blob.path.relative_to(source)),
+            "started_at": "2026-10-19T00:00:00Z",
+            "discovery": collector.discover_page(url, content, mime, recipe),
+        }
+        donor.execute("INSERT OR IGNORE INTO tasks(item_code,url,purpose) VALUES('1.3',?,?)", (url, purpose))
+        donor.commit()
+        collector.record_result(donor, {"item_code": "1.3", "url": url}, result)
+        historical.append(result)
+    current.execute("INSERT INTO tasks(item_code,url,purpose) VALUES('1.3',?,'detail')", (detail_url,))
+    current.execute("INSERT INTO config VALUES('transport_failure_streak','4')")
+    current.execute("INSERT INTO config VALUES('cooldown_until','9999999999')")
+    current.commit()
+    donor.close()
+    return current, source, target, {"1.3": definition}, historical
+
+
+def test_historical_receipt_reuse_is_offline_idempotent_and_preserves_backoff(tmp_path, monkeypatch):
+    current, source, target, definitions, historical = reusable_response_journals(tmp_path)
+
+    def no_request(*args, **kwargs):
+        raise AssertionError("receipt reuse must not contact the source")
+
+    monkeypatch.setattr(sys.modules[collector.SourceVerifier.__module__], "_download", no_request)
+    donor_before = (source / "journal.sqlite3").read_bytes()
+    try:
+        result = collector.reuse_receipts(current, target, [source], definitions)
+        assert result["reused_responses"] == 2 and result["network_attempts"] == 0
+        tasks = list(current.execute("SELECT status,attempts,result FROM tasks ORDER BY purpose"))
+        assert len(tasks) == 2 and all(tuple(row[:2]) == ("downloaded", 0) for row in tasks)
+        for row in tasks:
+            receipt = json.loads(row["result"])
+            old = next(r for r in historical if r["requested_url"] == receipt["requested_url"])
+            assert receipt["started_at"] == old["started_at"]
+            assert (target / receipt["evidence_path"]).read_bytes() == (
+                source / old["evidence_path"]
+            ).read_bytes()
+            reuse = receipt["cache_reuse"]
+            raw_proof = (target / reuse["source_result_cas"]).read_bytes()
+            assert hashlib.sha256(raw_proof).hexdigest() == reuse["source_result_sha256"]
+            assert json.loads(raw_proof) == old
+            assert reuse["freshness"] == "historical_response_not_refetched"
+        assert (
+            current.execute("SELECT value FROM config WHERE key='transport_failure_streak'").fetchone()[0]
+            == "4"
+        )
+        assert (
+            current.execute("SELECT value FROM config WHERE key='cooldown_until'").fetchone()[0]
+            == "9999999999"
+        )
+        assert collector.reuse_receipts(current, target, [source], definitions)["reused_responses"] == 0
+        assert current.execute("SELECT count(*) FROM attempts").fetchone()[0] == 2
+        collector.verify_receipts(current, target)
+        assert (source / "journal.sqlite3").read_bytes() == donor_before
+    finally:
+        current.close()
+
+
+@pytest.mark.parametrize("mutation", ["hash", "traversal", "symlink", "wrong_source"])
+def test_reused_receipt_rejects_corruption_and_path_or_source_escape(tmp_path, mutation):
+    current, source, target, definitions, historical = reusable_response_journals(tmp_path)
+    result = historical[0]
+    evidence = source / result["evidence_path"]
+    if mutation == "hash":
+        evidence.chmod(0o600)
+        evidence.write_bytes(b"X" * result["size"])
+    elif mutation == "symlink":
+        outside = tmp_path / "outside.json"
+        outside.write_bytes(evidence.read_bytes())
+        evidence.unlink()
+        evidence.symlink_to(outside)
+    else:
+        if mutation == "traversal":
+            result["evidence_path"] = "../outside.json"
+        else:
+            result["final_url"] = "https://example.com/untrusted.json"
+        with sqlite3.connect(source / "journal.sqlite3") as donor:
+            donor.execute("UPDATE tasks SET result=? WHERE purpose='detail'", (json.dumps(result),))
+    try:
+        with pytest.raises(ValueError):
+            collector.reuse_receipts(current, target, [source], definitions)
+        assert current.execute("SELECT status,attempts FROM tasks").fetchone()[:] == ("queued", 0)
+        assert current.execute("SELECT count(*) FROM attempts").fetchone()[0] == 0
+    finally:
+        current.close()
+
+
+def test_receipt_reuse_only_imports_already_discovered_tasks(tmp_path):
+    current, source, target, definitions, _ = reusable_response_journals(tmp_path)
+    try:
+        current.execute("DELETE FROM tasks")
+        current.commit()
+        assert collector.reuse_receipts(current, target, [source], definitions)["reused_responses"] == 0
+        assert current.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        current.close()
+
+
+def test_resume_rejects_changed_historical_response_proof(tmp_path):
+    current, source, target, definitions, _ = reusable_response_journals(tmp_path)
+    try:
+        collector.reuse_receipts(current, target, [source], definitions)
+        result = json.loads(current.execute("SELECT result FROM tasks WHERE purpose='detail'").fetchone()[0])
+        proof = target / result["cache_reuse"]["source_result_cas"]
+        proof.chmod(0o600)
+        proof.write_bytes(b"X" * proof.stat().st_size)
+        with pytest.raises(ValueError, match="historical receipt proof hash changed"):
+            collector.verify_receipts(current, target)
+    finally:
+        current.close()
+
+
 def association_record(tmp_path):
     from app.blob_store import BlobStore
 
@@ -277,6 +417,30 @@ def test_explicit_file_association_is_idempotent_and_preserves_processed_version
             json.loads(row[0])["review_status"] == "draft"
             for row in connection.execute("SELECT payload FROM document_metadata")
         )
+
+
+def test_historical_response_receipts_follow_prepared_originals(tmp_path):
+    record = association_record(tmp_path)
+    proof = {"status": "downloaded", "started_at": "2026-10-18T01:02:03Z"}
+    raw = json.dumps(proof).encode()
+    blob = collector.CorpusBlobs(tmp_path / "files", max_bytes=1024 * 1024).put("donor", [raw])
+    reuse = {
+        "source_result_cas": str(blob.path.relative_to(tmp_path)),
+        "source_result_sha256": blob.digest,
+        "source_url": record["detail_evidence"]["final_url"],
+    }
+    record["detail_receipt_reuse"] = reuse
+    record["assets"][0]["cache_reuse"] = {**reuse, "source_url": record["assets"][0]["url"]}
+    (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
+    collector.prepare_library(tmp_path)
+    documents = json.loads((tmp_path / "campaign.json").read_text())["documents"].values()
+    for document in documents:
+        evidence = document["source_evidence"]
+        assert Path(evidence["detail_receipt"]["cas_path"]).read_bytes() == raw
+        assert evidence["detail_receipt"]["freshness"] == "historical_response_not_refetched"
+        if document["original"]["sha256"] == record["assets"][0]["content_hash"]:
+            assert evidence["original_receipt"]["url"] == record["assets"][0]["url"]
+            assert Path(evidence["original_receipt"]["cas_path"]).read_bytes() == raw
 
 
 def test_pending_alternative_main_file_prevents_ambiguous_association(tmp_path):

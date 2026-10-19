@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,7 +28,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.blob_store import Blob, BlobStore  # noqa: E402 -- repository script bootstrap
 from app.checklists import load_blueprints  # noqa: E402
-from app.discovery import normalized_seeds_for, recipe_for  # noqa: E402
+from app.data_backup import _safe_absolute  # noqa: E402
+from app.discovery import (  # noqa: E402
+    MAX_HTML_BYTES,
+    discover_page,
+    normalized_seeds_for,
+    recipe_for,
+)
 from app.indonesia_official import (  # noqa: E402
     SETNEG_ITEMS,
     ledger_record,
@@ -103,9 +110,20 @@ def verify_receipts(c: sqlite3.Connection, output: Path) -> None:
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
         if digest != result["content_hash"]:
             raise ValueError("saved receipt hash changed")
+        reuse = result.get("cache_reuse")
+        if reuse:
+            relative = Path(reuse["source_result_cas"])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("historical receipt proof must remain inside the target CAS")
+            path = _safe_absolute(output / relative)
+            if not path.is_file() or not 0 < path.stat().st_size <= MAX_HTML_BYTES:
+                raise ValueError("historical receipt proof size changed")
+            with path.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != reuse["source_result_sha256"]:
+                    raise ValueError("historical receipt proof hash changed")
 
 
-def record_result(c: sqlite3.Connection, task: dict, result: dict) -> None:
+def record_result(c: sqlite3.Connection, task: dict, result: dict, *, network_attempt=True) -> None:
     discovery = result.get("discovery", {})
     status = result["status"]
     if status == "downloaded" and not discovery.get("matched"):
@@ -117,13 +135,13 @@ def record_result(c: sqlite3.Connection, task: dict, result: dict) -> None:
             (task["item_code"], task["url"], encoded),
         )
         c.execute(
-            "UPDATE tasks SET status=?,attempts=attempts+1,result=? WHERE item_code=? AND url=?",
-            (status, encoded, task["item_code"], task["url"]),
+            "UPDATE tasks SET status=?,attempts=attempts+?,result=? WHERE item_code=? AND url=?",
+            (status, int(network_attempt), encoded, task["item_code"], task["url"]),
         )
         delay = result.get("retry_after_seconds")
-        if result["status"] == "downloaded":
+        if network_attempt and result["status"] == "downloaded":
             c.execute("INSERT OR REPLACE INTO config VALUES('transport_failure_streak','0')")
-        elif status == "failed" and result.get("retryable"):
+        elif network_attempt and status == "failed" and result.get("retryable"):
             previous = c.execute("SELECT value FROM config WHERE key='transport_failure_streak'").fetchone()
             streak = (int(previous[0]) if previous else 0) + 1
             c.execute(
@@ -135,7 +153,7 @@ def record_result(c: sqlite3.Connection, task: dict, result: dict) -> None:
                 # even when no HTTP response supplies Retry-After. Preserve
                 # untouched queued work and cool down before another batch.
                 delay = max(float(delay or 0), min(900, 60 * 2 ** min(streak - 3, 4)))
-        if "HTTP 429" in result.get("error", "") or delay:
+        if network_attempt and ("HTTP 429" in result.get("error", "") or delay):
             # All queued work here is for this one official provider. Persist
             # the entire source's pause, including across collector restarts.
             until = time.time() + max(float(delay or 0), 60)
@@ -159,6 +177,134 @@ def record_result(c: sqlite3.Connection, task: dict, result: dict) -> None:
                 "INSERT OR IGNORE INTO tasks(item_code,url,purpose,parent_url) VALUES(?,?,?,?)",
                 (task["item_code"], link["url"], link["purpose"], task["url"]),
             )
+
+
+def reuse_receipts(c, output, source_dirs, definitions):
+    """Reuse explicit historical responses, never claim a new upstream fetch.
+
+    Only already-discovered detail/original tasks are eligible. Re-inspect the
+    stored response with the current frozen recipe and rebind verified bytes to
+    this collector's CAS. Cached success must not reset source transport backoff.
+    """
+    if len(source_dirs) > 8:
+        raise ValueError("receipt reuse supports at most eight explicit source directories")
+    records = []
+    for directory in source_dirs:
+        directory = _safe_absolute(directory)
+        if directory == output.resolve():
+            raise ValueError("receipt reuse source must differ from the target")
+        journal = _safe_absolute(directory / "journal.sqlite3")
+        with closing(sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True)) as donor:
+            donor.row_factory = sqlite3.Row
+            donor.execute("PRAGMA query_only=ON")
+            for purpose in ("detail", "document"):
+                for row in donor.execute(
+                    "SELECT * FROM tasks WHERE purpose=? AND status='downloaded' ORDER BY item_code,url",
+                    (purpose,),
+                ):
+                    definition = definitions.get(row["item_code"])
+                    task = c.execute(
+                        "SELECT * FROM tasks WHERE item_code=? AND url=? AND purpose=?",
+                        (row["item_code"], row["url"], purpose),
+                    ).fetchone()
+                    if definition is None or task is None or task["status"] == "downloaded":
+                        continue
+                    raw_result = row["result"]
+                    if not isinstance(raw_result, str) or len(raw_result) > MAX_HTML_BYTES:
+                        raise ValueError("saved receipt exceeds the bounded JSON limit")
+                    result = json.loads(raw_result)
+                    if (
+                        not isinstance(result, dict)
+                        or result.get("status") != "downloaded"
+                        or result.get("requested_url") != row["url"]
+                        or result.get("configured_purpose") != purpose
+                        or type(result.get("size")) is not int
+                        or not 0 < result["size"] <= 128 * 1024 * 1024
+                        or any(
+                            not isinstance(result.get(key), str) or not result[key]
+                            for key in (
+                                "evidence_path",
+                                "content_hash",
+                                "final_url",
+                                "mime_type",
+                            )
+                        )
+                    ):
+                        raise ValueError("saved receipt identity or size changed")
+                    relative = Path(result["evidence_path"])
+                    digest = result["content_hash"]
+                    if (
+                        relative.is_absolute()
+                        or ".." in relative.parts
+                        or len(relative.parts) != 6
+                        or relative.parts[:2] != ("files", "blobs")
+                        or len(digest) != 64
+                        or any(char not in "0123456789abcdef" for char in digest)
+                        or relative.parts[3:] != (digest[:2], digest[2:4], digest)
+                    ):
+                        raise ValueError("receipt reuse requires a local CAS evidence path")
+                    path = _safe_absolute(directory / relative)
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(descriptor, "rb") as handle:
+                        before = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(before.st_mode) or before.st_size != result["size"]:
+                            raise ValueError("saved receipt size changed")
+                        if hashlib.file_digest(handle, "sha256").hexdigest() != result["content_hash"]:
+                            raise ValueError("saved receipt hash changed")
+                        handle.seek(0)
+                        prefix = handle.read(8)
+                        if prefix.startswith(b"%PDF-"):
+                            content = prefix
+                        elif before.st_size <= MAX_HTML_BYTES:
+                            handle.seek(0)
+                            content = handle.read(MAX_HTML_BYTES + 1)
+                        else:
+                            raise ValueError("saved discovery response exceeds its size limit")
+                        recipe = recipe_for(definition)
+                        discovery = discover_page(result["final_url"], content, result["mime_type"], recipe)
+                        requested = discover_page(row["url"], content, result["mime_type"], recipe)
+                        if any(
+                            not item.get("matched") or item.get("purpose") != purpose
+                            for item in (discovery, requested)
+                        ):
+                            raise ValueError("saved response does not match the current source recipe")
+                        handle.seek(0)
+                        blobs = CorpusBlobs(output / "files", max_bytes=128 * 1024 * 1024)
+                        blob = blobs.put(SOURCE_OWNER, iter(lambda: handle.read(1024 * 1024), b""))
+                        after = os.fstat(handle.fileno())
+                        if (
+                            (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                            or blob.digest != result["content_hash"]
+                            or blob.size != result["size"]
+                        ):
+                            raise ValueError("saved receipt changed while copying")
+                    receipt_blob = blobs.put(SOURCE_OWNER, [raw_result.encode()])
+                    result.update(
+                        evidence_path=str(blob.path.relative_to(output)),
+                        discovery=discovery,
+                        original_acquired=purpose == "document",
+                        cache_reuse={
+                            "source_directory": str(directory),
+                            "source_item": row["item_code"],
+                            "source_url": row["url"],
+                            "source_result_sha256": hashlib.sha256(raw_result.encode()).hexdigest(),
+                            "source_result_cas": str(receipt_blob.path.relative_to(output)),
+                            "source_evidence_path": str(relative),
+                            "network_attempts": 0,
+                            "freshness": "historical_response_not_refetched",
+                        },
+                    )
+                    record_result(c, dict(task), result, network_attempt=False)
+                    records.append(
+                        {
+                            "item_code": row["item_code"],
+                            "url": row["url"],
+                            "purpose": purpose,
+                            "sha256": blob.digest,
+                            "source_directory": str(directory),
+                        }
+                    )
+    return {"reused_responses": len(records), "network_attempts": 0, "records": records}
 
 
 def export_state(c: sqlite3.Connection, output: Path) -> dict:
@@ -197,6 +343,8 @@ def export_state(c: sqlite3.Connection, output: Path) -> dict:
                     record["detail_evidence"] = {
                         key: proof[key] for key in ("final_url", "content_hash", "evidence_path")
                     }
+                    if proof.get("cache_reuse"):
+                        record["detail_receipt_reuse"] = proof["cache_reuse"]
                     record["detail_warnings"] = proof["discovery"].get("warnings", [])
                     detail_payload = json.loads((output / proof["evidence_path"]).read_bytes())
                     raw_detail = detail_payload["row"][0]
@@ -229,6 +377,7 @@ def export_state(c: sqlite3.Connection, output: Path) -> dict:
                                 "evidence_path",
                                 "original_acquired",
                                 "error",
+                                "cache_reuse",
                             ):
                                 if key in evidence:
                                     asset[key] = evidence[key]
@@ -410,6 +559,18 @@ def prepare_library(output: Path) -> dict:
                         "sha256": saved.digest,
                         "url": proof.get("url", proof.get("final_url")),
                     }
+                for label, reuse in (
+                    ("detail_receipt", record.get("detail_receipt_reuse")),
+                    ("original_receipt", asset.get("cache_reuse")),
+                ):
+                    if reuse:
+                        saved = owned_blob(reuse["source_result_cas"], reuse["source_result_sha256"])
+                        proofs[label] = {
+                            "cas_path": str(saved.path),
+                            "sha256": saved.digest,
+                            "url": reuse["source_url"],
+                            "freshness": "historical_response_not_refetched",
+                        }
                 with service.db.transaction() as conn:
                     doc = service.archive.store_original(
                         conn,
@@ -529,6 +690,9 @@ def run(args) -> int:
                 "UPDATE tasks SET status='queued' WHERE status IN ('failed','rejected','budget_exhausted')"
             )
         c.commit()
+        if source_dirs := getattr(args, "reuse_receipts_from", []):
+            reused = reuse_receipts(c, output, source_dirs, definitions)
+            print(json.dumps({"receipt_reuse": reused}, ensure_ascii=False), flush=True)
         verifier = SourceVerifier(
             output,
             timeout=args.timeout,
@@ -681,6 +845,13 @@ def main():
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument(
+        "--reuse-receipts-from",
+        type=Path,
+        action="append",
+        default=[],
+        help="reuse verified historical detail/original responses from another explicit collection journal",
+    )
     parser.add_argument("--detail-types", type=lambda value: value.split(","), default=["PERPU"])
     parser.add_argument("--original-byte-budget", type=int, default=0)
     parser.add_argument("--min-free-bytes", type=int, default=256 * 1024 * 1024)

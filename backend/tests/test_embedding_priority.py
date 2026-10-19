@@ -23,6 +23,14 @@ from test_retrieval_index import workspace as _workspace_fixture
 workspace = _workspace_fixture
 
 
+@pytest.fixture(autouse=True)
+def isolated_embedding_runtime(monkeypatch):
+    # configure() is also called in spawned processes and assigns these globals
+    # directly. Restore the parent process's objects after every local test.
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
+    monkeypatch.setattr(ingestion, "_EMBEDDING_PROFILES", {})
+
+
 def wait_for(predicate, timeout=15):
     until = time.monotonic() + timeout
     while not predicate():

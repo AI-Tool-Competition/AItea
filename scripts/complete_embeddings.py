@@ -45,7 +45,7 @@ def stable_manifest(raw):
     return digest(result)
 
 
-def unresolved_issued_inputs(output, saved):
+def unresolved_issued_inputs(output, saved, *, run_ids=None):
     """A durable intent without a known rejection or saved receipt is uncertain.
 
     An intent precedes sending, so an interruption in that narrow gap can be a
@@ -67,6 +67,8 @@ def unresolved_issued_inputs(output, saved):
         )
     attempted = set()
     for record in records:
+        if run_ids is not None and record.get("run_id") not in run_ids:
+            continue
         if record.get("http_started") and record.get("http_status") not in {
             400,
             401,
@@ -77,6 +79,24 @@ def unresolved_issued_inputs(output, saved):
         }:
             attempted.update(record["input_hashes"])
     return attempted - saved
+
+
+def consumed_recovery_inputs(output, selection_sha256):
+    """A new unknown result spends that exact recovery authorization once.
+
+    Preflight files bind past run IDs to the immutable selection file. This
+    also protects runs made before the supervisor existed, including a crash
+    after a durable send intent. Known rejection/429 does not spend an input.
+    """
+    run_ids = set()
+    for path in output.glob("preflight-*.json"):
+        previous = json.loads(path.read_text())
+        if (
+            previous.get("configuration", {}).get("retry_unresolved_selection_sha256")
+            == selection_sha256
+        ):
+            run_ids.add(previous["run_id"])
+    return unresolved_issued_inputs(output, set(), run_ids=run_ids)
 
 
 def read_unresolved_selection(path, plan, fixed_input_hashes):
@@ -420,6 +440,15 @@ def main():
         help="Runtime SQLite budget shared with the API process",
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Persistently resume safe work after cooldowns",
+    )
+    parser.add_argument("--supervisor-window-seconds", type=int, default=300)
+    parser.add_argument(
+        "--supervisor-max-document-workers", type=int, choices=range(1, 33)
+    )
     parser.add_argument("--http-workers", type=int, choices=range(1, 65), default=2)
     parser.add_argument(
         "--document-workers",
@@ -456,6 +485,16 @@ def main():
         parser.error(str(error))
     if args.max_run_seconds < 0:
         parser.error("Run window must be nonnegative")
+    if args.supervise:
+        if not args.apply or args.retry_unresolved:
+            parser.error(
+                "Supervision requires --apply and forbids broad --retry-unresolved"
+            )
+        if args.supervisor_window_seconds < 30:
+            parser.error("Supervision windows must be at least 30 seconds")
+        from embedding_supervisor import supervise
+
+        return supervise(args, Path(__file__), sys.argv[1:], document_workers)
     from processing_runtime import retry_local_database
     from verify_ingestion import configure_models, write_report
 
@@ -592,6 +631,12 @@ def main():
             recovery_selection["input_hashes"] if recovery_selection else ()
         )
     )
+    consumed_recovery = (
+        consumed_recovery_inputs(output, recovery_selection["sha256"])
+        if recovery_selection
+        else set()
+    )
+    allowed_unresolved -= consumed_recovery
     quarantined_inputs = unresolved - allowed_unresolved
     deferred_documents = deferred_input_documents(document_inputs, quarantined_inputs)
     observations = Observations(output)
@@ -669,8 +714,14 @@ def main():
             "failed_documents": sum(j["status"] == "failed" for j in jobs),
             "unresolved_issued_inputs_at_start": len(unresolved),
             "explicitly_allowed_unresolved_inputs": len(allowed_unresolved),
+            "consumed_recovery_inputs": len(consumed_recovery.intersection(unresolved)),
             "quarantined_inputs": len(quarantined_inputs),
             "deferred_documents": len(deferred_documents),
+            "runnable_documents": sum(
+                j["status"] in {"queued", "processing"}
+                and j["document_id"] not in deferred_documents
+                for j in jobs
+            ),
             "active_claims": len(active),
             "finished_claims_this_process": finished,
             "missing_rows": pending[0],

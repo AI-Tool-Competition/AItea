@@ -463,7 +463,10 @@ def test_unresolved_selection_rejects_oversized_file_and_conflicting_cli_flags(t
     assert error.value.code == 2
 
 
-def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(service, tmp_path, monkeypatch):
+@pytest.mark.parametrize("unknown_again", [False, True])
+def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(
+    service, tmp_path, monkeypatch, unknown_again
+):
     from contextlib import closing
     import os
     import signal
@@ -514,9 +517,30 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
     )
     cache.save([texts[docs[1]["id"]]], [[0.0, 1.0]])
     called = []
+    observers = []
 
     def embed(values, *, on_batch):
         called.extend(values)
+        if unknown_again:
+            observer = observers[-1]
+            observer.stop.set()
+            observer.failure = "issued_request_result_unknown"
+            with (output / "requests.jsonl").open("a") as stream:
+                stream.write(
+                    json.dumps(
+                        {
+                            "run_id": observer.run_id,
+                            "request_id": "new-unknown",
+                            "http_started": True,
+                            "http_status": 504,
+                            "input_hashes": [input_hash(text) for text in values],
+                        }
+                    )
+                    + "\n"
+                )
+            raise ingestion.EmbeddingServiceError(
+                retryable=True, http_status=504, request_outcome_unknown=True, request_sent=True
+            )
         result = [[1.0, 0.0] for _ in values]
         on_batch(values, result)
         return result
@@ -527,7 +551,7 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
     monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
     monkeypatch.setattr(service_module, "Service", lambda _: service)
     monkeypatch.setattr(verify_ingestion, "configure_models", lambda _: None)
-    monkeypatch.setattr(runner["Observations"], "install", lambda _: None)
+    monkeypatch.setattr(runner["Observations"], "install", lambda observer: observers.append(observer))
     monkeypatch.setattr(signal, "signal", lambda *_: None)
     monkeypatch.setattr(
         sys,
@@ -548,10 +572,11 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
         ],
     )
     monkeypatch.setattr(ingestion, "embed_texts", embed)
-    assert runner["main"]() == 0
+    assert runner["main"]() == (3 if unknown_again else 0)
     assert called == [texts[docs[0]["id"]]]
     report = json.loads((output / "report.json").read_text())
-    assert report["completed_documents"] == 2 and report["missing_rows"] == 1
+    assert report["completed_documents"] == (1 if unknown_again else 2)
+    assert report["missing_rows"] == (2 if unknown_again else 1)
     assert report["explicitly_allowed_unresolved_inputs"] == 1 and report["quarantined_inputs"] == 1
     assert report["deferred_documents"] == 1 and all(report["integrity"].values())
     snapshot = json.loads((output / ("unresolved-" + report["run_id"] + ".json")).read_text())
@@ -562,12 +587,14 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
         == report["configuration"]["retry_unresolved_selection_sha256"]
     )
     before = {doc["id"]: vectors(service, doc) for doc in docs}
+    retained_journal = (output / "requests.jsonl").read_text()
     monkeypatch.setattr(
         ingestion, "embed_texts", lambda *_: pytest.fail("restarted selection repaid a successful input")
     )
-    assert runner["main"]() == 0
+    assert runner["main"]() == (3 if unknown_again else 0)
     assert before == {doc["id"]: vectors(service, doc) for doc in docs}
-    assert (output / "requests.jsonl").read_text() == journal
+    assert (output / "requests.jsonl").read_text() == retained_journal
+    assert retained_journal.startswith(journal)
     with closing(service.db.connect()) as conn:
         assert (
             conn.execute(
@@ -576,7 +603,9 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
             == "queued"
         )
     report = json.loads((output / "report.json").read_text())
-    assert report["explicitly_allowed_unresolved_inputs"] == 0 and report["quarantined_inputs"] == 1
+    assert report["explicitly_allowed_unresolved_inputs"] == 0
+    assert report["quarantined_inputs"] == (2 if unknown_again else 1)
+    assert report["consumed_recovery_inputs"] == int(unknown_again)
 
 
 def test_runner_drains_paid_peer_after_local_future_failure(tmp_path):

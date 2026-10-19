@@ -98,32 +98,40 @@ def _uses_openai_endpoint(base):
     return parsed.scheme == "https" and parsed.hostname == "api.openai.com"
 
 
+def _uses_aerisun_deepseek_endpoint(base, model):
+    parsed = urlsplit(base)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "aerisun.top"
+        and parsed.path.rstrip("/") == "/sub2api"
+        and model == "deepseek-v4.1-flash"
+    )
+
+
 def _log_prompt_usage(usage):
     if not isinstance(usage, dict):
         return
     details = usage.get("prompt_tokens_details")
     details = details if isinstance(details, dict) else {}
     prompt_tokens = usage.get("prompt_tokens")
-    cached_tokens = details.get("cached_tokens", 0)
-    cache_write_tokens = details.get("cache_write_tokens", 0)
     if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool) or prompt_tokens < 0:
         return
-    cached_tokens = (
-        cached_tokens
-        if isinstance(cached_tokens, int) and not isinstance(cached_tokens, bool)
-        else 0
-    )
-    cache_write_tokens = (
-        cache_write_tokens
-        if isinstance(cache_write_tokens, int) and not isinstance(cache_write_tokens, bool)
-        else 0
-    )
-    cached_tokens, cache_write_tokens = max(0, cached_tokens), max(0, cache_write_tokens)
+
+    def token_count(*values):
+        for value in values:
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+        return None
+
+    cached_tokens = token_count(details.get("cached_tokens"), usage.get("prompt_cache_hit_tokens"))
+    cache_miss_tokens = token_count(usage.get("prompt_cache_miss_tokens"))
+    cache_write_tokens = token_count(details.get("cache_write_tokens"))
     logger.info(
         "provider_prompt_usage",
         extra={
             "prompt_tokens": prompt_tokens,
             "cached_tokens": cached_tokens,
+            "cache_miss_tokens": cache_miss_tokens,
             "cache_write_tokens": cache_write_tokens,
         },
     )
@@ -154,25 +162,30 @@ def generate_guidance(
     )
     history = context.get("recent_messages", [])
     inputs = guidance_inputs(content, context, citations, checks, previous_output)
+    base = (os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+    model = os.environ["LLM_MODEL"]
+    uses_aerisun_deepseek = _uses_aerisun_deepseek_endpoint(base, model)
+    messages = [{"role": "system", "content": system}]
+    if uses_aerisun_deepseek:
+        # Put the mostly stable case context before changing chat history and
+        # turn-specific inputs so the gateway can reuse its automatic prefix cache.
+        case_context = inputs.pop("case_context")
+        messages.append({"role": "user", "content": dump({"case_context": case_context})})
+    messages.extend(history)
+    messages.append({"role": "user", "content": dump(inputs)})
     body = {
-        "model": os.environ["LLM_MODEL"],
-        "messages": [
-            {"role": "system", "content": system},
-            *history,
-            {
-                "role": "user",
-                "content": dump(inputs),
-            },
-        ],
+        "model": model,
+        "messages": messages,
         "max_tokens": max_tokens,
     }
     if on_delta is not None:
         body["stream"] = True
-    base = (os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     if prompt_cache_key and _uses_openai_endpoint(base):
         body["prompt_cache_key"] = prompt_cache_key
         if on_delta is not None:
             body["stream_options"] = {"include_usage": True}
+    if uses_aerisun_deepseek and on_delta is not None:
+        body["stream_options"] = {"include_usage": True}
     if not _PROVIDER_SLOTS.acquire(blocking=False):
         raise RuntimeError("provider busy")
     try:

@@ -427,8 +427,8 @@ def test_runner_recovers_only_expired_fixed_owner_embedding_leases(service):
     assert runner["admission_candidates"](service, "owner", ids, 32) == []
 
 
-@pytest.mark.parametrize("crash", [False, True])
-def test_request_intent_is_durable_before_transport_and_survives_crash(monkeypatch, tmp_path, crash):
+@pytest.mark.parametrize("crash,status", [(False, 429), (False, 503), (False, 504), (True, 429)])
+def test_request_intent_is_durable_before_transport_and_survives_crash(monkeypatch, tmp_path, crash, status):
     import httpx
     import multiprocessing
     import os
@@ -444,6 +444,7 @@ def test_request_intent_is_durable_before_transport_and_survives_crash(monkeypat
         "HTTP_WORKERS": "1",
         "BATCH_SIZE": "1",
         "REQUEST_CONCURRENCY": "1",
+        "RETRY_AMBIGUOUS_TIMEOUTS": "true",
     }.items():
         monkeypatch.setenv("EMBEDDING_" + k, v)
     monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
@@ -472,7 +473,7 @@ def test_request_intent_is_durable_before_transport_and_survives_crash(monkeypat
         assert (tmp_path / "issued-requests.jsonl").stat().st_mode & 0o777 == 0o600
         if crash:
             os._exit(23)
-        return httpx.Response(429, headers={"Retry-After": "3"})
+        return httpx.Response(status, headers={"Retry-After": "3"} if status == 429 else {})
 
     provider(monkeypatch, handler)
     observations = runner["Observations"](tmp_path)
@@ -488,10 +489,47 @@ def test_request_intent_is_durable_before_transport_and_survives_crash(monkeypat
     else:
         with pytest.raises(ingestion.EmbeddingServiceError):
             ingestion.embed_texts(["1"])
-        result = json.loads((tmp_path / "requests.jsonl").read_text())
+        results = [json.loads(line) for line in (tmp_path / "requests.jsonl").read_text().splitlines()]
+        issued = [row for row in results if row["http_started"]]
+        assert len(issued) == 1  # Stop also blocks an old provider lane's internal retry.
+        result = issued[0]
         intent = json.loads((tmp_path / "issued-requests.jsonl").read_text())
         assert result["request_id"] == intent["request_id"]
-        assert result["retry_after_seconds"] == 3
-        assert observations.stop.is_set() and observations.failure == "provider_rate_limited"
+        assert result["retry_after_seconds"] == (3 if status == 429 else None)
+        assert observations.stop.is_set()
+        assert observations.failure == ("provider_rate_limited" if status == 429 else "provider_unavailable")
         assert observations.active == 0
-        assert runner["unresolved_issued_inputs"](tmp_path, set()) == set()
+        assert runner["unresolved_issued_inputs"](tmp_path, set()) == (
+            set() if status == 429 else {input_hash("1")}
+        )
+
+
+@pytest.mark.parametrize("status", [408, 500, 502, 503, 504])
+def test_ambiguous_gateway_failure_is_not_shrunk_or_reissued(monkeypatch, status):
+    import httpx
+
+    for k, v in {
+        "BASE_URL": "https://embed.example/v1",
+        "MODEL": "embed",
+        "API_KEY": "test",
+        "HTTP_WORKERS": "1",
+        "BATCH_SIZE": "2",
+        "REQUEST_CONCURRENCY": "1",
+        "RETRY_AMBIGUOUS_TIMEOUTS": "false",
+    }.items():
+        monkeypatch.setenv("EMBEDDING_" + k, v)
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
+    monkeypatch.setattr(ingestion, "_EMBEDDING_PROFILES", {})
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content)["input"])
+        return httpx.Response(status)
+
+    provider(monkeypatch, handler)
+    with pytest.raises(ingestion.EmbeddingServiceError) as failure:
+        ingestion.embed_texts(["1", "2"])
+    assert sent == [["1", "2"]]
+    assert failure.value.retry_after == 60
+    assert ingestion._EMBEDDING_HTTP_SLOTS.acquire(blocking=False)
+    ingestion._EMBEDDING_HTTP_SLOTS.release()

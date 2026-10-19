@@ -142,9 +142,11 @@ class Observations:
                     raise ValueError("Unexpected embedding endpoint")
                 record = self.record
                 started = time.monotonic()
-                record["started_at"] = time.time()
-                record["http_started"] = True
                 with recorder.lock:
+                    if recorder.stop.is_set():
+                        raise ingestion.EmbeddingProviderDeferred(retry_after=60)
+                    record["started_at"] = time.time()
+                    record["http_started"] = True
                     recorder.append("issued-requests.jsonl", record)
                     recorder.active += 1
                     recorder.peak = max(recorder.peak, recorder.active)
@@ -152,12 +154,19 @@ class Observations:
                     with self.client.stream(method, url, **kwargs) as response:
                         record["headers_seconds"] = round(time.monotonic() - started, 6)
                         record["http_status"] = response.status_code
-                        if response.status_code == 429:
-                            record["rate_limited"] = True
+                        if (
+                            response.status_code in {408, 429}
+                            or response.status_code >= 500
+                        ):
+                            record["rate_limited"] = response.status_code == 429
                             record["retry_after_seconds"] = ingestion._retry_after(
                                 response.headers.get("Retry-After")
                             )
-                            recorder.failure = "provider_rate_limited"
+                            recorder.failure = (
+                                "provider_rate_limited"
+                                if response.status_code == 429
+                                else "provider_unavailable"
+                            )
                             recorder.stop.set()
                         yield response
                 finally:
@@ -183,6 +192,8 @@ class Observations:
                 if record["http_started"] and type(error).__name__ in {
                     "ReadTimeout",
                     "WriteTimeout",
+                    "ReadError",
+                    "WriteError",
                     "RemoteProtocolError",
                 }:
                     self.failure = "issued_request_result_unknown"

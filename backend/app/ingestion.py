@@ -789,11 +789,22 @@ def _embedding_batches(
                     _embedding_profile(call.profile_key, cooldown=delay)
                     raise EmbeddingServiceError(retryable=True, retry_after=delay) from None
                 if (
-                    isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout))
-                    and not embedding_retry_ambiguous_timeouts()
-                ):
-                    # A timed-out request may already have been billed. Operators
-                    # can preserve its unresolved inputs instead of resending.
+                    isinstance(
+                        exc,
+                        (
+                            httpx.ReadTimeout,
+                            httpx.WriteTimeout,
+                            httpx.ReadError,
+                            httpx.WriteError,
+                            httpx.RemoteProtocolError,
+                        ),
+                    )
+                    or status == 408
+                    or status is not None
+                    and 500 <= status <= 599
+                ) and not embedding_retry_ambiguous_timeouts():
+                    # A transport/gateway failure may have happened after the
+                    # provider accepted and billed the input. Preserve uncertainty.
                     raise EmbeddingServiceError(retryable=True, retry_after=60) from None
                 shrink = isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)) or status in {408, 413, 504}
                 with call.lock:

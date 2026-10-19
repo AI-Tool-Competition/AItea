@@ -19,6 +19,7 @@ import statistics
 import sys
 import threading
 import time
+import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -26,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def digest(value):
@@ -43,6 +45,40 @@ def stable_manifest(raw):
     return digest(result)
 
 
+def unresolved_issued_inputs(output, saved):
+    """A durable intent without a known rejection or saved receipt is uncertain.
+
+    An intent precedes sending, so an interruption in that narrow gap can be a
+    conservative false positive. Never silently infer that it was unbilled.
+    Legacy completed-request journals remain valid without intent records.
+    """
+    completed = output / "requests.jsonl"
+    records = (
+        [json.loads(line) for line in completed.read_text().splitlines()]
+        if completed.exists()
+        else []
+    )
+    terminal = {r["request_id"]: r for r in records if r.get("request_id")}
+    intents = output / "issued-requests.jsonl"
+    if intents.exists():
+        records.extend(
+            terminal.get(record["request_id"], record)
+            for record in map(json.loads, intents.read_text().splitlines())
+        )
+    attempted = set()
+    for record in records:
+        if record.get("http_started") and record.get("http_status") not in {
+            400,
+            401,
+            403,
+            404,
+            413,
+            429,
+        }:
+            attempted.update(record["input_hashes"])
+    return attempted - saved
+
+
 class Observations:
     def __init__(self, output):
         self.output = output
@@ -52,6 +88,41 @@ class Observations:
         self.run_id = None
         self.stop = threading.Event()
         self.failure = None
+        self.database_waits = []
+        self.runtime_errors = []
+
+    def append(self, name, record):
+        # The caller holds self.lock; flush before any corresponding HTTP send.
+        with (self.output / name).open("a") as stream:
+            os.chmod(stream.name, 0o600)
+            stream.write(json.dumps(record) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def database_wait(self, operation, **details):
+        record = {
+            "run_id": self.run_id,
+            "at": time.time(),
+            "operation": operation,
+            **details,
+        }
+        with self.lock:
+            self.database_waits.append(record)
+            self.append("database-waits.jsonl", record)
+
+    def runtime_error(self, operation, error):
+        self.stop.set()
+        record = {
+            "run_id": self.run_id,
+            "at": time.time(),
+            "operation": operation,
+            "error_type": type(error).__name__,
+            "sqlite_errorcode": getattr(error, "sqlite_errorcode", None),
+        }
+        with self.lock:
+            self.failure = self.failure or "local_runtime_error"
+            self.runtime_errors.append(record)
+            self.append("runtime-errors.jsonl", record)
 
     def install(self):
         from app import ingestion, parsing, vision
@@ -74,6 +145,7 @@ class Observations:
                 record["started_at"] = time.time()
                 record["http_started"] = True
                 with recorder.lock:
+                    recorder.append("issued-requests.jsonl", record)
                     recorder.active += 1
                     recorder.peak = max(recorder.peak, recorder.active)
                 try:
@@ -95,6 +167,7 @@ class Observations:
 
         def observed(client, batch, base, key, model, call):
             record = {
+                "request_id": uuid.uuid4().hex,
                 "run_id": self.run_id,
                 "input_hashes": [input_hash(t) for t in batch],
                 "inputs": len(batch),
@@ -118,11 +191,7 @@ class Observations:
             finally:
                 with self.lock:
                     self.records.append(record)
-                    with (self.output / "requests.jsonl").open("a") as stream:
-                        os.chmod(stream.name, 0o600)
-                        stream.write(json.dumps(record) + "\n")
-                        stream.flush()
-                        os.fsync(stream.fileno())
+                    self.append("requests.jsonl", record)
 
         ingestion._embedding_response = observed
 
@@ -156,6 +225,39 @@ class Observations:
                 if times
                 else None,
             }
+
+
+def finish_claims(active, observations):
+    """Drain every completed future, even if one local commit failed."""
+    finished = 0
+    for future in list(active):
+        if not future.done():
+            continue
+        active.pop(future)
+        finished += 1
+        try:
+            future.result()
+        except Exception as error:  # noqa: BLE001 - preserve peers and report the local failure
+            observations.runtime_error("processing_result", error)
+    return finished
+
+
+def admission_candidates(service, owner, ids, limit):
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    timestamp = time.time()
+    with closing(service.db.connect()) as conn:
+        return [
+            row[0]
+            for row in conn.execute(
+                f"""SELECT document_id FROM processing_jobs
+                WHERE owner_id=? AND document_id IN ({placeholders}) AND phase='embed'
+                AND ((status='queued' AND available_at<=?) OR (status='processing' AND lease_until<=?))
+                ORDER BY updated_at,document_id LIMIT ?""",
+                (owner, *ids, timestamp, timestamp, limit),
+            )
+        ]
 
 
 def capture(service, ids):
@@ -257,6 +359,7 @@ def main():
     ) // args.request_concurrency
     if document_workers > 32:
         parser.error("More than 32 HTTP workers requires --request-concurrency 2")
+    from processing_runtime import retry_local_database
     from verify_ingestion import configure_models, write_report
 
     configure_models(args.models_env)
@@ -366,23 +469,9 @@ def main():
         output / "successful-inputs.sqlite3",
         {"owner": owner, "fingerprint": fingerprint, "source_plan": digest(plan)},
     )
-    attempted = set()
-    requests_path = output / "requests.jsonl"
-    if requests_path.exists():
-        for line in requests_path.read_text().splitlines():
-            record = json.loads(line)
-            if record.get("http_started") and record.get("http_status") not in {
-                400,
-                401,
-                403,
-                404,
-                413,
-                429,
-            }:
-                attempted.update(record["input_hashes"])
     with closing(sqlite3.connect(cache.path)) as conn:
         saved = {row[0] for row in conn.execute("SELECT input_hash FROM inputs")}
-    unresolved = attempted - saved
+    unresolved = unresolved_issued_inputs(output, saved)
     deferred_documents = set()
     if unresolved and not args.retry_unresolved:
         with closing(service.db.connect()) as conn:
@@ -412,7 +501,6 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: observations.stop.set())
     placeholders = ",".join("?" for _ in ids)
     admission_ids = [ident for ident in ids if ident not in deferred_documents]
-    admission_placeholders = ",".join("?" for _ in admission_ids)
     started = time.monotonic()
     finished = 0
     active = {}
@@ -468,6 +556,8 @@ def main():
             "total_vectors": count,
             "provider": observations.summary(),
             "checkpoint_cache": cache.snapshot(),
+            "database_waits": len(observations.database_waits),
+            "runtime_errors": list(observations.runtime_errors),
         }
         write_report(output, report, "progress.json")
         return report, jobs
@@ -478,43 +568,58 @@ def main():
     if not args.apply:
         return 0
     next_report = 0
+    storage_failed = False
+
+    def local_database(operation, function):
+        return retry_local_database(
+            function,
+            on_wait=lambda **details: observations.database_wait(operation, **details),
+        )
+
     with ThreadPoolExecutor(max_workers=document_workers) as pool:
         while True:
-            for future in list(active):
-                if future.done():
-                    future.result()
-                    active.pop(future)
-                    finished += 1
+            finished += finish_claims(active, observations)
             if (
                 args.stop_after_claims
                 and finished + len(active) >= args.stop_after_claims
             ):
                 observations.stop.set()
-            if not observations.stop.is_set() and len(active) < document_workers:
-                with closing(service.db.connect()) as conn:
-                    queued = [
-                        r[0]
-                        for r in conn.execute(
-                            f"""SELECT document_id FROM processing_jobs
-                      WHERE owner_id=? AND document_id IN ({admission_placeholders}) AND phase='embed' AND status='queued'
-                      AND available_at<=? ORDER BY updated_at,document_id LIMIT ?""",
-                            (owner, *admission_ids, time.time(), document_workers),
-                        )
-                    ]
-                for ident in queued:
-                    if ident in deferred_documents:
-                        continue
-                    if len(active) >= document_workers:
-                        break
-                    claim = service.collection.claim_processing(
-                        owner_id=owner, document_ids=[ident]
+            try:
+                if not observations.stop.is_set() and len(active) < document_workers:
+                    queued = admission_candidates(
+                        service, owner, admission_ids, document_workers
                     )
-                    if claim:
-                        assert claim["phase"] == "embed"
-                        active[pool.submit(service.collection.process_item, claim)] = (
-                            claim
+                    for ident in queued:
+                        if ident in deferred_documents or any(
+                            c["document_id"] == ident for c in active.values()
+                        ):
+                            continue
+                        if (
+                            len(active) >= document_workers
+                            or observations.stop.is_set()
+                        ):
+                            break
+                        claim = local_database(
+                            "claim",
+                            lambda ident=ident: service.collection.claim_processing(
+                                owner_id=owner, document_ids=[ident]
+                            ),
                         )
-            service.collection.heartbeat([(True, c) for c in active.values()])
+                        if claim:
+                            assert claim["phase"] == "embed"
+                            active[
+                                pool.submit(service.collection.process_item, claim)
+                            ] = claim
+                if active and not storage_failed:
+                    local_database(
+                        "heartbeat",
+                        lambda: service.collection.heartbeat(
+                            [(True, c) for c in active.values()]
+                        ),
+                    )
+            except Exception as error:  # noqa: BLE001 - stop admission, drain peers and report
+                storage_failed = True
+                observations.runtime_error("local_admission_or_heartbeat", error)
             if time.monotonic() >= next_report:
                 report, jobs = progress()
                 print(json.dumps(report), flush=True)
@@ -522,7 +627,7 @@ def main():
             if not active:
                 report, jobs = progress()
                 if observations.stop.is_set() or not any(
-                    j["status"] == "queued"
+                    j["status"] in {"queued", "processing"}
                     and j["document_id"] not in deferred_documents
                     for j in jobs
                 ):

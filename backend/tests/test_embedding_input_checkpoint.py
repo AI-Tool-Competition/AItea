@@ -353,3 +353,145 @@ def test_http_callback_preserves_inflight_success_after_peer_429(monkeypatch, tm
     assert resumed_inputs == ["1"] and calls[1].requests == 1
     assert result[1] == pytest.approx([2 / 5**0.5, 1 / 5**0.5])
     assert restarted.snapshot()["saved_inputs"] == 2
+
+
+def test_unresolved_intents_reconcile_each_attempt_and_preserve_legacy(tmp_path):
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    intents = [
+        {"request_id": key, "http_started": True, "input_hashes": [value]}
+        for key, value in [("a1", "a"), ("a2", "a"), ("b", "b"), ("c", "c"), ("e", "e")]
+    ]
+    results = [
+        {**intents[1], "http_status": 429},
+        {**intents[2], "http_status": 200},
+        {**intents[4], "http_status": 429},
+        {"http_started": True, "input_hashes": ["legacy"], "http_status": 200},
+        {"http_started": True, "input_hashes": ["rejected"], "http_status": 400},
+        {"http_started": False, "input_hashes": ["not_sent"]},
+    ]
+    for name, rows in [("issued-requests.jsonl", intents), ("requests.jsonl", results)]:
+        (tmp_path / name).write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert runner["unresolved_issued_inputs"](tmp_path, {"c"}) == {"a", "b", "legacy"}
+    assert runner["unresolved_issued_inputs"](tmp_path, {"a", "b", "c", "legacy"}) == set()
+    # A torn journal fails closed instead of treating unrecorded outcomes as free.
+    with (tmp_path / "requests.jsonl").open("a") as stream:
+        stream.write('{"request_id":')
+    with pytest.raises(json.JSONDecodeError):
+        runner["unresolved_issued_inputs"](tmp_path, set())
+
+
+def test_runner_drains_paid_peer_after_local_future_failure(tmp_path):
+    from concurrent.futures import Future
+    import sqlite3
+
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    observations = runner["Observations"](tmp_path)
+    first, second = Future(), Future()
+    first.set_exception(sqlite3.OperationalError("database is locked"))
+    active = {first: {"document_id": "first"}, second: {"document_id": "second"}}
+    assert runner["finish_claims"](active, observations) == 1
+    assert observations.stop.is_set() and list(active) == [second]
+    cache = checkpoint(tmp_path)
+    cache.save(["paid"], [[1.0, 0.0]])
+    second.set_result(None)
+    assert runner["finish_claims"](active, observations) == 1 and not active
+    assert checkpoint(tmp_path).embed(["paid"], lambda *_: pytest.fail("paid twice")) == [[1.0, 0.0]]
+    audit = json.loads((tmp_path / "runtime-errors.jsonl").read_text())
+    assert audit["operation"] == "processing_result" and audit["error_type"] == "OperationalError"
+
+
+def test_runner_recovers_only_expired_fixed_owner_embedding_leases(service):
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    expired, active, delayed, parse = [
+        register(service, key) for key in ["expired", "active", "delayed", "parse"]
+    ]
+    register(service, "outside-fixed-plan")
+    foreign = register(service, "foreign", owner="other")
+    old_claim = service.collection.claim_processing(owner_id="owner", document_ids=[expired["id"]])
+    assert old_claim
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE processing_jobs SET lease_until=0 WHERE document_id=?", (expired["id"],))
+        conn.execute(
+            "UPDATE processing_jobs SET status='processing',lease_until=? WHERE document_id=?",
+            (time.time() + 120, active["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET available_at=? WHERE document_id=?",
+            (time.time() + 120, delayed["id"]),
+        )
+        conn.execute("UPDATE processing_jobs SET phase='parse' WHERE document_id=?", (parse["id"],))
+    ids = [d["id"] for d in [expired, active, delayed, parse, foreign]]
+    assert runner["admission_candidates"](service, "owner", ids, 32) == [expired["id"]]
+    renewed = service.collection.claim_processing(owner_id="owner", document_ids=[expired["id"]])
+    assert renewed and renewed["lease_token"] != old_claim["lease_token"]
+    assert runner["admission_candidates"](service, "owner", ids, 32) == []
+
+
+@pytest.mark.parametrize("crash", [False, True])
+def test_request_intent_is_durable_before_transport_and_survives_crash(monkeypatch, tmp_path, crash):
+    import httpx
+    import multiprocessing
+    import os
+
+    from app import parsing, vision
+    from app.retrieval import input_hash
+
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    for k, v in {
+        "BASE_URL": "https://embed.example/v1",
+        "MODEL": "embed",
+        "API_KEY": "test",
+        "HTTP_WORKERS": "1",
+        "BATCH_SIZE": "1",
+        "REQUEST_CONCURRENCY": "1",
+    }.items():
+        monkeypatch.setenv("EMBEDDING_" + k, v)
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
+    monkeypatch.setattr(ingestion, "_EMBEDDING_PROFILES", {})
+    for module, names in [
+        (ingestion, ("_embedding_response", "_download")),
+        (parsing, ("parse_bounded", "ocr_bounded")),
+        (vision, ("transcribe_page", "transcribe_image")),
+    ]:
+        for name in names:
+            monkeypatch.setattr(module, name, getattr(module, name))
+    fsynced = []
+    original_fsync = os.fsync
+
+    def fsync(fd):
+        original_fsync(fd)
+        fsynced.append(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+    def handler(request):
+        assert fsynced
+        intent = json.loads((tmp_path / "issued-requests.jsonl").read_text())
+        assert intent["input_hashes"] == [input_hash("1")]
+        assert len(intent["request_id"]) == 32
+        assert (tmp_path / "issued-requests.jsonl").stat().st_mode & 0o777 == 0o600
+        if crash:
+            os._exit(23)
+        return httpx.Response(429, headers={"Retry-After": "3"})
+
+    provider(monkeypatch, handler)
+    observations = runner["Observations"](tmp_path)
+    observations.run_id = "test"
+    observations.install()
+    if crash:
+        child = multiprocessing.get_context("fork").Process(target=ingestion.embed_texts, args=(["1"],))
+        child.start()
+        child.join(5)
+        assert child.exitcode == 23
+        assert not (tmp_path / "requests.jsonl").exists()
+        assert runner["unresolved_issued_inputs"](tmp_path, set()) == {input_hash("1")}
+    else:
+        with pytest.raises(ingestion.EmbeddingServiceError):
+            ingestion.embed_texts(["1"])
+        result = json.loads((tmp_path / "requests.jsonl").read_text())
+        intent = json.loads((tmp_path / "issued-requests.jsonl").read_text())
+        assert result["request_id"] == intent["request_id"]
+        assert result["retry_after_seconds"] == 3
+        assert observations.stop.is_set() and observations.failure == "provider_rate_limited"
+        assert observations.active == 0
+        assert runner["unresolved_issued_inputs"](tmp_path, set()) == set()

@@ -148,13 +148,13 @@ describe("business node navigation", () => {
     ).toBe("page");
     expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
     expect(screen.queryByRole("button", { name: "资料库" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "查看更多节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开显示" }));
     expect(screen.getByRole("button", { name: "对接准备" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "收起节点：业务资料" }));
     expect(screen.queryByRole("button", { name: "引导会话" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "展开节点：业务资料" }));
     expect(screen.getByRole("button", { name: "引导会话" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "收起其他节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "收起" }));
     expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
   });
 

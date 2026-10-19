@@ -322,7 +322,7 @@ export function TeaNavigation({
                 onClick={() => setMore((value) => !value)}
               >
                 <ChevronDown size={14} className={more ? "rotate-180" : ""} />
-                {more ? "收起其他节点" : "查看更多节点"}
+                {more ? "收起" : "展开显示"}
               </button>
             )}
           </SidebarGroup>

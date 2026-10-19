@@ -591,11 +591,14 @@
   background: var(--background);
   padding: 12px 24px max(16px, env(safe-area-inset-bottom));
 }
+.tea-composer-content {
+  width: 100%;
+  max-width: var(--container-width-md);
+  margin-inline: auto;
+}
 .tea-composer {
   border: 1px solid var(--border);
   background: var(--background);
-  margin: auto;
-  max-width: var(--container-width-md);
   border-radius: var(--radius-xl);
 }
 .tea-composer:focus-within {
@@ -621,17 +624,20 @@
 }
 .tea-composer-toolbar {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-end;
+  gap: 8px;
   padding: 4px 8px 8px;
 }
-.tea-composer-toolbar > button:first-child {
+.tea-composer-tools {
   display: flex;
   align-items: center;
-  gap: 5px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  padding: 5px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+.tea-composer-tools .tea-chat-skills {
+  display: contents;
 }
 .tea-composer .tea-send {
   display: grid;
@@ -734,11 +740,12 @@
   color: var(--muted-foreground);
   font-size: 12px;
 }
-.tea-composer-toolbar > button:first-child {
-  width: 40px;
-  height: 40px;
+.tea-composer-upload {
+  width: 36px;
+  height: 36px;
+  color: var(--muted-foreground);
 }
-.tea-composer-area > .tea-error {
+.tea-composer-content > .tea-error {
   max-width: var(--container-width-md);
   margin: 0 auto 12px;
 }
@@ -747,7 +754,7 @@
 }
 @media (max-width: 767px) {
   .tea-composer .tea-send,
-  .tea-composer-toolbar > button:first-child {
+  .tea-composer-upload {
     width: 44px;
     height: 44px;
   }
@@ -2038,13 +2045,6 @@
   .tea-composer-toolbar {
     padding: 4px 7px 8px;
     gap: 9px;
-  }
-  .tea-composer-toolbar > button:first-child {
-    font-size: 12px;
-    gap: 3px;
-  }
-  .tea-composer-toolbar > button:first-child > svg {
-    width: 14px;
   }
   .tea-composer-note {
     font-size: 12px;
@@ -4741,7 +4741,6 @@
   flex-wrap: wrap;
   gap: 2px;
   align-items: center;
-  margin-right: auto;
 }
 .tea-chat-skills > button,
 .tea-chat-skills > button svg {
@@ -4760,8 +4759,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 3px;
-  margin: 0 0 5px;
+  gap: 4px;
+  margin: 0 0 6px;
 }
 .tea-guide-actions > button {
   font-size: 12px;

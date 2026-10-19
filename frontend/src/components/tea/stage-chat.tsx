@@ -326,121 +326,131 @@ export function StageChat({
         />
       </Conversation>
       <div className="tea-composer-area">
-        {guide && (
-          <div className="tea-guide-actions">
-            <Button type="button" size="sm" variant="ghost" onClick={onUpload}>
-              <Paperclip size={14} />
-              上传材料
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={chat.sending || chat.loading || !!chat.historyError}
-              onClick={() =>
-                chat.send(
-                  taskId,
-                  "现有情况和资料就这些，请开始分析，给出结论与下一步；缺少的材料请明确列出。",
-                )
-              }
-            >
-              开始分析并生成报告
-            </Button>
-          </div>
-        )}
-        {chat.historyError && (
-          <ErrorNotice message={chat.historyError} onRetry={chat.reload} />
-        )}
-        {focusedTask && (
-          <div className="tea-current-task">
-            <Circle size={10} />
-            <span>正在讨论：{focusedTask.title}</span>
-            <button onClick={() => onTask("")} aria-label="取消任务聚焦">
-              <X size={14} />
-            </button>
-          </div>
-        )}
-        <form
-          className="tea-composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            chat.send(taskId);
-            input.current?.focus();
-          }}
-        >
-          <textarea
-            ref={input}
-            aria-label="向茶渡助手提问"
-            aria-describedby="tea-composer-hint"
-            value={chat.text}
-            maxLength={12000}
-            placeholder={
-              chat.sending
-                ? "可以继续写下一条，回复结束后发送…"
-                : "向茶渡助手提问…"
-            }
-            rows={1}
-            onChange={(event) => chat.edit(event.target.value)}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing &&
-                event.keyCode !== 229
-              ) {
-                event.preventDefault();
-                chat.send(taskId);
-              }
-            }}
-          />
-          <div className="tea-composer-toolbar">
-            <ChatSkills
-              skills={skills}
-              onSkills={setSkills}
-              legal={legal}
-              onLegal={setLegal}
-            />
-            <Button
-              variant="ghost"
-              size="icon"
-              type="button"
-              onClick={onUpload}
-              aria-label="上传资料"
-              title="上传资料"
-            >
-              <Paperclip size={18} />
-            </Button>
-            <span className="tea-composer-shortcut" id="tea-composer-hint">
-              Enter 发送 · Shift + Enter 换行
-            </span>
-            {chat.sending ? (
-              <button
-                className="tea-send"
+        <div className="tea-composer-content">
+          {guide && (
+            <div className="tea-guide-actions">
+              <Button
                 type="button"
-                onClick={chat.stop}
-                aria-label="停止回复"
-                title="停止回复"
+                size="sm"
+                variant="ghost"
+                onClick={onUpload}
               >
-                <Square size={15} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                className="tea-send"
-                type="submit"
-                aria-label="发送消息"
-                title="发送消息"
-                disabled={
-                  !chat.text.trim() || chat.loading || !!chat.historyError
+                <Paperclip size={14} />
+                上传材料
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={chat.sending || chat.loading || !!chat.historyError}
+                onClick={() =>
+                  chat.send(
+                    taskId,
+                    "现有情况和资料就这些，请开始分析，给出结论与下一步；缺少的材料请明确列出。",
+                  )
                 }
               >
-                <ArrowUp size={19} />
+                开始分析并生成报告
+              </Button>
+            </div>
+          )}
+          {chat.historyError && (
+            <ErrorNotice message={chat.historyError} onRetry={chat.reload} />
+          )}
+          {focusedTask && (
+            <div className="tea-current-task">
+              <Circle size={10} />
+              <span>正在讨论：{focusedTask.title}</span>
+              <button onClick={() => onTask("")} aria-label="取消任务聚焦">
+                <X size={14} />
               </button>
-            )}
-          </div>
-        </form>
-        {capabilities.assistant_mode === "demo" && (
-          <p className="tea-composer-note">演示助手 · 基于资料与配置规则</p>
-        )}
+            </div>
+          )}
+          <form
+            className="tea-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              chat.send(taskId);
+              input.current?.focus();
+            }}
+          >
+            <textarea
+              ref={input}
+              aria-label="向茶渡助手提问"
+              aria-describedby="tea-composer-hint"
+              value={chat.text}
+              maxLength={12000}
+              placeholder={
+                chat.sending
+                  ? "可以继续写下一条，回复结束后发送…"
+                  : "向茶渡助手提问…"
+              }
+              rows={1}
+              onChange={(event) => chat.edit(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing &&
+                  event.keyCode !== 229
+                ) {
+                  event.preventDefault();
+                  chat.send(taskId);
+                }
+              }}
+            />
+            <div className="tea-composer-toolbar">
+              <div className="tea-composer-tools">
+                <Button
+                  className="tea-composer-upload"
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  onClick={onUpload}
+                  aria-label="上传资料"
+                  title="上传资料"
+                >
+                  <Paperclip size={18} />
+                </Button>
+                <ChatSkills
+                  skills={skills}
+                  onSkills={setSkills}
+                  legal={legal}
+                  onLegal={setLegal}
+                />
+              </div>
+              <span className="tea-composer-shortcut" id="tea-composer-hint">
+                Enter 发送 · Shift + Enter 换行
+              </span>
+              {chat.sending ? (
+                <button
+                  className="tea-send"
+                  type="button"
+                  onClick={chat.stop}
+                  aria-label="停止回复"
+                  title="停止回复"
+                >
+                  <Square size={15} fill="currentColor" />
+                </button>
+              ) : (
+                <button
+                  className="tea-send"
+                  type="submit"
+                  aria-label="发送消息"
+                  title="发送消息"
+                  disabled={
+                    !chat.text.trim() || chat.loading || !!chat.historyError
+                  }
+                >
+                  <ArrowUp size={19} />
+                </button>
+              )}
+            </div>
+          </form>
+          {capabilities.assistant_mode === "demo" && (
+            <p className="tea-composer-note">演示助手 · 基于资料与配置规则</p>
+          )}
+        </div>
       </div>
     </div>
   );

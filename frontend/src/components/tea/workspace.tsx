@@ -374,10 +374,6 @@ export function Workspace({
     <div className="tea-workspace tea-node-workspace">
       <header className="tea-workspace-topbar">
         <SidebarTrigger className="md:hidden" aria-label="展开导航" />
-        <div>
-          <span>{stage.name}</span>
-          <strong>{isGuide ? "引导会话" : "节点会话"}</strong>
-        </div>
         <Button
           variant="ghost"
           size="icon"

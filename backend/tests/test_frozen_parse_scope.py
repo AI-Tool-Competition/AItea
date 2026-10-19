@@ -1,5 +1,6 @@
 """An operator continuation cannot silently change its frozen ownership."""
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -207,3 +208,111 @@ def test_parse_candidate_checks_phase_availability_and_live_leases(phase, status
         )
         is expected
     )
+
+
+@pytest.mark.parametrize(
+    "status,held", [(408, True), (500, True), (502, True), (504, True), (429, False), (400, False)]
+)
+def test_batch_policy_does_not_treat_upstream_timeout_as_known_unbilled_rejection(status, held):
+    from app.vision import OCRResponseError
+
+    original_evidence = {"content_hash": "saved-raw-body", "http_status": status}
+    error = OCRResponseError(
+        "Provider response",
+        retryable=True,
+        http_status=status,
+        retry_after=70,
+        response_evidence=original_evidence,
+    )
+    assert RUNNER.hold_ambiguous_response(error) is error
+    assert error.request_outcome_unknown is held
+    assert error.retryable is (not held)
+    assert error.http_status == status and error.retry_after == 70
+    assert error.response_evidence == original_evidence
+
+
+def test_prior_gateway_error_is_held_with_identical_receipt_and_append_only_history():
+    page = {
+        "page": 1,
+        "source_hash": "source",
+        "status": "pending_ocr",
+        "error": "Old gateway timeout",
+        "deferred_reason": "provider_retry",
+        "ocr": {
+            "attempts": 1,
+            "request_id": "old-request",
+            "http_status": 504,
+            "error_response": {"blob": {"content_hash": "immutable-receipt"}},
+        },
+    }
+    before = deepcopy(page)
+    held = RUNNER.hold_previous_ambiguous_page(page)
+    assert page == before
+    assert held["status"] == "ocr_failed"
+    assert held["ocr_attempt_history"][0]["previous_page"] == before
+    for field in ("attempts", "request_id", "http_status", "error_response"):
+        assert held["ocr"][field] == before["ocr"][field]
+    assert RUNNER.hold_previous_ambiguous_page(held) is None
+    page["ocr"]["http_status"] = 429
+    assert RUNNER.hold_previous_ambiguous_page(page) is None
+
+
+def test_ambiguous_http_receipt_is_saved_once_and_never_automatically_reissued(tmp_path, monkeypatch):
+    from app import parsing, vision
+    from app.ingestion import parse_file
+    from app.ocr_error_evidence import persist_response_evidence
+    from app.service import Service
+    from test_ingestion_quality import make_pdf
+
+    for key, value in {
+        "VISION_OCR_ENABLED": "true",
+        "LLM_BASE_URL": "https://provider.invalid/v1",
+        "LLM_API_KEY": "private-test-key",
+        "LLM_MODEL": "test-model",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(parsing, "_OCR_SLOTS", parsing._VisionSlots())
+    service = Service(tmp_path / "owned")
+    content = make_pdf([("Original", True)])
+    page = parse_file("scan.pdf", content)["pages"][0]
+    checkpoints, requests = [], []
+    raw = b'{"error":{"message":"upstream timeout"}}'
+
+    def invoke(body):
+        requests.append(True)
+        error = vision._response_error(
+            "Gateway timeout",
+            body,
+            raw,
+            error_code="http_error",
+            payload_kind="http_body",
+            retryable=True,
+            retry_after=75,
+            http_status=504,
+        )
+        raise RUNNER.hold_ambiguous_response(error)
+
+    def store_error(evidence):
+        return persist_response_evidence(
+            service.archive.blobs,
+            "owner",
+            evidence,
+            source_hash=page["source_hash"],
+            request_page=checkpoints[-1],
+        )
+
+    monkeypatch.setattr(vision, "_invoke", invoke)
+    held = parsing._ocr_one_page(
+        content,
+        page,
+        on_page=lambda value: checkpoints.append(deepcopy(value)),
+        on_response_error=store_error,
+    )
+    assert held["status"] == "ocr_failed" and held["ocr"]["attempts"] == 1
+    assert held["ocr"]["request_outcome"] == "unknown_transport_result"
+    ref = held["ocr"]["error_response"]
+    envelope = json.loads((service.db.data_dir / ref["blob"]["storage_path"]).read_text())
+    assert base64.b64decode(envelope["response_base64"]) == raw
+    assert envelope["http_status"] == 504 and envelope["retry_after_seconds"] == 75
+    assert envelope["request_outcome"] == "unknown_transport_result"
+    assert parsing._ocr_one_page(content, held) == held and len(requests) == 1

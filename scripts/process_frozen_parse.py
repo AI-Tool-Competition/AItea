@@ -16,6 +16,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from contextvars import ContextVar, copy_context
+from copy import deepcopy
 from pathlib import Path
 from threading import Event, Lock
 
@@ -97,6 +98,39 @@ def available_parse_ids(conn, owner_id, timestamp):
             (owner_id, timestamp, timestamp),
         )
     }
+
+
+def ambiguous_http_outcome(status):
+    return type(status) is int and (status == 408 or 500 <= status <= 599)
+
+
+def hold_ambiguous_response(error):
+    """The batch runner cannot infer that an upstream 408/5xx was unbilled."""
+    if ambiguous_http_outcome(error.http_status):
+        error.retryable = False
+        error.request_outcome_unknown = True
+    return error
+
+
+def hold_previous_ambiguous_page(page):
+    """Append a hold checkpoint without altering an older receipt or attempt."""
+    metadata = page.get("ocr", {})
+    if page.get("status") != "pending_ocr" or not ambiguous_http_outcome(
+        metadata.get("http_status")
+    ):
+        return None
+    from app.ocr_error_evidence import preserve_previous_page_attempt
+
+    updated = deepcopy(page)
+    preserve_previous_page_attempt(updated)
+    updated["ocr"]["request_outcome"] = "unknown_transport_result"
+    updated["ocr"]["outcome_hold_reason"] = "previous_ambiguous_http_response"
+    updated.update(
+        status="ocr_failed",
+        error="上次请求返回超时或上游错误，结果与计费未知，需核验后显式补齐。",
+    )
+    updated.pop("deferred_reason", None)
+    return updated
 
 
 def main():
@@ -223,6 +257,7 @@ def main():
         try:
             return original_invoke(body)
         except vision.OCRResponseError as exc:
+            hold_ambiguous_response(exc)
             if exc.request_outcome_unknown:
                 with log_lock:
                     counters["unknown_paid_outcome"] += 1
@@ -250,6 +285,14 @@ def main():
             }
         )
         try:
+            held = hold_previous_ambiguous_page(page)
+            if held is not None:
+                event(
+                    "prior_http_outcome_held",
+                    **SCOPE.get(),
+                    request_id=held["ocr"].get("request_id"),
+                )
+                return held
             return original_page(content, page, *values, **kwargs)
         finally:
             SCOPE.reset(token)
@@ -416,6 +459,7 @@ def main():
                 args.models_env.read_bytes()
             ).hexdigest(),
             "embedding_calls_authorized": False,
+            "ambiguous_http_outcomes_require_explicit_recovery": True,
         },
     )
     with ThreadPoolExecutor(max_workers=args.document_workers) as executor:

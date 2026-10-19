@@ -12,6 +12,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -20,6 +21,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +36,7 @@ from app.discovery import (  # noqa: E402
     discover_page,
     normalized_seeds_for,
     recipe_for,
+    request_parameters,
 )
 from app.indonesia_official import (  # noqa: E402
     SETNEG_ITEMS,
@@ -48,6 +51,88 @@ SOURCE_OWNER = "setneg-official-corpus-20261019"
 MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
 MAX_ORIGINAL_BYTE_BUDGET = 64 * 1024**3
 MIN_FREE_BYTES = 256 * 1024 * 1024
+MAX_TRANSIENT_ATTEMPTS = 8
+
+
+def transient_original_retries(c, definitions, *, apply=False):
+    """Select only known GET originals; preserve every previous attempt verbatim."""
+    current = time.time()
+    cooldown = c.execute("SELECT value FROM config WHERE key='cooldown_until'").fetchone()
+    host_until = float(cooldown[0]) if cooldown else 0
+    if not math.isfinite(host_until) or host_until < 0:
+        raise ValueError("saved source cooldown is invalid")
+    result = {
+        "eligible": [],
+        "waiting": [],
+        "exhausted": [],
+        "excluded": [],
+        "requeued": 0,
+    }
+    for task in c.execute(
+        "SELECT * FROM tasks WHERE purpose='document' AND status='failed' ORDER BY item_code,url"
+    ):
+        item, url, attempts = task["item_code"], task["url"], task["attempts"]
+        if item not in definitions:
+            continue
+        prior = json.loads(task["result"])
+        identity = {
+            "item_code": item,
+            "url": url,
+            "prior_attempts": attempts,
+            "prior_result_sha256": hashlib.sha256(task["result"].encode()).hexdigest(),
+        }
+        error = prior.get("error", "")
+        if (
+            prior.get("retryable") is not True
+            or any(f"HTTP {code}" in error for code in (400, 401, 403, 404, 405, 410, 451))
+            or not url.startswith("https://jdih.setneg.go.id/api/hukumproduk/pdf?")
+            or request_parameters(url, definitions[item])
+        ):
+            result["excluded"].append(identity)
+            continue
+        if type(attempts) is not int or attempts < 1:
+            raise ValueError("saved original attempt count is invalid")
+        if attempts >= MAX_TRANSIENT_ATTEMPTS:
+            result["exhausted"].append(identity)
+            continue
+        until = prior.get("retry_not_before")
+        if until is None:
+            # Older journals retained request start/elapsed instead of next_at.
+            # Derive the deadline without rewriting their immutable error row.
+            try:
+                started = datetime.fromisoformat(prior["started_at"].replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    raise ValueError("missing request timezone")
+                until = (
+                    started.timestamp()
+                    + float(prior.get("elapsed_seconds", 0))
+                    + max(
+                        min(3600, 60 * 2 ** (attempts - 1)),
+                        float(prior.get("retry_after_seconds") or 0),
+                    )
+                )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                result["excluded"].append({**identity, "reason": "missing_valid_retry_time"})
+                continue
+        if type(until) not in (int, float) or not math.isfinite(until) or until < 0:
+            raise ValueError("saved original retry time is invalid")
+        identity["next_at"] = max(until, host_until)
+        if identity["next_at"] > current:
+            result["waiting"].append(identity)
+            continue
+        result["eligible"].append(identity)
+        if apply:
+            changed = c.execute(
+                "UPDATE tasks SET status='queued' WHERE item_code=? AND url=? AND status='failed' AND attempts=? AND result=?",
+                (item, url, attempts, task["result"]),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("original retry checkpoint changed")
+            result["requeued"] += 1
+    result["next_at"] = min(
+        (row["next_at"] for row in [*result["eligible"], *result["waiting"]]), default=None
+    )
+    return result
 
 
 class CorpusBlobs(BlobStore):
@@ -131,6 +216,23 @@ def record_result(c: sqlite3.Connection, task: dict, result: dict, *, network_at
     status = result["status"]
     if status == "downloaded" and not discovery.get("matched"):
         status = "rejected"
+    if network_attempt and status == "failed" and result.get("retryable"):
+        attempts = (
+            c.execute(
+                "SELECT attempts FROM tasks WHERE item_code=? AND url=?",
+                (task["item_code"], task["url"]),
+            ).fetchone()[0]
+            + 1
+        )
+        result = {
+            **result,
+            "finished_at": datetime.fromtimestamp(time.time(), UTC).isoformat(),
+            "retry_not_before": time.time()
+            + max(
+                min(3600, 60 * 2 ** min(attempts - 1, 6)),
+                float(result.get("retry_after_seconds") or 0),
+            ),
+        }
     encoded = json.dumps(result, ensure_ascii=False)
     with c:
         c.execute(
@@ -697,11 +799,26 @@ def run(args) -> int:
                         "INSERT OR IGNORE INTO tasks(item_code,url,purpose) VALUES(?,?,'catalog')",
                         (item, seed["url"]),
                     )
+        if args.retry_failed and getattr(args, "retry_transient", False):
+            raise ValueError("choose broad explicit retry or bounded transient recovery, not both")
         if args.retry_failed:
             c.execute(
                 "UPDATE tasks SET status='queued' WHERE status IN ('failed','rejected','budget_exhausted')"
             )
         c.commit()
+        recovery_definitions = {
+            key: definition
+            for key, definition in definitions.items()
+            if SETNEG_ITEMS[key] in args.detail_types
+        }
+        retry_selection = None
+        if getattr(args, "retry_transient", False):
+            with c:
+                retry_selection = transient_original_retries(c, recovery_definitions, apply=True)
+            print(
+                json.dumps({"transient_original_recovery": retry_selection}, ensure_ascii=False),
+                flush=True,
+            )
         if source_dirs := getattr(args, "reuse_receipts_from", []):
             reused = reuse_receipts(c, output, source_dirs, definitions)
             print(json.dumps({"receipt_reuse": reused}, ensure_ascii=False), flush=True)
@@ -855,6 +972,12 @@ def run(args) -> int:
                 and (not args.original_byte_budget or (not unfinished_originals and not original_scope_gaps))
             ),
         }
+        if retry_selection is not None:
+            report["transient_original_recovery"] = {
+                "max_attempts": MAX_TRANSIENT_ATTEMPTS,
+                "selection": retry_selection,
+                "remaining": transient_original_retries(c, recovery_definitions),
+            }
         write_report(output, report)
         if args.prepare_library:
             print(
@@ -879,7 +1002,13 @@ def main():
         help="explicitly authorized data root on another disk",
     )
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--retry-failed", action="store_true")
+    retries = parser.add_mutually_exclusive_group()
+    retries.add_argument("--retry-failed", action="store_true")
+    retries.add_argument(
+        "--retry-transient",
+        action="store_true",
+        help="resume only temporary GET-original failures after saved backoff; at most eight total attempts",
+    )
     parser.add_argument(
         "--reuse-receipts-from",
         type=Path,

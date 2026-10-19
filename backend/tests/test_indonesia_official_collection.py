@@ -758,3 +758,211 @@ def test_retry_after_is_persisted_and_blocks_new_requests_on_restart(tmp_path, m
     args.resume = args.retry_failed = True
     assert collector.run(args) == 2
     assert len(calls) == 4
+
+
+def transient_fixture(tmp_path, monkeypatch):
+    clock = [time.time()]
+    monkeypatch.setattr(collector.time, "time", lambda: clock[0])
+    output = tmp_path / "transient"
+    state = collector.open_state(output, resume=False, definition_hash="retry", storage_root=tmp_path)
+    definition = next(
+        row for row in collector.load_blueprints()["indonesia-20261003"]["items"] if row["id"] == "1.3"
+    )
+    return state, {"1.3": definition}, clock
+
+
+def add_transient_failure(
+    state, *, name="one", purpose="document", error="connection failed", retryable=True
+):
+    url = f"https://jdih.setneg.go.id/api/hukumproduk/pdf?f={name}.pdf&fl=P1&l=uploads"
+    task = {"item_code": "1.3", "url": url, "purpose": purpose}
+    state.execute("INSERT INTO tasks(item_code,url,purpose) VALUES(?,?,?)", ("1.3", url, purpose))
+    state.commit()
+    collector.record_result(state, task, {"status": "failed", "error": error, "retryable": retryable})
+    return task
+
+
+def test_transient_selector_restores_only_due_get_originals_and_keeps_errors(tmp_path, monkeypatch):
+    state, definitions, clock = transient_fixture(tmp_path, monkeypatch)
+    try:
+        transient = add_transient_failure(state)
+        add_transient_failure(state, name="post", purpose="detail")
+        add_transient_failure(state, name="denied", error="HTTP 403", retryable=True)
+        add_transient_failure(state, name="large", error="size limit", retryable=False)
+        old = [row[0] for row in state.execute("SELECT result FROM attempts ORDER BY id")]
+        waiting = collector.transient_original_retries(state, definitions, apply=True)
+        assert waiting["requeued"] == 0 and len(waiting["waiting"]) == 1
+        clock[0] += 61
+        with state:
+            selected = collector.transient_original_retries(state, definitions, apply=True)
+        assert selected["requeued"] == 1 and selected["eligible"][0]["url"] == transient["url"]
+        assert len(selected["excluded"]) == 2
+        assert [row[0] for row in state.execute("SELECT result FROM attempts ORDER BY id")] == old
+        assert (
+            state.execute("SELECT status FROM tasks WHERE url=?", (transient["url"],)).fetchone()[0]
+            == "queued"
+        )
+        assert collector.transient_original_retries(state, definitions, apply=True)["requeued"] == 0
+    finally:
+        state.close()
+
+
+def test_transient_recovery_restart_honours_retry_after_and_success_is_never_requeued(tmp_path, monkeypatch):
+    state, definitions, clock = transient_fixture(tmp_path, monkeypatch)
+    task = add_transient_failure(state)
+    collector.record_result(
+        state,
+        task,
+        {"status": "failed", "error": "HTTP 429", "retryable": True, "retry_after_seconds": 300},
+    )
+    before = [row[0] for row in state.execute("SELECT result FROM attempts ORDER BY id")]
+    state.close()
+    state = collector.open_state(
+        tmp_path / "transient", resume=True, definition_hash="retry", storage_root=tmp_path
+    )
+    try:
+        clock[0] += 121
+        report = collector.transient_original_retries(state, definitions, apply=True)
+        assert report["requeued"] == 0 and report["next_at"] > clock[0]
+        clock[0] += 180
+        with state:
+            assert collector.transient_original_retries(state, definitions, apply=True)["requeued"] == 1
+        collector.record_result(state, task, {"status": "downloaded", "discovery": {"matched": True}})
+        assert collector.transient_original_retries(state, definitions, apply=True)["requeued"] == 0
+        assert [row[0] for row in state.execute("SELECT result FROM attempts ORDER BY id")][:2] == before
+    finally:
+        state.close()
+
+
+def test_transient_recovery_repeated_outage_is_bounded_and_preserves_all_history(tmp_path, monkeypatch):
+    state, definitions, clock = transient_fixture(tmp_path, monkeypatch)
+    task = add_transient_failure(state)
+    history = []
+    try:
+        for attempt in range(1, collector.MAX_TRANSIENT_ATTEMPTS + 1):
+            rows = [row[0] for row in state.execute("SELECT result FROM attempts ORDER BY id")]
+            assert rows[: len(history)] == history and len(rows) == attempt
+            history = rows
+            report = collector.transient_original_retries(state, definitions)
+            if attempt == collector.MAX_TRANSIENT_ATTEMPTS:
+                assert len(report["exhausted"]) == 1 and not report["eligible"]
+                break
+            assert not report["eligible"]
+            clock[0] = report["next_at"] + 1
+            with state:
+                assert collector.transient_original_retries(state, definitions, apply=True)["requeued"] == 1
+            collector.record_result(
+                state, task, {"status": "failed", "error": "connection failed", "retryable": True}
+            )
+        clock[0] += 100_000
+        assert collector.transient_original_retries(state, definitions, apply=True)["requeued"] == 0
+        assert len(history) == collector.MAX_TRANSIENT_ATTEMPTS
+    finally:
+        state.close()
+
+
+def test_transient_selector_does_not_trust_changed_origin_or_post_identity(tmp_path, monkeypatch):
+    state, definitions, clock = transient_fixture(tmp_path, monkeypatch)
+    task = add_transient_failure(state)
+    try:
+        state.execute(
+            "UPDATE tasks SET url='https://elsewhere.example/original.pdf' WHERE url=?", (task["url"],)
+        )
+        state.commit()
+        clock[0] += 1000
+        report = collector.transient_original_retries(state, definitions, apply=True)
+        assert report["requeued"] == 0 and len(report["excluded"]) == 1
+    finally:
+        state.close()
+
+
+def test_cli_does_not_combine_broad_and_transient_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["collect", "--output", str(tmp_path), "--retry-failed", "--retry-transient"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        collector.main()
+    assert exc.value.code == 2
+
+
+def test_legacy_retry_deadline_is_derived_without_rewriting_old_error(tmp_path, monkeypatch):
+    state, definitions, clock = transient_fixture(tmp_path, monkeypatch)
+    try:
+        task = add_transient_failure(state)
+        original = state.execute("SELECT result FROM tasks WHERE url=?", (task["url"],)).fetchone()[0]
+        legacy = json.loads(original)
+        legacy.pop("retry_not_before")
+        legacy["started_at"] = collector.datetime.fromtimestamp(clock[0], collector.UTC).isoformat()
+        legacy["elapsed_seconds"] = 2
+        raw = json.dumps(legacy)
+        state.execute("UPDATE tasks SET result=? WHERE url=?", (raw, task["url"]))
+        state.commit()
+        waiting = collector.transient_original_retries(state, definitions)
+        assert waiting["next_at"] == pytest.approx(clock[0] + 62, rel=0, abs=0.000001)
+        clock[0] += 63
+        with state:
+            assert collector.transient_original_retries(state, definitions, apply=True)["requeued"] == 1
+        assert state.execute("SELECT result FROM tasks WHERE url=?", (task["url"],)).fetchone()[0] == raw
+        assert state.execute("SELECT result FROM attempts").fetchone()[0] == original
+    finally:
+        state.close()
+
+
+def test_real_transient_resume_downloads_only_failed_get_then_skips_success(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    args.resume = args.retry_transient = True
+    args.detail_types = ["UU"]
+    args.original_byte_budget = collector.MAX_ORIGINAL_BYTES
+    clock = [time.time()]
+    monkeypatch.setattr(collector.time, "time", lambda: clock[0])
+    plan = collector.ROOT / "config/collection-plans/indonesia-20261003.json"
+    state = collector.open_state(
+        args.output,
+        resume=False,
+        definition_hash=hashlib.sha256(plan.read_bytes()).hexdigest(),
+        storage_root=tmp_path,
+    )
+    for definition in collector.load_blueprints()["indonesia-20261003"]["items"]:
+        if definition["id"] not in SETNEG_ITEMS:
+            continue
+        for seed in collector.normalized_seeds_for(definition):
+            if seed["url"].startswith("https://jdih.setneg.go.id/api/hukumproduk/produkhukum?"):
+                state.execute(
+                    "INSERT INTO tasks(item_code,url,purpose,status,result) VALUES(?,?,'catalog','rejected',?)",
+                    (
+                        definition["id"],
+                        seed["url"],
+                        json.dumps({"status": "rejected", "error": "unmatched catalogue"}),
+                    ),
+                )
+    state.commit()
+    task = add_transient_failure(state)
+    old_error = state.execute("SELECT result FROM attempts").fetchone()[0]
+    state.close()
+    clock[0] += 61
+    calls = []
+
+    def original(url, *, consume, **options):
+        calls.append(url)
+        assert "json_body" not in options
+        return {
+            "url": url,
+            "filename": "one.pdf",
+            "mime_type": "application/pdf",
+            "response_status": 200,
+            "blob": consume([b"%PDF-1.4\nrecovered\n%%EOF"]),
+        }
+
+    monkeypatch.setattr(sys.modules[collector.SourceVerifier.__module__], "_download", original)
+    assert collector.run(args) == 2
+    assert calls == [task["url"]]
+    report = json.loads((args.output / "report.json").read_bytes())
+    assert report["transient_original_recovery"]["selection"]["requeued"] == 1
+    assert report["originals_acquired"] == 1
+    assert collector.run(args) == 2
+    assert calls == [task["url"]]
+    with sqlite3.connect(args.output / "journal.sqlite3") as connection:
+        assert (
+            connection.execute("SELECT result FROM attempts ORDER BY id LIMIT 1").fetchone()[0] == old_error
+        )
+        assert connection.execute("SELECT count(*) FROM attempts").fetchone()[0] == 2

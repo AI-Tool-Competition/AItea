@@ -4408,14 +4408,20 @@
 .tea-node-workspace {
   flex-direction: column;
 }
-.tea-workspace-topbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 52px;
-  min-height: 52px;
-  padding: 0 17px;
-  border-bottom: 1px solid var(--border);
+.tea-workspace-nav-trigger,
+.tea-workspace-panel-trigger {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+}
+.tea-workspace-nav-trigger {
+  left: 8px;
+}
+.tea-workspace-panel-trigger {
+  right: 8px;
+}
+.tea-node-workspace.tea-panel-hidden .tea-conversation-content {
+  padding-top: 64px;
 }
 .tea-node-workspace .tea-workspace-panels {
   flex: 1;
@@ -4619,9 +4625,6 @@
   .tea-more-nodes,
   .tea-node-folder-toggle {
     min-height: 44px;
-  }
-  .tea-workspace-topbar {
-    padding: 0 10px;
   }
   .tea-chat-skills {
     gap: 0;

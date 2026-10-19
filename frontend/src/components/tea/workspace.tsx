@@ -79,6 +79,7 @@ export function Workspace({
   const [guideAttempt, setGuideAttempt] = useState(0);
   const isMobile = useIsMobile();
   const overlay = isMobile || narrow;
+  const panelVisible = overlay ? mobileOpen : panelOpen;
   const panelRef = usePanelRef();
   const panelOpenRef = useRef(false);
   const previousDetailSize = useRef(0);
@@ -371,22 +372,29 @@ export function Workspace({
     </div>
   );
   return (
-    <div className="tea-workspace tea-node-workspace">
-      <header className="tea-workspace-topbar">
-        <SidebarTrigger className="md:hidden" aria-label="展开导航" />
+    <div
+      className={`tea-workspace tea-node-workspace ${panelVisible ? "" : "tea-panel-hidden"}`}
+    >
+      <SidebarTrigger
+        className="tea-workspace-nav-trigger md:hidden"
+        aria-label="展开导航"
+      />
+      {((overlay && !mobileOpen) || (!overlay && !panelOpen)) && (
         <Button
+          className="tea-workspace-panel-trigger"
           variant="ghost"
           size="icon"
+          style={{ position: "absolute", top: 8, right: 8, left: "auto" }}
           aria-label="展开业务工作区"
           aria-expanded={overlay ? mobileOpen : panelOpen}
           onClick={() => {
             if (overlay) setMobileOpen(true);
-            else setPanelOpen((value) => !value);
+            else setPanelOpen(true);
           }}
         >
           <PanelRightOpen size={17} />
         </Button>
-      </header>
+      )}
       <ResizablePanelGroup
         orientation="horizontal"
         className="tea-workspace-panels"

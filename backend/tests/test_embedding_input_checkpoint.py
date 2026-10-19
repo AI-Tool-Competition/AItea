@@ -25,6 +25,21 @@ def checkpoint(tmp_path, **scope):
     )
 
 
+@pytest.mark.parametrize(
+    "http,lanes,requested,expected", [(64, 2, 12, 12), (64, 2, None, 32), (24, 2, None, 12), (64, 1, 12, 12)]
+)
+def test_background_can_reduce_without_changing_shared_query_ceiling(http, lanes, requested, expected):
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    assert runner["document_worker_limit"](http, lanes, requested) == expected
+
+
+@pytest.mark.parametrize("http,lanes,requested", [(64, 2, 33), (24, 2, 13), (64, 1, None), (64, 2, 0)])
+def test_background_cannot_bypass_global_or_processing_ceiling(http, lanes, requested):
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    with pytest.raises(ValueError):
+        runner["document_worker_limit"](http, lanes, requested)
+
+
 def test_successful_partial_batch_is_reused_after_failure_and_restart(tmp_path):
     cache = checkpoint(tmp_path)
 

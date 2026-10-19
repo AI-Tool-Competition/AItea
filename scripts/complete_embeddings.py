@@ -398,6 +398,17 @@ def existing_metadata_intact(service, guard):
     )
 
 
+def document_worker_limit(http_workers, request_concurrency, requested=None):
+    ceiling = min(32, (http_workers + request_concurrency - 1) // request_concurrency)
+    if requested is not None and not 1 <= requested <= ceiling:
+        raise ValueError(
+            "Document workers must fit the shared HTTP and 32-document limits"
+        )
+    if requested is None and http_workers > 32 and request_concurrency == 1:
+        raise ValueError("More than 32 HTTP workers requires --request-concurrency 2")
+    return requested or ceiling
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, required=True)
@@ -410,10 +421,21 @@ def main():
     )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--http-workers", type=int, choices=range(1, 65), default=2)
+    parser.add_argument(
+        "--document-workers",
+        type=int,
+        help="Active background documents within the shared ceiling",
+    )
     parser.add_argument("--batch-size", type=int, choices=range(1, 65), default=6)
     parser.add_argument("--request-concurrency", type=int, choices=(1, 2), default=1)
     parser.add_argument("--stop-after-claims", type=int, default=0)
     parser.add_argument("--http-timeout", type=int, choices=range(1, 61), default=30)
+    parser.add_argument(
+        "--max-run-seconds",
+        type=int,
+        default=0,
+        help="Stop new work after this window, then drain",
+    )
     retry = parser.add_mutually_exclusive_group()
     retry.add_argument(
         "--retry-unresolved",
@@ -426,11 +448,14 @@ def main():
         help="Allow only exact input hashes in an owner/model/frozen-plan recovery file; billing may recur",
     )
     args = parser.parse_args()
-    document_workers = (
-        args.http_workers + args.request_concurrency - 1
-    ) // args.request_concurrency
-    if document_workers > 32:
-        parser.error("More than 32 HTTP workers requires --request-concurrency 2")
+    try:
+        document_workers = document_worker_limit(
+            args.http_workers, args.request_concurrency, args.document_workers
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    if args.max_run_seconds < 0:
+        parser.error("Run window must be nonnegative")
     from processing_runtime import retry_local_database
     from verify_ingestion import configure_models, write_report
 
@@ -631,6 +656,7 @@ def main():
                 "batch_size": args.batch_size,
                 "request_concurrency": args.request_concurrency,
                 "http_timeout": args.http_timeout,
+                "max_run_seconds": args.max_run_seconds,
                 "retry_unresolved": args.retry_unresolved,
                 "retry_unresolved_selection_sha256": (
                     recovery_selection["sha256"] if recovery_selection else None
@@ -684,6 +710,11 @@ def main():
     with ThreadPoolExecutor(max_workers=document_workers) as pool:
         while True:
             finished += finish_claims(active, observations)
+            if (
+                args.max_run_seconds
+                and time.monotonic() - started >= args.max_run_seconds
+            ):
+                observations.stop.set()
             if (
                 args.stop_after_claims
                 and finished + len(active) >= args.stop_after_claims

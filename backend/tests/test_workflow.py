@@ -502,36 +502,16 @@ def test_live_assistant_receives_prior_stage_messages(client, monkeypatch):
         monkeypatch.setenv(key, value)
     captured = []
 
-    class ProviderResponse:
-        def raise_for_status(self):
-            return None
+    def respond(request):
+        import json
 
-        def __enter__(self):
-            return self
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "先准备产品说明书。"}}]})
 
-        def __exit__(self, *args):
-            pass
-
-        def iter_bytes(self):
-            import json
-
-            yield json.dumps({"choices": [{"message": {"content": "先准备产品说明书。"}}]}).encode()
-
-    class ProviderClient:
-        def __init__(self, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def stream(self, method, url, **kwargs):
-            captured.append(kwargs["json"])
-            return ProviderResponse()
-
-    monkeypatch.setattr(httpx, "Client", ProviderClient)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs)
+    )
     url = f"/api/tea/cases/{case['id']}/messages"
     assert (
         client.post(
@@ -602,20 +582,18 @@ def test_live_provider_failure_is_visible_and_does_not_complete_task(client, mon
     }.items():
         monkeypatch.setenv(key, value)
 
-    class BrokenProvider:
-        def __init__(self, **kwargs):
-            pass
+    calls = []
 
-        def __enter__(self):
-            return self
+    def unavailable(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("unavailable", request=request)
 
-        def __exit__(self, *args):
-            pass
-
-        def stream(self, *args, **kwargs):
-            raise httpx.TimeoutException("unavailable")
-
-    monkeypatch.setattr(httpx, "Client", BrokenProvider)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(unavailable), **kwargs)
+    )
+    url = f"/api/tea/cases/{case['id']}/messages"
+    before = client.get(url).json()["items"]
     response = client.post(
         f"/api/tea/cases/{case['id']}/messages",
         json={
@@ -624,10 +602,11 @@ def test_live_provider_failure_is_visible_and_does_not_complete_task(client, mon
             "client_message_id": "failed-live",
         },
     )
-    assert response.status_code == 200
-    assert any(step["status"] == "failed" for step in response.json()["messages"][1]["trace"])
-    assert "暂时不可用" in response.json()["messages"][1]["content"]
-    assert response.json()["case"]["completed_tasks"] == 0
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "assistant_failed"
+    assert len(calls) == 1
+    assert client.get(url).json()["items"] == before
+    assert client.get(f"/api/tea/cases/{case['id']}").json()["completed_tasks"] == 0
 
 
 def test_partial_source_collection_preserves_original_and_exposes_warnings(client, monkeypatch):

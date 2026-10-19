@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import ValidationError
 
 from .assistant import generate_guidance
+from .tool_runtime import SEARCH_LEGAL, ToolFailure, ToolRun, call_tool
 from .countries import resolve_country
 from .legal_models import (
     LEGAL_MODULES,
@@ -242,6 +243,7 @@ class _LegalRunner:
         self.options = options
         self.cancel = options.get("check_cancelled") or (lambda: None)
         self.emit = options.get("emit")
+        self.tools = ToolRun(self.emit, self.cancel)
         self.checkpoint = options.get("on_checkpoint")
         self.mode = service.capabilities["assistant_mode"]
         self.model_calls = 0
@@ -401,7 +403,10 @@ class _LegalRunner:
                     "前次输出未通过结构或引用范围校验；请遵循 schema 和输入中的编号。"
                 )
             except Exception as exc:
+                # Transport retry belongs to the shared tool runtime. Repeating
+                # authentication errors or partial output here would bypass its budget.
                 error = exc
+                break
             if not attempt:
                 self.cancel()
                 sleep(0.05)
@@ -415,25 +420,34 @@ class _LegalRunner:
         if not set(jurisdictions) <= set(self.allowed):
             raise LegalEngineError("检索法域超出业务允许范围。")
         if not jurisdictions:
-            result = {"items": [], "mode": "lexical", "warning": "尚未明确允许检索的国家，未执行跨国检索。"}
+            result = {
+                "items": [],
+                "mode": "lexical",
+                "warning": "尚未明确允许检索的国家，未执行跨国检索。",
+                "failed": False,
+            }
         else:
             try:
-                result = self.service.legal.search(
-                    self.owner,
-                    query[:2000],
-                    self.options.get("case_id"),
-                    self.template,
-                    jurisdictions,
-                    self.policy["retrieval_limit"],
-                    document_ids=self.options.get("document_ids"),
-                    as_of=self.as_of,
+                result = call_tool(
+                    SEARCH_LEGAL,
+                    {
+                        "query": query[:2000],
+                        "jurisdictions": jurisdictions,
+                        "limit": self.policy["retrieval_limit"],
+                        "document_ids": self.options.get("document_ids"),
+                    },
+                    lambda args, attempt: self._search_result(args),
+                    summarize=lambda value: f"找到 {len(value['items'])} 条候选依据。" + value["warning"],
                 )
                 self.cancel()
             except StreamCancelled:
                 raise
             except Exception as exc:
                 # Do not hide an authentication/scope/revision failure as no hits.
-                if getattr(exc, "status", getattr(exc, "status_code", 500)) < 500:
+                if (
+                    isinstance(exc, (LegalEngineError, ValidationError))
+                    or getattr(exc, "status", getattr(exc, "status_code", 500)) < 500
+                ):
                     raise
                 result = {
                     "items": [],
@@ -441,6 +455,28 @@ class _LegalRunner:
                     "warning": "本次检索失败，候选覆盖尚未完成。",
                     "failed": True,
                 }
+        answer = result
+        if record:
+            self.work["searches"].append(
+                {"query": query[:2000], "jurisdictions": jurisdictions, "fingerprint": _fingerprint(answer)}
+            )
+        return answer
+
+    def _search_result(self, args):
+        jurisdictions = args.jurisdictions
+        result = self.service.legal.search(
+            self.owner,
+            args.query,
+            self.options.get("case_id"),
+            self.template,
+            jurisdictions,
+            args.limit,
+            document_ids=args.document_ids,
+            as_of=self.as_of,
+        )
+        self.cancel()
+        if result.get("failed"):
+            raise ToolFailure("retrieval_unavailable", "检索服务未能完成。")
         clean = []
         for raw in result.get("items", [])[:80]:
             item = dict(raw)
@@ -472,10 +508,6 @@ class _LegalRunner:
             answer["warning"] = (
                 answer["warning"] + "；本轮检索结果超过 80 条预算，仍需缩小范围补检。"
             ).lstrip("；")
-        if record:
-            self.work["searches"].append(
-                {"query": query[:2000], "jurisdictions": jurisdictions, "fingerprint": _fingerprint(answer)}
-            )
         return answer
 
     def _active_seeds(self):
@@ -1164,8 +1196,9 @@ class _LegalRunner:
                 self.cancel()
                 if self.emit:
                     self.emit("status", {"label": module["title"], "step_id": module["id"]})
-                    self.emit("step", copy.deepcopy(trace))
-                output = getattr(self, module["id"])()
+                self.tools.publish(trace)
+                with self.tools.step(trace):
+                    output = getattr(self, module["id"])()
                 self.cancel()
                 trace.update(
                     status="completed",
@@ -1205,13 +1238,13 @@ class _LegalRunner:
                 self.result["trace"].append(trace)
                 if self.checkpoint:
                     self.checkpoint(module["id"], copy.deepcopy(self.result), completed_state)
+                self.tools.publish(trace)
                 raise
             trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
             self.result["trace"].append(trace)
             if self.checkpoint:
                 self.checkpoint(module["id"], copy.deepcopy(self.result), self._snapshot())
-            if self.emit:
-                self.emit("step", copy.deepcopy(trace))
+            self.tools.publish(trace)
             if stop == module["id"]:
                 break
         return LegalResult.model_validate(self.result).model_dump(mode="json")

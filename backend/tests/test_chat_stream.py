@@ -247,9 +247,7 @@ def test_aerisun_deepseek_requests_usage_and_keeps_case_context_in_cache_prefix(
     assert all(body["stream_options"] == {"include_usage": True} for body in sent)
     assert all("prompt_cache_key" not in body for body in sent)
     assert sent[0]["messages"][:2] == sent[1]["messages"][:2]
-    assert json.loads(sent[0]["messages"][1]["content"]) == {
-        "case_context": {"business_name": "六堡茶出口"}
-    }
+    assert json.loads(sent[0]["messages"][1]["content"]) == {"case_context": {"business_name": "六堡茶出口"}}
     assert sent[0]["messages"][-1] != sent[1]["messages"][-1]
     usage_records = [record for record in caplog.records if record.getMessage() == "provider_prompt_usage"]
     assert len(usage_records) == 2
@@ -364,3 +362,60 @@ def test_stop_interrupts_a_provider_waiting_for_its_first_byte(monkeypatch):
         with pytest.raises(StreamCancelled):
             pending.result(timeout=1)
     assert closed.is_set()
+
+
+def test_stream_exposes_real_tool_lifecycle_and_persists_the_same_order(chat):
+    client, case, payload, _ = chat
+    events = frames(client.post(f"/api/tea/cases/{case['id']}/messages/stream", json=payload))
+    steps = [data for event, data in events if event == "step"]
+    assert steps and steps[0]["status"] == "running"
+    assert [item["sequence"] for item in steps] == sorted({item["sequence"] for item in steps})
+    calls = [tool for step in steps for tool in step.get("tools", [])]
+    assert {tool["name"] for tool in calls} == {"search_documents", "check_materials"}
+    for call_id in {tool["id"] for tool in calls}:
+        states = [tool["status"] for tool in calls if tool["id"] == call_id]
+        assert states[0] == "running" and states[-1] == "completed"
+    saved = events[-1][1]["messages"][1]["trace"]
+    assert [tool["id"] for step in saved for tool in step.get("tools", [])] == list(
+        dict.fromkeys(tool["id"] for tool in calls)
+    )
+
+
+def test_provider_length_truncation_is_failed_and_not_saved_or_retried(chat, monkeypatch):
+    client, case, payload, _ = chat
+
+    def chunks():
+        yield delta("尚未完成的回复")
+        yield b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    before = client.get(f"/api/tea/cases/{case['id']}/messages").json()["items"]
+    requests = provider(monkeypatch, chunks)
+    events = frames(client.post(f"/api/tea/cases/{case['id']}/messages/stream", json=payload))
+    assert events[-1][0] == "error"
+    assert not any(event == "done" for event, _ in events)
+    assert len(requests) == 1
+    failed = [data for event, data in events if event == "step" and data["status"] == "failed"]
+    assert failed[-1]["tools"][-1]["error_code"] == "invalid_response"
+    assert client.get(f"/api/tea/cases/{case['id']}/messages").json()["items"] == before
+
+
+def test_provider_parses_complete_multiline_events(monkeypatch):
+    provider(
+        monkeypatch,
+        lambda: iter(
+            [
+                b': keep-alive\r\n\r\ndata: {"choices": [\r\ndata: {"delta": {"content": "hello"}}]}\r\n\r\n',
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+                b"data: [DONE]\n\n",
+            ]
+        ),
+    )
+    seen = []
+    assert (
+        assistant.generate_guidance(
+            {"language": "zh-CN", "instructions": ""}, {}, "", {}, [], [], "", on_delta=seen.append
+        )
+        == "hello"
+    )
+    assert seen == ["hello"]

@@ -235,3 +235,18 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 - `POST /cases/{case_id}/stages/{stage_id}/guides/{guide_id}/retry`：`{client_request_id}`，新建重试记录并返回 `{id}`，保留旧记录。
 
 任务通过核验后登记去重的自动分析任务，后台追加报告；读取会话及引导记录会恢复待执行任务。未配置模型时保持演示说明。完整边界见 [节点工作区](NODE_WORKSPACE.md)。
+
+### 工具过程快照
+
+聊天、调试、法律分析与节点分析沿用 `step` SSE 事件，`TraceStep` 新增可选字段：
+
+- `run_id: string`：本次执行标识；`sequence: integer`：本次执行内严格递增的步骤快照序号。
+- `tools: ToolCall[]`：按首次调用顺序排列，最多 128 项；未提供时兼容历史记录。
+- `ToolCall = {id,name,label,position,status,attempt,max_attempts,detail,duration_ms,error_code?}`。
+- `name` 为 `search_documents | check_materials | search_legal_evidence | generate_guidance`。
+- `status` 为 `running | retrying | completed | failed | cancelled`；`attempt` 为当前尝试次数，`max_attempts` 最大为 2，`duration_ms` 含重试等待。
+- 重试保持同一工具 `id`。每个 `step` 是完整快照；客户端在原位置更新，同一 `run_id` 下忽略小于等于已接收 `sequence` 的快照。
+- 普通聊天也推送实际步骤的开始、工具进度和结束；最终消息 `trace` 保存相同公开记录。工具成功不等于业务任务完成。
+- 模型被截断、协议异常或工作流失败时，JSON 和 SSE 聊天都不保存未完成回复；SSE 发送 `error`，不发送 `done`。重试继续使用原 `client_message_id` 的持久化幂等规则。
+
+执行预算、取消与安全重试边界见 [AGENT_TOOLS.md](AGENT_TOOLS.md)。

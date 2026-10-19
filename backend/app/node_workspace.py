@@ -7,6 +7,8 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from .db import dump, now, uid
+from .streaming import StreamCancelled
+from .tool_runtime import ToolRun
 
 
 SKILLS = {
@@ -224,33 +226,53 @@ class NodeWorkspace:
     def intake(self, agent, question, context, emit=None, check_cancelled=None, prompt_cache_key=None):
         from .assistant import generate_guidance
 
-        if self.service.capabilities["assistant_mode"] == "live":
-            output = generate_guidance(
-                agent,
-                {
-                    "instructions": "这是节点引导的信息收集阶段。简短确认用户已说明的内容，再追问最关键的1至2项缺口；邀请上传相关材料，同时明确没有材料也可继续。此轮先不生成最终报告，不重复询问已有事实。"
-                },
-                question,
-                context,
-                [],
-                [],
-                "",
-                on_delta=(lambda text: emit("delta", {"text": text})) if emit else None,
-                check_cancelled=check_cancelled,
-                prompt_cache_key=prompt_cache_key,
-            )
-        else:
-            output = (
-                "已记下你的补充。当前为演示模式，以下按节点准备要求继续收集信息。\n\n"
-                "请再说明目前最着急解决的事项，以及参与企业、产品或交易安排中尚未确定的部分。"
-                "如果有证照、产品说明或合同，可以上传；**没有材料也可以继续**。\n\n"
-                "准备好后点击“开始分析”，或直接告诉我“开始分析”，我会整理现有信息与待核实事项。"
-            )
-            if emit:
-                emit("delta", {"text": output})
+        trace = {
+            "id": "intake",
+            "label": "梳理当前情况",
+            "type": "guide",
+            "status": "running",
+            "detail": "正在整理已提供的信息。",
+        }
+        tools = ToolRun(emit, check_cancelled)
+        tools.publish(trace)
+        with tools.step(trace):
+            try:
+                if self.service.capabilities["assistant_mode"] == "live":
+                    output = generate_guidance(
+                        agent,
+                        {
+                            "instructions": "这是节点引导的信息收集阶段。简短确认用户已说明的内容，再追问最关键的1至2项缺口；邀请上传相关材料，同时明确没有材料也可继续。此轮先不生成最终报告，不重复询问已有事实。"
+                        },
+                        question,
+                        context,
+                        [],
+                        [],
+                        "",
+                        on_delta=(lambda text: emit("delta", {"text": text})) if emit else None,
+                        check_cancelled=check_cancelled,
+                        prompt_cache_key=prompt_cache_key,
+                    )
+                else:
+                    output = (
+                        "已记下你的补充。当前为演示模式，以下按节点准备要求继续收集信息。\n\n"
+                        "请再说明目前最着急解决的事项，以及参与企业、产品或交易安排中尚未确定的部分。"
+                        "如果有证照、产品说明或合同，可以上传；**没有材料也可以继续**。\n\n"
+                        "准备好后点击“开始分析”，或直接告诉我“开始分析”，我会整理现有信息与待核实事项。"
+                    )
+                    if emit:
+                        emit("delta", {"text": output})
+                trace.update(status="completed", detail="已整理当前情况与待补充事项。")
+            except StreamCancelled:
+                trace.update(status="cancelled", detail="回复已停止。")
+                raise
+            except Exception:
+                trace.update(status="failed", detail="回复未完成，请重试。")
+                tools.publish(trace)
+                raise
+        tools.publish(trace)
         return {
             "output": output,
-            "trace": [],
+            "trace": [trace],
             "citations": [],
             "assistant_mode": self.service.capabilities["assistant_mode"],
         }

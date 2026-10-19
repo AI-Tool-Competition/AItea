@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { mergeTraceStep } from "@/core/tea/trace";
+
 import {
   errorMessage,
   getLegalAnalysis,
@@ -289,11 +291,7 @@ export function useLegalWorkbench(
           onEvent: (event) => {
             if (!valid(abort)) return;
             if (event.event === "status") setLabel(event.data.label);
-            else
-              setSteps((current) => [
-                ...current.filter((item) => item.id !== event.data.id),
-                event.data,
-              ]);
+            else setSteps((current) => mergeTraceStep(current, event.data));
           },
         },
       );

@@ -900,6 +900,8 @@ class Service:
                     error = quality_warning(manifest)
                     if ocr_work_pending(manifest) and vision_ocr_configured():
                         status = "processing"
+                    else:
+                        status = "failed"
             except Exception as exc:
                 logger.info("document_parse_failed", extra={"parser_error": type(exc).__name__})
                 status, error = "failed", str(exc)[:500]

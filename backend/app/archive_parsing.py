@@ -20,9 +20,10 @@ from copy import deepcopy
 from pathlib import Path
 
 from .parsing import ProcessingDeferred, _MAX_RESULT_BYTES, _run_bounded
+from .pdf_limits import ARCHIVE_MAX_PAGES
 
 _MAX_BYTES = 128 * 1024 * 1024
-_MAX_PAGES = 5_000
+_MAX_PAGES = ARCHIVE_MAX_PAGES
 _MAX_WINDOW_PAGES = 64
 _MAX_PAGE_STREAM_BYTES = 16 * 1024 * 1024
 _MAX_TEXT = 4_000_000
@@ -98,7 +99,7 @@ def render_archive_page_bounded(
     """
     file_path = _validate_original_request(path, source_hash, size)
     if type(page_number) is not int or not 1 <= page_number <= _MAX_PAGES:
-        raise ValueError("采集 PDF 物理页码必须为 1 至 5000 页。")
+        raise ValueError(f"采集 PDF 物理页码必须为 1 至 {_MAX_PAGES} 页。")
     if type(dpi) is not int or dpi not in {200, 400}:
         raise ValueError("PDF 渲染 DPI 必须为 200 或 400。")
     if region_bbox is not None:
@@ -135,7 +136,7 @@ def archive_rebuild_bounded(manifest: dict) -> dict:
     size, count = metadata.get("source_size"), metadata.get("total_pages")
     _validate_original_request("archive-checkpoint.pdf", source_hash, size)
     if type(count) is not int or not 0 < count <= _MAX_PAGES:
-        raise ValueError("采集 PDF 页数必须为 1 至 5000 页。")
+        raise ValueError(f"采集 PDF 页数必须为 1 至 {_MAX_PAGES} 页。")
     pages = manifest.get("pages")
     if not isinstance(pages, list) or len(pages) != count:
         raise ValueError("PDF 重组装检查点必须覆盖完整原件物理页。")

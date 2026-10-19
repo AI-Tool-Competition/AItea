@@ -646,10 +646,19 @@ class CollectionService:
                 elif active_phases == {"embed"}:
                     preferred = "parse"
             order = "CASE WHEN phase=? THEN 0 ELSE 1 END," if preferred else ""
+            # The embedding transport has two shared HTTP slots. Claiming
+            # dozens of embed jobs would spend their finite provider budget
+            # waiting locally and exhaust retries without useful requests.
+            # Keep excess work durable and leave the other slots for parsing.
+            embedding_available = conn.execute(
+                "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?",
+                (timestamp,),
+            ).fetchone()[0] < min(self.processing_workers, 2)
             row = conn.execute(
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope
                 + policy
+                + " AND (phase!='embed' OR ?)"
                 + """ AND EXISTS(SELECT 1 FROM documents owned_source
                     WHERE owned_source.id=processing_jobs.document_id
                         AND owned_source.owner_id=processing_jobs.owner_id AND owned_source.role='primary')"""
@@ -671,7 +680,7 @@ class CollectionService:
                 + " ORDER BY "
                 + order
                 + "updated_at,document_id LIMIT 1",
-                (timestamp, *arguments, timestamp, *((preferred,) if preferred else ())),
+                (timestamp, *arguments, embedding_available, timestamp, *((preferred,) if preferred else ())),
             ).fetchone()
             if not row:
                 return None
@@ -1172,6 +1181,39 @@ class CollectionService:
             # request attempt through on_page before any HTTP call.
             return reference
 
+        def store_response_error(evidence):
+            from .ocr_error_evidence import persist_response_evidence, validate_response_binding
+
+            def current_request(conn):
+                current_document(conn)
+                saved = json.loads(
+                    conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+                )
+                page = next((p for p in saved["pages"] if p["page"] == evidence.get("page")), None)
+                validate_response_binding(evidence, doc["content_hash"], page)
+                return page
+
+            with closing(self.db.connect()) as conn:
+                request_page = current_request(conn)
+            reference = persist_response_evidence(
+                self.service.archive.blobs,
+                doc["owner_id"],
+                evidence,
+                source_hash=doc["content_hash"],
+                request_page=request_page,
+            )
+
+            def update(conn):
+                page = next(p for p in manifest["pages"] if p["page"] == evidence["page"])
+                page["ocr"]["error_response"] = {
+                    **{key: value for key, value in evidence.items() if key != "response_base64"},
+                    "blob": reference,
+                }
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+
+            self._write_ocr_checkpoint(checkpoint_lock, current_request, update)
+            return reference
+
         def checkpoint(page):
             # Each completed physical page is durable before another batch.
             # The lease check prevents a stale worker from replacing new work.
@@ -1213,6 +1255,7 @@ class CollectionService:
             on_image=store_image,
             on_region=store_region,
             on_reuse=reuse,
+            on_response_error=store_response_error,
             archive_path=doc["storage_path"] if archive_mode else None,
             archive_size=doc["size"] if archive_mode else None,
         )
@@ -1457,7 +1500,11 @@ class CollectionService:
                 incomplete = not text_complete(manifest) and not next_phase
                 conn.execute(
                     "UPDATE documents SET status=?,error=? WHERE id=?",
-                    ("processing" if needs_parse or needs_ocr else "ready", warning, doc["id"]),
+                    (
+                        "processing" if needs_parse or needs_ocr else ("failed" if incomplete else "ready"),
+                        warning,
+                        doc["id"],
+                    ),
                 )
                 if not needs_index and current_fingerprint and indexable and text_complete(manifest):
                     conn.execute(

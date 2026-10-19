@@ -11,12 +11,14 @@ import multiprocessing
 import os
 import re
 import time
+from uuid import uuid4
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from threading import BoundedSemaphore, Condition, Lock
 
 from .vision import vision_ocr_adaptive_enabled, vision_ocr_worker_limit
+from .pdf_limits import ARCHIVE_MAX_PAGES
 
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
@@ -459,6 +461,7 @@ def _ocr_one_page(
     archive_path=None,
     archive_size: int | None = None,
     on_reuse: Callable[[dict, dict], dict | None] | None = None,
+    on_response_error: Callable[[dict], dict] | None = None,
 ) -> dict:
     from .ingestion_quality import validate_ocr_page
     from .vision import OCRResponseError, PROMPT_VERSION, transcribe_page
@@ -506,6 +509,25 @@ def _ocr_one_page(
     def failure(exc: ValueError | OSError) -> dict:
         if isinstance(exc, OCRResponseError):
             metadata["finish_reason"] = exc.finish_reason
+            if exc.response_evidence is not None and on_response_error is not None:
+                evidence = {
+                    **deepcopy(exc.response_evidence),
+                    "source_hash": metadata["source_hash"],
+                    "page": metadata["page"],
+                    "request_id": metadata["request_id"],
+                    "attempt": metadata["attempts"],
+                    "image_sha256": metadata["image_sha256"],
+                    "prompt_version": metadata["prompt_version"],
+                    "requested_model": metadata["requested_model"],
+                    "finish_reason": exc.finish_reason,
+                }
+                reference = on_response_error(deepcopy(evidence))
+                if not isinstance(reference, dict):
+                    raise ValueError("识别错误响应存储回调必须返回持久引用。")
+                metadata["error_response"] = {
+                    **{key: value for key, value in evidence.items() if key != "response_base64"},
+                    "blob": reference,
+                }
         retryable = isinstance(exc, OCRResponseError) and exc.retryable and metadata["attempts"] < 3
         updated.update(
             status="pending_ocr" if retryable else "ocr_failed",
@@ -559,6 +581,7 @@ def _ocr_one_page(
         if profile is not None:
             metadata["provider_profile"] = profile
         metadata["attempts"] += 1
+        metadata["request_id"] = uuid4().hex
         updated.update(status="pending_ocr", ocr=metadata)
         # The entire request intent (not just PNG) survives process interruption.
         # Callback failure propagates before any provider request or model-error handler.
@@ -616,6 +639,7 @@ def ocr_bounded(
     on_image: Callable[[dict], dict] | None = None,
     on_region: Callable[[dict], dict] | None = None,
     on_reuse: Callable[[dict, dict], dict | None] | None = None,
+    on_response_error: Callable[[dict], dict] | None = None,
     max_pages: int = 4,
     archive_path=None,
     archive_size: int | None = None,
@@ -624,6 +648,8 @@ def ocr_bounded(
 
     Callbacks are persistence boundaries: exceptions propagate, never turn into
     model failures. The queue owns repeated batches, explicit retry and access.
+    ``on_response_error`` stores bounded diagnostic bytes, never page text. Its
+    reference joins the existing physical-page and request-intent checkpoint.
     """
     from .vision import vision_ocr_configured
 
@@ -645,7 +671,7 @@ def ocr_bounded(
 
     if (
         not pages
-        or len(pages) > (5000 if content is None else 300)
+        or len(pages) > (ARCHIVE_MAX_PAGES if content is None else 300)
         or [page.get("page") for page in pages] != list(range(1, len(pages) + 1))
         or any(page.get("source_hash") != result["source_hash"] for page in pages)
     ):
@@ -676,6 +702,7 @@ def ocr_bounded(
                 archive_path,
                 archive_size,
                 on_reuse,
+                on_response_error,
             )
             # A sibling may interrupt the batch while this page is in flight.
             # Persist its result before returning the future, including during

@@ -15,6 +15,7 @@ import math
 import re
 
 from .ingestion_quality import anchor_present, number_anchors, validate_ocr_page
+from .pdf_limits import ARCHIVE_MAX_PAGES
 
 RECOVERY_VERSION = "legal-region-recovery-v4"
 MAX_TASKS = 24
@@ -164,7 +165,7 @@ def plan_regions(content: bytes | None, page: dict, archive_path=None, archive_s
         stream, info = _open_original(archive_path, archive_size)
         with stream:
             _verify_hash(stream, page["source_hash"], archive_size)
-            result = _plan_regions_input(stream, page, 5000)
+            result = _plan_regions_input(stream, page, ARCHIVE_MAX_PAGES)
             _verify_hash(stream, page["source_hash"], archive_size)
             _verify_identity(archive_path, info, archive_size)
             return result

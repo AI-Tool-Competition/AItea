@@ -13,6 +13,8 @@ import math
 import re
 import unicodedata
 
+from .pdf_limits import ARCHIVE_MAX_PAGES
+
 VERSION = "pdf-native-visibility-v1"
 _HASH = re.compile(r"[a-f0-9]{64}")
 _MAX_OBJECTS = 4096
@@ -220,7 +222,7 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
         not isinstance(source_hash, str)
         or not _HASH.fullmatch(source_hash)
         or type(page_number) is not int
-        or not 1 <= page_number <= 5000
+        or not 1 <= page_number <= ARCHIVE_MAX_PAGES
         or not isinstance(native_text, str)
         or len(native_text) > 4_000_000
         or type(optional_content) is not bool
@@ -424,7 +426,7 @@ def prove_blank_page(rendered, audit, *, native_text):
         or not isinstance(audit.get("source_hash"), str)
         or not _HASH.fullmatch(audit["source_hash"])
         or type(audit.get("page")) is not int
-        or not 1 <= audit["page"] <= 5000
+        or not 1 <= audit["page"] <= ARCHIVE_MAX_PAGES
         or type(audit.get("annotation_count")) is not int
         or type(audit.get("text_object_count")) is not int
         or audit.get("annotation_count") != 0

@@ -15,6 +15,7 @@ import time
 
 from .db import dump, now, uid
 from .ocr_error_evidence import request_outcome_unknown
+from .system_library import BackgroundWorkerScope
 
 SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
@@ -361,7 +362,10 @@ class CollectionRecovery:
         )
         return receipts
 
-    def _resume(self, conn, row, timestamp):
+    def _resume(self, conn, row, timestamp, *, worker_scope=BackgroundWorkerScope()):
+        if not worker_scope.allows(row["owner_id"]):
+            return "deferred"  # An excluded row must not gain an event or state change.
+        scope, arguments = worker_scope.sql()
         binding = self._binding(conn, row["owner_id"], row["queue_kind"], row["item_id"], row["phase"])
         if binding is None or _digest(binding) != row["binding_sha256"]:
             self._block(conn, row, "source_changed")
@@ -392,7 +396,8 @@ class CollectionRecovery:
                 return "deferred"
             if (
                 conn.execute(
-                    "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+                    "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')" + scope,
+                    arguments,
                 ).fetchone()[0]
                 >= 200
             ):
@@ -432,7 +437,8 @@ class CollectionRecovery:
                 return "deferred"
             if (
                 conn.execute(
-                    "SELECT COUNT(*) FROM collection_items WHERE status IN ('queued','fetching')"
+                    "SELECT COUNT(*) FROM collection_items WHERE status IN ('queued','fetching')" + scope,
+                    arguments,
                 ).fetchone()[0]
                 >= 2000
                 or conn.execute(
@@ -492,8 +498,9 @@ class CollectionRecovery:
             (timestamp + 60, now(), row["id"]),
         )
 
-    def adopt_failed(self, conn, *, limit):
+    def adopt_failed(self, conn, *, limit, worker_scope=BackgroundWorkerScope()):
         """Inventory legacy failures conservatively; never guess paid outcomes."""
+        scope, arguments = worker_scope.sql("j.owner_id")
         adopted = 0
         for kind, table, key, phase in (
             ("fetch", "collection_items", "id", "'fetch'"),
@@ -501,9 +508,10 @@ class CollectionRecovery:
         ):
             rows = conn.execute(
                 f"""SELECT j.* FROM {table} j WHERE j.status='failed' AND NOT EXISTS(
-                SELECT 1 FROM collection_recovery_jobs r WHERE r.owner_id=j.owner_id AND r.queue_kind=? AND r.item_id=j.{key} AND r.phase={phase})
-                ORDER BY j.{key} LIMIT ?""",
-                (kind, limit - adopted),
+                SELECT 1 FROM collection_recovery_jobs r WHERE r.owner_id=j.owner_id AND r.queue_kind=? AND r.item_id=j.{key} AND r.phase={phase})"""
+                + scope
+                + f" ORDER BY j.{key} LIMIT ?",
+                (kind, *arguments, limit - adopted),
             ).fetchall()
             for row in rows:
                 claim = dict(row)
@@ -525,15 +533,16 @@ class CollectionRecovery:
                 break
         return adopted
 
-    def run_due(self, *, limit=10):
+    def run_due(self, *, limit=10, worker_scope=BackgroundWorkerScope()):
         if type(limit) is not int or not 1 <= limit <= MAX_BATCH:
             raise ValueError("recovery batch must be between 1 and 32")
         result = {"adopted": 0, "requeued": 0, "blocked": 0, "deferred": 0}
+        scope, arguments = worker_scope.sql()
         # One target per write transaction: OCR checkpoint validation must not
         # hold a write lock across an entire scheduled batch of large documents.
         for _ in range(limit):
             with self.db.transaction() as conn:
-                adopted = self.adopt_failed(conn, limit=1)
+                adopted = self.adopt_failed(conn, limit=1, worker_scope=worker_scope)
             result["adopted"] += adopted
             if not adopted:
                 break
@@ -541,17 +550,20 @@ class CollectionRecovery:
             identifiers = [
                 row[0]
                 for row in conn.execute(
-                    "SELECT id FROM collection_recovery_jobs WHERE status='waiting' AND available_at<=? ORDER BY available_at,id LIMIT ?",
-                    (time.time(), limit),
+                    "SELECT id FROM collection_recovery_jobs WHERE status='waiting' AND available_at<=?"
+                    + scope
+                    + " ORDER BY available_at,id LIMIT ?",
+                    (time.time(), *arguments, limit),
                 )
             ]
         for identifier in identifiers:
             with self.db.transaction() as conn:
                 timestamp = time.time()
                 row = conn.execute(
-                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='waiting' AND available_at<=?",
-                    (identifier, timestamp),
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='waiting' AND available_at<=?"
+                    + scope,
+                    (identifier, timestamp, *arguments),
                 ).fetchone()
                 if row:
-                    result[self._resume(conn, row, timestamp)] += 1
+                    result[self._resume(conn, row, timestamp, worker_scope=worker_scope)] += 1
         return result

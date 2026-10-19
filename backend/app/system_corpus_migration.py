@@ -560,6 +560,12 @@ def _validate_source(scope, source_dir, inventory, *, paths=None, lookup=None, v
         )
         manifest = json.loads(doc["manifest"])
         _cas_reference(manifest, source_dir, paths)
+        if "corpus_import_aliases" in manifest:
+            from .system_corpus_merge import validate_alias_archives
+
+            validate_alias_archives(
+                manifest, SYSTEM_OWNER_ID, paths, document_id=doc["id"], content_hash=doc["content_hash"]
+            )
         if doc["role"] == "secondary":
             _require(
                 parent
@@ -1266,9 +1272,7 @@ def _migrate_streaming(snapshot_dir, target_dir, receipt, *, apply, source_stopp
         return report
 
 
-def migrate_system_corpus(snapshot_dir, target_dir, *, apply=False, source_stopped=False, backup_dir=None):
-    """Default preflight does not initialize, upgrade or write the target."""
-    snapshot_dir, target_dir = Path(snapshot_dir).resolve(), Path(target_dir).resolve()
+def _snapshot_receipt(snapshot_dir):
     _require(
         (snapshot_dir / "snapshot.json").stat().st_size <= MAX_RECEIPT_BYTES, "snapshot_receipt_too_large"
     )
@@ -1282,6 +1286,27 @@ def migrate_system_corpus(snapshot_dir, target_dir, *, apply=False, source_stopp
         _hash_json(receipt["CAS_blobs"]) == receipt["CAS_inventory_sha256"],
         "snapshot_CAS_inventory_hash_mismatch",
     )
+    return receipt
+
+
+def migrate_system_corpus(
+    snapshot_dir, target_dir, *, apply=False, source_stopped=False, backup_dir=None, alias_plan=None
+):
+    """Default preflight does not initialize, upgrade or write the target."""
+    snapshot_dir, target_dir = Path(snapshot_dir).resolve(), Path(target_dir).resolve()
+    receipt = _snapshot_receipt(snapshot_dir)
+    if alias_plan is not None:
+        from .system_corpus_merge import migrate_alias_plan
+
+        return migrate_alias_plan(
+            snapshot_dir,
+            target_dir,
+            receipt,
+            alias_plan,
+            apply=apply,
+            source_stopped=source_stopped,
+            backup_dir=backup_dir,
+        )
     if receipt["protocol"] == STREAM_PROTOCOL:
         return _migrate_streaming(
             snapshot_dir,

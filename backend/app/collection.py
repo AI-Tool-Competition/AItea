@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from .db import dump, now, uid
 from .models import CollectionPlan
 from .parsing import parse_worker_limit
+from .system_library import BackgroundWorkerScope
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
@@ -67,7 +68,11 @@ class CollectionService:
         self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 32)
         self.embedding_workers = min(_setting("TEA_EMBED_WORKERS", 2, 32), self.processing_workers)
         parse_worker_limit()  # Reject invalid parser capacity before claiming work.
-        self.worker_health = {"status": "stopped", "last_error_at": None}
+        self.worker_health = {
+            "status": "stopped",
+            "last_error_at": None,
+            "shared_library_workers": "internal",
+        }
         self._migrate()
         with self.db.transaction() as conn:
             if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=6").fetchone():
@@ -581,21 +586,24 @@ class CollectionService:
             (document_id, owner, now()),
         )
 
-    def claim_fetch(self):
+    def claim_fetch(self, *, worker_scope=BackgroundWorkerScope()):
+        scope, arguments = worker_scope.sql()
+        item_scope, item_arguments = worker_scope.sql("i.owner_id")
         timestamp = time.time()
         with self.db.transaction() as conn:
-            self._expire(conn, "collection_items", "fetching", timestamp)
+            self._expire(conn, "collection_items", "fetching", timestamp, worker_scope=worker_scope)
             if (
                 conn.execute(
-                    "SELECT COUNT(*) FROM collection_items WHERE status='fetching' AND lease_until>?",
-                    (timestamp,),
+                    "SELECT COUNT(*) FROM collection_items WHERE status='fetching' AND lease_until>?" + scope,
+                    (timestamp, *arguments),
                 ).fetchone()[0]
                 >= self.download_workers
             ):
                 return None
             if (
                 conn.execute(
-                    "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+                    "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')" + scope,
+                    arguments,
                 ).fetchone()[0]
                 >= 200
             ):
@@ -605,11 +613,13 @@ class CollectionService:
                 LEFT JOIN collection_host_cooldowns h ON h.host=i.host
                 WHERE i.status='queued' AND i.available_at<=? AND r.status IN ('queued','running')
                 AND COALESCE(h.available_at,0)<=? AND (SELECT COUNT(*) FROM collection_items a
-                    WHERE a.host=i.host AND a.status='fetching' AND a.lease_until>?)<?
+                    WHERE a.host=i.host AND a.status='fetching' AND a.lease_until>?)<?"""
+                + item_scope
+                + """
                 -- Rotate durable runs before taking another page/file from a
                 -- large category sharing the same host.
                 ORDER BY r.updated_at,i.created_at,i.id LIMIT 1""",
-                (timestamp, timestamp, timestamp, self.host_workers),
+                (timestamp, timestamp, timestamp, self.host_workers, *item_arguments),
             ).fetchone()
             if not row:
                 return None
@@ -668,9 +678,16 @@ class CollectionService:
         )"""
 
     def claim_processing(
-        self, *, owner_id=None, document_ids=None, processing_policy=None, expected_expired_claim=None
+        self,
+        *,
+        owner_id=None,
+        document_ids=None,
+        processing_policy=None,
+        expected_expired_claim=None,
+        worker_scope=BackgroundWorkerScope(),
     ):
         scope, arguments = self._processing_scope(owner_id, document_ids)
+        background_scope, background_arguments = worker_scope.sql()
         policy = self._processing_policy_clause(processing_policy)
         if policy and not scope:
             raise ValueError("正文处理授权策略必须限定账号和文档范围。")
@@ -701,11 +718,13 @@ class CollectionService:
                 owner_id=owner_id,
                 document_ids=document_ids,
                 processing_policy=processing_policy,
+                worker_scope=worker_scope,
             )
             if (
                 conn.execute(
-                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND lease_until>?",
-                    (timestamp,),
+                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND lease_until>?"
+                    + background_scope,
+                    (timestamp, *background_arguments),
                 ).fetchone()[0]
                 >= self.processing_workers
             ):
@@ -718,8 +737,9 @@ class CollectionService:
                 active_phases = {
                     item["phase"]
                     for item in conn.execute(
-                        "SELECT DISTINCT phase FROM processing_jobs WHERE status='processing' AND lease_until>?",
-                        (timestamp,),
+                        "SELECT DISTINCT phase FROM processing_jobs WHERE status='processing' AND lease_until>?"
+                        + background_scope,
+                        (timestamp, *background_arguments),
                     )
                 }
                 if active_phases == {"parse"}:
@@ -732,14 +752,16 @@ class CollectionService:
             # document leases; the default remains two.
             embedding_available = (
                 conn.execute(
-                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?",
-                    (timestamp,),
+                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?"
+                    + background_scope,
+                    (timestamp, *background_arguments),
                 ).fetchone()[0]
                 < self.embedding_workers
             )
             row = conn.execute(
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope
+                + background_scope
                 + policy
                 + " AND (phase!='embed' OR ?)"
                 + """ AND EXISTS(SELECT 1 FROM documents owned_source
@@ -763,7 +785,14 @@ class CollectionService:
                 + " ORDER BY "
                 + order
                 + "updated_at,document_id LIMIT 1",
-                (timestamp, *arguments, embedding_available, timestamp, *((preferred,) if preferred else ())),
+                (
+                    timestamp,
+                    *arguments,
+                    *background_arguments,
+                    embedding_available,
+                    timestamp,
+                    *((preferred,) if preferred else ()),
+                ),
             ).fetchone()
             if not row:
                 return None
@@ -836,18 +865,32 @@ class CollectionService:
             )
 
     def _expire(
-        self, conn, table, status, timestamp, *, owner_id=None, document_ids=None, processing_policy=None
+        self,
+        conn,
+        table,
+        status,
+        timestamp,
+        *,
+        owner_id=None,
+        document_ids=None,
+        processing_policy=None,
+        worker_scope=BackgroundWorkerScope(),
     ):
         # Table names come exclusively from the two internal queue implementations.
         scope, arguments = self._processing_scope(owner_id, document_ids)
+        background_scope, background_arguments = worker_scope.sql()
         if scope and table != "processing_jobs":
             raise ValueError("限定范围只适用于正文处理任务。")
         policy = self._processing_policy_clause(processing_policy)
         if policy and (not scope or table != "processing_jobs"):
             raise ValueError("正文处理授权策略必须限定账号和文档范围。")
         rows = conn.execute(
-            f"SELECT * FROM {table} WHERE status=? AND lease_until<=?" + scope + policy + " LIMIT 32",
-            (status, timestamp, *arguments),
+            f"SELECT * FROM {table} WHERE status=? AND lease_until<=?"
+            + scope
+            + background_scope
+            + policy
+            + " LIMIT 32",
+            (status, timestamp, *arguments, *background_arguments),
         ).fetchall()
         key = "id" if table == "collection_items" else "document_id"
         for row in rows:
@@ -1809,8 +1852,19 @@ class CollectionService:
 class CollectionWorkers:
     """Fixed-size executors with at most one claimed future per available worker."""
 
-    def __init__(self, collection, *, processing_scope=None, processing_policy=None, fetch_enabled=True):
+    def __init__(
+        self,
+        collection,
+        *,
+        processing_scope=None,
+        processing_policy=None,
+        fetch_enabled=True,
+        worker_scope=BackgroundWorkerScope(),
+    ):
         self.collection = collection
+        worker_scope.sql()
+        self.worker_scope = worker_scope
+        collection.worker_health["shared_library_workers"] = worker_scope.shared_library_workers
         if processing_scope is not None:
             if not isinstance(processing_scope, (tuple, list)) or len(processing_scope) != 2:
                 raise ValueError("处理范围需要账号与文档列表。")
@@ -1864,6 +1918,7 @@ class CollectionWorkers:
                                     break
                                 claim = (
                                     self.collection.claim_processing(
+                                        **self.worker_scope.kwargs(),
                                         **(
                                             {
                                                 "owner_id": self.processing_scope[0],
@@ -1872,10 +1927,10 @@ class CollectionWorkers:
                                             }
                                             if self.processing_scope is not None
                                             else {}
-                                        )
+                                        ),
                                     )
                                     if is_processing
-                                    else self.collection.claim_fetch()
+                                    else self.collection.claim_fetch(**self.worker_scope.kwargs())
                                 )
                                 if not claim:
                                     break

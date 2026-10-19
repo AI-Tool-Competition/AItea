@@ -1,6 +1,7 @@
 """Read-only shared official originals; private ownership remains a write boundary."""
 
 import re
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from .db import now
@@ -8,6 +9,33 @@ from .db import now
 
 SYSTEM_OWNER_ID = "aitea-system-legal-library"
 SYSTEM_OWNER_NAME = "系统法规总库"
+
+
+@dataclass(frozen=True)
+class BackgroundWorkerScope:
+    """An injected background queue boundary, independent of API read/write scope."""
+
+    shared_library_workers: str = "internal"
+
+    def __post_init__(self):
+        if self.shared_library_workers not in ("internal", "external"):
+            raise ValueError("TEA_SHARED_LIBRARY_WORKERS 必须为 internal 或 external。")
+
+    def sql(self, owner_column="owner_id"):
+        # Column names are internal call-site constants; owner values stay bound.
+        if owner_column not in ("owner_id", "i.owner_id", "j.owner_id", "s.owner_id"):
+            raise ValueError("后台任务归属列无效。")
+        if self.shared_library_workers == "external":
+            return f" AND {owner_column}!=?", (SYSTEM_OWNER_ID,)
+        return "", ()
+
+    def allows(self, owner_id):
+        return self.shared_library_workers == "internal" or owner_id != SYSTEM_OWNER_ID
+
+    def kwargs(self):
+        # Preserve existing unscoped collaborator interfaces in default mode.
+        return {"worker_scope": self} if self.shared_library_workers == "external" else {}
+
 
 # These are operator-maintained official sources from the collection plans.
 # A page, upload tag or request payload cannot extend this allowlist.

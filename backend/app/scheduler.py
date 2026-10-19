@@ -6,20 +6,31 @@ import logging
 from threading import Event, Lock, Thread
 from typing import Protocol
 
+from .system_library import BackgroundWorkerScope
+
 logger = logging.getLogger(__name__)
 
 
 class SourceService(Protocol):
-    def due_sources(self) -> list[dict]: ...
+    def due_sources(self, *, worker_scope=BackgroundWorkerScope()) -> list[dict]: ...
 
     def fetch_source(self, owner_id: str, source_id: str) -> object: ...
 
 
 class ScheduledCollector:
-    def __init__(self, service: SourceService, *, interval_seconds: float = 60, batch_size: int = 10):
+    def __init__(
+        self,
+        service: SourceService,
+        *,
+        interval_seconds: float = 60,
+        batch_size: int = 10,
+        worker_scope=BackgroundWorkerScope(),
+    ):
         if interval_seconds <= 0 or batch_size < 1:
             raise ValueError("The polling interval and batch size must be positive")
         self.service = service
+        worker_scope.sql()
+        self.worker_scope = worker_scope
         self.interval_seconds = interval_seconds
         self.batch_size = batch_size
         self._stop = Event()
@@ -36,12 +47,14 @@ class ScheduledCollector:
             recovery = getattr(collection, "recovery", None)
             if recovery is not None:
                 try:
-                    self.last_recovery = recovery.run_due(limit=min(self.batch_size, 32))
+                    self.last_recovery = recovery.run_due(
+                        limit=min(self.batch_size, 32), **self.worker_scope.kwargs()
+                    )
                 except Exception:
                     result["failed"] += 1
                     logger.exception("Could not resume due collection failures")
             try:
-                sources = self.service.due_sources()[: self.batch_size]
+                sources = self.service.due_sources(**self.worker_scope.kwargs())[: self.batch_size]
             except Exception:
                 logger.exception("Could not read due document sources")
                 return {"succeeded": 0, "failed": 1}
@@ -80,8 +93,10 @@ class ScheduledCollector:
             self._thread.join(timeout=timeout)
 
 
-def start_scheduler(service: SourceService, *, enabled: bool = True) -> ScheduledCollector | None:
-    return ScheduledCollector(service).start() if enabled else None
+def start_scheduler(
+    service: SourceService, *, enabled: bool = True, worker_scope=BackgroundWorkerScope()
+) -> ScheduledCollector | None:
+    return ScheduledCollector(service, worker_scope=worker_scope).start() if enabled else None
 
 
 def stop_scheduler(handle: ScheduledCollector | None) -> None:

@@ -1968,13 +1968,18 @@ class Service:
             )
         return self.source_dict(conn.execute("SELECT * FROM sources WHERE id=?", (id,)).fetchone(), conn)
 
-    def due_sources(self):
+    def due_sources(self, *, worker_scope=None):
+        from .system_library import BackgroundWorkerScope
+
+        scope, arguments = (worker_scope or BackgroundWorkerScope()).sql("s.owner_id")
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
                 """SELECT id,owner_id,last_attempt_at,interval_hours,status FROM sources s WHERE enabled=1
                 AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))
-                AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now'))
-                ORDER BY COALESCE(last_attempt_at,''),id LIMIT 100"""
+                AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now'))"""
+                + scope
+                + " ORDER BY COALESCE(last_attempt_at,''),id LIMIT 100",
+                arguments,
             ).fetchall()
         current = datetime.now(timezone.utc)
         return [

@@ -450,10 +450,16 @@ def stop_fixture(script: Path, root: Path) -> None:
 ])
 def test_service_polling_is_development_web_only(tmp_path, production, polling, expected_web):
     child = ("import json,os,time; from pathlib import Path; "
+             "time.sleep(0.1 if '{name}' == 'api' else 0); "
              "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
              "json.dumps(os.environ.get('WATCHPACK_POLLING'))); time.sleep(60)")
     script = fixture_runner(tmp_path, f'''
-def health_ready(*args, **kwargs): return True
+def health_ready(url, *, api=False):
+    try:
+        json.loads((ROOT / ('api.json' if api else 'web.json')).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    return True
 def service_commands(args, root=ROOT):
     return [(name, ROOT, [sys.executable, '-c', {child!r}.format(name=name)])
             for name in ('api', 'web')]

@@ -1385,7 +1385,12 @@ class CollectionService:
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
-            provenance_keys = ("collection_import", "collection_evidence", "gazette_publication")
+            provenance_keys = (
+                "collection_import",
+                "collection_evidence",
+                "gazette_publication",
+                "native_page_recovery",
+            )
             stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
 
             def preserve_import_origin(result):

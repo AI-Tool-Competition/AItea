@@ -1,12 +1,15 @@
 """Derived text rebuilds retain mapped official evidence without granting authority."""
 
 import hashlib
+import json
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from app.db import dump
+from test_archive_page_recovery import case as case
 from test_collection_import_provenance import imported, pdf_manifest, saved
 from test_collection_import_provenance import pair as pair
 
@@ -125,7 +128,9 @@ def test_parser_cannot_inject_missing_official_provenance(pair, monkeypatch):
     monkeypatch.setattr(
         parsing,
         "parse_bounded",
-        lambda *_a, **_k: pdf_manifest(doc) | {key: {"forged": True} for key in KEYS},
+        lambda *_a, **_k: (
+            pdf_manifest(doc) | {key: {"forged": True} for key in (*KEYS, "native_page_recovery")}
+        ),
     )
     target.collection.process_item(
         target.collection.claim_processing(owner_id="target", document_ids=[doc["id"]])
@@ -133,4 +138,45 @@ def test_parser_cannot_inject_missing_official_provenance(pair, monkeypatch):
     current = saved(target, doc["id"])
     assert current["collection_import"] == origin
     assert "collection_evidence" not in current and "gazette_publication" not in current
+    assert "native_page_recovery" not in current
     assert target.catalog.metadata_for(doc["id"])["metadata"]["review_status"] == "draft"
+
+
+def test_real_archive_processing_retains_native_recovery_failure_and_page_cas(case, monkeypatch):
+    from app import archive_parsing, vision
+    from app.archive_page_recovery import recover_native_page_shards
+    from test_archive_page_recovery import arguments
+
+    service, ident = case["service"], case["document_id"]
+
+    def manifest():
+        with closing(service.db.connect()) as conn:
+            return json.loads(service.own_document(conn, case["owner"], ident)["manifest"])
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: False)
+    recover_native_page_shards(**arguments(case, apply=True))
+    before = manifest()
+    expected = deepcopy(before["native_page_recovery"])
+    real_parser = archive_parsing.parse_archive_pdf_bounded
+    calls = []
+
+    def parse(*args, **kwargs):
+        calls.append(True)
+        # The actual file-backed parser rebuilds the whole document. Mutating
+        # its input or returning a forged proof must not replace stored CAS.
+        kwargs["manifest"]["native_page_recovery"]["evidence_blobs"][0]["storage_path"] = "changed"
+        return real_parser(*args, **kwargs) | {"native_page_recovery": {"forged": True}}
+
+    monkeypatch.setattr(archive_parsing, "parse_archive_pdf_bounded", parse)
+    claim = service.collection.claim_processing(owner_id=case["owner"], document_ids=[ident])
+    assert claim is not None
+    service.collection.process_item(claim)
+    current = manifest()
+    assert calls == [True] and current["native_page_recovery"] == expected
+    assert current["pages"] == before["pages"]
+    assert len({chunk["id"] for chunk in current["chunks"]}) == len(current["chunks"])
+    assert case["expected_manifest"] in {blob["content_hash"] for blob in expected["evidence_blobs"]}
+    for reference in expected["evidence_blobs"]:
+        raw = (service.db.data_dir / reference["storage_path"]).read_bytes()
+        assert len(raw) == reference["size"]
+        assert hashlib.sha256(raw).hexdigest() == reference["content_hash"]

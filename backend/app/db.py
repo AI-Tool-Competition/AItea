@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import stat
 from collections import deque
 from contextlib import contextmanager, closing
 from datetime import datetime, timezone
@@ -49,6 +50,29 @@ CREATE INDEX IF NOT EXISTS sources_owner ON sources(owner_id);
 CREATE TABLE IF NOT EXISTS auth_attempts(ip TEXT NOT NULL,at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS auth_attempts_ip ON auth_attempts(ip,at);
 """
+
+# These tables existed in the base schema. Their absence is damaged storage,
+# not a later migration that can be repaired by creating empty replacement tables.
+_BASE_TABLES = frozenset(
+    {
+        "schema_migrations",
+        "users",
+        "sessions",
+        "templates",
+        "cases",
+        "task_states",
+        "facts",
+        "messages",
+        "message_requests",
+        "events",
+        "documents",
+        "artifacts",
+        "artifact_versions",
+        "verifications",
+        "sources",
+        "auth_attempts",
+    }
+)
 
 
 class _WriteGate:
@@ -109,13 +133,27 @@ def _writer_gate(path):
         return gate
 
 
+class DatabaseUnavailable(sqlite3.OperationalError):
+    """The initialized storage disappeared or was replaced; do not create a new store."""
+
+
 class Database:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, *, require_existing=False):
         self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.files_dir = self.data_dir / "files"
-        self.files_dir.mkdir(exist_ok=True)
         self.path = self.data_dir / "tea.sqlite3"
+        self._storage_identity = None
+        if require_existing:
+            self._storage_identity = self._disk_identity()
+            try:
+                with closing(sqlite3.connect(self.path.absolute().as_uri() + "?mode=ro", uri=True)) as conn:
+                    self._check_base_schema(conn)
+            except sqlite3.DatabaseError as error:
+                raise DatabaseUnavailable("Existing application database is unavailable") from error
+            self._check_identity()
+        else:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.files_dir.mkdir(exist_ok=True)
         with _writer_gate(self.path).hold():
             with closing(self.connect()) as conn:
                 conn.executescript(SCHEMA)
@@ -144,12 +182,63 @@ class Database:
                 except BaseException:
                     conn.rollback()
                     raise
+            if self._storage_identity is None:
+                self._storage_identity = self._disk_identity()
+            else:
+                self._check_identity()
+
+    def _disk_identity(self):
+        try:
+            database, files = self.path.stat(), self.files_dir.stat()
+            if (
+                not stat.S_ISREG(database.st_mode)
+                or database.st_size < 100
+                or not stat.S_ISDIR(files.st_mode)
+            ):
+                raise DatabaseUnavailable("Application storage is missing or incomplete")
+            return database.st_dev, database.st_ino, files.st_dev, files.st_ino
+        except OSError as error:
+            raise DatabaseUnavailable("Application storage is unavailable") from error
+
+    def _check_identity(self):
+        if self._disk_identity() != self._storage_identity:
+            raise DatabaseUnavailable("Application storage changed; verify recovery before restarting")
+
+    @staticmethod
+    def _check_base_schema(conn):
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if (
+            not _BASE_TABLES <= tables
+            or not conn.execute("SELECT 1 FROM schema_migrations WHERE version=1").fetchone()
+        ):
+            raise DatabaseUnavailable("Application database base schema is incomplete")
+
+    def check_available(self):
+        """Bounded readiness check; does not repair, initialize or scan the corpus."""
+        try:
+            with closing(self.connect()) as conn:
+                self._check_base_schema(conn)
+        except sqlite3.DatabaseError as error:
+            raise DatabaseUnavailable("Application database is unavailable") from error
 
     def connect(self):
         from .system_library import register_source_guard
 
-        conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)
+        initializing = self._storage_identity is None
+        if not initializing:
+            self._check_identity()
+        # Only explicit initialization may create a database. A disappearing
+        # mount or removed file must not become a fresh empty SQLite store.
+        mode = "rwc" if initializing else "rw"
+        conn = sqlite3.connect(
+            self.path.absolute().as_uri() + "?mode=" + mode,
+            uri=True,
+            timeout=15,
+            isolation_level=None,
+        )
         try:
+            if not initializing:
+                self._check_identity()
             conn.row_factory = sqlite3.Row
             register_source_guard(conn)
             conn.execute("PRAGMA journal_mode=WAL")
@@ -167,6 +256,7 @@ class Database:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 yield conn
+                self._check_identity()
                 conn.commit()
             except BaseException:
                 conn.rollback()

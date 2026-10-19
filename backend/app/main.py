@@ -17,7 +17,7 @@ from . import models
 from .catalog import MetadataPatch
 from .request_limits import RequestLimitMiddleware
 from .auth import COOKIE, Auth
-from .db import uid
+from .db import DatabaseUnavailable, uid
 from .service import MAX_UPLOAD, AppError, Service, fail
 from .system_library import BackgroundWorkerScope
 
@@ -28,8 +28,12 @@ logger = logging.getLogger(__name__)
 def create_app(data_dir=None, *, enable_scheduler=None):
     is_test = data_dir is not None
     worker_scope = BackgroundWorkerScope(os.getenv("TEA_SHARED_LIBRARY_WORKERS", "internal").strip().lower())
+    existing_data = os.getenv("TEA_REQUIRE_EXISTING_DATA", "false").strip().lower()
+    if existing_data not in {"true", "false"}:
+        raise ValueError("TEA_REQUIRE_EXISTING_DATA 必须为 true 或 false。")
     service = Service(
-        data_dir or os.getenv("TEA_DATA_DIR", str(Path(__file__).resolve().parents[2] / "data"))
+        data_dir or os.getenv("TEA_DATA_DIR", str(Path(__file__).resolve().parents[2] / "data")),
+        require_existing=existing_data == "true",
     )
     auth = Auth(service)
     service.collection.worker_health["shared_library_workers"] = worker_scope.shared_library_workers
@@ -144,6 +148,20 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             status_code=422,
         )
 
+    @app.exception_handler(DatabaseUnavailable)
+    async def storage_unavailable(request, error):
+        logger.error("application_storage_unavailable", extra={"request_id": request.state.request_id})
+        return JSONResponse(
+            {
+                "error": {
+                    "code": "database_unavailable",
+                    "message": "资料存储暂不可用，请检查数据目录并完成恢复后重启服务",
+                    "request_id": request.state.request_id,
+                }
+            },
+            status_code=503,
+        )
+
     @app.exception_handler(sqlite3.OperationalError)
     async def database_error(request, error):
         logger.exception("database_operation_failed")
@@ -185,6 +203,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     @app.get("/api/tea/health")
     def health():
+        service.db.check_available()
         return {
             "status": "ok",
             "version": "0.1.0",

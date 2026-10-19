@@ -19,6 +19,7 @@ def isolated_providers(monkeypatch):
     monkeypatch.setenv("EMBEDDING_ADMISSION_PATH", "")
     monkeypatch.setenv("EMBEDDING_HTTP_WORKERS", "2")
     monkeypatch.setenv("EMBEDDING_REQUEST_CONCURRENCY", "1")
+    monkeypatch.setenv("TEA_REQUIRE_EXISTING_DATA", "false")
 
 
 @pytest.fixture

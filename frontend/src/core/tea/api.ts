@@ -479,6 +479,10 @@ export function patch<T>(path: string, body: unknown, signal?: AbortSignal) {
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "操作未完成，请重试。";
 }
+export function documentImageUrl(documentId: string, imageId: string) {
+  return `/api/tea/documents/${encodeURIComponent(documentId)}/images/${encodeURIComponent(imageId)}`;
+}
+
 export function downloadUrl(
   id: string,
   kind: "documents" | "artifacts" = "documents",

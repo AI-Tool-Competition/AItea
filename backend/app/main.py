@@ -333,7 +333,9 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         return service.studio.draft(current["id"], template_id)
 
     @app.put("/api/tea/templates/{template_id}/draft")
-    def save_template_draft(template_id: str, payload: models.TemplateDraftInput, current=Depends(admin_user)):
+    def save_template_draft(
+        template_id: str, payload: models.TemplateDraftInput, current=Depends(admin_user)
+    ):
         return service.studio.save_draft(current["id"], template_id, payload)
 
     @app.get("/api/tea/templates/{template_id}")
@@ -493,7 +495,13 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         return service.patch_task(current["id"], case_id, task_id, payload.model_dump())
 
     @app.post("/api/tea/cases/{case_id}/tasks/{task_id}/verify")
-    def verify(case_id: str, task_id: str, payload: models.Verify, background_tasks: BackgroundTasks, current=Depends(user)):
+    def verify(
+        case_id: str,
+        task_id: str,
+        payload: models.Verify,
+        background_tasks: BackgroundTasks,
+        current=Depends(user),
+    ):
         result = service.verify_task(current["id"], case_id, task_id, payload.model_dump())
         background_tasks.add_task(service.node_workspace.process_pending, current["id"], case_id)
         return result
@@ -602,10 +610,28 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         element_offset: int = Query(0, ge=0),
         chunk_offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=200),
+        include_preview: bool = True,
         current=Depends(user),
     ):
         return service.document_detail(
-            current["id"], id, element_offset=element_offset, chunk_offset=chunk_offset, limit=limit
+            current["id"],
+            id,
+            element_offset=element_offset,
+            chunk_offset=chunk_offset,
+            limit=limit,
+            include_preview=include_preview,
+        )
+
+    @app.get("/api/tea/documents/{id}/images/{image_id}")
+    def document_image(id: str, image_id: str, current=Depends(user)):
+        return Response(
+            service.document_image(current["id"], id, image_id),
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+            },
         )
 
     @app.get("/api/tea/documents/{id}/download")
@@ -695,7 +721,9 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         )
 
     @app.get("/api/tea/sources")
-    def sources(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)):
+    def sources(
+        limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)
+    ):
         return service.sources(current["id"], limit, offset)
 
     @app.post("/api/tea/sources", status_code=201)
@@ -726,7 +754,10 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     @app.get("/api/tea/sources/{id}/runs")
     def source_runs(
-        id: str, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)
+        id: str,
+        limit: int = Query(20, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        current=Depends(admin_user),
     ):
         return service.collection.runs(current["id"], id, limit, offset)
 
@@ -771,7 +802,10 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     @app.get("/api/tea/collection-runs/{id}")
     def collection_run(
-        id: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), current=Depends(admin_user)
+        id: str,
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        current=Depends(admin_user),
     ):
         return service.collection.run_detail(current["id"], id, limit, offset)
 

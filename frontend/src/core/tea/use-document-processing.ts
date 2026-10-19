@@ -54,7 +54,7 @@ export function useDocumentProcessing({
       const results = await Promise.allSettled(
         batch.map((id) =>
           teaRequest<DocumentDetail>(
-            `/documents/${encodeURIComponent(id)}?limit=1`,
+            `/documents/${encodeURIComponent(id)}?limit=1&include_preview=false`,
             { signal },
           ),
         ),

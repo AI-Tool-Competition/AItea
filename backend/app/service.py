@@ -1125,7 +1125,11 @@ class Service:
             ]
             return {"items": self.document_summaries(rows, conn), "total": total}
 
-    def document_detail(self, owner, document_id, *, element_offset=0, chunk_offset=0, limit=100):
+    def document_detail(
+        self, owner, document_id, *, element_offset=0, chunk_offset=0, limit=100, include_preview=True
+    ):
+        from .document_preview import preview
+
         with closing(self.db.connect()) as conn:
             row = self.read_document(conn, owner, document_id)
             manifest = json.loads(row["manifest"])
@@ -1145,7 +1149,18 @@ class Service:
                 "parser": manifest.get("parser"),
                 "warnings": manifest.get("warnings", []),
                 "quality": manifest.get("quality"),
+                **({"preview": preview(manifest, element_offset, limit)} if include_preview else {}),
             }
+
+    def document_image(self, owner, document_id, image_id):
+        from .document_preview import image_bytes
+
+        with closing(self.db.connect()) as conn:
+            row = self.read_document(conn, owner, document_id)
+        try:
+            return image_bytes(self, row, json.loads(row["manifest"]), image_id)
+        except (ValueError, OSError, KeyError) as exc:
+            raise AppError(422, "image_unavailable", "图片暂时无法读取，请重试或下载原件。") from exc
 
     def search(
         self,

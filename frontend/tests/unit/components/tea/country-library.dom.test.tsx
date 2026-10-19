@@ -9,15 +9,8 @@ import {
 } from "@testing-library/react";
 
 import { AdminLibrary } from "@/components/tea/admin-library";
-import { DocumentClassificationEditor } from "@/components/tea/document-classification";
-import { DocumentMetadataEditor } from "@/components/tea/document-metadata";
-import { DocumentRelations } from "@/components/tea/document-relations";
-import { Library, UploadDialog } from "@/components/tea/library";
-import {
-  clearCollectionDrafts,
-  relationDrafts,
-  classificationDrafts,
-} from "@/core/tea/collection-drafts";
+import { Library } from "@/components/tea/library";
+import { clearCollectionDrafts } from "@/core/tea/collection-drafts";
 import { type CaseSummary, type Document } from "@/core/tea/types";
 
 const law = {
@@ -70,45 +63,11 @@ afterEach(() => {
 });
 
 describe("country boundaries in document management", () => {
-  it("shows shared metadata and relations without granting write actions", async () => {
-    const shared: Document = {
-      ...law,
-      source_scope: "system",
-      metadata: {
-        kind: "law",
-        jurisdiction: "ID",
-        language: "id",
-        published_at: null,
-        effective_from: null,
-        effective_to: null,
-        review_status: "draft",
-      },
-    };
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async () => response({ items: [], total: 0 }));
-    render(
-      <>
-        <DocumentMetadataEditor document={shared} onSaved={() => undefined} />
-        <DocumentRelations document={shared} onSelect={() => undefined} />
-      </>,
-    );
-    expect(screen.getByText(/系统法规总库 · 只读/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "保存为待审核" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "添加关联" })).toBeNull();
-    await waitFor(() => expect(screen.getByText("0 条关联")).toBeTruthy());
-    expect(
-      fetcher.mock.calls.every(
-        ([, options]) => !options?.method || options.method === "GET",
-      ),
-    ).toBe(true);
-  });
-
   it("defaults public lists to the configured country and explicitly separates unassigned documents", async () => {
     const fetcher = rs
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => read(url));
-    render(<AdminLibrary cases={[]} revision={0} onUpload={() => undefined} />);
+    render(<AdminLibrary />);
     await screen.findByText("印尼法规");
     expect(screen.getByLabelText<HTMLSelectElement>("资料国家").value).toBe(
       "ID",
@@ -135,56 +94,6 @@ describe("country boundaries in document management", () => {
         ),
       ).toBe(true),
     );
-  });
-  it("uses the case country when switching the admin library from public unassigned materials", async () => {
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (url) => read(url));
-    render(
-      <AdminLibrary
-        cases={[{ id: "case-1", title: "印尼出口业务" } as CaseSummary]}
-        revision={0}
-        onUpload={() => undefined}
-      />,
-    );
-    await screen.findByText("印尼法规");
-    fireEvent.change(screen.getByLabelText("资料国家"), {
-      target: { value: "unassigned" },
-    });
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.some(([url]) =>
-          pathOf(url).includes("country=unassigned"),
-        ),
-      ).toBe(true),
-    );
-    fireEvent.change(screen.getByLabelText("资料范围"), {
-      target: { value: "case-1" },
-    });
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.some(([url]) =>
-          pathOf(url).includes("case_id=case-1"),
-        ),
-      ).toBe(true),
-    );
-    const caseReads = fetcher.mock.calls.filter(([url]) =>
-      pathOf(url).includes("case_id=case-1"),
-    );
-    expect(
-      caseReads.every(
-        ([url]) =>
-          !new URL(pathOf(url), "http://localhost").searchParams.has("country"),
-      ),
-    ).toBe(true);
-    const country = screen.getByLabelText<HTMLSelectElement>("资料国家");
-    expect(country.disabled).toBe(true);
-    expect(country.selectedOptions[0]?.textContent).toBe("按业务目的地");
-    fireEvent.change(screen.getByLabelText("资料范围"), {
-      target: { value: "" },
-    });
-    expect(country.disabled).toBe(false);
-    expect(country.value).toBe("unassigned");
   });
   it("sends an explicit country for RAG and ignores an old country's delayed response", async () => {
     let signal: AbortSignal | null | undefined;
@@ -262,193 +171,5 @@ describe("country boundaries in document management", () => {
     fireEvent.click(screen.getByRole("button", { name: "检索" }));
     await waitFor(() => expect(submitted.case_id).toBe("case-1"));
     expect(submitted.country).toBeUndefined();
-  });
-  it("loads attachment parents from the original parent's country", async () => {
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (url) => read(url));
-    render(
-      <UploadDialog
-        open
-        onOpenChange={() => undefined}
-        initialParentId="law"
-        initialCountry="ID"
-        cases={[]}
-        onDone={() => undefined}
-      />,
-    );
-    await screen.findByRole("option", { name: "印尼法规" });
-    const parentReads = fetcher.mock.calls.filter(([url]) =>
-      pathOf(url).includes("/documents?"),
-    );
-    expect(parentReads.length).toBeGreaterThan(0);
-    expect(
-      parentReads.every(
-        ([url]) =>
-          new URL(pathOf(url), "http://localhost").searchParams.get(
-            "country",
-          ) === "ID",
-      ),
-    ).toBe(true);
-    expect(screen.getByLabelText<HTMLSelectElement>("关联到主文件").value).toBe(
-      "law",
-    );
-  });
-
-  it("locks manual relationships to the document's immutable country", async () => {
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (url) => read(url));
-    render(<DocumentRelations document={law} onSelect={() => undefined} />);
-    fireEvent.click(screen.getByRole("button", { name: "添加关联" }));
-    expect(screen.getByLabelText<HTMLInputElement>("关联采集组").readOnly).toBe(
-      true,
-    );
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.some(([url]) =>
-          pathOf(url).includes("collection=country%3AID"),
-        ),
-      ).toBe(true),
-    );
-  });
-  it("keeps unassigned case materials selectable within the case country boundary", async () => {
-    const current = {
-      ...law,
-      country: null,
-      case_id: "case-1",
-      classifications: [],
-    };
-    const candidate = {
-      ...current,
-      id: "case-reference",
-      title: "业务内未分国参考",
-    };
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (url) => {
-        const path = pathOf(url);
-        if (path.includes("/documents?")) {
-          const params = new URL(path, "http://localhost").searchParams;
-          if (params.has("country"))
-            return response({ detail: "资料国家与业务目的地不一致。" }, 422);
-          return response({ items: [candidate], total: 1 });
-        }
-        return read(url);
-      });
-    render(<DocumentRelations document={current} onSelect={() => undefined} />);
-    fireEvent.click(screen.getByRole("button", { name: "添加关联" }));
-    fireEvent.click(
-      await screen.findByRole("checkbox", { name: /业务内未分国参考/ }),
-    );
-    expect(
-      screen.getByRole<HTMLButtonElement>("button", { name: "保存关联" })
-        .disabled,
-    ).toBe(false);
-    expect(
-      fetcher.mock.calls.some(([url]) =>
-        pathOf(url).includes("case_id=case-1"),
-      ),
-    ).toBe(true);
-    expect(
-      fetcher.mock.calls.some(([url]) =>
-        pathOf(url).includes("country=unassigned"),
-      ),
-    ).toBe(false);
-  });
-  it("drops a stale relationship target after a document acquires a country", async () => {
-    relationDrafts.set("owner:law", {
-      target: ["foreign-law"],
-      collection: "country:SG",
-      relation: "cites",
-      locator: "第十二条",
-    });
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (url) => read(url));
-    render(
-      <DocumentRelations
-        document={law}
-        ownerId="owner"
-        onSelect={() => undefined}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", { name: "移除 foreign-law" }),
-    ).toBeNull();
-    expect(screen.getByLabelText<HTMLInputElement>("原文定位").value).toBe(
-      "第十二条",
-    );
-    expect(
-      screen.getByRole<HTMLButtonElement>("button", { name: "保存关联" })
-        .disabled,
-    ).toBe(true);
-  });
-
-  it("retains classification edits but submits the revision of its fixed country", async () => {
-    classificationDrafts.set("owner:law", {
-      collection: "country:SG",
-      level: "primary",
-      tags: "未保存标签",
-      expected_revision: 7,
-    });
-    const writes: Record<string, unknown>[] = [];
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
-      if (options?.method === "PATCH") {
-        writes.push(
-          JSON.parse(options.body as string) as Record<string, unknown>,
-        );
-        return response(law);
-      }
-      return read(url);
-    });
-    render(
-      <DocumentClassificationEditor
-        document={law}
-        ownerId="owner"
-        onSaved={() => undefined}
-      />,
-    );
-    fireEvent.click(screen.getByText("分级与标签"));
-    fireEvent.click(screen.getByRole("button", { name: "保存分级" }));
-    await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0]).toMatchObject({
-      collection: "country:ID",
-      tags: ["未保存标签"],
-      expected_revision: 1,
-    });
-  });
-
-  it("locks a country's classification and lets an unassigned upload explicitly join the country", async () => {
-    const writes: Record<string, unknown>[] = [];
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
-      if (options?.method === "PATCH") {
-        writes.push(
-          JSON.parse(options.body as string) as Record<string, unknown>,
-        );
-        return response(law);
-      }
-      return read(url);
-    });
-    const view = render(
-      <DocumentClassificationEditor document={law} onSaved={() => undefined} />,
-    );
-    fireEvent.click(screen.getByText("分级与标签"));
-    expect(screen.getByLabelText<HTMLInputElement>("采集组").readOnly).toBe(
-      true,
-    );
-    view.unmount();
-    render(
-      <DocumentClassificationEditor
-        document={{ ...law, country: null, classifications: [] }}
-        onSaved={() => undefined}
-      />,
-    );
-    fireEvent.click(screen.getByText("分级与标签"));
-    fireEvent.click(await screen.findByRole("button", { name: "归入印尼" }));
-    await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0]).toMatchObject({
-      collection: "country:ID",
-      expected_revision: 0,
-      tags: ["法律"],
-    });
   });
 });

@@ -91,9 +91,6 @@ describe("upload and library journey", () => {
       await rs.advanceTimersByTimeAsync(0);
     });
     expect(screen.getByRole("heading", { name: "正在处理正文" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("法域 / 适用地区"), {
-      target: { value: "未保存的地区" },
-    });
     processed = true;
     await act(async () => {
       await rs.advanceTimersByTimeAsync(3000);
@@ -101,9 +98,7 @@ describe("upload and library journey", () => {
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByText("已解析")).toBeTruthy();
     expect(dialog.getByText("产品说明正文")).toBeTruthy();
-    expect(
-      screen.getByLabelText<HTMLInputElement>("法域 / 适用地区").value,
-    ).toBe("未保存的地区");
+    expect(dialog.queryByRole("tab")).toBeNull();
     expect(document.querySelector(".tea-library-file")?.textContent).toContain(
       "已解析",
     );
@@ -112,13 +107,29 @@ describe("upload and library journey", () => {
     ).toContain("已解析");
   });
 
-  it("keeps a server-backed attachment filter and does not erase an active filter's results", async () => {
+  it("shows all materials together and keeps legacy originals available without role controls", async () => {
     const reads: string[] = [];
+    const legacy = {
+      ...file,
+      id: "legacy",
+      title: "补充资料",
+      status: "stored",
+      role: "secondary",
+    } as Document;
     rs.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       reads.push(pathOf(url));
+      if (pathOf(url).includes("/documents/legacy?"))
+        return response({
+          document: legacy,
+          elements: [],
+          chunks: [],
+          element_total: 0,
+          chunk_total: 0,
+          warnings: [],
+        });
       return response({
-        items: [{ ...file, status: "stored", role: "secondary" }],
-        total: 1,
+        items: [{ ...file, status: "ready" }, legacy],
+        total: 2,
       });
     });
     render(
@@ -132,14 +143,21 @@ describe("upload and library journey", () => {
       />,
     );
     await screen.findByRole("button", { name: /产品说明/ });
-    fireEvent.click(screen.getByRole("button", { name: "附件" }));
-    await screen.findByRole("button", { name: /产品说明/ });
-    expect(reads.at(-1)).toContain("role=secondary");
-    const count = reads.length;
-    fireEvent.click(screen.getByRole("button", { name: "附件" }));
-    expect(screen.getByRole("button", { name: /产品说明/ })).toBeTruthy();
-    expect(reads.length).toBe(count);
+    expect(screen.getByRole("button", { name: /补充资料/ })).toBeTruthy();
+    expect(
+      reads.every(
+        (path) => !new URL(path, "http://localhost").searchParams.has("role"),
+      ),
+    ).toBe(true);
+    expect(screen.queryByRole("group", { name: "文件用途筛选" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "主文件" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "附件" })).toBeNull();
     expect(screen.queryByText(/资料仅当前账号可见/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /补充资料/ }));
+    await screen.findByRole("heading", { name: "暂无解析内容" });
+    expect(screen.getByRole("link", { name: "下载原件" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "附件" })).toBeNull();
+    expect(screen.queryByText(/关联附件/)).toBeNull();
   });
 
   it("retries a failed content search without replacing it with a directory refresh", async () => {

@@ -5,7 +5,6 @@ function documentSample(
   id: string,
   title: string,
   sections: { title: string; text: string; kind?: string }[],
-  parentId: string | null = null,
 ): DocumentDetail {
   const elements: DocumentPart[] = sections.map((section, index) => ({
     element_key: `${id}-${index}`,
@@ -23,19 +22,19 @@ function documentSample(
       id,
       title,
       filename: `${title}.txt`,
-      role: parentId ? "secondary" : "primary",
-      status: parentId ? "stored" : "ready",
+      role: "primary",
+      status: "ready",
       mime_type: "text/plain",
       size: new TextEncoder().encode(sections.map((s) => s.text).join("\n"))
         .length,
       version: 1,
       case_id: null,
-      parent_id: parentId,
+      parent_id: null,
       tags: ["开发样例"],
       created_at: "2026-10-11T00:00:00Z",
       source_url: null,
       error: null,
-      chunk_count: parentId ? 0 : chunks.length,
+      chunk_count: chunks.length,
       metadata: {
         kind: "demo",
         jurisdiction: "",
@@ -46,71 +45,38 @@ function documentSample(
         review_status: "draft",
       },
     },
-    elements: parentId ? [] : elements,
-    chunks: parentId ? [] : chunks,
-    element_total: parentId ? 0 : elements.length,
-    chunk_total: parentId ? 0 : chunks.length,
+    elements,
+    chunks,
+    element_total: elements.length,
+    chunk_total: chunks.length,
     warnings: [],
   };
 }
 
 export const librarySamples: DocumentDetail[] = [
-  documentSample("sample-import", "茶叶进口登记 · 主资料样例", [
+  documentSample("sample-import", "茶叶进口登记 · 示例", [
+    { title: "资料说明", text: "开发样例，不是真实法规。" },
+    { title: "登记信息", kind: "heading", text: "登记信息" },
     {
-      title: "资料说明",
-      text: "开发样例，用于预览资料结构与关联关系，不是真实法规。",
+      title: "登记信息",
+      text: "申请资料通常包含主体信息、产品名称、生产企业和原产地，具体要求以正式资料为准。",
     },
-    {
-      title: "第一章 · 登记信息",
-      text: "示例字段：申请主体、产品名称、生产企业、原产地。每段内容保留所属资料、版本和原文位置。",
-    },
-    {
-      title: "第二章 · 材料清单",
-      kind: "list",
-      text: "主体信息表\n产品说明\n标签样稿\n关联名词定义",
-    },
-    {
-      title: "第三章 · 关联资料",
-      text: "本主资料附带《名词说明 · 附件样例》。展开目录中的附件可以查看对应文件。",
-    },
+    { title: "材料清单", kind: "heading", text: "材料清单" },
+    { title: "材料清单", kind: "list", text: "主体信息表\n产品说明\n标签样稿" },
   ]),
-  documentSample("sample-label", "产品标签规范 · 主资料样例", [
+  documentSample("sample-label", "产品标签规范 · 示例", [
+    { title: "资料说明", text: "开发样例，用于展示排版。" },
+    { title: "标签信息", kind: "heading", text: "标签信息" },
     {
-      title: "资料说明",
-      text: "开发样例，用于预览段落、清单和检索片段，不构成标签合规要求。",
+      title: "标签信息",
+      text: "示例产品为茉莉花茶，规格为 100 g。企业、批次与日期由实际资料提供。",
     },
     {
-      title: "第一章 · 标签信息",
-      text: "示例产品：茉莉花茶。示例规格：100 g。企业、批次与日期等内容由实际资料提供。",
-    },
-    {
-      title: "第二章 · 核对清单",
+      title: "核对清单",
       kind: "list",
       text: "产品名称\n配料信息\n净含量\n生产主体\n日期与批次",
     },
   ]),
-  documentSample(
-    "sample-definitions",
-    "名词说明 · 附件样例",
-    [
-      {
-        title: "名词定义",
-        text: "开发样例：申请主体指提交示例登记资料的企业。",
-      },
-    ],
-    "sample-import",
-  ),
-  documentSample(
-    "sample-layout",
-    "标签版式 · 关联文件样例",
-    [
-      {
-        title: "标签版式",
-        text: "开发样例：展示产品名称、规格与批次字段的位置。",
-      },
-    ],
-    "sample-label",
-  ),
 ];
 
 export const sourceSamples: Source[] = [

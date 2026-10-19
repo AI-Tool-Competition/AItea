@@ -21,6 +21,31 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
 
+class PreviewCell(StrictModel):
+    row: int
+    text: str
+    col_span: int = 1
+    row_span: int = 1
+
+
+class DocumentPreviewBlock(StrictModel):
+    kind: str
+    text: str = ""
+    image_id: str | None = None
+    caption: str = ""
+    summary: str = ""
+    width: int | None = None
+    height: int | None = None
+    cells: list[PreviewCell] | None = None
+
+
+class DocumentPreview(StrictModel):
+    summary: str
+    blocks: list[DocumentPreviewBlock]
+    total: int
+    offset: int
+
+
 class FieldDefinition(StrictModel):
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     label: str = Field(min_length=1, max_length=100)

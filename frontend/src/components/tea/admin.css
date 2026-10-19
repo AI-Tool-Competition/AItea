@@ -496,25 +496,6 @@
   margin-bottom: 20px !important;
 }
 
-.ta-document-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 21px;
-  border-bottom: 1px solid var(--border);
-}
-
-.ta-document-tabs > button {
-  padding: 10px 0;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  border-bottom: 2px solid transparent;
-}
-
-.ta-document-tabs > button[aria-selected="true"] {
-  border-color: var(--primary);
-  color: var(--foreground);
-}
-
 .ta-output-text {
   font-size: 14px;
   line-height: 1.95;
@@ -688,24 +669,9 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
-.ta-review-state {
-  color: var(--tea-warning);
-  font-size: 12px;
-}
-.ta-review-state.reviewed {
-  color: var(--tea-success);
-}
 .ta-date-cell {
   color: var(--muted-foreground);
   font-size: 12px;
-}
-.ta-document-status.failed {
-  background: color-mix(in oklch, var(--destructive) 8%, var(--background));
-  color: var(--destructive);
-  border-color: color-mix(in oklch, var(--destructive) 25%, var(--border));
-}
-.ta-document-status.failed .ta-dot {
-  background: var(--destructive);
 }
 .ta-pagination {
   display: flex;
@@ -856,36 +822,6 @@
   font-size: 12px;
   color: var(--muted-foreground);
 }
-.ta-document-title {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  padding: 22px 0;
-}
-.ta-document-title > .ta-file-symbol {
-  width: 47px;
-  height: 54px;
-}
-.ta-document-title > div {
-  flex: 1;
-  min-width: 0;
-}
-.ta-document-title > div > div {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.ta-document-title h2 {
-  font-size: 20px;
-  font-weight: 500;
-  margin-top: 7px;
-  overflow-wrap: anywhere;
-}
-.ta-document-title p {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  margin-top: 8px;
-}
 .ta-source-link {
   display: flex;
   align-items: center;
@@ -893,44 +829,6 @@
   font-size: 12px;
   color: var(--muted-foreground) !important;
   margin-bottom: 18px;
-}
-.ta-document-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--background);
-  margin: 5px 0 24px;
-  padding: 20px 0;
-}
-.ta-document-summary > div {
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
-  padding: 0 24px;
-  border-right: 1px solid var(--border);
-  align-items: flex-start;
-}
-.ta-document-summary > div:last-child {
-  border: 0;
-}
-.ta-document-summary small {
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-.ta-document-summary strong {
-  font-size: 21px;
-  font-weight: 500;
-  color: var(--foreground);
-}
-.ta-document-summary strong > span {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  font-weight: 400;
-}
-.ta-document-tabs {
-  margin: 24px 0 18px;
-  gap: 30px;
 }
 .ta-structure-layout {
   display: grid;
@@ -2120,5 +2018,161 @@
   }
   .ta-debug-step-actions {
     gap: 4px;
+  }
+}
+
+/* The law library is a flat directory with a focused reading page. */
+.ta-law-library {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.ta-law-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 4px 0 24px;
+}
+.ta-law-heading h2 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.ta-law-heading > span {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.ta-law-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+.ta-law-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  text-align: left;
+}
+.ta-law-table th {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ta-law-table th:first-child {
+  width: 64%;
+  padding-left: 0;
+}
+.ta-law-table th:nth-child(2) {
+  width: 10%;
+}
+.ta-law-table th:nth-child(3) {
+  width: 14%;
+}
+.ta-law-table th:last-child {
+  width: 12%;
+}
+.ta-law-table td {
+  padding: 20px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.ta-law-table td:first-child {
+  padding-left: 0;
+}
+.ta-law-table tr:hover td {
+  background: color-mix(in oklch, var(--muted) 40%, transparent);
+}
+.ta-law-file {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.ta-law-file > svg {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.ta-law-file > span {
+  min-width: 0;
+}
+.ta-law-file strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ta-law-file small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 5px;
+}
+.ta-law-country {
+  color: var(--muted-foreground);
+}
+.ta-law-preview {
+  max-width: 980px;
+  margin: 0 auto;
+}
+.ta-law-back {
+  margin: 0 0 24px -10px;
+  color: var(--muted-foreground);
+}
+.ta-law-preview-heading {
+  margin-bottom: 16px;
+}
+.ta-law-preview-heading h2 {
+  font-size: 25px;
+  line-height: 1.55;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.ta-law-preview .tea-preview-reading {
+  margin-top: 10px;
+}
+@media (max-width: 640px) {
+  .ta-law-heading {
+    margin-top: 12px;
+    margin-bottom: 18px;
+  }
+  .ta-law-heading h2 {
+    font-size: 20px;
+  }
+  .ta-law-table th:first-child {
+    width: 62%;
+  }
+  .ta-law-table th:nth-child(2),
+  .ta-law-table .ta-law-country {
+    display: none;
+  }
+  .ta-law-table th:nth-child(3) {
+    width: 22%;
+  }
+  .ta-law-table th:last-child {
+    width: 16%;
+  }
+  .ta-law-table td,
+  .ta-law-table th {
+    padding: 14px 4px;
+  }
+  .ta-law-file {
+    gap: 10px;
+  }
+  .ta-law-file strong {
+    font-size: 13px;
+  }
+  .ta-law-table td:last-child [data-slot="button"] {
+    padding: 0;
+    font-size: 12px;
+    gap: 2px;
+  }
+  .ta-law-preview-heading h2 {
+    font-size: 20px;
   }
 }

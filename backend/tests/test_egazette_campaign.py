@@ -285,12 +285,17 @@ def test_retry_after_persists_host_cooldown_and_prevents_new_requests_on_resume(
     assert runner.hops == 0
 
 
-def staged_fixture(tmp_path, monkeypatch):
+def staged_fixture(tmp_path, monkeypatch, *, title=None):
     raw = b"%PDF-1.4\nqueued official original\n%%EOF"
 
     def download(url, **kwargs):
         if url == campaign.EGAZETTE_SEARCH_URL:
-            return response(0, total=1)
+            result = response(0, total=1)
+            if title is not None:
+                body = json.loads(result["content"])
+                body["hits"][0]["title"] = title
+                result["content"] = json.dumps(body).encode()
+            return result
         return {"blob": kwargs["consume"]([raw]), "url": url}
 
     monkeypatch.setattr(campaign, "_download", download)
@@ -335,6 +340,67 @@ def test_acquired_original_stages_idempotent_parse_job_and_transferable_source_e
     report = import_collected_resources(source, tmp_path / "target", campaign.SOURCE_OWNER, SYSTEM_OWNER_ID)
     assert report["blockers"] == [] and report["source_evidence_documents"] == 1
     assert report["verified_owner_blobs"] == 4 and report["model_calls"] == report["HTTP_calls"] == 0
+
+
+@pytest.mark.parametrize(
+    "title,document_type",
+    [
+        ("The Statutes of the Republic of Singapore - Subject Index to Acts", "subject-index"),
+        ("Pre-Publication Notice - Re-issue of Subject Index to Acts", "publication-notice"),
+        ("Pre-Publication Notice - Re-Issue of Subject Index to Acts", "publication-notice"),
+    ],
+)
+def test_standalone_reference_publications_are_textual_secondary_sources(
+    tmp_path, monkeypatch, title, document_type
+):
+    from app.service import Service
+
+    runner, rows, raw = staged_fixture(tmp_path, monkeypatch, title=title)
+    runner.stage_originals(rows)
+    runner.stage_originals(rows)
+    service = Service(tmp_path)
+    with service.db.connect() as conn:
+        doc = dict(conn.execute("SELECT * FROM documents").fetchone())
+        assert doc["role"] == "primary"  # Independent secondary source, not an opaque attachment.
+        assert conn.execute("SELECT level,revision FROM legal_classifications").fetchone()[:] == (
+            "secondary",
+            1,
+        )
+        assert not service.archive.can_index(conn, doc["id"])
+        assert conn.execute("SELECT phase,status FROM processing_jobs").fetchone()[:] == ("parse", "queued")
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] == 0
+    metadata = service.catalog.enrich_document(doc)["metadata"]
+    assert metadata["kind"] == "guidance" and metadata["review_status"] == "draft"
+    assert Path(doc["storage_path"]).read_bytes() == raw
+    proof = json.loads(doc["manifest"])["gazette_publication"]["classification"]
+    assert proof["document_type"] == document_type and proof["level"] == "secondary"
+    saved = json.loads((tmp_path / "campaign.json").read_text())
+    assert next(iter(saved["documents"].values()))["classification"] == proof
+
+
+def test_staging_refuses_to_silently_reclassify_an_existing_reference_publication(tmp_path, monkeypatch):
+    from app.service import Service
+
+    title = "The Statutes of the Republic of Singapore - Subject Index to Acts"
+    runner, rows, _ = staged_fixture(tmp_path, monkeypatch, title=title)
+    classify = campaign.publication_classification
+    monkeypatch.setattr(campaign, "publication_classification", lambda _: classify({}))
+    runner.stage_originals(rows)
+    service = Service(tmp_path)
+    with service.db.connect() as conn:
+        before = dict(conn.execute("SELECT * FROM documents").fetchone())
+    monkeypatch.setattr(campaign, "publication_classification", classify)
+    from app.service import AppError
+
+    with pytest.raises(AppError) as error:
+        runner.stage_originals(rows)
+    assert error.value.status == 409
+    with service.db.connect() as conn:
+        assert dict(conn.execute("SELECT * FROM documents").fetchone()) == before
+        assert conn.execute("SELECT level,revision FROM legal_classifications").fetchone()[:] == (
+            "primary",
+            1,
+        )
 
 
 @pytest.mark.parametrize("failure", ["outside_root", "wrong_hash", "not_catalogued"])

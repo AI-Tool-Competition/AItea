@@ -35,6 +35,7 @@ from app.egazette import (
     SOURCE_ROLE,
     inspect_search_response,
     original_url,
+    publication_classification,
     public_search_from_html,
     search_body,
 )
@@ -668,6 +669,7 @@ class GazetteCollector:
                         }
                     )
                 with service.db.transaction() as conn:
+                    classification = publication_classification(row)
                     doc = service.archive.store_original(
                         conn,
                         SOURCE_OWNER,
@@ -676,13 +678,15 @@ class GazetteCollector:
                         "application/pdf",
                         url,
                         collection="country:SG",
-                        level="primary",
+                        level=classification["level"],
                         tags=[
                             "country:SG",
                             "source:egazette",
                             "gazette:historical-publication",
+                            "gazette:" + classification["document_type"],
                         ],
                         identity_key="egazette-published-original:" + url,
+                        kind_hint=classification["kind"],
                     )
                     manifest = json.loads(doc["manifest"])
                     if manifest.get("source_hash", digest) != digest:
@@ -697,7 +701,11 @@ class GazetteCollector:
                             "subCategory",
                             "notificationNum",
                         )
-                    } | {"source_role": SOURCE_ROLE, "current_effect_verified": False}
+                    } | {
+                        "source_role": SOURCE_ROLE,
+                        "current_effect_verified": False,
+                        "classification": classification,
+                    }
                     conn.execute(
                         "UPDATE documents SET manifest=? WHERE id=?",
                         (dump(manifest), doc["id"]),
@@ -707,7 +715,9 @@ class GazetteCollector:
                     service.catalog.patch_document(
                         SOURCE_OWNER,
                         doc["id"],
-                        MetadataPatch(expected_revision=0, kind="law", review_status="draft"),
+                        MetadataPatch(
+                            expected_revision=0, kind=classification["kind"], review_status="draft"
+                        ),
                     )
                 elif metadata["metadata"]["review_status"] != "draft":
                     raise ValueError("staging cannot overwrite an already reviewed source document")
@@ -721,6 +731,7 @@ class GazetteCollector:
                     "original_sha256": digest,
                     "source_role": SOURCE_ROLE,
                     "current_effect_verified": False,
+                    "classification": classification,
                     "catalogue": catalog_proofs,
                     "download_receipt": evidence(receipt_path),
                 }

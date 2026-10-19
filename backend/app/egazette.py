@@ -32,6 +32,44 @@ LEGISLATIVE_CATEGORIES = (
 )
 
 
+def publication_classification(record: dict) -> dict:
+    """Classify known standalone reference publications by exact official title.
+
+    A chapter or page labelled "Index" inside an Act is not this publication.
+    Unknown titles retain the legislative-source default and draft review gate.
+    Existing classified documents require an explicit revision-checked repair.
+    """
+    reference_titles = {
+        "the statutes of the republic of singapore - subject index to acts": (
+            ("Revised Acts",),
+            "subject-index",
+        ),
+        "pre-publication notice - re-issue of subject index to acts": (
+            ("Revised Acts", "Subsidiary Legislation Supplement"),
+            "publication-notice",
+        ),
+    }
+    title = record.get("title")
+    match = reference_titles.get(title.casefold()) if isinstance(title, str) else None
+    if (
+        match
+        and record.get("category") == "Legislative Supplements"
+        and record.get("subCategory") in match[0]
+    ):
+        return {
+            "level": "secondary",
+            "kind": "guidance",
+            "document_type": match[1],
+            "basis": "official-catalogue-exact-reference-title-v1",
+        }
+    return {
+        "level": "primary",
+        "kind": "law",
+        "document_type": "legislative-publication",
+        "basis": "legislative-catalogue-pending-review",
+    }
+
+
 def public_search_from_html(url: str, content: bytes) -> tuple[EGazetteSearchRequest, dict]:
     """Read complete literal frontend configuration, without evaluating scripts."""
     if url != EGAZETTE_ORIGIN or not 0 < len(content) <= MAX_SOURCE_BYTES:

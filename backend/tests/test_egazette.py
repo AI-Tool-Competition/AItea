@@ -11,7 +11,13 @@ import time
 import pytest
 
 from app import ingestion
-from app.egazette import inspect_search_response, original_url, public_search_from_html, search_body
+from app.egazette import (
+    inspect_search_response,
+    original_url,
+    publication_classification,
+    public_search_from_html,
+    search_body,
+)
 from app.public_search import (
     EGAZETTE_APPLICATION,
     EGAZETTE_INDEX,
@@ -21,6 +27,57 @@ from app.public_search import (
     EGazetteSearchRequest,
 )
 from test_stream_download import Response
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Income Tax Act 1947",
+        "The Statutes of the Republic of Singapore 2004",
+        "Index of Legislation Act 2026",
+        "The Statutes of the Republic of Singapore - Subject Index to Acts (Amendment)",
+        "Pre-Publication Notice - Re-issue of Subject Index to Acts Act 2026",
+    ],
+)
+def test_reference_title_rule_does_not_exclude_statutes_with_internal_indexes(title):
+    result = publication_classification(
+        {
+            "title": title,
+            "category": "Legislative Supplements",
+            "subCategory": "Revised Acts",
+            "page_heading": "Subject Index to Acts",
+        }
+    )
+    assert result["level"] == "primary" and result["kind"] == "law"
+
+
+@pytest.mark.parametrize(
+    "category,subcategory", [("Other", "Revised Acts"), ("Legislative Supplements", "Other")]
+)
+def test_reference_title_rule_requires_official_legislative_category(category, subcategory):
+    assert (
+        publication_classification(
+            {
+                "title": "The Statutes of the Republic of Singapore - Subject Index to Acts",
+                "category": category,
+                "subCategory": subcategory,
+            }
+        )["level"]
+        == "primary"
+    )
+
+
+def test_publication_notice_can_appear_in_subsidiary_supplement():
+    assert (
+        publication_classification(
+            {
+                "title": "Pre-Publication Notice - Re-Issue of Subject Index to Acts",
+                "category": "Legislative Supplements",
+                "subCategory": "Subsidiary Legislation Supplement",
+            }
+        )["level"]
+        == "secondary"
+    )
 
 
 def config_html(*, config=None, wrapper=None):

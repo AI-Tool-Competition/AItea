@@ -37,6 +37,7 @@ import {
 
 import { CitationCard } from "./library";
 import { ReadableData } from "./readable-data";
+import { ToolActivity } from "./tool-activity";
 
 const stepIcons = {
   completed: Check,
@@ -228,6 +229,13 @@ function AnalysisStep({
         ) : undefined
       }
     >
+      {!!step.tools?.length && (
+        <ToolActivity
+          tools={step.tools}
+          running={running && step.status === "running"}
+          cached={step.status === "cached"}
+        />
+      )}
       {view.warning && <p className="tea-analysis-attention">{view.warning}</p>}
       {expanded && (
         <div

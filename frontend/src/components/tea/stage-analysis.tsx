@@ -8,6 +8,7 @@ import { processStepLabels } from "@/core/tea/analysis-process";
 import { errorMessage, teaRequest } from "@/core/tea/api";
 import { legalModules } from "@/core/tea/configuration";
 import { subscribeNodeAnalysis } from "@/core/tea/node-analysis";
+import { mergeTraceStep } from "@/core/tea/trace";
 import type {
   CaseDetail,
   StageAnalysis,
@@ -74,10 +75,7 @@ function NodeAnalysis({ accountId, record, stage, onUpdate }: Props) {
               : event.data.label,
           );
         } else if (event.event === "step")
-          setSteps((prior) => [
-            ...prior.filter((step) => step.id !== event.data.id),
-            event.data,
-          ]);
+          setSteps((prior) => mergeTraceStep(prior, event.data));
       },
     );
     stop.current = request.stop;

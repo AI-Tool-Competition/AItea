@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { errorMessage, streamDebug, TeaApiError, teaRequest } from "./api";
+import { mergeTraceStep, settleTraceSteps } from "./trace";
 import type {
   AgentConfig,
   DebugExpectation,
@@ -530,11 +531,7 @@ export function useWorkflowDebugger({
   }
   function markStopped() {
     adopt({
-      trace: latest.current.trace.map((step) =>
-        step.status === "running"
-          ? { ...step, status: "cancelled", detail: "已停止" }
-          : step,
-      ),
+      trace: settleTraceSteps(latest.current.trace, "cancelled"),
     });
   }
   async function execute(request: DebugRequest, abort: AbortController) {
@@ -548,16 +545,14 @@ export function useWorkflowDebugger({
         if (event.event === "run") pending.id = event.data.id;
         else if (event.event === "step") {
           const old = latest.current.trace;
-          const index = old.findIndex((step) => step.id === event.data.id);
-          adopt({
-            trace:
-              index < 0
-                ? [...old, event.data]
-                : old.map((step) =>
-                    step.id === event.data.id ? event.data : step,
-                  ),
-          });
-          if (event.data.status === "running") setLiveOutput("");
+          const previous = old.find((step) => step.id === event.data.id);
+          adopt({ trace: mergeTraceStep(old, event.data) });
+          if (
+            event.data.status === "running" &&
+            (previous?.status !== "running" ||
+              previous.run_id !== event.data.run_id)
+          )
+            setLiveOutput("");
         } else if (event.event === "status") setProgress(event.data.label);
         else if (event.event === "delta")
           setLiveOutput((text) => text + event.data.text);

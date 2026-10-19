@@ -191,7 +191,11 @@ def test_debug_stream_delivers_steps_before_done_and_cancel_retains_checkpoint(c
     ]
     assert frames[-1][0] == "done"
     steps = [data for kind, data in frames if kind == "step"]
-    assert [step["status"] for step in steps if step["id"] == "check"] == ["running", "completed"]
+    check_steps = [step for step in steps if step["id"] == "check"]
+    assert check_steps[0]["status"] == "running"
+    assert all(step["status"] == "running" for step in check_steps[:-1])
+    assert check_steps[-1]["status"] == "completed"
+    assert check_steps[-1]["tools"][0]["status"] == "completed"
     owner = client.get("/api/tea/auth/me").json()["id"]
     completed = []
     run_id = []
@@ -355,14 +359,14 @@ def test_provider_receives_the_inspected_guidance_payload_and_long_output(client
     monkeypatch.setenv("LLM_MODEL", "test-model")
     calls = []
     output = "清楚的实际建议。" * 300
-    original = httpx.Client
+    original = httpx.AsyncClient
 
     def receive(request):
         calls.append(json.loads(request.content))
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 
     monkeypatch.setattr(
-        httpx, "Client", lambda **options: original(transport=httpx.MockTransport(receive), **options)
+        httpx, "AsyncClient", lambda **options: original(transport=httpx.MockTransport(receive), **options)
     )
     result = client.app.state.service.studio.debug(owner, TemplateDebugInput.model_validate(payload))
     assert result["status"] == "completed"

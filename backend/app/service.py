@@ -1340,7 +1340,16 @@ class Service:
                 key: value
                 for key, value in options.items()
                 if key
-                in ("case_id", "emit", "check_cancelled", "document_ids", "stop_after_step_id", "resume")
+                in (
+                    "case_id",
+                    "emit",
+                    "check_cancelled",
+                    "document_ids",
+                    "stop_after_step_id",
+                    "resume",
+                    "context",
+                    "prompt_cache_key",
+                )
             }
             if checkpoint:
                 legal_options["on_checkpoint"] = lambda step_id, result, state: checkpoint(
@@ -1532,7 +1541,7 @@ class Service:
                 fail(422, "analysis_context_limit", "当前问题与补充说明过长，请在本节点分析中整理事实后继续")
 
             def legal_emit(event, data):
-                if emit and (event in ("status", "delta") or (conversation_id and event == "step")):
+                if emit and event in ("status", "start", "delta", "step"):
                     emit(event, data)
 
             analysis = self.legal.analyze(
@@ -1612,27 +1621,42 @@ class Service:
             and self.capabilities["assistant_mode"] == "live"
         ):
             from .assistant import generate_guidance
+            from .tool_runtime import ToolRun
+
+            tools = ToolRun(emit, check_cancelled)
+            draft_trace = copy.deepcopy(result["trace"][-1])
+            draft_trace.update(status="running", detail="正在根据分析结果起草文稿。")
+            tools.publish(draft_trace)
 
             if emit:
                 emit("start", {"step_id": "draft"})
                 emit("status", {"label": "正在起草 Markdown 文稿…"})
-            content = generate_guidance(
-                agent,
-                {
-                    "instructions": "用户明确要求新建文稿。请直接输出完整 Markdown 文稿正文；以法律核对结果为约束，未知内容标为待补充。"
-                },
-                payload["content"],
-                {"node_memory": prepared["memory"], "recent_messages": prepared["history"]},
-                result["citations"],
-                [],
-                result["output"],
-                on_delta=(lambda text: emit("delta", {"text": text})) if emit else None,
-                check_cancelled=check_cancelled,
-                max_tokens=4000,
-                prompt_cache_key=prompt_cache_key,
-            )
+            with tools.step(draft_trace):
+                try:
+                    content = generate_guidance(
+                        agent,
+                        {
+                            "instructions": "用户明确要求新建文稿。请直接输出完整 Markdown 文稿正文；以法律核对结果为约束，未知内容标为待补充。"
+                        },
+                        payload["content"],
+                        {"node_memory": prepared["memory"], "recent_messages": prepared["history"]},
+                        result["citations"],
+                        [],
+                        result["output"],
+                        on_delta=(lambda text: emit("delta", {"text": text})) if emit else None,
+                        check_cancelled=check_cancelled,
+                        max_tokens=4000,
+                        prompt_cache_key=prompt_cache_key,
+                    )
+                except Exception:
+                    draft_trace.update(status="failed", detail="文稿生成未完成，请重试。")
+                    tools.publish(draft_trace)
+                    raise
+            draft_trace.update(status="completed", detail="已根据分析结果生成文稿正文。")
+            tools.publish(draft_trace)
+            result["trace"][-1] = draft_trace
             result = {**result, "output": content}
-        if emit and any(step["status"] == "failed" for step in result["trace"]):
+        if any(step["status"] == "failed" for step in result["trace"]):
             fail(502, "assistant_failed", "回复未能完成，已收到的内容仅供参考。请重试。")
         output, trace, citations = result["output"], result["trace"], result["citations"]
         with self.db.transaction() as conn:

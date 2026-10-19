@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { errorMessage, streamMessage, teaRequest } from "./api";
 import { clearNodeAnalyses } from "./node-analysis";
+import { mergeTraceStep, settleTraceSteps } from "./trace";
 import type {
   CaseDetail,
   ChatSkill,
@@ -95,7 +96,12 @@ export function useStageChat({
         draft.turns = draft.turns.map((turn) =>
           turn.request.client_message_id ===
           sending.turn.request.client_message_id
-            ? { ...sending.turn, state: "stopped", label: "上次回复未完成" }
+            ? {
+                ...sending.turn,
+                state: "stopped",
+                label: "上次回复未完成",
+                steps: settleTraceSteps(sending.turn.steps ?? [], "cancelled"),
+              }
             : turn,
         );
       sending?.controller.abort();
@@ -224,10 +230,7 @@ export function useStageChat({
           if (event.event === "start") turn.text = "";
           else if (event.event === "delta") turn.text += event.data.text;
           else if (event.event === "step")
-            turn.steps = [
-              ...(turn.steps ?? []).filter((step) => step.id !== event.data.id),
-              event.data,
-            ];
+            turn.steps = mergeTraceStep(turn.steps ?? [], event.data);
           else turn.label = event.data.label;
           frame ??= setTimeout(publish, 16);
         },
@@ -254,6 +257,10 @@ export function useStageChat({
       turn.state = controller.signal.aborted ? "stopped" : "failed";
       turn.label = controller.signal.aborted ? "已停止回复" : "回复未完成";
       turn.error = controller.signal.aborted ? undefined : errorMessage(error);
+      turn.steps = settleTraceSteps(
+        turn.steps ?? [],
+        controller.signal.aborted ? "cancelled" : "failed",
+      );
       setTurns((items) =>
         items.map((item) =>
           item.request.client_message_id === request.client_message_id

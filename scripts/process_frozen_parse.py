@@ -30,9 +30,7 @@ SCOPE = ContextVar("frozen_parse_request_scope", default=None)
 
 def digest(value):
     return hashlib.sha256(
-        json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode()
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
@@ -55,11 +53,8 @@ def document_progress(manifest):
 def progress_delta(before, after, requested_pages):
     """Count this run's transitions, keeping older requests out of new failures."""
     return {
-        "new_complete_documents": int(after["text_complete"])
-        - int(before["text_complete"]),
-        "new_request_pages_not_accepted": len(
-            set(after["unaccepted_pages"]) & set(requested_pages)
-        ),
+        "new_complete_documents": int(after["text_complete"]) - int(before["text_complete"]),
+        "new_request_pages_not_accepted": len(set(after["unaccepted_pages"]) & set(requested_pages)),
         **{
             "new_" + status + "_pages": after["page_states"].get(status, 0)
             - before["page_states"].get(status, 0)
@@ -102,9 +97,7 @@ def frozen_inputs(directory, data_dir):
 
 
 def read_db(data_dir):
-    conn = sqlite3.connect(
-        (data_dir / "tea.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=15
-    )
+    conn = sqlite3.connect((data_dir / "tea.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
     return conn
@@ -147,9 +140,7 @@ def hold_ambiguous_response(error):
 def hold_previous_ambiguous_page(page):
     """Append a hold checkpoint without altering an older receipt or attempt."""
     metadata = page.get("ocr", {})
-    if page.get("status") != "pending_ocr" or not ambiguous_http_outcome(
-        metadata.get("http_status")
-    ):
+    if page.get("status") != "pending_ocr" or not ambiguous_http_outcome(metadata.get("http_status")):
         return None
     from app.ocr_error_evidence import preserve_previous_page_attempt
 
@@ -194,8 +185,7 @@ def main():
         and len(selected) > 20
         or not args.run_id
         or any(
-            c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-            for c in args.run_id
+            c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in args.run_id
         )
     ):
         raise ValueError("Require unique authorized IDs and a safe run identifier")
@@ -209,10 +199,7 @@ def main():
         if key.startswith(("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_")):
             os.environ.pop(key)
     for key, value in dotenv_values(args.models_env, interpolate=False).items():
-        if (
-            key.startswith(("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_"))
-            and value is not None
-        ):
+        if key.startswith(("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_")) and value is not None:
             os.environ[key] = value
     os.environ.update(
         VISION_OCR_ENABLED="true",
@@ -247,9 +234,7 @@ def main():
     events = (output / "events.jsonl").open("x", buffering=1)
     cooldown_path = args.snapshot / "provider-cooldown.json"
     cooldown = (
-        json.loads(cooldown_path.read_text()).get("retry_not_before", 0)
-        if cooldown_path.exists()
-        else 0
+        json.loads(cooldown_path.read_text()).get("retry_not_before", 0) if cooldown_path.exists() else 0
     )
 
     def event(kind, **values):
@@ -263,11 +248,7 @@ def main():
         nonlocal cooldown
         status = kwargs.get("status_code")
         with log_lock:
-            counters[
-                f"http_{status}"
-                if status
-                else "transport_" + str(kwargs.get("timeout"))
-            ] += 1
+            counters[f"http_{status}" if status else "transport_" + str(kwargs.get("timeout"))] += 1
             retry_after = kwargs.get("retry_after")
             if retry_after is not None:
                 cooldown = max(cooldown, time.time() + retry_after)
@@ -285,9 +266,7 @@ def main():
         with log_lock:
             counters["requests"] += 1
             counters["inflight"] += 1
-            counters["peak_inflight"] = max(
-                counters["peak_inflight"], counters["inflight"]
-            )
+            counters["peak_inflight"] = max(counters["peak_inflight"], counters["inflight"])
             if "document_id" in scope and "page" in scope:
                 requested_pages.add((scope["document_id"], scope["page"]))
         try:
@@ -374,10 +353,7 @@ def main():
         ):
             if row[key] != old[key]:
                 raise ValueError("Frozen document source guard changed: " + identifier)
-        if (
-            hashlib.sha256((row["metadata"] or "").encode()).hexdigest()
-            != old["metadata_sha256"]
-        ):
+        if hashlib.sha256((row["metadata"] or "").encode()).hexdigest() != old["metadata_sha256"]:
             raise ValueError("Frozen document legal metadata changed: " + identifier)
         manifest = json.loads(row["manifest"])
         if protect:
@@ -403,9 +379,7 @@ def main():
                 "phase": row["phase"],
                 "job_status": row["job_status"],
                 "text_complete": text_complete(manifest),
-                "page_states": dict(
-                    Counter(pdf_page_status(page) for page in manifest.get("pages", []))
-                ),
+                "page_states": dict(Counter(pdf_page_status(page) for page in manifest.get("pages", []))),
                 "manifest_sha256": hashlib.sha256(row["manifest"].encode()).hexdigest(),
             }
             event("document_checkpoint", **result)
@@ -427,9 +401,7 @@ def main():
         with closing(read_db(args.data_dir)) as conn:
             conn.execute("BEGIN")
             for identifier in touched:
-                raw = conn.execute(
-                    "SELECT manifest FROM documents WHERE id=?", (identifier,)
-                ).fetchone()[0]
+                raw = conn.execute("SELECT manifest FROM documents WHERE id=?", (identifier,)).fetchone()[0]
                 current = document_progress(json.loads(raw))
                 changes.update(
                     progress_delta(
@@ -481,9 +453,7 @@ def main():
             "document_workers": args.document_workers,
             "claim_limit": args.claim_limit,
             "seconds": args.seconds,
-            "models_file_sha256": hashlib.sha256(
-                args.models_env.read_bytes()
-            ).hexdigest(),
+            "models_file_sha256": hashlib.sha256(args.models_env.read_bytes()).hexdigest(),
             "embedding_calls_authorized": False,
             "ambiguous_http_outcomes_require_explicit_recovery": True,
         },
@@ -506,20 +476,13 @@ def main():
                     args.document_workers,
                     capacity.get("target") or args.document_workers,
                 )
-                if (
-                    not stop.is_set()
-                    and len(futures) < admission_limit
-                    and time.time() >= cooldown
-                ):
+                if not stop.is_set() and len(futures) < admission_limit and time.time() >= cooldown:
                     with closing(read_db(args.data_dir)) as conn:
-                        available = available_parse_ids(
-                            conn, report["owner_id"], time.time()
-                        )
+                        available = available_parse_ids(conn, report["owner_id"], time.time())
                     candidates = [
                         identifier
                         for identifier in selected
-                        if identifier in available
-                        and identifier not in futures.values()
+                        if identifier in available and identifier not in futures.values()
                     ]
                     # Fair rounds prevent long documents from being permanently displaced;
                     # within each round, missing native text and nearly complete PDFs go first.
@@ -527,12 +490,7 @@ def main():
                         key=lambda identifier: (
                             dispatch.get(identifier, 0),
                             bool(initial[identifier]["pages"]),
-                            len(
-                                (initial[identifier]["quality"] or {}).get(
-                                    "pending_pages", []
-                                )
-                            )
-                            or 10**8,
+                            len((initial[identifier]["quality"] or {}).get("pending_pages", [])) or 10**8,
                             len(initial[identifier]["pages"]),
                             identifier,
                         )
@@ -547,30 +505,22 @@ def main():
                         if not parse_job_due(row, time.time()):
                             continue
                         claim = retry_local_database(
-                            lambda identifier=identifier: (
-                                service.collection.claim_processing(
-                                    owner_id=report["owner_id"],
-                                    document_ids=[identifier],
-                                )
+                            lambda identifier=identifier: service.collection.claim_processing(
+                                owner_id=report["owner_id"],
+                                document_ids=[identifier],
                             ),
-                            on_wait=lambda **values: event(
-                                "claim_storage_wait", **values
-                            ),
+                            on_wait=lambda **values: event("claim_storage_wait", **values),
                         )
                         if claim is None:
                             continue
                         if claim["phase"] != "parse":
-                            raise RuntimeError(
-                                "Unexpected non-parse claim; frozen scope ownership violated"
-                            )
+                            raise RuntimeError("Unexpected non-parse claim; frozen scope ownership violated")
                         if identifier not in baselines:
                             baselines[identifier] = {
                                 **document_progress(manifest),
                                 "document_version": row["version"],
                                 "original_sha256": row["content_hash"],
-                                "manifest_sha256": hashlib.sha256(
-                                    row["manifest"].encode()
-                                ).hexdigest(),
+                                "manifest_sha256": hashlib.sha256(row["manifest"].encode()).hexdigest(),
                             }
                             save("run-baseline.json", baselines)
                         dispatch[identifier] = dispatch.get(identifier, 0) + 1
@@ -595,14 +545,9 @@ def main():
                 if futures and time.monotonic() - last_heartbeat >= 5:
                     retry_local_database(
                         lambda: service.collection.heartbeat(
-                            [
-                                (True, claims[identifier])
-                                for identifier in futures.values()
-                            ]
+                            [(True, claims[identifier]) for identifier in futures.values()]
                         ),
-                        on_wait=lambda **values: event(
-                            "heartbeat_storage_wait", **values
-                        ),
+                        on_wait=lambda **values: event("heartbeat_storage_wait", **values),
                     )
                     last_heartbeat = time.monotonic()
                 if time.monotonic() - last_progress >= 30:

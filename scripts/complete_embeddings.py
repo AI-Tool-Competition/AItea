@@ -32,9 +32,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 def digest(value):
     return hashlib.sha256(
-        json.dumps(
-            value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-        ).encode()
+        json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     ).hexdigest()
 
 
@@ -53,11 +51,7 @@ def unresolved_issued_inputs(output, saved, *, run_ids=None):
     Legacy completed-request journals remain valid without intent records.
     """
     completed = output / "requests.jsonl"
-    records = (
-        [json.loads(line) for line in completed.read_text().splitlines()]
-        if completed.exists()
-        else []
-    )
+    records = [json.loads(line) for line in completed.read_text().splitlines()] if completed.exists() else []
     terminal = {r["request_id"]: r for r in records if r.get("request_id")}
     intents = output / "issued-requests.jsonl"
     if intents.exists():
@@ -91,10 +85,7 @@ def consumed_recovery_inputs(output, selection_sha256):
     run_ids = set()
     for path in output.glob("preflight-*.json"):
         previous = json.loads(path.read_text())
-        if (
-            previous.get("configuration", {}).get("retry_unresolved_selection_sha256")
-            == selection_sha256
-        ):
+        if previous.get("configuration", {}).get("retry_unresolved_selection_sha256") == selection_sha256:
             run_ids.add(previous["run_id"])
     return unresolved_issued_inputs(output, set(), run_ids=run_ids)
 
@@ -131,9 +122,7 @@ def read_unresolved_selection(path, plan, fixed_input_hashes):
         or len(hashes) != len(set(hashes))
         or not set(hashes).issubset(fixed_input_hashes)
     ):
-        raise ValueError(
-            "Unresolved recovery selection contains invalid or out-of-plan inputs"
-        )
+        raise ValueError("Unresolved recovery selection contains invalid or out-of-plan inputs")
     return {
         "path": str(path.resolve()),
         "sha256": hashlib.sha256(raw).hexdigest(),
@@ -142,11 +131,7 @@ def read_unresolved_selection(path, plan, fixed_input_hashes):
 
 
 def deferred_input_documents(document_inputs, quarantined_inputs):
-    return {
-        ident
-        for ident, hashes in document_inputs.items()
-        if quarantined_inputs.intersection(hashes)
-    }
+    return {ident for ident, hashes in document_inputs.items() if quarantined_inputs.intersection(hashes)}
 
 
 class Observations:
@@ -224,10 +209,7 @@ class Observations:
                     with self.client.stream(method, url, **kwargs) as response:
                         record["headers_seconds"] = round(time.monotonic() - started, 6)
                         record["http_status"] = response.status_code
-                        if (
-                            response.status_code in {408, 429}
-                            or response.status_code >= 500
-                        ):
+                        if response.status_code in {408, 429} or response.status_code >= 500:
                             record["rate_limited"] = response.status_code == 429
                             record["retry_after_seconds"] = ingestion._retry_after(
                                 response.headers.get("Retry-After")
@@ -279,9 +261,7 @@ class Observations:
         def forbid(*args, **kwargs):
             self.failure = "non_embedding_operation_prevented"
             self.stop.set()
-            raise AssertionError(
-                "This fixed embedding plan cannot download, parse or OCR"
-            )
+            raise AssertionError("This fixed embedding plan cannot download, parse or OCR")
 
         ingestion._download = forbid
         parsing.parse_bounded = parsing.ocr_bounded = forbid
@@ -302,9 +282,7 @@ class Observations:
                 "unique_requested_inputs": len(set(inputs)),
                 "repeated_requested_inputs": len(inputs) - len(set(inputs)),
                 "latency_median": statistics.median(times) if times else None,
-                "latency_p95": times[math.ceil(len(times) * 0.95) - 1]
-                if times
-                else None,
+                "latency_p95": times[math.ceil(len(times) * 0.95) - 1] if times else None,
             }
 
 
@@ -345,9 +323,7 @@ def capture(service, ids):
     with closing(service.db.connect()) as conn:
         documents = {}
         for ident in ids:
-            row = dict(
-                conn.execute("SELECT * FROM documents WHERE id=?", (ident,)).fetchone()
-            )
+            row = dict(conn.execute("SELECT * FROM documents WHERE id=?", (ident,)).fetchone())
             documents[ident] = {
                 "source": {
                     k: row[k]
@@ -370,9 +346,7 @@ def capture(service, ids):
                 "dimension": r["dimension"],
                 "sha256": hashlib.sha256(r["vector"]).hexdigest(),
             }
-            for r in conn.execute(
-                "SELECT * FROM retrieval_vectors ORDER BY chunk_rowid"
-            )
+            for r in conn.execute("SELECT * FROM retrieval_vectors ORDER BY chunk_rowid")
         }
         metadata = {}
         for table in (
@@ -382,12 +356,7 @@ def capture(service, ids):
             "legal_relations",
         ):
             metadata[table] = digest(
-                [
-                    dict(r)
-                    for r in conn.execute(
-                        'SELECT * FROM "' + table + '" ORDER BY rowid'
-                    )
-                ]
+                [dict(r) for r in conn.execute('SELECT * FROM "' + table + '" ORDER BY rowid')]
             )
     return {"documents": documents, "vectors": vectors, "metadata": metadata}
 
@@ -421,9 +390,7 @@ def existing_metadata_intact(service, guard):
 def document_worker_limit(http_workers, request_concurrency, requested=None):
     ceiling = min(32, (http_workers + request_concurrency - 1) // request_concurrency)
     if requested is not None and not 1 <= requested <= ceiling:
-        raise ValueError(
-            "Document workers must fit the shared HTTP and 32-document limits"
-        )
+        raise ValueError("Document workers must fit the shared HTTP and 32-document limits")
     if requested is None and http_workers > 32 and request_concurrency == 1:
         raise ValueError("More than 32 HTTP workers requires --request-concurrency 2")
     return requested or ceiling
@@ -446,9 +413,7 @@ def main():
         help="Persistently resume safe work after cooldowns",
     )
     parser.add_argument("--supervisor-window-seconds", type=int, default=300)
-    parser.add_argument(
-        "--supervisor-max-document-workers", type=int, choices=range(1, 33)
-    )
+    parser.add_argument("--supervisor-max-document-workers", type=int, choices=range(1, 33))
     parser.add_argument("--http-workers", type=int, choices=range(1, 65), default=2)
     parser.add_argument(
         "--document-workers",
@@ -487,9 +452,7 @@ def main():
         parser.error("Run window must be nonnegative")
     if args.supervise:
         if not args.apply or args.retry_unresolved:
-            parser.error(
-                "Supervision requires --apply and forbids broad --retry-unresolved"
-            )
+            parser.error("Supervision requires --apply and forbids broad --retry-unresolved")
         if args.supervisor_window_seconds < 30:
             parser.error("Supervision windows must be at least 30 seconds")
         from embedding_supervisor import supervise
@@ -552,12 +515,7 @@ def main():
             assert service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
             assert doc["role"] == "primary" and text_complete(manifest)
-            assert (
-                service.catalog.metadata_for(doc["id"], conn=conn)["metadata"][
-                    "review_status"
-                ]
-                == "draft"
-            )
+            assert service.catalog.metadata_for(doc["id"], conn=conn)["metadata"]["review_status"] == "draft"
             chunks = conn.execute(
                 "SELECT * FROM retrieval_chunks WHERE document_id=? ORDER BY ordinal,rowid",
                 (doc["id"],),
@@ -573,16 +531,9 @@ def main():
                 )
             document_inputs[doc["id"]] = {chunk["input_hash"] for chunk in chunks}
         with Path(item["storage_path"]).open("rb") as stream:
-            assert (
-                hashlib.file_digest(stream, "sha256").hexdigest()
-                == item["content_hash"]
-            )
+            assert hashlib.file_digest(stream, "sha256").hexdigest() == item["content_hash"]
     baseline_path = output / "baseline.json"
-    baseline = (
-        json.loads(baseline_path.read_text())
-        if baseline_path.exists()
-        else capture(service, ids)
-    )
+    baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else capture(service, ids)
     if not baseline_path.exists():
         write_report(output, baseline, "baseline.json")
     current = capture(service, ids)
@@ -597,9 +548,7 @@ def main():
         # whole-table evidence. Keep that original baseline file untouched.
         assert current["metadata"] == baseline["metadata"]
         with closing(service.db.connect()) as conn:
-            old_ids = [
-                r[0] for r in conn.execute("SELECT id FROM documents ORDER BY id")
-            ]
+            old_ids = [r[0] for r in conn.execute("SELECT id FROM documents ORDER BY id")]
         metadata_guard = {
             "protocol": "existing-metadata-stable-keys-v1",
             "legacy_metadata": baseline["metadata"],
@@ -627,9 +576,7 @@ def main():
     allowed_unresolved = (
         unresolved
         if args.retry_unresolved
-        else unresolved.intersection(
-            recovery_selection["input_hashes"] if recovery_selection else ()
-        )
+        else unresolved.intersection(recovery_selection["input_hashes"] if recovery_selection else ())
     )
     consumed_recovery = (
         consumed_recovery_inputs(output, recovery_selection["sha256"]).intersection(
@@ -720,8 +667,7 @@ def main():
             "quarantined_inputs": len(quarantined_inputs),
             "deferred_documents": len(deferred_documents),
             "runnable_documents": sum(
-                j["status"] in {"queued", "processing"}
-                and j["document_id"] not in deferred_documents
+                j["status"] in {"queued", "processing"} and j["document_id"] not in deferred_documents
                 for j in jobs
             ),
             "active_claims": len(active),
@@ -740,9 +686,7 @@ def main():
         if milestone > last_checkpoint:
             # The receipt database commits every successful HTTP batch. These
             # immutable milestones add a compact audit snapshot every 200 inputs.
-            write_report(
-                output, report, f"checkpoint-{run_id}-{milestone * 200:08}.json"
-            )
+            write_report(output, report, f"checkpoint-{run_id}-{milestone * 200:08}.json")
             last_checkpoint = milestone
         return report, jobs
 
@@ -763,30 +707,19 @@ def main():
     with ThreadPoolExecutor(max_workers=document_workers) as pool:
         while True:
             finished += finish_claims(active, observations)
-            if (
-                args.max_run_seconds
-                and time.monotonic() - started >= args.max_run_seconds
-            ):
+            if args.max_run_seconds and time.monotonic() - started >= args.max_run_seconds:
                 observations.stop.set()
-            if (
-                args.stop_after_claims
-                and finished + len(active) >= args.stop_after_claims
-            ):
+            if args.stop_after_claims and finished + len(active) >= args.stop_after_claims:
                 observations.stop.set()
             try:
                 if not observations.stop.is_set() and len(active) < document_workers:
-                    queued = admission_candidates(
-                        service, owner, admission_ids, document_workers
-                    )
+                    queued = admission_candidates(service, owner, admission_ids, document_workers)
                     for ident in queued:
                         if ident in deferred_documents or any(
                             c["document_id"] == ident for c in active.values()
                         ):
                             continue
-                        if (
-                            len(active) >= document_workers
-                            or observations.stop.is_set()
-                        ):
+                        if len(active) >= document_workers or observations.stop.is_set():
                             break
                         claim = local_database(
                             "claim",
@@ -796,15 +729,11 @@ def main():
                         )
                         if claim:
                             assert claim["phase"] == "embed"
-                            active[
-                                pool.submit(service.collection.process_item, claim)
-                            ] = claim
+                            active[pool.submit(service.collection.process_item, claim)] = claim
                 if active and not storage_failed:
                     local_database(
                         "heartbeat",
-                        lambda: service.collection.heartbeat(
-                            [(True, c) for c in active.values()]
-                        ),
+                        lambda: service.collection.heartbeat([(True, c) for c in active.values()]),
                     )
             except Exception as error:  # noqa: BLE001 - stop admission, drain peers and report
                 storage_failed = True
@@ -816,8 +745,7 @@ def main():
             if not active:
                 report, jobs = progress()
                 if observations.stop.is_set() or not any(
-                    j["status"] in {"queued", "processing"}
-                    and j["document_id"] not in deferred_documents
+                    j["status"] in {"queued", "processing"} and j["document_id"] not in deferred_documents
                     for j in jobs
                 ):
                     break
@@ -825,14 +753,11 @@ def main():
     after = capture(service, ids)
     report, jobs = progress()
     integrity = {
-        "selected_originals_and_all_text_unchanged": after["documents"]
-        == baseline["documents"],
+        "selected_originals_and_all_text_unchanged": after["documents"] == baseline["documents"],
         "all_old_vectors_exact_bytes": all(
             after["vectors"].get(k) == v for k, v in baseline["vectors"].items()
         ),
-        "metadata_classifications_relations_unchanged": existing_metadata_intact(
-            service, metadata_guard
-        ),
+        "metadata_classifications_relations_unchanged": existing_metadata_intact(service, metadata_guard),
     }
     report.update(
         status="complete" if report["missing_rows"] == 0 else "stopped",

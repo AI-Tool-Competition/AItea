@@ -130,9 +130,7 @@ def decide(state, report, *, timestamp, retry_after=0):
         reason = report.get("failure") or "local_runtime_error"
     else:
         failures = 0
-        stable += int(
-            report.get("checkpoint_cache", {}).get("new_saved_this_process", 0) > 0
-        )
+        stable += int(report.get("checkpoint_cache", {}).get("new_saved_this_process", 0) > 0)
         p95 = report.get("provider", {}).get("latency_p95")
         if stable >= 2 and p95 is not None and p95 <= 40:
             documents = min(state["maximum_document_workers"], documents + 2)
@@ -161,9 +159,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     maximum = args.supervisor_max_document_workers or initial_documents
     if not initial_documents <= maximum <= min(32, args.http_workers):
-        raise ValueError(
-            "Supervisor background ceiling must contain the initial document limit"
-        )
+        raise ValueError("Supervisor background ceiling must contain the initial document limit")
     document_worker_limit(args.http_workers, args.request_concurrency, maximum)
     plan_raw = args.plan.read_bytes()
     plan = json.loads(plan_raw)
@@ -172,9 +168,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
         "plan_sha256": hashlib.sha256(plan_raw).hexdigest(),
         "owner": plan["owner"],
         "fingerprint": plan["fingerprint"],
-        "selection_sha256": hashlib.sha256(
-            args.retry_unresolved_selection.read_bytes()
-        ).hexdigest()
+        "selection_sha256": hashlib.sha256(args.retry_unresolved_selection.read_bytes()).hexdigest()
         if args.retry_unresolved_selection
         else None,
         "http_ceiling": args.http_workers,
@@ -183,9 +177,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
     cache = output / "successful-inputs.sqlite3"
     if cache.exists():
         with closing(sqlite3.connect(cache.as_uri() + "?mode=ro", uri=True)) as conn:
-            actual = json.loads(
-                conn.execute("SELECT payload FROM scope WHERE version=1").fetchone()[0]
-            )
+            actual = json.loads(conn.execute("SELECT payload FROM scope WHERE version=1").fetchone()[0])
         if actual != {
             "owner": plan["owner"],
             "fingerprint": plan["fingerprint"],
@@ -198,9 +190,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
         state = load_json(state_path)
         if state:
             if any(state.get(key) != value for key, value in binding.items()):
-                raise ValueError(
-                    "Supervisor configuration differs from the persisted fixed plan"
-                )
+                raise ValueError("Supervisor configuration differs from the persisted fixed plan")
         else:
             previous = load_json(output / "report.json") or {}
             state = {
@@ -214,8 +204,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
             }
         stopped = threading.Event()
         previous_handlers = {
-            sig: signal.signal(sig, lambda *_: stopped.set())
-            for sig in (signal.SIGTERM, signal.SIGINT)
+            sig: signal.signal(sig, lambda *_: stopped.set()) for sig in (signal.SIGTERM, signal.SIGINT)
         }
         child = None
         last_emitted = None
@@ -232,9 +221,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
                 state.get("document_workers"),
             )
             if signature != last_emitted:
-                event = {
-                    key: value for key, value in state.items() if key != "child_command"
-                }
+                event = {key: value for key, value in state.items() if key != "child_command"}
                 with (output / "supervisor-events.jsonl").open("a") as stream:
                     os.chmod(stream.name, 0o600)
                     stream.write(json.dumps(event) + "\n")
@@ -251,9 +238,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
                         child.terminate()  # This supervisor's own child only; drain valid paid responses.
                         while child.poll() is None:
                             time.sleep(0.2)
-                    state.update(
-                        status="cooldown", reason="operator_stopped", child_pid=None
-                    )
+                    state.update(status="cooldown", reason="operator_stopped", child_pid=None)
                     save()
                     return 130
                 # After a supervisor crash its child may still be running. The
@@ -291,9 +276,7 @@ def supervise(args, runner: Path, arguments, initial_documents):
                         reason="preflight_or_configuration_failed"
                         if preflight_failure
                         else "child_interrupted",
-                        document_workers=max(
-                            1, min(12, state["document_workers"] // 2)
-                        ),
+                        document_workers=max(1, min(12, state["document_workers"] // 2)),
                         next_run_at=time.time() + (300 if preflight_failure else 60),
                         child_pid=None,
                         child_exit_code=exit_code,
@@ -313,18 +296,14 @@ def supervise(args, runner: Path, arguments, initial_documents):
                 log = output / f"supervised-{time.time_ns()}.log"
                 with log.open("w") as stream:
                     os.chmod(log, 0o600)
-                    child = subprocess.Popen(
-                        command, stdout=stream, stderr=subprocess.STDOUT
-                    )
+                    child = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
                 state.update(
                     status="running",
                     reason="fixed_plan_active",
                     child_pid=child.pid,
                     child_start_identity=process_identity(child.pid),
                     child_log=str(log),
-                    child_command_sha256=hashlib.sha256(
-                        json.dumps(command).encode()
-                    ).hexdigest(),
+                    child_command_sha256=hashlib.sha256(json.dumps(command).encode()).hexdigest(),
                 )
                 save()
         finally:

@@ -43,11 +43,7 @@ def main():
         try:
             configure_models(args.models_env)
         except (ValueError, OSError):
-            print(
-                json.dumps(
-                    {"status": "refused", "reason": "model_configuration_rejected"}
-                )
-            )
+            print(json.dumps({"status": "refused", "reason": "model_configuration_rejected"}))
             return 2
     from app.system_corpus_migration import (
         SystemCorpusMigrationError,
@@ -69,10 +65,7 @@ def main():
                 json.loads(args.aliases.read_bytes()),
             )
             with args.output.open("x") as stream:
-                stream.write(
-                    json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2)
-                    + "\n"
-                )
+                stream.write(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             from app.blob_store import _sync_directory
@@ -99,9 +92,7 @@ def main():
                 apply=args.apply,
                 source_stopped=args.source_stopped,
                 backup_dir=args.backup_dir,
-                alias_plan=json.loads(args.alias_plan.read_bytes())
-                if args.alias_plan
-                else None,
+                alias_plan=json.loads(args.alias_plan.read_bytes()) if args.alias_plan else None,
             )
     except (
         SystemCorpusMigrationError,

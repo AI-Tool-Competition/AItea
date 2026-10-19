@@ -474,38 +474,29 @@ def _ocr_one_page(
     on_reuse: Callable[[dict, dict], dict | None] | None = None,
     on_response_error: Callable[[dict], dict] | None = None,
 ) -> dict:
-    from .ocr_error_evidence import preserve_previous_page_attempt
+    from .ocr_error_evidence import preserve_previous_page_attempt, request_outcome_unknown
     from .vision import OCRResponseError, PROMPT_VERSION, transcribe_page
 
     updated = deepcopy(page)
     previous_metadata = page.get("ocr") if page.get("ocr") is not None else {}
     if not isinstance(previous_metadata, dict):
         raise ValueError("页面识别检查点格式无效。")
-    if page.get("status") == "ocr_failed" and previous_metadata.get("request_outcome") in {
-        "unknown_transport_result",
-        "unknown_after_interruption",
-    }:
+    if page.get("status") == "ocr_failed" and request_outcome_unknown(previous_metadata):
         return updated
 
     def defer(reason: str) -> dict:
         updated.update(status="pending_ocr", deferred_reason=reason)
         return updated
 
-    if (
-        page.get("status") == "pending_ocr"
-        and previous_metadata.get("attempts", 0)
+    if page.get("status") == "pending_ocr" and (
+        request_outcome_unknown(previous_metadata)
+        or previous_metadata.get("attempts", 0)
         and previous_metadata.get("request_id")
-        and (
-            previous_metadata.get("request_outcome")
-            in {"unknown_transport_result", "unknown_after_interruption"}
-            or (previous_metadata.get("error_response") or {}).get("request_outcome")
-            == "unknown_transport_result"
-            or not previous_metadata.get("finish_reason")
-            and "text" not in previous_metadata
-            and "complete" not in previous_metadata
-            and not previous_metadata.get("error_response")
-            and not page.get("error")
-        )
+        and not previous_metadata.get("finish_reason")
+        and "text" not in previous_metadata
+        and "complete" not in previous_metadata
+        and not previous_metadata.get("error_response")
+        and not page.get("error")
     ):
         preserve_previous_page_attempt(updated)
         updated["ocr"]["request_outcome"] = "unknown_after_interruption"

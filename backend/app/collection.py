@@ -469,6 +469,11 @@ class CollectionService:
         if retry_ocr:
             from .ingestion import pdf_quality
             from .native_asset_ocr import apply_asset_checkpoint, assets
+            from .ocr_error_evidence import (
+                preserve_previous_asset_attempt,
+                preserve_previous_page_attempt,
+                request_outcome_unknown,
+            )
 
             row = conn.execute(
                 "SELECT d.manifest FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND p.status='failed'",
@@ -477,15 +482,19 @@ class CollectionService:
             manifest = json.loads(row["manifest"]) if row else {}
             pages = manifest.get("pages", [])
             changed = False
-            if any(page.get("status") == "ocr_failed" for page in pages):
-                for page in pages:
-                    if page.get("status") == "ocr_failed":
-                        page["status"] = "pending_ocr"
-                        page.setdefault("ocr", {})["attempts"] = 0
+            for page in pages:
+                if page.get("status") == "ocr_failed" and not request_outcome_unknown(page.get("ocr", {})):
+                    preserve_previous_page_attempt(page)
+                    page["status"] = "pending_ocr"
+                    page.setdefault("ocr", {})["attempts"] = 0
+                    changed = True
+            if changed:
                 manifest["quality"] = pdf_quality(pages)
-                changed = True
             for asset in assets(manifest):
-                if asset["asset_status"] == "ocr_failed":
+                if asset["asset_status"] == "ocr_failed" and not request_outcome_unknown(
+                    asset.get("ocr", {})
+                ):
+                    preserve_previous_asset_attempt(asset)
                     asset["asset_status"] = "pending_vision"
                     asset.setdefault("ocr", {})["attempts"] = 0
                     asset.pop("error", None)

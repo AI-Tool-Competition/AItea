@@ -9,6 +9,51 @@ from .db import dump
 from .vision import MAX_ERROR_RESPONSE_BYTES
 
 
+def request_outcome_unknown(metadata):
+    """Inspect current requests only; prior resolved history is not a new hold."""
+    if not isinstance(metadata, dict):
+        return True
+    outcomes = ("unknown_transport_result", "unknown_after_interruption")
+    recovery = metadata.get("recovery")
+    regions = recovery.get("regions", []) if isinstance(recovery, dict) else []
+    if not isinstance(regions, list) or any(not isinstance(region, dict) for region in regions):
+        return True
+    for record in (metadata, *regions):
+        envelope = record.get("error_response")
+        if record.get("request_outcome") in outcomes or (
+            isinstance(envelope, dict) and envelope.get("request_outcome") in outcomes
+        ):
+            return True
+    return False
+
+
+def preserve_previous_asset_attempt(asset):
+    """Retain failed native-image evidence before an explicit retry resets it."""
+    metadata = asset.get("ocr") or {}
+    if not (metadata.get("attempts") or metadata.get("request_id")):
+        return
+    history = asset.get("ocr_attempt_history", [])
+    if not isinstance(history, list) or len(history) >= 3:
+        raise ValueError("原生图片识别尝试历史已达到上限或格式无效")
+    previous = {key: deepcopy(value) for key, value in asset.items() if key != "ocr_attempt_history"}
+    raw = json.dumps(
+        previous, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    if len(raw) > 2 * 1024 * 1024:
+        raise ValueError("原生图片识别尝试检查点超过存储限额")
+    asset["ocr_attempt_history"] = [
+        *deepcopy(history),
+        {
+            "protocol": "ocr-asset-attempt-history-v1",
+            "source_hash": asset["source_hash"],
+            "asset_key": asset["asset_key"],
+            "input_identity": asset["input_identity"],
+            "previous_asset_sha256": hashlib.sha256(raw).hexdigest(),
+            "previous_asset": previous,
+        },
+    ]
+
+
 def preserve_previous_page_attempt(page):
     """Append a bounded prior checkpoint before replacing request metadata."""
     metadata = page.get("ocr") or {}

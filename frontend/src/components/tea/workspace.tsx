@@ -384,7 +384,7 @@ export function Workspace({
           className="tea-workspace-panel-trigger"
           variant="ghost"
           size="icon"
-          style={{ position: "absolute", top: 8, right: 8, left: "auto" }}
+          style={{ position: "absolute", top: 8, right: 20, left: "auto" }}
           aria-label="展开业务工作区"
           aria-expanded={overlay ? mobileOpen : panelOpen}
           onClick={() => {

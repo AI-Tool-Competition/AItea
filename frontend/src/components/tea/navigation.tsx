@@ -98,6 +98,7 @@ export function TeaNavigation({
 }: Props) {
   const { open, isMobile, setOpenMobile } = useSidebar();
   const [more, setMore] = useState(false);
+  const [businessExpanded, setBusinessExpanded] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set([stageId]),
   );
@@ -126,47 +127,66 @@ export function TeaNavigation({
         </div>
         <SidebarMenu>
           <SidebarMenuItem>
-            <DropdownMenu modal={!isMobile}>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  className="tea-business-switch"
-                  tooltip={business?.title ?? "选择出口业务"}
-                  aria-label="切换业务"
-                >
-                  <FolderOpen />
-                  <span className="tea-business-switch-name">
-                    {business?.title ?? "选择出口业务"}
-                  </span>
-                  <ChevronDown className="ml-auto shrink-0" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                sideOffset={5}
-                className="tea-business-switch-menu"
+            <div className="tea-business-switch-row">
+              <button
+                className="tea-business-folder-toggle"
+                aria-label={`${businessExpanded ? "收起" : "展开"}业务节点`}
+                aria-expanded={businessExpanded}
+                aria-controls="tea-business-nodes"
+                onClick={() => setBusinessExpanded((value) => !value)}
               >
-                {cases.map((item) => (
-                  <DropdownMenuItem
-                    key={item.id}
-                    onSelect={() => navigate(() => onCase(item.id))}
+                <ChevronDown
+                  size={14}
+                  className={businessExpanded ? "" : "-rotate-90"}
+                />
+              </button>
+              <DropdownMenu modal={!isMobile}>
+                <DropdownMenuTrigger asChild>
+                  <SidebarMenuButton
+                    className="tea-business-switch"
+                    tooltip={business?.title ?? "选择出口业务"}
+                    aria-label="切换业务"
                   >
-                    <span className="tea-business-option">{item.title}</span>
-                    {item.id === caseId && <Check size={14} />}
+                    <FolderOpen />
+                    <span className="tea-business-switch-name">
+                      {business?.title ?? "选择出口业务"}
+                    </span>
+                    <ChevronDown className="ml-auto shrink-0" />
+                  </SidebarMenuButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  sideOffset={5}
+                  className="tea-business-switch-menu"
+                >
+                  {cases.map((item) => (
+                    <DropdownMenuItem
+                      key={item.id}
+                      onSelect={() => navigate(() => onCase(item.id))}
+                    >
+                      <span className="tea-business-option">{item.title}</span>
+                      {item.id === caseId && <Check size={14} />}
+                    </DropdownMenuItem>
+                  ))}
+                  {cases.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem onSelect={() => navigate(onCreate)}>
+                    <Plus size={15} />
+                    新建业务
                   </DropdownMenuItem>
-                ))}
-                {cases.length > 0 && <DropdownMenuSeparator />}
-                <DropdownMenuItem onSelect={() => navigate(onCreate)}>
-                  <Plus size={15} />
-                  新建业务
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
         {open || isMobile ? (
-          <SidebarGroup className="tea-node-folders" aria-label="当前业务节点">
+          <SidebarGroup
+            id="tea-business-nodes"
+            className="tea-node-folders"
+            aria-label="当前业务节点"
+            hidden={!businessExpanded}
+          >
             {recordLoading && (
               <p role="status" className="tea-business-loading">
                 正在读取节点…

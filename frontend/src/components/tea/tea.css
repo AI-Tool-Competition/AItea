@@ -680,6 +680,9 @@
   width: 40px !important;
   height: 40px !important;
   bottom: 9px !important;
+  left: auto !important;
+  right: 20px !important;
+  transform: none !important;
 }
 .tea-chat-welcome {
   padding-block: 24px 48px;
@@ -4282,6 +4285,28 @@
   padding: 10px 12px;
   gap: 9px;
 }
+.tea-business-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-inline: 8px;
+}
+.tea-business-folder-toggle {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 36px;
+  flex: none;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.tea-business-folder-toggle:hover {
+  background: var(--sidebar-accent);
+}
+.tea-navigation .tea-business-switch-row > [data-slot="sidebar-menu-button"] {
+  flex: 1;
+  min-width: 0;
+}
 .tea-navigation .tea-business-switch-name {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -4304,7 +4329,12 @@
 }
 .tea-node-folders {
   gap: 5px;
-  padding: 14px 8px;
+  margin-left: 8px;
+  padding: 8px 8px 8px 6px;
+  border-left: 1px solid var(--border);
+}
+.tea-node-folders[hidden] {
+  display: none;
 }
 .tea-node-folder {
   min-width: 0;
@@ -4418,7 +4448,7 @@
   left: 8px;
 }
 .tea-workspace-panel-trigger {
-  right: 8px;
+  right: 20px;
 }
 .tea-node-workspace.tea-panel-hidden .tea-conversation-content {
   padding-top: 64px;

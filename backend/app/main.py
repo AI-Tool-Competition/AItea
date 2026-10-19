@@ -19,6 +19,7 @@ from .request_limits import RequestLimitMiddleware
 from .auth import COOKIE, Auth
 from .db import uid
 from .service import MAX_UPLOAD, AppError, Service, fail
+from .system_library import BackgroundWorkerScope
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 logger = logging.getLogger(__name__)
@@ -26,10 +27,12 @@ logger = logging.getLogger(__name__)
 
 def create_app(data_dir=None, *, enable_scheduler=None):
     is_test = data_dir is not None
+    worker_scope = BackgroundWorkerScope(os.getenv("TEA_SHARED_LIBRARY_WORKERS", "internal").strip().lower())
     service = Service(
         data_dir or os.getenv("TEA_DATA_DIR", str(Path(__file__).resolve().parents[2] / "data"))
     )
     auth = Auth(service)
+    service.collection.worker_health["shared_library_workers"] = worker_scope.shared_library_workers
     if not is_test:
         auth.ensure_default_admin()
 
@@ -44,8 +47,8 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         from .scheduler import start_scheduler, stop_scheduler
 
         enabled = enable_scheduler if enable_scheduler is not None else not is_test
-        handle = start_scheduler(service, enabled=enabled)
-        workers = CollectionWorkers(service.collection).start() if enabled else None
+        handle = start_scheduler(service, enabled=enabled, **worker_scope.kwargs())
+        workers = CollectionWorkers(service.collection, **worker_scope.kwargs()).start() if enabled else None
         try:
             yield
         finally:

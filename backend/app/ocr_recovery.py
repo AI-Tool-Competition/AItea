@@ -177,8 +177,9 @@ def plan_regions(content: bytes | None, page: dict, archive_path=None, archive_s
 
 def _plan_regions_input(content, page: dict, page_limit: int) -> list[dict]:
     import pypdfium2 as pdfium
+    from .native_anchor_evidence import filter_offpage_amount_anchors
 
-    native = number_anchors(page.get("native_text", ""))
+    native, _ = filter_offpage_amount_anchors(page, number_anchors(page.get("native_text", "")))
     old = number_anchors(page.get("text", ""))
     tasks = []
     with pdfium.PdfDocument(content) as document:

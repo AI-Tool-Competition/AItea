@@ -193,6 +193,9 @@ def validate_ocr_page(page: dict) -> None:
     if "\ufffd" in transcribed:
         warnings.append("ocr_decode_replacement")
     anchors = [number_anchors(text) for text in (native, transcribed)]
+    from .native_anchor_evidence import filter_offpage_amount_anchors
+
+    anchors[0], _ = filter_offpage_amount_anchors(page, anchors[0])
     for anchor in anchors[0]:
         if not anchor_present(anchor, anchors[1]):
             if not _number_verified(page, anchor, anchors[1]):

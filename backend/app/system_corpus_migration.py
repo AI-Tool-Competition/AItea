@@ -215,8 +215,15 @@ def export_system_corpus(source_dir, snapshot_dir):
     digest = _backup(source_dir / "tea.sqlite3", snapshot_dir / "tea.sqlite3")
     with closing(_readonly(snapshot_dir / "tea.sqlite3")) as conn:
         scope = _scope(conn)
+        if scope["schema_version"] >= 19:
+            _require(
+                not conn.execute(
+                    "SELECT 1 FROM collection_recovery_jobs WHERE owner_id=? LIMIT 1", (SYSTEM_OWNER_ID,)
+                ).fetchone(),
+                "recovery_ledger_requires_full_backup_restore",
+            )
     _principal(scope, required=True)
-    _require(scope["schema_version"] in (15, 16, 17, 18), "source_schema15_to18_required")
+    _require(scope["schema_version"] in (15, 16, 17, 18, 19), "source_schema15_to19_required")
     inventory = _inventory(source_dir)
     report = {
         "protocol": PROTOCOL,

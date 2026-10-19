@@ -244,6 +244,28 @@ def snapshot(source, tmp_path):
     return path
 
 
+def test_subset_export_refuses_to_drop_system_recovery_history(pair, tmp_path):
+    from app.collection_recovery import Decision
+
+    source, _target, docs = pair
+    document = docs["a"]
+    with source.db.transaction() as conn:
+        source.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": SYSTEM_OWNER_ID, "phase": "embed", "attempts": 3},
+            processing=True,
+            decision=Decision("paid_result_unknown"),
+            exhausted=True,
+        )
+        before = [tuple(row) for row in conn.execute("SELECT * FROM collection_recovery_events")]
+    with pytest.raises(
+        module.SystemCorpusMigrationError, match="recovery_ledger_requires_full_backup_restore"
+    ):
+        module.export_system_corpus(source.db.data_dir, tmp_path / "blocked-subset")
+    with closing(source.db.connect()) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT * FROM collection_recovery_events")] == before
+
+
 def test_schema9_upgrade_preserves_private_business_and_exact_ids_proofs_and_vectors(pair, tmp_path):
     source, target, docs = pair
     before = private_state(target)
@@ -258,7 +280,7 @@ def test_schema9_upgrade_preserves_private_business_and_exact_ids_proofs_and_vec
         result["target_writes"] == 6
         and result["true_vectors"] == 2
         and result["relations"] == 3
-        and result["target_schema_after"] == 18
+        and result["target_schema_after"] == 19
     )
     after = private_state(target)
     after["users"] = [row for row in after["users"] if row[0] != SYSTEM_OWNER_ID]
@@ -430,7 +452,7 @@ def test_late_copy_failure_rolls_back_only_corpus_and_keeps_backup_upgrade(pair,
     assert private_state(target) == before
     with closing(target.db.connect()) as conn:
         assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
-        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 18
+        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 19
     backups = list((target.db.data_dir / "migration-backups").glob("*/tea.sqlite3"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as conn:

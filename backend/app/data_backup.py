@@ -25,7 +25,7 @@ from .db import now, uid
 from .system_corpus_migration import SystemCorpusMigrationError, _cas_reference
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 18
+SUPPORTED_SCHEMA_VERSION = 19
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -164,11 +164,19 @@ def _database_check(path, *, primary=False):
             _require(type(version) is int and 1 <= version <= SUPPORTED_SCHEMA_VERSION, "unsupported_schema")
             if version >= 16:
                 try:
-                    conn.execute(
-                        "SELECT user_id,can_login,is_admin,revision FROM user_access LIMIT 0"
-                    )
+                    conn.execute("SELECT user_id,can_login,is_admin,revision FROM user_access LIMIT 0")
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("account_access_schema_incomplete") from exc
+            if version >= 19:
+                try:
+                    conn.execute(
+                        "SELECT id,owner_id,queue_kind,item_id,phase,status,reason,available_at,binding,binding_sha256,retry_plan,revision FROM collection_recovery_jobs LIMIT 0"
+                    )
+                    conn.execute(
+                        "SELECT id,recovery_id,event,detail,created_at FROM collection_recovery_events LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("collection_recovery_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")
@@ -284,6 +292,11 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
                 raise DataBackupError(str(exc)) from exc
             except (json.JSONDecodeError, RecursionError) as exc:
                 raise DataBackupError("invalid_document_manifest") from exc
+        if "collection_recovery_events" in _tables(conn):
+            for row in conn.execute(
+                "SELECT e.detail,r.owner_id FROM collection_recovery_events e JOIN collection_recovery_jobs r ON r.id=e.recovery_id"
+            ):
+                _manifest_cas(json.loads(row[0]), files, prefix=prefix, owner=row[1])
     return count
 
 

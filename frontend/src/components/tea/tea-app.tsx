@@ -756,7 +756,6 @@ export function TeaApp({
           setView("workspace");
         }}
         onCreateConversation={(id) => void createConversation(id)}
-        libraryCaseId={libraryCaseId}
         onNavigate={(next) => {
           setUploadedDocument(undefined);
           if (next === "studio") router.push("/tea/admin/workflow");
@@ -770,12 +769,6 @@ export function TeaApp({
           setConversationId("guide");
           setStageId(id);
           setView("workspace");
-        }}
-        onLibrary={(id) => {
-          setUploadedDocument(undefined);
-          selectCase(id);
-          setLibraryCaseId(id);
-          setView("library");
         }}
         onCreate={() => setCreateOpen(true)}
       />

@@ -28,6 +28,27 @@ def service(tmp_path):
     return value
 
 
+def test_library_country_directory_is_readable_without_collection_admin_access(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path, enable_scheduler=False)) as client:
+        assert client.get("/api/tea/library/countries").status_code == 401
+        users = []
+        for _ in range(2):
+            account = client.post("/api/tea/auth/demo", json={})
+            assert account.status_code == 200
+            users.append(account.json()["id"])
+            directory = client.get("/api/tea/library/countries")
+            assert directory.status_code == 200
+            assert directory.json() == {"items": [{"country": "ID"}, {"country": "SG"}], "total": 2}
+            assert client.get("/api/tea/collection-plans").status_code == 403
+            assert client.get("/api/tea/collection-plans/indonesia-20261003").status_code == 403
+            assert client.get("/api/tea/sources").status_code == 403
+            client.post("/api/tea/auth/logout")
+        assert users[0] != users[1]
+        with closing(sqlite3.connect(tmp_path / "tea.sqlite3")) as conn:
+            for table in ("sources", "checklist_bindings", "collection_runs", "documents"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
 def original(
     service,
     key,

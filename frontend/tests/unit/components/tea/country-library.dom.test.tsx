@@ -58,7 +58,7 @@ function pathOf(url: RequestInfo | URL) {
 }
 function read(url: RequestInfo | URL) {
   const path = pathOf(url);
-  if (path.endsWith("/collection-plans")) return response(plans);
+  if (path.endsWith("/library/countries")) return response(plans);
   if (path.includes("/relations")) return response({ items: [], total: 0 });
   if (path.includes("/documents/law")) return response({ document: law });
   return response({ items: [law], total: 1 });

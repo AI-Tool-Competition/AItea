@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { errorMessage, teaRequest } from "./api";
-import { type CollectionBlueprintSummary, type ListResult } from "./types";
+import { type LibraryCountry, type ListResult } from "./types";
 
 export function countryLabel(country: string) {
   return (
@@ -16,7 +16,7 @@ export function countryLabel(country: string) {
   );
 }
 
-// Read only the available plan metadata. Never infer a document country from tags.
+// Read the authenticated country directory without requesting admin collection plans.
 export function useCollectionCountries(ownerId?: string, enabled = true) {
   const [data, setData] = useState<{ ownerId?: string; countries: string[] }>();
   const [error, setError] = useState("");
@@ -25,7 +25,7 @@ export function useCollectionCountries(ownerId?: string, enabled = true) {
     if (!enabled) return;
     const abort = new AbortController();
     setError("");
-    teaRequest<ListResult<CollectionBlueprintSummary>>("/collection-plans", {
+    teaRequest<ListResult<LibraryCountry>>("/library/countries", {
       signal: abort.signal,
     })
       .then((result) => {

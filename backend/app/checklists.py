@@ -244,6 +244,10 @@ class ChecklistService:
             "total": len(self.plans),
         }
 
+    def library_countries(self):
+        countries = sorted({plan["country"] for plan in self.plans.values()})
+        return {"items": [{"country": country} for country in countries], "total": len(countries)}
+
     def binding(self, conn, owner, plan, item):
         return conn.execute(
             "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=? AND item_id=?",

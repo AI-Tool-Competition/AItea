@@ -730,6 +730,10 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     ):
         return service.collection.runs(current["id"], id, limit, offset)
 
+    @app.get("/api/tea/library/countries", response_model=models.LibraryCountryList)
+    def library_countries(current=Depends(user)):
+        return service.checklists.library_countries()
+
     @app.get("/api/tea/collection-plans")
     def collection_plans(current=Depends(admin_user)):
         return service.checklists.catalog()

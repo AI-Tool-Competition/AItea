@@ -9,6 +9,7 @@ import {
   relationDrafts,
   type RelationDraft,
 } from "@/core/tea/collection-drafts";
+import { countryLabel } from "@/core/tea/countries";
 import {
   type Document,
   type DocumentDetail,
@@ -18,6 +19,31 @@ import {
 
 import { DocumentChooser } from "./document-chooser";
 import { ActionButton, Busy, ErrorNotice } from "./shared";
+
+function RelationLocator({ value }: { value: string }) {
+  let evidence: Record<string, unknown> | undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      evidence = parsed as Record<string, unknown>;
+  } catch {
+    // Manually entered locations are plain text.
+  }
+  if (!evidence) return value ? <small>{value}</small> : null;
+  return (
+    <>
+      {typeof evidence.locator === "string" && (
+        <small>{evidence.locator}</small>
+      )}
+      <details className="mt-2 text-xs">
+        <summary className="cursor-pointer">查看来源与版本记录</summary>
+        <pre className="mt-2 break-all whitespace-pre-wrap">
+          {JSON.stringify(evidence, null, 2)}
+        </pre>
+      </details>
+    </>
+  );
+}
 
 export function DocumentRelations({
   document,
@@ -259,7 +285,7 @@ export function DocumentRelations({
           const incoming = item.target_document_id === document.id;
           return (
             <article key={item.id} className="ta-relation-row">
-              <span className="ta-badge">
+              <span className="ta-badge shrink-0 whitespace-nowrap">
                 {item.relation === "cites"
                   ? incoming
                     ? "被引用"
@@ -280,10 +306,10 @@ export function DocumentRelations({
                   {incoming ? item.source_version : item.target_version}
                 </button>
                 <small>
-                  {item.collection} · 本文 v
-                  {incoming ? item.target_version : item.source_version}
-                  {item.locator ? ` · ${item.locator}` : ""}
+                  {document.country ? countryLabel(document.country) : "资料库"}{" "}
+                  · 本文 v{incoming ? item.target_version : item.source_version}
                 </small>
+                <RelationLocator value={item.locator} />
               </div>
             </article>
           );

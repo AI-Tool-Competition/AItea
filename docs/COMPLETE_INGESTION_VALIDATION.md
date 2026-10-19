@@ -2,7 +2,39 @@
 
 本轮沿用两份已冻结清单，在 `feature/id-sg-complete-ingestion` 独立工作树执行。这里记录已验证成果与剩余缺口；目录枚举、原件下载、正文完整、向量完成和法规审核分别计数，不能相互替代。正式实例的既有用户资料没有被本轮测试覆盖；新增采集保存在隔离总库，尚未切换正式实例，全部恢复原件仍为草稿。
 
-## 存储与交接
+## 15:32 UTC 增量检查点
+
+本节覆盖下文较早的 2,046 份检查点。系统草稿库现有 3,653 份原件：ID 1,063、SG 2,590；法规一级 3,594、二级 59。分级按 `legal_classifications.level` 统计，不能拿顶层文件的 `documents.role` 代替。2,184 份正文完整、1,469 份不完整；16,727 条真实向量、584 条版本绑定关系。OCR 与向量仍在运行，数字固定对应读取时刻；来源目录范围和法律审核尚未完成。
+
+本次增量含 208 份 Setneg、1,399 份 eGazette，重放全部无新增，来源及旧总库元数据、已生成向量均保留。两个已有 Setneg 原件只作为明确的关系依赖绑定，导入不重写其正文、处理租约或付费检查点。一个 200 份大批次曾阻塞模型任务的数据库心跳；已改用每批 40 份，并对回滚后的本地忙事务做有界重试。后续 800 份实导入最长事务 8.50 秒；独立 17 秒占锁验证确认租约续期恢复且没有调用模型或增加任务尝试数。
+
+完整备份已存于项目 `backups/id-sg-expanded-20261019-3653`，与活动数据位于不同物理磁盘；9,748 个 payload 文件、6,230,709,013 字节，清单 SHA `741d0b672aec1c2701f70d40efd858dbd1cc9d07ef528795fdc68717db1f98f5`。备份对应 3,653 份文档、15,763 条向量、584 条关系。实际恢复到 `recovery/restore-proof-3653` 后，全表逐行比较及全部原件的 3,090,271,879 字节重新计算 SHA 通过；仅重定位 3,653 个原件路径并释放 17 个暂态租约，正文、索引、向量和历史字节保留。此检查点可直接恢复，不再需要拼接旧 1,889 基线与 157 增量；旧备份仍保留。
+
+运行状态另外保存在项目相邻的 `id-sg-expanded-20261019-3653-runtime` 与 `id-sg-expanded-20261019-3653-ocr-runtime`。前者在线备份 3,868 条成功向量回执并保留完整 JSONL 前缀，实恢复后复用 16 个输入、零模型请求；后者保存原 991 份识别范围、初始页证据、运行记录和未知结果隔离清单，共 1,081 个文件、115,686,698 字节。模型配置私有保存，不提交 Git。应用库和运行文件是不同时间点的快照；之后的新原件与模型结果需要下一次备份，当前不是异地备份。
+
+项目 `backups/id-sg-catalog-20261019-3653/` 另存可筛选的 `documents.csv`、`relations.csv` 和用途说明；原始只读库存快照为 `recovery/system-library-expanded/catalogs/20261019T154225.280590Z-8faa75196d314eb28c8b71c636c4d829`。3,653 个备份原件路径及 584 条关系两端版本均核对通过，库存结构异常为零；该目录不嵌入原件，也不代表正文、向量或全站覆盖完成。迁移步骤保存在项目 `backups/id-sg-expanded-20261019-3653-MIGRATION.md`。
+
+向量执行固定原 621 份完整一级资料，含 44 份超过 128 个切片的大文，新增导入不改变分母。真实并发从 4 提至 64 后发现限流，32 路后续还发生网关故障；保留全部成功响应、未知结果和 76 条历史重复输入发送记录，已修复停止后的隐式重发。恢复时 16 路持续 146/146 请求成功，再提高到 24 路持续 284/284 请求成功；更高档按实测吞吐继续验证。详细配置和限制见 [向量运行记录](EMBEDDING_OPERATIONS.md)。
+
+原生解析新增精确的装饰 Form 识别：两个真实 PDF 隔离验证中，6 个待识别页可直接接受已有文字，原件与物理页身份不变。隐藏 Bill 文本的两页反例及《Food Safety and Security Act》第 2 页仍被可见性检查拒绝。随后 366 份实际新解析资料的 6,596 页没有命中装饰 Form 放行，待 OCR 仍为 422 页，不能外推样本收益。旧付费或冻结结果未重写。eGazette 的 116 个分区已按官方精确总数全部对账，原先 6 个分区缺口已解决；27,124 个唯一 URL 的原件下载仍在继续。
+
+Setneg 又固定 1,426 份尚无物理页的来源原件，334.431 秒内以最高 16 个受限解析进程完成两次进程接续验证。1,425 份建立共 59,672 个物理页检查点，394 份正文完整，46,953 页仍待图片识别；一份智利关税附件在解析进程/结果限制处失败，尚无完整页映射。原 844 个识别页、3,612 条向量及 645 份已有完成向量或失败任务逐项保留，零模型/网络调用。这批仅更新来源库，未导入上述 3,653 份系统库；证据为 `campaigns/id/setneg-native-round4/report.json`。
+
+该智利关税附件随后经受限页数检查确认为 191 页；将每窗口缩至 16 页，以 8 个受限进程在 19.896 秒保存完整 191 页分片，均仍待 OCR，原失败检查点未改写。分片位于 `recovery/chile-tariff-native-shards`，根 SHA `eadbfe5dd76c8722314636f1484d6108eb16be3cf779e9b0c3945c3e33fccfe2`；它与 LKPP 的分片一样尚未接入应用正文和 RAG，不能算该原件已可检索。
+
+独立证据位于溢出根：
+
+- `recovery/system-library-expanded/verification-setneg-round3-208-with-dependencies/report.json`
+- `recovery/system-library-expanded/verification-sg-round3-batches002-003-small-transactions/report.json`
+- `recovery/system-library-expanded/verification-sg-round3-batches004-007-small-transactions/report.json`
+- `recovery/restore-proof-3653-verification/report.json`
+- `recovery/runtime-3653-restore-proof/report.json`
+- `campaigns/sg/egazette-legislative-round3-full/visibility-audit-20261019/decorative-form-reparse/report.json`
+- `campaigns/sg/egazette-legislative-round3-full/visibility-audit-20261019/food-act-hidden-bill-negative/report.json`
+
+上一轮 2,716 项后端测试通过后，完整检查曾被一处导入格式规则拦住；修复后的 `95b439f` 已重新通过 `make check`：2,760 项后端测试（1,055.55 秒）、Ruff、前端类型及 201 项交互测试。唯一后端提示为已有 TestClient/httpx 弃用警告，日志 `tests/integrated-95b439f-make-check.log`。生产构建亦通过，使用与工作树逐文件一致的 1,313 个前端文件和 Makefile 独立磁盘副本；构建前后源码 SHA 相同，证据 `tests/build-95b439f-source-proof-after.json`。镜像目录缺少 Git 元数据产生 Nextra 警告，不影响编译与页面生成；未据此宣称完成部署验收。
+
+## 早期存储与交接
 
 用户明确授权项目磁盘不足时使用其他可写磁盘。本轮溢出根为 `/var/tmp/aitea-wenbo/id-sg-20261019`，权限 `0700`。运行配置单独存于 `config/`，权限 `0600`，不进入 Git 或数据备份；任何日志均不应打印密钥。早期实验使用 `models.env`；12:19 后的识别使用从正式项目当前配置复制的 `models-current-20261019T1219.env`，旧快照保留供历史实验追溯。两份配置的 embedding 指纹一致。当前私有模型配置另以 `0600` 权限保存到正式项目的 `backups/id-sg-config-20261019/models-current.env`，与数据包分开保管，不能提交 Git。
 
@@ -32,7 +64,7 @@ Setneg 与 eGazette 来源库另有独立检查点。新加坡 935 份当前模�
 
 早期 155 份备份包含 813 个文件、496,459,871 字节、结构版本 18；清单 SHA-256 为 `f48ad7a1d0e9a4ef40acd786d671bd99bbab6b6d282d9ab167e556078d29c285`。备份及迁移命令见 [DATA_BACKUP.md](DATA_BACKUP.md)，不能直接复制运行中的 SQLite 主文件代替在线快照。原件先写入账号 CAS，再提交数据库引用；恢复时只重定位明确运行路径，保留历史证据字节。
 
-## 当前成果的边界
+## 早期检查点的范围与边界
 
 | 范围 | 已核实结果 | 仍未完成 |
 | --- | --- | --- |

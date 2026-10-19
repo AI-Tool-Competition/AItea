@@ -429,6 +429,28 @@ def _validate_retry_evidence(value, source_hash):
             _validate_retry_evidence(item, source_hash)
 
 
+def _target_import_ids(conn, target_owner, source_owner_hash, document_ids):
+    """Read provenance once in the write transaction; retain only selected IDs."""
+    selected = set(document_ids)
+    if not selected:
+        return {}
+    matches = {}
+    # Fetch only the two provenance fields, not every owner's full manifests.
+    # Streaming keeps the map bounded by the already validated source selection.
+    for row in conn.execute(
+        """SELECT id, json_extract(manifest,
+               '$.collection_import.source_owner_sha256',
+               '$.collection_import.source_document_id') AS provenance
+           FROM documents WHERE owner_id=?""",
+        (target_owner,),
+    ):
+        owner_hash, source_id = json.loads(row["provenance"])
+        if owner_hash == source_owner_hash and isinstance(source_id, str) and source_id in selected:
+            # Preserve the existing first-match behavior for duplicate markers.
+            matches.setdefault(source_id, row["id"])
+    return matches
+
+
 def _guard(conn, ident):
     doc = dict(conn.execute("SELECT * FROM documents WHERE id=?", (ident,)).fetchone())
     manifest = json.loads(doc["manifest"])
@@ -887,14 +909,18 @@ def import_collected_resources(
         digest: str(blob.path.relative_to(Path(target_dir).resolve())) for digest, blob in published.items()
     }
     identities, created, unchanged = {}, 0, 0
+    source_owner_hash = _sha(source_owner.encode())
     with service.db.transaction() as conn:
         if not conn.execute("SELECT 1 FROM users WHERE id=?", (target_owner,)).fetchone():
             raise CollectionImportError("target_owner_not_found")
+        imported_ids = _target_import_ids(
+            conn, target_owner, source_owner_hash, (doc["id"] for doc in source["documents"])
+        )
         for doc in source["documents"]:
             ident = doc["id"]
             origin = {
                 "protocol": PROTOCOL,
-                "source_owner_sha256": _sha(source_owner.encode()),
+                "source_owner_sha256": source_owner_hash,
                 "source_document_id": ident,
                 "source_family_id": doc["family_id"],
                 "source_version": doc["version"],
@@ -912,12 +938,14 @@ def import_collected_resources(
                     }
                 ).encode()
             )
-            existing = conn.execute(
-                """SELECT * FROM documents WHERE owner_id=? AND
-                   json_extract(manifest,'$.collection_import.source_owner_sha256')=? AND
-                   json_extract(manifest,'$.collection_import.source_document_id')=?""",
-                (target_owner, origin["source_owner_sha256"], ident),
-            ).fetchone()
+            existing = (
+                conn.execute(
+                    "SELECT * FROM documents WHERE id=? AND owner_id=?",
+                    (imported_ids[ident], target_owner),
+                ).fetchone()
+                if ident in imported_ids
+                else None
+            )
             if existing:
                 mark = json.loads(existing["manifest"])["collection_import"]
                 job = conn.execute(

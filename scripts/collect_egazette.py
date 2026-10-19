@@ -78,6 +78,67 @@ def load_json(path, limit=8 * 1024 * 1024):
     return json.loads(path.read_text())
 
 
+def original_attempts(output, receipt):
+    """Verify the immutable failed receipt retained before an explicit retry."""
+    history = receipt.get("previous_attempts", [])
+    count = receipt.get("attempt_count", 1)
+    if type(count) is not int or count not in (1, 2) or not isinstance(history, list):
+        raise ValueError("saved original attempt state is invalid")
+    if len(history) != count - 1:
+        raise ValueError("saved original attempt history is incomplete")
+    for entry in history:
+        if not isinstance(entry, dict):
+            raise ValueError("saved original attempt evidence is invalid")
+        digest = entry.get("sha256", "")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or entry.get("attempt") != 1
+            or type(entry.get("size")) is not int
+            or not 0 < entry["size"] <= 8 * 1024 * 1024
+        ):
+            raise ValueError("saved original attempt evidence is invalid")
+        expected = (
+            Path("files/blobs")
+            / sha256(SOURCE_OWNER.encode()).hexdigest()
+            / digest[:2]
+            / digest[2:4]
+            / digest
+        )
+        path = output / expected
+        if entry.get("path") != str(expected) or any(
+            parent.is_symlink() for parent in (path, *path.parents) if parent != output.parent
+        ):
+            raise ValueError("saved original attempt path is invalid")
+        raw = path.read_bytes() if path.is_file() and path.stat().st_size == entry["size"] else b""
+        if sha256(raw).hexdigest() != digest:
+            raise ValueError("saved original attempt evidence hash mismatch")
+        prior = json.loads(raw)
+        if (
+            not isinstance(prior, dict)
+            or prior.get("source_url") != receipt.get("source_url")
+            or prior.get("status") != "incomplete"
+            or prior.get("attempt_count", 1) != 1
+            or prior.get("previous_attempts")
+        ):
+            raise ValueError("saved original attempt belongs to a different source")
+    return history
+
+
+def retryable_original(receipt):
+    error = receipt.get("error", {})
+    message = error.get("message", "")
+    if any(f"HTTP {status}" in message for status in (400, 401, 403, 404, 405, 410, 451)):
+        return False
+    # Older receipts predate the structured retryable field; only this exact
+    # transport error is known to represent a transient connection failure.
+    legacy_timeout = (
+        error.get("type") == "DownloadError" and message == "抓取连接失败或超时，请检查来源后重试。"
+    )
+    return error.get("retryable") is True or legacy_timeout
+
+
 class GazetteCollector:
     def __init__(
         self,
@@ -477,7 +538,16 @@ class GazetteCollector:
                 documents[url]["catalog_locators"].append(locator)
         return list(documents.values())
 
-    def originals(self, rows, *, max_files, byte_budget, reuse_dirs=(), reuse_campaigns=()):
+    def originals(
+        self,
+        rows,
+        *,
+        max_files,
+        byte_budget,
+        reuse_dirs=(),
+        reuse_campaigns=(),
+        retry_incomplete=False,
+    ):
         target = self.output / "originals"
         target.mkdir(mode=0o700, exist_ok=True)
         store = BlobStore(self.output / "files", max_bytes=32 * 1024 * 1024)
@@ -522,7 +592,7 @@ class GazetteCollector:
         receipts = []
         transferred = 0
         # Reserve the maximum transfer of each in-flight file under one lock.
-        reserved, attempted = 0, 0
+        reserved, attempted, retried = 0, 0, 0
         existing_bytes = 0
         for path in target.glob("*.json"):
             receipt = load_json(path)
@@ -531,12 +601,16 @@ class GazetteCollector:
         byte_budget -= existing_bytes
 
         def fetch(row):
-            nonlocal transferred, reserved, attempted
+            nonlocal transferred, reserved, attempted, retried
             url = row["download_url"]
             key = sha256(url.encode()).hexdigest()
             receipt_path = target / (key + ".json")
+            retry_prior = None
             if receipt_path.exists():
                 receipt = load_json(receipt_path)
+                if receipt.get("source_url") != url or receipt.get("title") != row["title"]:
+                    raise ValueError("saved original belongs to different catalogue identity")
+                original_attempts(self.output, receipt)
                 if receipt["status"] in {"downloaded", "reused"}:
                     path = Path(receipt["path"])
                     if receipt["status"] == "downloaded":
@@ -549,8 +623,31 @@ class GazetteCollector:
                     ):
                         raise ValueError("saved original integrity mismatch")
                     return receipt
-                # Failed originals are durable explicit gaps; no blind retry.
-                return receipt
+                if not (
+                    retry_incomplete
+                    and receipt.get("status") == "incomplete"
+                    and receipt.get("attempt_count", 1) == 1
+                    and retryable_original(receipt)
+                ):
+                    return receipt
+                until = receipt.get("retry_not_before", receipt_path.stat().st_mtime + 60)
+                if type(until) not in (int, float) or not math.isfinite(until) or until < 0:
+                    raise ValueError("saved original retry time is invalid")
+                if until > time.time():
+                    return {
+                        **receipt,
+                        "status": "retry_pending",
+                        "retry_after_seconds": until - time.time(),
+                    }
+                try:
+                    self.check_cooldown("assets.egazette.gov.sg")
+                except HostCooling as exc:
+                    return {
+                        **receipt,
+                        "status": "cooldown_pending",
+                        "retry_after_seconds": exc.retry_after,
+                    }
+                retry_prior = receipt_path.read_bytes()
             receipt = {
                 "source_url": url,
                 "source_role": SOURCE_ROLE,
@@ -559,8 +656,23 @@ class GazetteCollector:
                 "current_effect_verified": False,
                 "legal_review": "pending",
             }
+
+            def retain_prior_attempt():
+                archived = store.put_bytes(SOURCE_OWNER, retry_prior)
+                receipt.update(
+                    attempt_count=2,
+                    previous_attempts=[{
+                        "attempt": 1,
+                        "path": str(archived.path.relative_to(self.output)),
+                        "sha256": archived.digest,
+                        "size": archived.size,
+                    }],
+                )
+
             prior = reused.get(url)
             if prior and sha256(prior["path"].read_bytes()).hexdigest() == prior["content_hash"]:
+                if retry_prior is not None:
+                    retain_prior_attempt()
                 receipt.update(
                     status="reused",
                     path=str(prior["path"]),
@@ -582,6 +694,24 @@ class GazetteCollector:
                 reserved += allowance
                 attempted += 1
             try:
+                if retry_prior is not None:
+                    retain_prior_attempt()
+                    # Reserve the sole retry durably before sending HTTP. A
+                    # crash cannot silently repeat it or erase the first error.
+                    write_json(
+                        receipt_path,
+                        {
+                            **receipt,
+                            "status": "incomplete",
+                            "error": {
+                                "type": "RetryInterrupted",
+                                "message": "retry reserved; completion not yet saved",
+                                "retryable": False,
+                            },
+                        },
+                    )
+                    with self.lock:
+                        retried += 1
 
                 def consume(chunks):
                     def checked():
@@ -630,9 +760,23 @@ class GazetteCollector:
                     "retry_after_seconds": exc.retry_after,
                 }
             except (ValueError, OSError, TimeoutError) as exc:
+                retryable = isinstance(exc, TimeoutError) or (
+                    isinstance(exc, DownloadError) and exc.retryable
+                )
                 receipt.update(
                     status="incomplete",
-                    error={"type": type(exc).__name__, "message": str(exc)[:500]},
+                    attempt_count=receipt.get("attempt_count", 1),
+                    error={
+                        "type": type(exc).__name__,
+                        "message": str(exc)[:500],
+                        "retryable": retryable,
+                    },
+                    attempted_at=datetime.now(UTC).isoformat(),
+                    retry_not_before=time.time()
+                    + max(
+                        60,
+                        (exc.retry_after or 0) if isinstance(exc, DownloadError) else 0,
+                    ),
                 )
             finally:
                 with self.lock:
@@ -676,10 +820,19 @@ class GazetteCollector:
             "downloaded": sum(x["status"] == "downloaded" for x in receipts),
             "reused": sum(x["status"] == "reused" for x in receipts),
             "pending": sum(
-                x["status"] in {"budget_pending", "storage_pending", "cooldown_pending"} for x in receipts
+                x["status"]
+                in {
+                    "budget_pending",
+                    "storage_pending",
+                    "cooldown_pending",
+                    "retry_pending",
+                }
+                for x in receipts
             ),
             "storage_pending": sum(x["status"] == "storage_pending" for x in receipts),
             "cooldown_pending": sum(x["status"] == "cooldown_pending" for x in receipts),
+            "retry_pending": sum(x["status"] == "retry_pending" for x in receipts),
+            "retry_attempts_this_run": retried,
             "failed": sum(x["status"] == "incomplete" for x in receipts),
             "new_bytes": transferred,
         }
@@ -751,6 +904,7 @@ class GazetteCollector:
                 receipt = load_json(receipt_path)
                 if receipt.get("status") not in {"downloaded", "reused"}:
                     continue
+                history = original_attempts(self.output, receipt)
                 url = original_url(receipt["source_url"])
                 row = indexed.get(url)
                 if row is None or receipt["title"] != row["title"]:
@@ -839,7 +993,9 @@ class GazetteCollector:
                         SOURCE_OWNER,
                         doc["id"],
                         MetadataPatch(
-                            expected_revision=0, kind=classification["kind"], review_status="draft"
+                            expected_revision=0,
+                            kind=classification["kind"],
+                            review_status="draft",
                         ),
                     )
                 elif metadata["metadata"]["review_status"] != "draft":
@@ -858,6 +1014,15 @@ class GazetteCollector:
                     "catalogue": catalog_proofs,
                     "download_receipt": evidence(receipt_path),
                 }
+                if history:
+                    campaign["documents"][key]["download_attempts"] = [
+                        {
+                            "attempt": entry["attempt"],
+                            "source_url": url,
+                            "receipt": evidence(self.output / entry["path"]),
+                        }
+                        for entry in history
+                    ]
                 staged += 1
                 # A crash can leave a queued document without evidence; rerunning
                 # the same URL/hash repairs its record without a new version.
@@ -900,6 +1065,11 @@ def main():
     parser.add_argument("--timeout", type=float, default=35)
     parser.add_argument("--time-budget", type=float, default=1800)
     parser.add_argument("--originals", type=int, default=0)
+    parser.add_argument(
+        "--retry-incomplete",
+        action="store_true",
+        help="Permit one durable retry of transient original failures after their saved backoff",
+    )
     parser.add_argument(
         "--confirm-counts",
         action="store_true",
@@ -998,6 +1168,7 @@ def main():
                 byte_budget=args.original_byte_budget,
                 reuse_dirs=args.reuse_source_dir,
                 reuse_campaigns=args.reuse_campaign,
+                retry_incomplete=args.retry_incomplete,
             )
             if args.originals
             else {"downloaded": 0}

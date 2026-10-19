@@ -657,6 +657,8 @@ def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=No
         if total > MAX_TOTAL_MANIFEST_BYTES:
             raise CollectionImportError("total_manifest_scope_exceeded")
         manifest = json.loads(doc["manifest"])
+        if "corpus_import_aliases" in manifest:
+            blockers.append("source_corpus_alias_history_requires_system_migration:" + ident)
         _validate_retry_evidence(manifest, doc["content_hash"])
         if "same-owner-pdf-page-reuse-v1" in doc["manifest"]:
             blockers.append("source_same_owner_OCR_reuse_unsupported:" + ident)

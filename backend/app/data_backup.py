@@ -277,7 +277,7 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
             owners.setdefault(match[1], {})[match[4]] = database.parent / Path(relative).relative_to(prefix)
     with closing(_readonly(database, immutable=True)) as conn:
         count = _storage_references(conn, source_root, files, prefix=prefix)
-        for row in conn.execute("SELECT manifest,owner_id FROM documents"):
+        for row in conn.execute("SELECT manifest,owner_id,id,content_hash FROM documents"):
             _require(len(row[0].encode()) <= 40 * 1024 * 1024, "manifest_too_large")
             try:
                 value = json.loads(row[0])
@@ -288,6 +288,16 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
                 _cas_reference(
                     value, database.parent, owners.get(hashlib.sha256(row[1].encode()).hexdigest(), {})
                 )
+                if "corpus_import_aliases" in value:
+                    from .system_corpus_merge import validate_alias_archives
+
+                    validate_alias_archives(
+                        value,
+                        row[1],
+                        owners.get(hashlib.sha256(row[1].encode()).hexdigest(), {}),
+                        document_id=row[2],
+                        content_hash=row[3],
+                    )
             except SystemCorpusMigrationError as exc:
                 raise DataBackupError(str(exc)) from exc
             except (json.JSONDecodeError, RecursionError) as exc:

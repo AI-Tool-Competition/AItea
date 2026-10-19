@@ -513,6 +513,23 @@ def test_dry_run_missing_target_never_initializes_directory(pair, tmp_path):
     assert result["blockers"] == ["target_existing_database_required"] and not path.exists()
 
 
+def test_corpus_alias_history_requires_formal_system_migration(pair):
+    src, dst = pair
+    doc = original(src)
+    with src.db.transaction() as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
+        manifest["corpus_import_aliases"] = [{"protocol": "system-corpus-alias-v1"}]
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+    before = facts(dst)
+    reason = "source_corpus_alias_history_requires_system_migration:" + doc["id"]
+    assert reason in transfer(src, dst)["blockers"]
+    with pytest.raises(CollectionImportError, match="source_corpus_alias_history_requires_system_migration"):
+        transfer(src, dst, apply=True)
+    assert facts(dst) == before
+
+
 def test_target_owner_required_without_account_creation(pair):
     src, dst = pair
     original(src)

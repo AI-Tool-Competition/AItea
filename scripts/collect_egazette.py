@@ -45,6 +45,7 @@ from collect_sso_catalog import write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_ORIGINAL_BUDGET = 10 * 1024**3
+MAX_ORIGINAL_ATTEMPTS = 8
 MIN_FREE_DISK_BYTES = 40 * 1024**3
 SOURCE_OWNER = "egazette-legislative-archive"
 SOURCE_HOSTS = frozenset({EGAZETTE_SEARCH_HOST, "assets.egazette.gov.sg"})
@@ -82,11 +83,11 @@ def original_attempts(output, receipt):
     """Verify the immutable failed receipt retained before an explicit retry."""
     history = receipt.get("previous_attempts", [])
     count = receipt.get("attempt_count", 1)
-    if type(count) is not int or count not in (1, 2) or not isinstance(history, list):
+    if type(count) is not int or not 1 <= count <= MAX_ORIGINAL_ATTEMPTS or not isinstance(history, list):
         raise ValueError("saved original attempt state is invalid")
     if len(history) != count - 1:
         raise ValueError("saved original attempt history is incomplete")
-    for entry in history:
+    for number, entry in enumerate(history, 1):
         if not isinstance(entry, dict):
             raise ValueError("saved original attempt evidence is invalid")
         digest = entry.get("sha256", "")
@@ -94,7 +95,8 @@ def original_attempts(output, receipt):
             not isinstance(digest, str)
             or len(digest) != 64
             or any(char not in "0123456789abcdef" for char in digest)
-            or entry.get("attempt") != 1
+            or type(entry.get("attempt")) is not int
+            or entry["attempt"] != number
             or type(entry.get("size")) is not int
             or not 0 < entry["size"] <= 8 * 1024 * 1024
         ):
@@ -118,9 +120,11 @@ def original_attempts(output, receipt):
         if (
             not isinstance(prior, dict)
             or prior.get("source_url") != receipt.get("source_url")
+            or prior.get("title") != receipt.get("title")
+            or prior.get("catalog_locators") != receipt.get("catalog_locators")
             or prior.get("status") != "incomplete"
-            or prior.get("attempt_count", 1) != 1
-            or prior.get("previous_attempts")
+            or prior.get("attempt_count", 1) != number
+            or prior.get("previous_attempts", []) != history[: number - 1]
         ):
             raise ValueError("saved original attempt belongs to a different source")
     return history
@@ -136,7 +140,27 @@ def retryable_original(receipt):
     legacy_timeout = (
         error.get("type") == "DownloadError" and message == "抓取连接失败或超时，请检查来源后重试。"
     )
-    return error.get("retryable") is True or legacy_timeout
+    return error.get("retryable") is True or legacy_timeout or error.get("type") == "RetryInterrupted"
+
+
+def original_retry_at(output, receipt, *, max_attempts=2):
+    """A verified GET receipt may resume only at its durable next attempt time."""
+    if type(max_attempts) is not int or not 1 <= max_attempts <= MAX_ORIGINAL_ATTEMPTS:
+        raise ValueError("original attempts must be between one and eight")
+    original_attempts(output, receipt)
+    if (
+        receipt.get("status") != "incomplete"
+        or receipt.get("attempt_count", 1) >= max_attempts
+        or not retryable_original(receipt)
+    ):
+        return None
+    until = receipt.get("retry_not_before")
+    if until is None:
+        path = output / "originals" / (sha256(receipt["source_url"].encode()).hexdigest() + ".json")
+        until = path.stat().st_mtime + min(3600, 60 * 2 ** (receipt.get("attempt_count", 1) - 1))
+    if type(until) not in (int, float) or not math.isfinite(until) or until < 0:
+        raise ValueError("saved original retry time is invalid")
+    return until
 
 
 class GazetteCollector:
@@ -166,6 +190,13 @@ class GazetteCollector:
             for host, until in self.cooldowns.items()
         ):
             raise ValueError("saved official host cooldown state is invalid")
+        failure_path = output / "network-failure-streak.json"
+        self.failures = load_json(failure_path, limit=4096) if failure_path.exists() else {}
+        if not isinstance(self.failures, dict) or any(
+            host not in SOURCE_HOSTS or type(count) is not int or not 0 <= count <= 1_000_000
+            for host, count in self.failures.items()
+        ):
+            raise ValueError("saved official host failure state is invalid")
 
     def check_cooldown(self, host):
         with self.lock:
@@ -174,22 +205,35 @@ class GazetteCollector:
             raise HostCooling(host, delay)
 
     def fetch(self, url, **kwargs):
-        self.check_cooldown(urlsplit(url).hostname)
+        host = urlsplit(url).hostname
+        self.check_cooldown(host)
         try:
-            return _download(url, **kwargs)
+            response = _download(url, **kwargs)
         except DownloadError as exc:
             if isinstance(exc, HostCooling):
                 raise
             delay = exc.retry_after
             if delay is None and exc.retryable and "HTTP 429" in str(exc):
                 delay = 60.0
-            if exc.response_host in SOURCE_HOSTS and delay is not None:
+            failed_host = exc.response_host or host
+            if failed_host in SOURCE_HOSTS and exc.retryable:
                 with self.lock:
-                    self.cooldowns[exc.response_host] = max(
-                        self.cooldowns.get(exc.response_host, 0), time.time() + delay
-                    )
-                    write_json(self.output / "network-state.json", self.cooldowns)
+                    streak = min(1_000_000, self.failures.get(failed_host, 0) + 1)
+                    self.failures[failed_host] = streak
+                    if streak >= 3:
+                        delay = max(delay or 0, min(3600, 60 * 2 ** min(streak - 3, 6)))
+                    if delay is not None:
+                        self.cooldowns[failed_host] = max(
+                            self.cooldowns.get(failed_host, 0), time.time() + delay
+                        )
+                        write_json(self.output / "network-state.json", self.cooldowns)
+                    write_json(self.output / "network-failure-streak.json", self.failures)
             raise
+        with self.lock:
+            if self.failures.get(host, 0):
+                self.failures[host] = 0
+                write_json(self.output / "network-failure-streak.json", self.failures)
+        return response
 
     @contextmanager
     def slot(self, host):
@@ -219,7 +263,9 @@ class GazetteCollector:
 
     def page(self, target, filters, page, *, page_size=None, confirm_count=False):
         body = search_body(
-            page=page, page_size=self.page_size if page_size is None else page_size, filters=filters
+            page=page,
+            page_size=self.page_size if page_size is None else page_size,
+            filters=filters,
         )
         if confirm_count:
             if page != 0 or page_size != 1:
@@ -547,7 +593,10 @@ class GazetteCollector:
         reuse_dirs=(),
         reuse_campaigns=(),
         retry_incomplete=False,
+        max_attempts=2,
     ):
+        if type(max_attempts) is not int or not 1 <= max_attempts <= MAX_ORIGINAL_ATTEMPTS:
+            raise ValueError("original attempts must be between one and eight")
         target = self.output / "originals"
         target.mkdir(mode=0o700, exist_ok=True)
         store = BlobStore(self.output / "files", max_bytes=32 * 1024 * 1024)
@@ -623,16 +672,9 @@ class GazetteCollector:
                     ):
                         raise ValueError("saved original integrity mismatch")
                     return receipt
-                if not (
-                    retry_incomplete
-                    and receipt.get("status") == "incomplete"
-                    and receipt.get("attempt_count", 1) == 1
-                    and retryable_original(receipt)
-                ):
+                until = original_retry_at(self.output, receipt, max_attempts=max_attempts)
+                if not retry_incomplete or until is None:
                     return receipt
-                until = receipt.get("retry_not_before", receipt_path.stat().st_mtime + 60)
-                if type(until) not in (int, float) or not math.isfinite(until) or until < 0:
-                    raise ValueError("saved original retry time is invalid")
                 if until > time.time():
                     return {
                         **receipt,
@@ -658,15 +700,20 @@ class GazetteCollector:
             }
 
             def retain_prior_attempt():
+                prior_receipt = json.loads(retry_prior)
+                prior_count = prior_receipt.get("attempt_count", 1)
                 archived = store.put_bytes(SOURCE_OWNER, retry_prior)
                 receipt.update(
-                    attempt_count=2,
-                    previous_attempts=[{
-                        "attempt": 1,
-                        "path": str(archived.path.relative_to(self.output)),
-                        "sha256": archived.digest,
-                        "size": archived.size,
-                    }],
+                    attempt_count=prior_count + 1,
+                    previous_attempts=[
+                        *prior_receipt.get("previous_attempts", []),
+                        {
+                            "attempt": prior_count,
+                            "path": str(archived.path.relative_to(self.output)),
+                            "sha256": archived.digest,
+                            "size": archived.size,
+                        },
+                    ],
                 )
 
             prior = reused.get(url)
@@ -696,8 +743,8 @@ class GazetteCollector:
             try:
                 if retry_prior is not None:
                     retain_prior_attempt()
-                    # Reserve the sole retry durably before sending HTTP. A
-                    # crash cannot silently repeat it or erase the first error.
+                    # Reserve this attempt durably before sending HTTP. A
+                    # restart may only create a later, bounded attempt.
                     write_json(
                         receipt_path,
                         {
@@ -706,8 +753,11 @@ class GazetteCollector:
                             "error": {
                                 "type": "RetryInterrupted",
                                 "message": "retry reserved; completion not yet saved",
-                                "retryable": False,
+                                "retryable": True,
                             },
+                            "attempted_at": datetime.now(UTC).isoformat(),
+                            "retry_not_before": time.time()
+                            + min(3600, 60 * 2 ** (receipt["attempt_count"] - 1)),
                         },
                     )
                     with self.lock:
@@ -758,6 +808,8 @@ class GazetteCollector:
                     **receipt,
                     "status": "cooldown_pending",
                     "retry_after_seconds": exc.retry_after,
+                    "retry_not_before": time.time() + exc.retry_after,
+                    "error": {"type": "HostCooling", "retryable": True},
                 }
             except (ValueError, OSError, TimeoutError) as exc:
                 retryable = isinstance(exc, TimeoutError) or (
@@ -774,7 +826,7 @@ class GazetteCollector:
                     attempted_at=datetime.now(UTC).isoformat(),
                     retry_not_before=time.time()
                     + max(
-                        60,
+                        min(3600, 60 * 2 ** (receipt.get("attempt_count", 1) - 1)),
                         (exc.retry_after or 0) if isinstance(exc, DownloadError) else 0,
                     ),
                 )
@@ -815,6 +867,19 @@ class GazetteCollector:
                 "current_effect_verified": False,
             },
         )
+        retry_times = [
+            until
+            for receipt in receipts
+            if receipt.get("status") in {"incomplete", "retry_pending", "cooldown_pending"}
+            if (
+                until := original_retry_at(
+                    self.output,
+                    {**receipt, "status": "incomplete"},
+                    max_attempts=max_attempts,
+                )
+            )
+            is not None
+        ]
         return {
             "documents": len(receipts),
             "downloaded": sum(x["status"] == "downloaded" for x in receipts),
@@ -833,6 +898,16 @@ class GazetteCollector:
             "cooldown_pending": sum(x["status"] == "cooldown_pending" for x in receipts),
             "retry_pending": sum(x["status"] == "retry_pending" for x in receipts),
             "retry_attempts_this_run": retried,
+            "retry_next_at": max(min(retry_times), self.cooldowns.get("assets.egazette.gov.sg", 0))
+            if retry_times
+            else None,
+            "retry_attempts_exhausted": sum(
+                x["status"] == "incomplete"
+                and retryable_original(x)
+                and x.get("attempt_count", 1) >= max_attempts
+                for x in receipts
+            ),
+            "max_original_attempts": max_attempts,
             "failed": sum(x["status"] == "incomplete" for x in receipts),
             "new_bytes": transferred,
         }
@@ -1068,7 +1143,13 @@ def main():
     parser.add_argument(
         "--retry-incomplete",
         action="store_true",
-        help="Permit one durable retry of transient original failures after their saved backoff",
+        help="Permit bounded durable retries of transient original failures after saved backoff",
+    )
+    parser.add_argument(
+        "--max-original-attempts",
+        type=int,
+        choices=range(1, MAX_ORIGINAL_ATTEMPTS + 1),
+        default=2,
     )
     parser.add_argument(
         "--confirm-counts",
@@ -1169,6 +1250,7 @@ def main():
                 reuse_dirs=args.reuse_source_dir,
                 reuse_campaigns=args.reuse_campaign,
                 retry_incomplete=args.retry_incomplete,
+                max_attempts=args.max_original_attempts,
             )
             if args.originals
             else {"downloaded": 0}

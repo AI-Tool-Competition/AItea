@@ -1,4 +1,4 @@
-"""A transient original gap gets one explicit, evidenced and restart-safe retry."""
+"""Transient originals retain bounded, evidenced and restart-safe attempt chains."""
 
 from hashlib import sha256
 import json
@@ -102,19 +102,23 @@ def test_legacy_connection_timeout_can_retry_after_receipt_age(tmp_path, monkeyp
         ValueError("not a PDF"),
     ],
 )
-def test_denied_missing_and_invalid_content_are_not_retried(tmp_path, monkeypatch, error):
+@pytest.mark.parametrize("max_attempts", [2, 8])
+def test_denied_missing_and_invalid_content_are_not_retried(tmp_path, monkeypatch, error, max_attempts):
     rows, clock, calls, path = failed_source(tmp_path, monkeypatch, error=error)
     before = path.read_bytes()
     clock[0] += 1000
     success(monkeypatch, calls)
     assert (
-        collector(tmp_path).originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True)["failed"]
+        collector(tmp_path).originals(
+            rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=max_attempts
+        )["failed"]
         == 1
     )
     assert len(calls) == 1 and path.read_bytes() == before
 
 
-def test_host_retry_after_survives_new_collector_and_defers_retry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("max_attempts", [2, 8])
+def test_host_retry_after_survives_new_collector_and_defers_retry(tmp_path, monkeypatch, max_attempts):
     rows, clock, calls, path = failed_source(
         tmp_path,
         monkeypatch,
@@ -125,9 +129,9 @@ def test_host_retry_after_survives_new_collector_and_defers_retry(tmp_path, monk
     clock[0] += 61
     before = path.read_bytes()
     assert (
-        collector(tmp_path).originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True)[
-            "retry_pending"
-        ]
+        collector(tmp_path).originals(
+            rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=max_attempts
+        )["retry_pending"]
         == 1
     )
     assert len(calls) == 1 and path.read_bytes() == before
@@ -255,3 +259,173 @@ def test_explicit_recovery_by_verified_reuse_also_preserves_failed_history(tmp_p
     saved = json.loads(path.read_text())
     entry = campaign.original_attempts(destination, saved)[0]
     assert (destination / entry["path"]).read_bytes() == before
+
+
+def test_extended_chain_recovers_after_two_failures_without_changing_old_receipts(tmp_path, monkeypatch):
+    rows, clock, calls, path = failed_source(tmp_path, monkeypatch)
+    first = path.read_bytes()
+    clock[0] += 61
+    collector(tmp_path).originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8)
+    second = path.read_bytes()
+    saved = json.loads(second)
+    assert saved["attempt_count"] == 2
+    assert campaign.original_retry_at(tmp_path, saved, max_attempts=8) == clock[0] + 120
+    success(monkeypatch, calls)
+    waiting = collector(tmp_path).originals(
+        rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+    )
+    assert waiting["retry_pending"] == 1 and path.read_bytes() == second
+    clock[0] += 121
+    result = collector(tmp_path).originals(
+        rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+    )
+    assert result["downloaded"] == 1 and result["retry_next_at"] is None
+    saved = json.loads(path.read_bytes())
+    assert saved["attempt_count"] == 3
+    history = campaign.original_attempts(tmp_path, saved)
+    assert [(tmp_path / row["path"]).read_bytes() for row in history] == [first, second]
+    collector(tmp_path).originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8)
+    assert len(calls) == 3
+
+
+def test_continuous_outage_stops_at_explicit_attempt_limit_and_keeps_every_error(tmp_path, monkeypatch):
+    rows, clock, calls, path = failed_source(tmp_path, monkeypatch)
+    raw_history = []
+    for attempt in range(1, 8):
+        raw_history.append(path.read_bytes())
+        saved = json.loads(path.read_bytes())
+        clock[0] = campaign.original_retry_at(tmp_path, saved, max_attempts=8) + 1
+        result = collector(tmp_path).originals(
+            rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+        )
+        assert result["failed"] == 1
+        saved = json.loads(path.read_bytes())
+        assert saved["attempt_count"] == attempt + 1
+        history = campaign.original_attempts(tmp_path, saved)
+        assert [(tmp_path / row["path"]).read_bytes() for row in history] == raw_history
+    assert result["retry_attempts_exhausted"] == 1 and result["retry_next_at"] is None
+    before = path.read_bytes()
+    clock[0] += 100_000
+    collector(tmp_path).originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8)
+    assert len(calls) == 8 and path.read_bytes() == before
+
+
+def test_extended_resume_after_interruption_uses_new_attempt_and_persistent_backoff(tmp_path, monkeypatch):
+    rows, clock, calls, path = failed_source(tmp_path, monkeypatch)
+    first = path.read_bytes()
+    clock[0] += 61
+    monkeypatch.setattr(campaign, "_download", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        collector(tmp_path).originals(
+            rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+        )
+    interrupted = path.read_bytes()
+    success(monkeypatch, calls)
+    report = collector(tmp_path).originals(
+        rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+    )
+    assert report["retry_pending"] == 1 and len(calls) == 1
+    clock[0] += 121
+    report = collector(tmp_path).originals(
+        rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+    )
+    saved = json.loads(path.read_bytes())
+    assert report["downloaded"] == 1 and saved["attempt_count"] == 3
+    assert [(tmp_path / row["path"]).read_bytes() for row in campaign.original_attempts(tmp_path, saved)] == [
+        first,
+        interrupted,
+    ]
+
+
+@pytest.mark.parametrize("damage", ["reorder", "prefix", "title", "count"])
+def test_extended_attempt_chain_rejects_reordered_or_changed_history(tmp_path, monkeypatch, damage):
+    rows, clock, calls, path = failed_source(tmp_path, monkeypatch)
+    for _ in range(2):
+        saved = json.loads(path.read_bytes())
+        clock[0] = campaign.original_retry_at(tmp_path, saved, max_attempts=8) + 1
+        collector(tmp_path).originals(
+            rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8
+        )
+    saved = json.loads(path.read_bytes())
+    if damage == "reorder":
+        saved["previous_attempts"].reverse()
+    elif damage == "prefix":
+        saved["previous_attempts"][0] = saved["previous_attempts"][1]
+    elif damage == "title":
+        saved["title"] = "another publication"
+    else:
+        saved["attempt_count"] = 9
+    path.write_text(json.dumps(saved))
+    with pytest.raises(ValueError):
+        campaign.original_retry_at(tmp_path, saved, max_attempts=8)
+    assert len(calls) == 3
+
+
+def test_all_extended_failure_cas_are_mapped_by_offline_formal_import(tmp_path, monkeypatch):
+    from app.collection_import import import_collected_resources
+    from app.service import Service
+    from app.system_library import SYSTEM_OWNER_ID, ensure_principal
+
+    source = tmp_path / "source"
+    source.mkdir()
+    rows, clock, calls, path = failed_source(source, monkeypatch, with_catalog=True)
+    first = path.read_bytes()
+    clock[0] += 61
+    collector(source).originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8)
+    second = path.read_bytes()
+    clock[0] += 121
+    success(monkeypatch, calls)
+    runner = collector(source)
+    runner.originals(rows, max_files=1, byte_budget=1000, retry_incomplete=True, max_attempts=8)
+    runner.stage_originals(rows)
+    target_path = tmp_path / "target"
+    target = Service(target_path)
+    with target.db.transaction() as conn:
+        ensure_principal(conn)
+    report = import_collected_resources(
+        source, target_path, campaign.SOURCE_OWNER, SYSTEM_OWNER_ID, apply=True
+    )
+    assert not report["blockers"]
+    with target.db.connect() as conn:
+        manifest = json.loads(conn.execute("SELECT manifest FROM documents").fetchone()[0])
+    mapped = manifest["collection_evidence"]["record"]["download_attempts"]
+    assert [row["attempt"] for row in mapped] == [1, 2]
+    assert [(target_path / row["receipt"]["cas_path"]).read_bytes() for row in mapped] == [first, second]
+    assert all(not Path(row["receipt"]["cas_path"]).is_absolute() for row in mapped)
+
+
+def test_consecutive_connection_outage_cools_host_across_restarts(tmp_path, monkeypatch):
+    clock = [time.time()]
+    monkeypatch.setattr(campaign.time, "time", lambda: clock[0])
+    calls = []
+
+    def disconnected(url, **kwargs):
+        calls.append(url)
+        raise campaign.DownloadError("connection failed", retryable=True)
+
+    monkeypatch.setattr(campaign, "_download", disconnected)
+    url = original_row()["download_url"]
+    for _ in range(3):
+        with pytest.raises(campaign.DownloadError):
+            collector(tmp_path).fetch(url)
+    assert len(calls) == 3
+    with pytest.raises(campaign.HostCooling):
+        collector(tmp_path).fetch(url)
+    assert len(calls) == 3
+    saved = json.loads((tmp_path / "network-state.json").read_bytes())
+    assert saved["assets.egazette.gov.sg"] == clock[0] + 60
+    clock[0] += 61
+    monkeypatch.setattr(campaign, "_download", lambda *a, **k: {"url": url})
+    assert collector(tmp_path).fetch(url) == {"url": url}
+    assert json.loads((tmp_path / "network-failure-streak.json").read_bytes())["assets.egazette.gov.sg"] == 0
+    monkeypatch.setattr(campaign, "_download", disconnected)
+    with pytest.raises(campaign.DownloadError):
+        collector(tmp_path).fetch(url)
+    assert json.loads((tmp_path / "network-failure-streak.json").read_bytes())["assets.egazette.gov.sg"] == 1
+
+
+@pytest.mark.parametrize("attempts", [0, 9, True])
+def test_attempt_limit_is_checked_before_creating_artifacts(tmp_path, attempts):
+    with pytest.raises(ValueError, match="between one and eight"):
+        collector(tmp_path).originals([original_row()], max_files=1, byte_budget=1000, max_attempts=attempts)
+    assert not (tmp_path / "originals").exists()

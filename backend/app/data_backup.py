@@ -346,6 +346,7 @@ def create_backup(source_dir, backup_dir, *, timeout=300):
             source / "tea.sqlite3", payload / "tea.sqlite3", timeout=timeout
         )
         database_info = _database_check(payload / "tea.sqlite3", primary=True)
+        online_databases = {"tea.sqlite3"}
         for directory, subdirs, names in os.walk(source, topdown=True, followlinks=False):
             base = Path(directory)
             relative_base = base.relative_to(source)
@@ -364,12 +365,32 @@ def create_backup(source_dir, backup_dir, *, timeout=300):
                 directories.append(relative.as_posix())
             for name in sorted(names):
                 path = base / name
+                relative = (relative_base / name).as_posix()
+                suffix = next((s for s in ("-wal", "-shm", "-journal") if name.endswith(s)), None)
+                original = path.with_name(name.removesuffix(suffix)) if suffix else None
+                if original is not None and original.relative_to(source).as_posix() in online_databases:
+                    # The committed state is already in a verified SQLite
+                    # snapshot. A final connection closing can remove its
+                    # sidecars after os.walk, or even after this path check.
+                    # Only the final sidecar may be absent; parents, the main
+                    # file and any extant sidecar must still be safe.
+                    _safe_absolute(original)
+                    _require(stat.S_ISREG(original.lstat().st_mode), "regular_file_required")
+                    _safe_absolute(path, exists=False)
+                    try:
+                        mode = path.lstat().st_mode
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        _require(not stat.S_ISLNK(mode), "symlink_path_refused")
+                        _require(stat.S_ISREG(mode), "regular_file_required")
+                    excluded.append(
+                        {"path": relative, "reason": "sqlite_online_backup_includes_committed_WAL"}
+                    )
+                    continue
                 _safe_absolute(path)
                 _require(stat.S_ISREG(path.lstat().st_mode), "regular_file_required")
-                relative = (relative_base / name).as_posix()
-                if name.endswith(("-wal", "-shm", "-journal")):
-                    suffix = next(s for s in ("-wal", "-shm", "-journal") if name.endswith(s))
-                    original = path.with_name(name.removesuffix(suffix))
+                if original is not None:
                     if original.exists() and _sqlite_file(original, original.relative_to(source).as_posix()):
                         excluded.append(
                             {"path": relative, "reason": "sqlite_online_backup_includes_committed_WAL"}
@@ -418,6 +439,8 @@ def create_backup(source_dir, backup_dir, *, timeout=300):
                         _require(digest == cas[4], "CAS_integrity_failed")
                         kind = "blob"
                 files.append({"path": relative, "sha256": digest, "bytes": size, "kind": kind})
+                if kind == "sqlite":
+                    online_databases.add(relative)
                 _require(len(files) <= MAX_FILES, "too_many_files")
         files.sort(key=lambda row: row["path"])
         indexed = {row["path"]: row for row in files}

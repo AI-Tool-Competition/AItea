@@ -213,6 +213,117 @@ def test_online_backup_includes_live_committed_WAL_and_does_not_change_source(po
         keeper.close()
 
 
+@pytest.mark.parametrize("disappears", ["after_walk", "after_path_check"])
+@pytest.mark.parametrize("location", ["root", "campaign"])
+def test_online_sidecars_can_disappear_after_snapshot(populated, tmp_path, monkeypatch, disappears, location):
+    service, _, _ = populated
+    database = service.db if location == "root" else Service(service.db.data_dir / "campaigns/active").db
+    keeper = database.connect()
+    keeper.execute("PRAGMA wal_autocheckpoint=0")
+    keeper.execute(
+        "INSERT INTO users VALUES(?,?,?,?,?,?)", ("sidecar-race", "Committed", None, None, 0, now())
+    )
+    shm = Path(str(database.path) + "-shm")
+    assert shm.is_file()
+    real_walk, real_safe = module.os.walk, module._safe_absolute
+    closed = False
+
+    def disappear():
+        nonlocal closed
+        if not closed:
+            keeper.close()
+            closed = True
+            assert not shm.exists()
+
+    def racing_walk(root, *args, **kwargs):
+        for base, subdirs, names in real_walk(root, *args, **kwargs):
+            if Path(base) == database.data_dir and shm.name in names and disappears == "after_walk":
+                disappear()
+            yield base, subdirs, names
+
+    def racing_safe(path, **kwargs):
+        result = real_safe(path, **kwargs)
+        if Path(path) == shm and disappears == "after_path_check":
+            disappear()
+        return result
+
+    monkeypatch.setattr(module.os, "walk", racing_walk)
+    monkeypatch.setattr(module, "_safe_absolute", racing_safe)
+    try:
+        backup = tmp_path / "backup"
+        result = module.create_backup(service.db.data_dir, backup)
+        assert result["status"] == "complete" and closed
+        relative = database.path.relative_to(service.db.data_dir).as_posix()
+        assert {row["path"] for row in result["excluded"]} >= {relative + "-shm", relative + "-wal"}
+        assert module.verify_backup(backup)["status"] == "verified"
+        with sqlite3.connect(backup / "data" / relative) as conn:
+            assert conn.execute("SELECT name FROM users WHERE id='sidecar-race'").fetchone()[0] == "Committed"
+    finally:
+        keeper.close()
+
+
+@pytest.mark.parametrize("replacement", ["symlink", "directory"])
+def test_online_sidecar_replacement_is_not_ignored(populated, tmp_path, monkeypatch, replacement):
+    service, _, _ = populated
+    keeper = service.db.connect()
+    keeper.execute("INSERT INTO users VALUES(?,?,?,?,?,?)", ("race", "saved", None, None, 0, now()))
+    shm = Path(str(service.db.path) + "-shm")
+    real_walk = module.os.walk
+    changed = False
+
+    def racing_walk(root, *args, **kwargs):
+        nonlocal changed
+        for base, subdirs, names in real_walk(root, *args, **kwargs):
+            if not changed and Path(base) == service.db.data_dir and shm.name in names:
+                keeper.close()
+                assert not shm.exists()
+                if replacement == "symlink":
+                    shm.symlink_to(tmp_path / "outside")
+                else:
+                    shm.mkdir()
+                changed = True
+            yield base, subdirs, names
+
+    monkeypatch.setattr(module.os, "walk", racing_walk)
+    try:
+        with pytest.raises(module.DataBackupError, match="symlink_path_refused|regular_file_required"):
+            module.create_backup(service.db.data_dir, tmp_path / "backup")
+        assert changed and not (tmp_path / "backup").exists()
+    finally:
+        keeper.close()
+
+
+@pytest.mark.parametrize("kind", ["cas", "ordinary_wal_name", "frozen_sidecar"])
+def test_disappearing_non_online_files_still_refuse_backup(populated, tmp_path, monkeypatch, kind):
+    service, docs, _ = populated
+    if kind == "cas":
+        target = Path(docs["alice"]["storage_path"])
+    elif kind == "ordinary_wal_name":
+        target = service.db.data_dir / "files/upload.sqlite3-wal"
+        target.write_bytes(b"a user's original, not an active sidecar")
+    else:
+        database = service.db.data_dir / "cold.sqlite3"
+        with closing(sqlite3.connect(database)) as conn:
+            conn.execute("CREATE TABLE frozen(value TEXT)")
+        target = database.with_name(database.name + "-wal")
+        target.touch()
+    real_walk = module.os.walk
+    disappeared = False
+
+    def racing_walk(root, *args, **kwargs):
+        nonlocal disappeared
+        for base, subdirs, names in real_walk(root, *args, **kwargs):
+            if not disappeared and Path(base) == target.parent and target.name in names:
+                target.unlink()
+                disappeared = True
+            yield base, subdirs, names
+
+    monkeypatch.setattr(module.os, "walk", racing_walk)
+    with pytest.raises(module.DataBackupError, match="existing_parent_directory_required"):
+        module.create_backup(service.db.data_dir, tmp_path / "backup")
+    assert disappeared and not (tmp_path / "backup").exists()
+
+
 @pytest.mark.parametrize("schema", [1, 9, 15])
 def test_empty_and_legacy_schema_snapshots_are_preserved_without_upgrade(tmp_path, schema):
     source = tmp_path / "source"

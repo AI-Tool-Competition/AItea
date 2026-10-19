@@ -288,6 +288,26 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
                 _cas_reference(
                     value, database.parent, owners.get(hashlib.sha256(row[1].encode()).hexdigest(), {})
                 )
+                for page in value.get("pages", []):
+                    if not isinstance(page.get("ocr"), dict) or "reuse_import" not in page["ocr"]:
+                        continue
+                    from .pdf_ocr_reuse_import import _page, validate_imported
+
+                    target = dict(conn.execute("SELECT * FROM documents WHERE id=?", (row[2],)).fetchone())
+                    donor = conn.execute(
+                        "SELECT * FROM documents WHERE id=? AND owner_id=?",
+                        (page["ocr"]["reuse"]["source_document_id"], row[1]),
+                    ).fetchone()
+                    _require(donor is not None, "imported_OCR_donor_missing")
+                    _require(len(donor["manifest"].encode()) <= 40 * 1024 * 1024, "manifest_too_large")
+                    validate_imported(
+                        target,
+                        dict(donor),
+                        page,
+                        _page(json.loads(donor["manifest"]), page["page"]),
+                        owners.get(hashlib.sha256(row[1].encode()).hexdigest(), {}),
+                        database.parent,
+                    )
                 if "corpus_import_aliases" in value:
                     from .system_corpus_merge import validate_alias_archives
 
@@ -302,6 +322,34 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
                 raise DataBackupError(str(exc)) from exc
             except (json.JSONDecodeError, RecursionError) as exc:
                 raise DataBackupError("invalid_document_manifest") from exc
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise DataBackupError("invalid_imported_OCR_reuse:" + str(exc)) from exc
+        relations = (
+            conn.execute("SELECT * FROM legal_relations") if "legal_relations" in _tables(conn) else ()
+        )
+        for relation in relations:
+            try:
+                locator = json.loads(relation["locator"])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(locator, dict) or "collection_relation_import" not in locator:
+                continue
+            from .collection_import import validate_relation_import
+
+            endpoints = [
+                conn.execute(
+                    "SELECT * FROM documents WHERE id=? AND owner_id=?", (relation[key], relation["owner_id"])
+                ).fetchone()
+                for key in ("source_document_id", "target_document_id")
+            ]
+            _require(all(endpoints), "imported_relation_endpoint_missing")
+            try:
+                _manifest_cas(locator, files, prefix=prefix, owner=relation["owner_id"])
+                paths = owners.get(hashlib.sha256(relation["owner_id"].encode()).hexdigest(), {})
+                _cas_reference(locator, database.parent, paths)
+                validate_relation_import(locator, *endpoints, paths, database.parent, relation=relation)
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise DataBackupError("invalid_relation_import:" + str(exc)) from exc
         if "collection_recovery_events" in _tables(conn):
             for row in conn.execute(
                 "SELECT e.detail,r.owner_id FROM collection_recovery_events e JOIN collection_recovery_jobs r ON r.id=e.recovery_id"

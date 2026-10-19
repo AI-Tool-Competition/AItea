@@ -57,17 +57,156 @@ _PLAN_HOSTS = {
     "ID": frozenset({"s.mkri.id", "www.mkri.id", "jdih.mkri.id"}) | _INTERNATIONAL_HOSTS,
     "SG": _INTERNATIONAL_HOSTS,
 }
-# Operator-reviewed original files cited by the SG treaty collection. Keep the
-# complete URL exact: this grants neither an OECD host nor a directory. Evidence
-# and the acquired SHA-256 values are recorded in docs/SINGAPORE_COLLECTION.md.
+# Operator-reviewed originals cited by the country collection plans. Keep each
+# complete URL exact: this grants neither a host nor a directory. Historical
+# SHA-256/classification evidence is in docs/SINGAPORE_COLLECTION.md and
+# docs/ACFTA_SOURCE_ADMISSION.md; admission does not freeze later file versions.
 _PLAN_ORIGINAL_URLS = {
+    "ID": frozenset(
+        {
+            "https://dev.agreement.asean.org/wp-content/uploads/2025/12/ACFTA-3.0-Upgrade-Protocol.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-1-Trade-in-Goods",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-10-Green-Economy",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-11-Supply-Chain-Connectivity",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-12-Micro-Small-And-Medium-Enterprises",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-13-Economic-and-Technical-Cooperation",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-14-Dispute-Settlement",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-2-Rules-of-Origin",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-3-0-Upgrade-Protocol",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-3-Customs-Procedures-and-Trade-Facilitation",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-4-STRACAP",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-5-Sanitary-And-Phytosanitary-Measures",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-6-Trade-in-Services",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-7-Investment",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-8-Competition-and-Consumer-Protection",
+            "https://www.enterprisesg.gov.sg/-/media/esg/Files/Non-Financial-Assistance/For-Companies/Free-"
+            "Trade-Agreements/ACFTA/ACFTA-9-Digital-Economy",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ACFTA/ACFTA_Protocol_to_implement_the_Second_Package_of_Specific_Commitments_"
+            "under_the_Agreement_on_Trade_in_Services_between_ASEAN_China_2011.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ACFTA/ACFTA_SC_1_Indonesia.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ACFTA/ACFTA_SC_2_Headnote_to_the_Annex.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ACFTA/ACFTA_SC_2_Indonesia.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ACFTA/ACFTA_Third_Protocol_to_Amend_the_ASEAN_China_Framework_Agreement_on_"
+            "Comprehensive_Economic_Co_Operation_2012.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Dispute-Settlement-Mechanism-of-"
+            "Framework-Agreement-on-Comprehensive-Econ-Coop/Agreement-on-Dispute-Settlement-Mechanism",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Dispute-Settlement-Mechanism-of-"
+            "Framework-Agreement-on-Comprehensive-Econ-Coop/Annex-1-Agreement-on-DSM",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Investment-of-Framework-Agreement-on-"
+            "Comprehensive-Econ-Coop-between-ASEAN-and-China/Agreement-on-Investment",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Agreement-on-Trade-in-Goods",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Annex-1-Modality-for-tariff-reduction-and-elimination",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Annex-2-Modality-for-tariff-reduction-elimination",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Annex-3-Rules-of-Origin",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Appendix-1-Revised-Operational-Certification-Procedures",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Appendix-2-Form-E",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Appendix-2a-Overleaf-Notes",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Protocol-to-Amend-the-Trade-in-Goods-Agreement",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Goods-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Second-Protocol-to-Amend-the-Agreement-on-Trade-In-Goods",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Services-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Agreement-on-Trade-in-Services",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Agreement-on-Trade-in-Services-of-the-Framework-"
+            "Agreement-on-Comprehensive-Econ-Coop/Indonesia",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "2nd-Protocol-to-Amend-the-Framework-Agreement",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Annex-1",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Annex-2",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Annex-3",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Annex-4",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Appendix-1",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Appendix-2",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Appendix-3",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Framework-Agreement",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Framework-Agreement-on-Comprehensive-Econ-Coop/"
+            "Protocol-to-Amend-the-Framework-Agreement",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/Legal-Text/Protocol-incorporating-ASEAN-China-Technical-"
+            "Barriers-to-Trade-Sanitary-Phytosanitary-Measures-Chapter/Protocol",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/upgrade-protocol/3rd-Package-ACTIS-Indonesia.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/upgrade-protocol/ANNEX-1-Rules-of-Origin.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/upgrade-protocol/Attachment-A-Revised-OCP.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/upgrade-protocol/Attachment-B-PSR.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/upgrade-protocol/Attachment-C-Revised-Form-E.pdf",
+            "https://www.enterprisesg.gov.sg/-/media/esg/files/non-financial-assistance/for-companies/free-"
+            "trade-agreements/ASEAN-China-FTA/upgrade-protocol/Protocol-to-Amend-the-Framework-Agreement-"
+            "ACFTA.pdf",
+        }
+    ),
     "SG": frozenset(
         {
-            "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/"
-            "beps-mli-position-china-instrument-deposit.pdf",
-            "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/"
-            "beps-mli-position-singapore-instrument-deposit.pdf",
+            "https://dev.agreement.asean.org/wp-content/uploads/2025/12/ACFTA-3.0-Upgrade-Protocol.pdf",
+            "https://dev.agreement.asean.org/wp-content/uploads/2025/12/Singapores-Notification-for-the-"
+            "ACFTA-3.0-Upgrade-Protocol.pdf",
             "https://treaties.un.org/doc/Publication/UNTS/Volume%20563/volume-563-I-8206-English.pdf",
+            "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/beps-mli-position-"
+            "china-instrument-deposit.pdf",
+            "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/beps-mli-position-"
+            "singapore-instrument-deposit.pdf",
         }
     ),
 }

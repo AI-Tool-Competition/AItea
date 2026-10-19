@@ -672,11 +672,25 @@ def test_selected_import_requires_explicit_relation_endpoints(pair):
         relation = conn.execute("SELECT * FROM legal_relations").fetchone()
         assert relation["source_document_id"] == result["document_versions"][supplement["id"]]["document_id"]
         assert relation["target_document_id"] == result["document_versions"][base["id"]]["document_id"]
-        assert json.loads(relation["locator"]) == {
-            "source_locator": "p. 1",
-            "source_version": 1,
-            "target_version": 1,
-        }
+        locator = json.loads(relation["locator"])
+        assert locator["source_locator"] == "p. 1"
+        assert locator["source_version"] == locator["target_version"] == 1
+        assert locator["source_hash"] == supplement["content_hash"]
+        assert locator["target_hash"] == base["content_hash"]
+        origin = locator["collection_relation_import"]
+        assert origin["source_document_id"] == supplement["id"]
+        assert origin["target_document_id"] == base["id"]
+        assert origin["source_owner_sha256"] == hashlib.sha256(b"source").hexdigest()
+        assert json.loads((dst.db.data_dir / origin["archive_path"]).read_bytes())["source_locator"] == "p. 1"
+        assert origin["source_locator_sha256"] == hashlib.sha256(b"p. 1").hexdigest()
+    before = facts(dst)
+    assert (
+        transfer(src, dst, document_ids=[supplement["id"], base["id"]], apply=True)["unchanged_documents"]
+        == 2
+    )
+    assert facts(dst) == before
+    with closing(dst.db.connect()) as conn:
+        assert conn.execute("SELECT count(*) FROM legal_relations").fetchone()[0] == 1
 
 
 def test_selected_attachment_requires_parent_and_retains_mapping(pair):
@@ -693,6 +707,197 @@ def test_selected_attachment_requires_parent_and_retains_mapping(pair):
             conn, "target", result["document_versions"][attachment["id"]]["document_id"]
         )
         assert mapped["parent_id"] == result["document_versions"][parent["id"]]["document_id"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_hash",
+        "target_hash",
+        "source_version",
+        "target_version",
+        "source_document_id",
+        "target_document_id",
+    ],
+)
+def test_relation_explicit_endpoint_bindings_cannot_be_silently_rewritten(pair, field):
+    src, dst = pair
+    source, target = original(src, "left"), original(src, "right")
+    src.archive.add_relation(
+        "source",
+        source["id"],
+        {
+            "collection": "country:ID",
+            "target_document_id": target["id"],
+            "relation": "cites",
+            "locator": dump({field: 2 if field.endswith("version") else "wrong"}),
+        },
+    )
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="relation_endpoint_binding_mismatch"):
+        transfer(src, dst, apply=True)
+    assert facts(dst) == before
+
+
+def test_relation_keeps_original_private_locator_only_in_immutable_cas(pair, tmp_path):
+    from app import data_backup
+
+    src, dst = pair
+    source, target = original(src, "left"), original(src, "right")
+    raw = dump(
+        {"source_original_path": source["storage_path"], "source_document_id": source["id"], "page": 1}
+    )
+    src.archive.add_relation(
+        "source",
+        source["id"],
+        {
+            "collection": "country:ID",
+            "target_document_id": target["id"],
+            "relation": "cites",
+            "locator": raw,
+        },
+    )
+    transfer(src, dst, apply=True)
+    with closing(dst.db.connect()) as conn:
+        locator = conn.execute("SELECT locator FROM legal_relations").fetchone()[0]
+    assert source["storage_path"] not in locator
+    origin = json.loads(locator)["collection_relation_import"]
+    archive = dst.db.data_dir / origin["archive_path"]
+    assert json.loads(archive.read_bytes())["source_locator"].encode() == raw.encode()
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == origin["archive_sha256"]
+    assert hashlib.sha256(raw.encode()).hexdigest() == origin["source_locator_sha256"]
+    data_backup.create_backup(dst.db.data_dir, tmp_path / "relation-backup")
+    archive.unlink()
+    with pytest.raises(data_backup.DataBackupError, match="manifest_CAS_missing"):
+        data_backup.create_backup(dst.db.data_dir, tmp_path / "broken-relation-backup")
+
+
+def test_empty_legacy_relation_locator_is_archived_and_replays(pair, tmp_path):
+    from app import data_backup
+
+    src, dst = pair
+    source, target = original(src, "left"), original(src, "right")
+    src.archive.add_relation(
+        "source",
+        source["id"],
+        {
+            "collection": "country:ID",
+            "target_document_id": target["id"],
+            "relation": "cites",
+            "locator": "",
+        },
+    )
+    transfer(src, dst, apply=True)
+    assert transfer(src, dst, apply=True)["unchanged_documents"] == 2
+    with closing(dst.db.connect()) as conn:
+        rows = conn.execute("SELECT locator FROM legal_relations").fetchall()
+    assert len(rows) == 1
+    locator = json.loads(rows[0][0])
+    assert locator["source_locator"] == ""
+    receipt = locator["collection_relation_import"]
+    assert receipt["source_locator_size"] == 0
+    assert receipt["source_locator_sha256"] == hashlib.sha256(b"").hexdigest()
+    archive = json.loads((dst.db.data_dir / receipt["archive_path"]).read_bytes())
+    assert archive["source_locator"] == "" and archive["source_document_id"] == source["id"]
+    data_backup.create_backup(dst.db.data_dir, tmp_path / "empty-locator-backup")
+
+
+def test_old_relation_binding_requires_explicit_migration_without_duplicates(pair):
+    src, dst = pair
+    source, target = original(src, "left"), original(src, "right")
+    src.archive.add_relation(
+        "source",
+        source["id"],
+        {
+            "collection": "country:ID",
+            "target_document_id": target["id"],
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    transfer(src, dst, apply=True)
+    legacy = dump({"source_locator": "p. 1", "source_version": 1, "target_version": 1})
+    with dst.db.transaction() as conn:
+        conn.execute("UPDATE legal_relations SET locator=?", (legacy,))
+    before = facts(dst)
+    with closing(dst.db.connect()) as conn:
+        before_relations = [tuple(row) for row in conn.execute("SELECT * FROM legal_relations")]
+    with pytest.raises(CollectionImportError, match="legacy_relation_binding_requires_explicit_migration"):
+        transfer(src, dst, apply=True)
+    assert facts(dst) == before
+    with closing(dst.db.connect()) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT * FROM legal_relations")] == before_relations
+
+
+def test_old_normalized_vector_snapshot_is_not_silently_replaced(pair, monkeypatch):
+    import numpy as np
+    from app import collection_import as module
+    from app.retrieval import normalized_vector
+
+    src, dst = pair
+    original(src)
+    with src.db.transaction() as conn:
+        conn.execute(
+            "UPDATE retrieval_vectors SET vector=?",
+            (np.array([0.600003, 0.800004], dtype="float32").tobytes(),),
+        )
+    current = module._plan
+
+    def old_normalized_plan(*args, **kwargs):
+        plan = current(*args, **kwargs)
+        for vectors in plan[6].values():
+            for key, value in list(vectors.items()):
+                vectors[key] = normalized_vector(value)
+        return plan
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "_plan", old_normalized_plan)
+        transfer(src, dst, apply=True)
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="source_checkpoint_changed_requires_refresh"):
+        transfer(src, dst, apply=True)
+    assert facts(dst) == before
+
+
+@pytest.mark.parametrize("change", ["locator", "same_original_endpoint", "relation_kind", "collection"])
+def test_relation_archive_fences_active_location_and_endpoint_identity(pair, change):
+    from app.collection_import import validate_relation_import
+
+    src, dst = pair
+    source, target = original(src, "left"), original(src, "right")
+    src.archive.add_relation(
+        "source",
+        source["id"],
+        {
+            "collection": "country:ID",
+            "target_document_id": target["id"],
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    transfer(src, dst, apply=True)
+    with closing(dst.db.connect()) as conn:
+        relation = dict(conn.execute("SELECT * FROM legal_relations").fetchone())
+        endpoints = [
+            dict(conn.execute("SELECT * FROM documents WHERE id=?", (relation[key],)).fetchone())
+            for key in ("source_document_id", "target_document_id")
+        ]
+    locator = json.loads(relation["locator"])
+    paths = {p.name: p for p in (dst.db.data_dir / "files/blobs").glob("*/*/*/*")}
+    validate_relation_import(locator, *endpoints, paths, dst.db.data_dir, relation=relation)
+    if change == "locator":
+        locator["source_locator"] = "wrong page 999"
+    elif change == "same_original_endpoint":
+        endpoints[0]["id"] = relation["source_document_id"] = "another-country-copy"
+        manifest = json.loads(endpoints[0]["manifest"])
+        manifest["collection_import"]["source_document_id"] = "another-source-copy"
+        endpoints[0]["manifest"] = dump(manifest)
+    elif change == "relation_kind":
+        relation["relation"] = "amends"
+    else:
+        relation["collection"] = "country:SG"
+    with pytest.raises(CollectionImportError):
+        validate_relation_import(locator, *endpoints, paths, dst.db.data_dir, relation=relation)
 
 
 def dependency_facts(service, ident):

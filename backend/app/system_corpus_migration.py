@@ -455,6 +455,13 @@ def _cas_reference(value, source_dir, paths):
         for item in value:
             _cas_reference(item, source_dir, paths)
     elif isinstance(value, dict):
+        if isinstance(value.get("ocr"), dict) and "reuse_import" in value["ocr"]:
+            from .pdf_ocr_reuse_import import validate_archive
+
+            try:
+                validate_archive(value, paths, source_dir)
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise SystemCorpusMigrationError("invalid_imported_OCR_reuse:" + str(exc)) from exc
         for key, item in value.items():
             if key == "image_blob" and isinstance(item, dict):
                 digest = item.get("content_hash")
@@ -486,6 +493,8 @@ def _cas_reference(value, source_dir, paths):
             ("mapping_path", "mapping_sha256"),
             ("registry_path", "registry_sha256"),
             ("source_registry_path", "source_registry_sha256"),
+            ("archive_path", "archive_sha256"),
+            ("source_locator_path", "source_locator_sha256"),
         ]:
             if (
                 isinstance(value.get(path_key), str)
@@ -631,6 +640,13 @@ def _validate_source(scope, source_dir, inventory, *, paths=None, lookup=None, v
                 and _hash_json(donor_page) == proof.get("source_page_checkpoint_sha256"),
                 "same_owner_OCR_checkpoint_mismatch",
             )
+            if "reuse_import" in page["ocr"]:
+                from .pdf_ocr_reuse_import import validate_imported
+
+                try:
+                    validate_imported(doc, donor, page, donor_page, paths, source_dir)
+                except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    raise SystemCorpusMigrationError("invalid_imported_OCR_reuse:" + str(exc)) from exc
         provenance = doc["parsed_manifest"].get("embedding_reuse") or {}
         if provenance:
             _require(
@@ -738,6 +754,14 @@ def _validate_source(scope, source_dir, inventory, *, paths=None, lookup=None, v
             locator = json.loads(relation["locator"])
         except (TypeError, json.JSONDecodeError):
             locator = {}
+        if isinstance(locator, dict) and "collection_relation_import" in locator:
+            from .collection_import import validate_relation_import
+
+            try:
+                _cas_reference(locator, source_dir, paths)
+                validate_relation_import(locator, source, target, paths, source_dir, relation=relation)
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise SystemCorpusMigrationError("invalid_relation_import:" + str(exc)) from exc
         digest = locator.get("registry_sha256") or locator.get("source_registry_sha256")
         if digest:
             _cas_reference(locator, source_dir, paths)

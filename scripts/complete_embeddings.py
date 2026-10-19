@@ -81,6 +81,11 @@ class Observations:
                         record["http_status"] = response.status_code
                         if response.status_code == 429:
                             record["rate_limited"] = True
+                            record["retry_after_seconds"] = ingestion._retry_after(
+                                response.headers.get("Retry-After")
+                            )
+                            recorder.failure = "provider_rate_limited"
+                            recorder.stop.set()
                         yield response
                 finally:
                     record["seconds"] = round(time.monotonic() - started, 6)

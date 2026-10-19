@@ -673,6 +673,7 @@ class _EmbeddingCall(AbstractContextManager):
         self.profile_key = profile_key
         self.deadline = time.monotonic() + 300
         self.stop = threading.Event()
+        self.preserve_inflight = False
         self.lock = threading.Lock()
         self.failures = self.active = self.requests = 0
 
@@ -740,7 +741,7 @@ def _embedding_response(client, batch: list[str], base: str, key: str, model: st
             response.raise_for_status()
             payload = bytearray()
             for block in response.iter_bytes():
-                if call.stop.is_set():
+                if call.stop.is_set() and not call.preserve_inflight:
                     raise _EmbeddingCallCancelled()
                 payload.extend(block)
                 if len(payload) > 16 * 1024 * 1024:
@@ -896,6 +897,9 @@ def embed_texts(texts: list[str], *, on_batch=None) -> list[list[float]] | None:
     concurrency = embedding_request_concurrency()
     batch_size = embedding_batch_size()
     call = _EmbeddingCall(_embedding_profile_key())
+    # Already issued siblings may still return billable, valid vectors after a
+    # peer fails. A durable callback can retain those within existing deadlines.
+    call.preserve_inflight = on_batch is not None
     # HTTPX read timeouts bound inactivity, not a complete trickling response.
     # The existing response/call deadlines remain shared across both lanes.
     with httpx.Client(

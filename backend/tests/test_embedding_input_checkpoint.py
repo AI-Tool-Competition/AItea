@@ -297,3 +297,59 @@ def test_http_callback_preserves_success_before_later_failure(monkeypatch):
     assert ingestion._EMBEDDING_HTTP_SLOTS.acquire(blocking=False)
     ingestion._EMBEDDING_HTTP_SLOTS.release()
     ingestion._EMBEDDING_HTTP_SLOTS.release()
+
+
+def test_http_callback_preserves_inflight_success_after_peer_429(monkeypatch, tmp_path):
+    import httpx
+
+    for k, v in {
+        "BASE_URL": "https://embed.example/v1",
+        "MODEL": "embed",
+        "API_KEY": "test",
+        "HTTP_WORKERS": "2",
+        "BATCH_SIZE": "1",
+        "REQUEST_CONCURRENCY": "2",
+    }.items():
+        monkeypatch.setenv("EMBEDDING_" + k, v)
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
+    monkeypatch.setattr(ingestion, "_EMBEDDING_PROFILES", {})
+    original_init = ingestion._EmbeddingCall.__init__
+    calls = []
+
+    def capture(self, profile):
+        original_init(self, profile)
+        calls.append(self)
+
+    monkeypatch.setattr(ingestion._EmbeddingCall, "__init__", capture)
+    barrier = threading.Barrier(2)
+    recovering = False
+    resumed_inputs = []
+
+    class AfterFailure(httpx.SyncByteStream):
+        def __iter__(self):
+            assert calls[0].stop.wait(3)
+            yield json.dumps({"data": [{"index": 0, "embedding": [2.0, 1.0]}]}).encode()
+
+    def handler(request):
+        if recovering:
+            values = json.loads(request.content)["input"]
+            resumed_inputs.extend(values)
+            return response(values)
+        barrier.wait(3)
+        if json.loads(request.content)["input"] == ["1"]:
+            return httpx.Response(429, headers={"Retry-After": "1"})
+        return httpx.Response(200, stream=AfterFailure())
+
+    provider(monkeypatch, handler)
+    cache = checkpoint(tmp_path)
+    with pytest.raises(ingestion.EmbeddingServiceError):
+        cache.embed(["1", "2"], ingestion.embed_texts)
+    assert cache.snapshot()["saved_inputs"] == 1
+    assert calls[0].requests == 2
+    recovering = True
+    monkeypatch.setattr(ingestion, "_EMBEDDING_PROFILES", {})
+    restarted = checkpoint(tmp_path)
+    result = restarted.embed(["1", "2"], ingestion.embed_texts)
+    assert resumed_inputs == ["1"] and calls[1].requests == 1
+    assert result[1] == pytest.approx([2 / 5**0.5, 1 / 5**0.5])
+    assert restarted.snapshot()["saved_inputs"] == 2

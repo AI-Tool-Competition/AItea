@@ -66,8 +66,10 @@ def read_plan(path):
             sample["path"] = str(source)
         filename = sample.get("filename")
         if filename is not None and (
-            not isinstance(filename, str) or not 1 <= len(filename) <= 240
-            or re.search(r"[/\\\x00-\x1f\x7f]", filename) or filename in {".", ".."}
+            not isinstance(filename, str)
+            or not 1 <= len(filename) <= 240
+            or re.search(r"[/\\\x00-\x1f\x7f]", filename)
+            or filename in {".", ".."}
         ):
             raise ValueError("sample filenames must be plain short display names")
         for key in ("url", "source_url"):
@@ -335,7 +337,11 @@ def run_verification(plan, output, models_env):
             if not valid:
                 image_errors.append(page.get("page"))
             images.append(
-                {"page": page.get("page"), "content_hash": image.get("content_hash"), "verified": valid}
+                {
+                    "page": page.get("page"),
+                    "content_hash": image.get("content_hash"),
+                    "verified": valid,
+                }
             )
         state.update(
             status=document["status"],
@@ -432,6 +438,7 @@ def run_verification(plan, output, models_env):
         return {
             "sample_ids": list(dict.fromkeys(by_document[hit["document_id"]] for hit in result["items"])),
             "mode": result["mode"],
+            "reranked": result.get("reranked", False),
             "warning": result.get("warning"),
             "hits": [
                 {
@@ -464,6 +471,9 @@ def run_verification(plan, output, models_env):
     restarted = Service(output)
     for query, result in zip(plan["queries"], report["queries"], strict=True):
         again = query_result(restarted, query)
+        # Preserve the second response, including provider degradation and exact
+        # citations, so candidate-set changes can be diagnosed after the run.
+        result["restart"] = again
         result["restart_consistent"] = set(again["sample_ids"]) == set(result["sample_ids"])
         result["restart_expected_recalled"] = set(query.get("expected_sample_ids", [])) <= set(
             again["sample_ids"]

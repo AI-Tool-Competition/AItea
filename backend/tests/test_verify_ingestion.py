@@ -41,6 +41,10 @@ def test_local_verification_exercises_dedup_restart_and_tier_gates(tmp_path):
     assert all(sample["duplicate_same_document"] for sample in report["samples"])
     assert report["queries"][0]["expected_recalled"]
     assert report["queries"][0]["restart_consistent"]
+    assert report["queries"][0]["restart"]["hits"] == report["queries"][0]["hits"]
+    assert report["queries"][0]["restart"]["mode"] == "lexical"
+    assert report["queries"][0]["restart"]["warning"] is None
+    assert report["queries"][0]["restart"]["reranked"] is False
     assert (
         report["gates"]["draft_excluded"]
         and report["gates"]["secondary_excluded"]
@@ -97,8 +101,6 @@ def test_verifier_preserves_original_filename_for_content_addressed_samples(tmp_
 def test_verifier_rejects_paths_in_display_filenames(tmp_path):
     original = tmp_path / "original.txt"
     original.write_text("tea")
-    result = invoke(tmp_path, {"samples": [
-        {"id": "bad", "path": str(original), "filename": "../law.pdf"}
-    ]})
+    result = invoke(tmp_path, {"samples": [{"id": "bad", "path": str(original), "filename": "../law.pdf"}]})
     assert result.returncode != 0
     assert not (tmp_path / "result/tea.sqlite3").exists()

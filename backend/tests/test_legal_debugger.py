@@ -5,11 +5,13 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 
+from admin_helpers import login_admin
+
 
 @pytest.fixture
 def client(tmp_path):
     with TestClient(create_app(data_dir=tmp_path)) as value:
-        assert value.post("/api/tea/auth/demo", json={}).status_code == 200
+        login_admin(value)
         yield value
 
 

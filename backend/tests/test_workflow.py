@@ -1,6 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import grant_admin, login_admin
+
 pytestmark = pytest.mark.usefixtures("sample_workflow")
 
 
@@ -104,6 +106,7 @@ def test_message_idempotency_and_cannot_complete_by_claim(client):
 
 def test_template_publish_freezes_case(client):
     case = demo(client)
+    grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
     template = case["template"]
     template["stages"][0]["name"] = "修改后的节点"
     published = client.post("/api/tea/templates/publish", json={"template": template})
@@ -208,13 +211,17 @@ def test_conflicting_and_superseded_evidence_cannot_pass(client):
 
 def test_register_upgrade_login_logout_and_origin(client):
     original = demo(client)
+    owner = client.get("/api/tea/auth/me").json()["id"]
     response = client.post(
         "/api/tea/auth/register",
         json={"name": "业务员", "email": "owner@example.com", "password": "correct horse battery"},
     )
     assert response.status_code == 201
     assert response.json()["is_demo"] is False
-    assert client.get("/api/tea/cases/" + original["id"]).status_code == 200
+    assert response.json()["id"] == owner
+    assert response.json()["can_login"] is False
+    assert response.json()["is_admin"] is False
+    assert client.get("/api/tea/cases/" + original["id"]).status_code == 401
     assert (
         client.post("/api/tea/auth/logout", headers={"origin": "https://attacker.invalid"}).status_code == 403
     )
@@ -229,8 +236,24 @@ def test_register_upgrade_login_logout_and_origin(client):
         client.post(
             "/api/tea/auth/login", json={"email": "owner@example.com", "password": "correct horse battery"}
         ).status_code
+        == 403
+    )
+    with TestClient(client.app) as admin:
+        login_admin(admin)
+        access = admin.get("/api/tea/admin/users", params={"q": "owner@example.com"}).json()["items"][0]
+        approved = admin.patch(
+            f"/api/tea/admin/users/{owner}",
+            json={"expected_revision": access["revision"], "can_login": True},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["is_admin"] is False
+    assert (
+        client.post(
+            "/api/tea/auth/login", json={"email": "owner@example.com", "password": "correct horse battery"}
+        ).status_code
         == 200
     )
+    assert client.get("/api/tea/auth/me").json()["is_admin"] is False
     assert client.get("/api/tea/cases/" + original["id"]).status_code == 200
 
 
@@ -430,6 +453,7 @@ def test_failed_source_has_durable_backoff(client, monkeypatch):
     import app.ingestion as ingestion
 
     demo(client)
+    grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
     source = client.post(
         "/api/tea/sources",
         json={
@@ -610,6 +634,7 @@ def test_partial_source_collection_preserves_original_and_exposes_warnings(clien
     import app.ingestion as ingestion
 
     demo(client)
+    grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
     source = client.post(
         "/api/tea/sources",
         json={

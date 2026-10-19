@@ -14,6 +14,8 @@ from app.legal_models import MAX_CASE_FACTS
 from app.db import now
 from app.workflow_catalog import load_workflow_catalog
 
+from admin_helpers import grant_admin
+
 ROUTES = [key for key in BUILTIN_TEMPLATES if key.startswith("liubao-")]
 CATALOG = Path(__file__).resolve().parents[2] / "config/workflows/liubao-export.json"
 
@@ -37,6 +39,8 @@ def test_only_four_handbook_routes_and_new_demo_case_are_available(client, monke
     case = client.get(f"/api/tea/cases/{bootstrap['cases'][0]['id']}").json()
     assert case["product"] == "六堡茶"
     assert case["template"]["id"] == "liubao-id-online"
+    assert client.get(f"/api/tea/templates/{RETIRED_TEMPLATE_ID}").status_code == 403
+    grant_admin(client, bootstrap["user"]["id"])
     assert client.get(f"/api/tea/templates/{RETIRED_TEMPLATE_ID}").status_code == 404
     monkeypatch.setenv("TEA_TEMPLATE_FILE", "config/workflows/china-indonesia.json")
     assert load_template()["id"] == "liubao-id-online"
@@ -45,6 +49,7 @@ def test_only_four_handbook_routes_and_new_demo_case_are_available(client, monke
 def test_old_demo_cases_published_templates_and_drafts_are_retired(client):
     bootstrap = client.get("/api/tea/bootstrap").json()
     owner = bootstrap["user"]["id"]
+    grant_admin(client, owner)
     old_case = bootstrap["cases"][0]["id"]
     retired = dict(bootstrap["templates"][0], id=RETIRED_TEMPLATE_ID)
     payload = json.dumps(retired)
@@ -76,7 +81,9 @@ def test_old_demo_cases_published_templates_and_drafts_are_retired(client):
 
 
 def create(client, route):
-    template = client.get(f"/api/tea/templates/{route}").json()
+    template = next(
+        item for item in client.get("/api/tea/bootstrap").json()["templates"] if item["id"] == route
+    )
     response = client.post(
         "/api/tea/cases",
         json={
@@ -313,6 +320,7 @@ def test_completed_choice_alone_is_not_evidence_and_arbitrary_choices_are_reject
 
 def test_builtin_publish_is_account_scoped_revisioned_and_preserves_existing_cases(client, tmp_path):
     case = create(client, "liubao-id-offline")
+    grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
     original = case["template"]
     changed = copy.deepcopy(original)
     changed["stages"][0]["name"] = "本账号定制准备"
@@ -327,7 +335,9 @@ def test_builtin_publish_is_account_scoped_revisioned_and_preserves_existing_cas
             restarted.get("/api/tea/templates/liubao-id-offline").json()["version"] == original["version"] + 1
         )
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get("/api/tea/templates/liubao-id-offline").status_code == 403
+    grant_admin(client, other["id"])
     assert client.get("/api/tea/templates/liubao-id-offline").json()["version"] == original["version"]
     assert client.get(f"/api/tea/cases/{case['id']}").status_code == 404
 

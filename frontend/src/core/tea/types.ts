@@ -197,7 +197,26 @@ export interface Citation {
   source_url?: string;
   document_version?: number;
 }
+export interface ToolCall {
+  id: string;
+  name:
+    | "search_documents"
+    | "search_legal_evidence"
+    | "check_materials"
+    | "generate_guidance";
+  label: string;
+  position: number;
+  status: "running" | "retrying" | "completed" | "failed" | "cancelled";
+  attempt: number;
+  max_attempts: number;
+  detail: string;
+  duration_ms: number;
+  error_code?: string;
+}
 export interface TraceStep {
+  run_id?: string;
+  sequence?: number;
+  tools?: ToolCall[];
   id: string;
   label: string;
   status:
@@ -610,6 +629,12 @@ export interface DocumentDetail {
   chunk_total: number;
   warnings: string[];
   parser?: string | null;
+  preview?: {
+    summary: string;
+    blocks: DocumentPreviewBlock[];
+    total: number;
+    offset: number;
+  };
   quality?: {
     status: "complete" | "needs_parse" | "needs_ocr" | "partial";
     complete: boolean;
@@ -623,6 +648,17 @@ export interface DocumentDetail {
     deferred_pages?: number[];
     retry_after_seconds?: number;
   } | null;
+}
+
+export interface DocumentPreviewBlock {
+  kind: string;
+  text?: string;
+  image_id?: string;
+  caption?: string;
+  summary?: string;
+  width?: number;
+  height?: number;
+  cells?: { row: number; text: string; col_span: number; row_span: number }[];
 }
 
 export interface LegalFactRequirement {

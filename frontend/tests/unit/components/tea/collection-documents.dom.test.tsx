@@ -1,182 +1,116 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import { AdminLibrary } from "@/components/tea/admin-library";
-import { type Document } from "@/core/tea/types";
+import { DocumentPreview } from "@/components/tea/document-preview";
+import { type Document, type DocumentDetail } from "@/core/tea/types";
 
-const current: Document = {
-  id: "law-v2",
-  title: "示例法规",
-  filename: "law.html",
+const document: Document = {
+  id: "law",
+  title: "进口条例",
+  filename: "law.pdf",
   role: "primary",
-  legal_level: "primary",
   status: "ready",
-  mime_type: "text/html",
-  size: 200,
+  mime_type: "application/pdf",
+  size: 1000,
   version: 2,
   case_id: null,
   parent_id: null,
-  tags: ["ID"],
+  tags: ["内部标签"],
   created_at: "2026-10-12T00:00:00Z",
-  source_url: "https://example.com/law",
+  source_url: null,
   error: null,
-  chunk_count: 1,
-  family_id: "family",
-  classifications: [
-    { collection: "ID", level: "primary", tags: ["原标签"], revision: 3 },
-  ],
+  chunk_count: 5,
 };
-const old = { ...current, id: "law-v1", version: 1 };
-function response(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), { status });
-}
-function pathOf(url: RequestInfo | URL) {
-  return typeof url === "string"
-    ? url
-    : url instanceof URL
-      ? url.href
-      : url.url;
-}
-function detail(document: Document) {
-  return {
-    document,
-    elements: [
+const sample: DocumentDetail = {
+  document,
+  elements: [],
+  chunks: [],
+  element_total: 0,
+  chunk_total: 0,
+  warnings: [],
+  preview: {
+    summary: "介绍进口申请的材料和步骤。",
+    total: 4,
+    offset: 0,
+    blocks: [
+      { kind: "heading", text: "申请条件" },
       {
-        content_text: `第 ${document.version} 版正文`,
-        locator: { line_start: 1 },
+        kind: "paragraph",
+        text: "申请人应提供 **产品说明**。\n\n| 材料 | 数量 |\n| --- | --- |\n| 登记表 | 1 |\n\n![不可信图片](https://example.com/tracker.png)",
+      },
+      {
+        kind: "table",
+        cells: [
+          { row: 1, text: "主体信息", col_span: 2, row_span: 1 },
+          { row: 2, text: "企业名称", col_span: 1, row_span: 1 },
+          { row: 2, text: "茶叶公司", col_span: 1, row_span: 1 },
+        ],
+      },
+      {
+        kind: "image",
+        image_id: "native-0",
+        width: 1200,
+        height: 800,
+        caption: "标签示意图",
+        summary: "图中列出名称、规格与产地。",
       },
     ],
-    chunks: [],
-    element_total: 1,
-    chunk_total: 0,
-    warnings: [],
-  };
-}
+  },
+};
 afterEach(() => {
   cleanup();
   rs.restoreAllMocks();
 });
 
-describe("document version and relationship operations", () => {
-  it("opens an immutable old version without replacing the latest document", async () => {
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      const path = pathOf(url);
-      if (path.includes("/versions"))
-        return response({ items: [current, old], total: 2 });
-      if (path.includes("/documents/law-v1")) return response(detail(old));
-      if (path.includes("/documents/law-v2")) return response(detail(current));
-      return response({ items: [current], total: 1 });
-    });
-    render(<AdminLibrary cases={[]} revision={0} onUpload={() => undefined} />);
-    fireEvent.click(await screen.findByRole("button", { name: "查看拆解" }));
-    fireEvent.click(screen.getByRole("tab", { name: "版本" }));
-    fireEvent.click(await screen.findByRole("button", { name: "查看 v1" }));
+describe("content-focused document preview", () => {
+  it("renders parsed headings, Markdown, tables and authenticated images with their summaries", () => {
+    render(<DocumentPreview document={document} sample={sample} />);
+    expect(screen.getByRole("heading", { name: "申请条件" })).toBeTruthy();
     expect(
-      await screen.findByText("第 1 版正文", { selector: "p" }),
+      screen.getByText("产品说明").closest('[data-streamdown="strong"]'),
     ).toBeTruthy();
+    expect(screen.getAllByRole("table")).toHaveLength(2);
     expect(
-      screen.getByRole("link", { name: "下载原件" }).getAttribute("href"),
-    ).toBe("/api/tea/documents/law-v1/download");
-    fireEvent.click(screen.getByRole("button", { name: "返回资料目录" }));
-    expect(await screen.findByText(/一级资料.*v2/)).toBeTruthy();
+      screen.getByRole("cell", { name: "主体信息" }).getAttribute("colspan"),
+    ).toBe("2");
+    const image = screen.getByRole("img", { name: "标签示意图" });
+    expect(image.getAttribute("src")).toBe(
+      "/api/tea/documents/law/images/native-0",
+    );
+    expect(image.getAttribute("width")).toBe("1200");
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+    expect(screen.getByText("图中列出名称、规格与产地。")).toBeTruthy();
+    expect(screen.getByText("介绍进口申请的材料和步骤。")).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByText("内部标签")).toBeNull();
+    fireEvent.error(image);
+    expect(screen.getByText("图片读取失败")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试图片" }));
+    expect(screen.getByRole("img", { name: "标签示意图" })).toBeTruthy();
   });
 
-  it("shows parsed secondary laws separately from raw attachments and pins incoming relations to versions", async () => {
-    const secondary: Document = {
-      ...current,
-      legal_level: "secondary",
-      classifications: [
-        { collection: "ID", level: "secondary", tags: [], revision: 1 },
-      ],
-    };
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      const path = pathOf(url);
-      if (path.includes("/relations"))
-        return response({
-          items: [
-            {
-              id: "rel",
-              collection: "ID",
-              relation: "cites",
-              source_document_id: "parent-v3",
-              target_document_id: secondary.id,
-              source_title: "主法规",
-              target_title: secondary.title,
-              source_version: 3,
-              target_version: 2,
-              locator: "第十二条",
-              created_at: secondary.created_at,
-            },
-          ],
-          total: 1,
-        });
-      if (path.includes("/documents/law-v2"))
-        return response(detail(secondary));
-      return response({ items: [secondary], total: 1 });
-    });
-    render(<AdminLibrary cases={[]} revision={0} onUpload={() => undefined} />);
-    fireEvent.click(await screen.findByRole("button", { name: "查看拆解" }));
-    expect(
-      await screen.findByText("第 2 版正文", { selector: "p" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText("二级法规", { selector: ".ta-badge" }),
-    ).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "附件" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "法规关联" }));
-    expect(await screen.findByText("主法规 · v3")).toBeTruthy();
-    expect(screen.getByText("被引用")).toBeTruthy();
-    expect(screen.getByText(/第十二条/)).toBeTruthy();
-  });
-
-  it("preserves tags and the submitted classification revision after a conflict", async () => {
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (url, options) => {
-        if (options?.method === "PATCH")
-          return response(
-            {
-              error: {
-                code: "stale_revision",
-                message: "分类已变化，请核对最新版本",
+  it("does not execute raw HTML or unsafe links from parsed text", () => {
+    render(
+      <DocumentPreview
+        document={document}
+        sample={{
+          ...sample,
+          preview: {
+            ...sample.preview!,
+            blocks: [
+              {
+                kind: "paragraph",
+                text: "<script>window.pwned=true</script>\n\n[恶意链接](javascript:alert(1))\n\n[原文](https://example.org/law)",
               },
-            },
-            409,
-          );
-        if (pathOf(url).includes("/documents/law-v2"))
-          return response(detail(current));
-        return response({ items: [current], total: 1 });
-      });
-    render(<AdminLibrary cases={[]} revision={0} onUpload={() => undefined} />);
-    fireEvent.click(await screen.findByRole("button", { name: "查看拆解" }));
-    fireEvent.click(screen.getByText("分级与标签"));
-    fireEvent.change(screen.getByLabelText("分类标签"), {
-      target: { value: "ID, 1.3, 税务" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存分级" }));
-    await screen.findByText("分类已变化，请核对最新版本");
-    expect(screen.getByLabelText<HTMLInputElement>("分类标签").value).toBe(
-      "ID, 1.3, 税务",
+            ],
+          },
+        }}
+      />,
     );
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.some(([, options]) => options?.method === "PATCH"),
-      ).toBe(true),
-    );
-    const save = fetcher.mock.calls.find(
-      ([, options]) => options?.method === "PATCH",
-    )!;
-    expect(JSON.parse(save[1]!.body as string)).toMatchObject({
-      collection: "ID",
-      level: "primary",
-      tags: ["ID", "1.3", "税务"],
-      expected_revision: 3,
-    });
+    expect(globalThis.document.querySelector("script")).toBeNull();
+    expect(screen.queryByRole("link", { name: "恶意链接" })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "原文" }).getAttribute("href"),
+    ).toBe("https://example.org/law");
   });
 });

@@ -9,7 +9,6 @@ import {
   FileText,
   Link2,
   Loader2,
-  Paperclip,
   RefreshCw,
   Search,
   Upload,
@@ -26,7 +25,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   downloadUrl,
   errorMessage,
@@ -44,15 +42,11 @@ import {
   type CaseSummary,
   type Citation,
   type Document,
-  type DocumentDetail,
   type ListResult,
 } from "@/core/tea/types";
 import { useDocumentProcessing } from "@/core/tea/use-document-processing";
 
-import { DocumentAttachments } from "./admin-library";
-import { DocumentHistory } from "./document-history";
-import { DocumentMetadataEditor } from "./document-metadata";
-import { DocumentRelations } from "./document-relations";
+import { DocumentPreview } from "./document-preview";
 import {
   ActionButton,
   Busy,
@@ -129,32 +123,17 @@ export function UploadDialog({
   open,
   onOpenChange,
   caseId,
-  initialParentId,
-  initialCountry,
   cases,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
   caseId?: string;
-  initialParentId?: string;
-  initialCountry?: string;
   cases: CaseSummary[];
   onDone: (document: Document) => void;
 }) {
   const [scope, setScope] = useState(caseId ?? "");
-  const [role, setRole] = useState("primary");
-  const [parent, setParent] = useState("");
   const [tags, setTags] = useState("");
-  const [docs, setDocs] = useState<Document[]>([]);
-  const [attachmentCountry, setAttachmentCountry] = useState(
-    initialCountry ?? "",
-  );
-  const countries = useCollectionCountries(
-    undefined,
-    open && role === "secondary" && !scope && !initialCountry,
-  );
-  const parentCountry = attachmentCountry || countries.defaultCountry;
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -165,88 +144,11 @@ export function UploadDialog({
   useEffect(() => {
     if (!open) return;
     setScope(caseId ?? "");
-    setRole(initialParentId ? "secondary" : "primary");
-    setAttachmentCountry(initialCountry ?? "");
     setFile(null);
     setTags("");
-    setParent("");
-    setDocs([]);
     setError("");
     setDragging(false);
-  }, [open, caseId, initialParentId, initialCountry]);
-  useEffect(() => {
-    if (
-      !open ||
-      role !== "secondary" ||
-      (!scope && !initialCountry && !countries.ready)
-    )
-      return;
-    const controller = new AbortController();
-    setParent(
-      scope === (caseId ?? "") &&
-        (!initialCountry || parentCountry === initialCountry)
-        ? (initialParentId ?? "")
-        : "",
-    );
-    setDocs([]);
-    async function readParents() {
-      const original =
-        initialParentId && scope === (caseId ?? "")
-          ? (
-              await teaRequest<DocumentDetail>(
-                `/documents/${encodeURIComponent(initialParentId)}?limit=1`,
-                { signal: controller.signal },
-              )
-            ).document
-          : undefined;
-      if (controller.signal.aborted) return;
-      const params = new URLSearchParams({
-        role: "primary",
-        limit: "100",
-        offset: "0",
-        source_scope: "personal",
-      });
-      if (!scope) params.set("library_only", "true");
-      if (scope) params.set("case_id", scope);
-      else
-        params.set(
-          "country",
-          original ? (original.country ?? "unassigned") : parentCountry,
-        );
-      const result = await teaRequest<ListResult<Document>>(
-        `/documents?${params}`,
-        { signal: controller.signal },
-      );
-      if (controller.signal.aborted) return;
-      if (original?.source_scope === "system") setParent("");
-      const options = result.items.filter(
-        (document) =>
-          document.role === "primary" &&
-          document.source_scope !== "system" &&
-          document.case_id === (scope || null),
-      );
-      setDocs(
-        original &&
-          original.source_scope !== "system" &&
-          !options.some((document) => document.id === original.id)
-          ? [original, ...options]
-          : options,
-      );
-    }
-    void readParents().catch((e) => {
-      if (!controller.signal.aborted) setError(errorMessage(e));
-    });
-    return () => controller.abort();
-  }, [
-    scope,
-    open,
-    role,
-    initialParentId,
-    initialCountry,
-    caseId,
-    parentCountry,
-    countries.ready,
-  ]);
+  }, [open, caseId]);
   function chooseFile(next: File | null) {
     if (busy) return;
     setError("");
@@ -259,11 +161,7 @@ export function UploadDialog({
       setError("文件不能超过 20 MB。");
       return;
     }
-    if (
-      next &&
-      role === "primary" &&
-      !/\.(pdf|docx|html?|txt|md)$/i.test(next.name)
-    ) {
+    if (next && !/\.(pdf|docx|html?|txt|md)$/i.test(next.name)) {
       setError("请选择 PDF、Word、HTML 或文本文件。");
       return;
     }
@@ -282,7 +180,7 @@ export function UploadDialog({
     setError("");
     const data = new FormData();
     data.append("file", file);
-    data.append("role", role);
+    data.append("role", "primary");
     data.append(
       "tags",
       JSON.stringify(
@@ -293,7 +191,6 @@ export function UploadDialog({
       ),
     );
     if (scope) data.append("case_id", scope);
-    if (role === "secondary") data.append("parent_id", parent);
     try {
       const document = await teaRequest<Document>("/documents", {
         method: "POST",
@@ -315,8 +212,8 @@ export function UploadDialog({
       <DialogContent className="tea-theme tea-dialog">
         <DialogHeader>
           <DialogTitle>上传资料</DialogTitle>
-          <DialogDescription>
-            主文件解析正文；关联附件仅保存原件。
+          <DialogDescription className="sr-only">
+            上传文件并保存到所选资料范围。
           </DialogDescription>
         </DialogHeader>
         <label className="tea-field">
@@ -334,22 +231,7 @@ export function UploadDialog({
             ))}
           </select>
         </label>
-        <div className="tea-form-row">
-          <label className="tea-field">
-            <span>文件用途</span>
-            <select
-              value={role}
-              onChange={(e) => {
-                setRole(e.target.value);
-                setFile(null);
-                setError("");
-              }}
-              disabled={busy}
-            >
-              <option value="primary">主文件 · 解析与检索</option>
-              <option value="secondary">关联附件 · 仅保存</option>
-            </select>
-          </label>
+        <div>
           <label className="tea-field">
             <span>标签</span>
             <Input
@@ -360,44 +242,6 @@ export function UploadDialog({
             />
           </label>
         </div>
-        {role === "secondary" && !scope && !initialParentId && (
-          <label className="tea-field">
-            <span>主文件国家</span>
-            <select
-              value={countries.ready ? parentCountry : ""}
-              disabled={busy || !countries.ready}
-              onChange={(event) => setAttachmentCountry(event.target.value)}
-            >
-              {!countries.ready && <option value="">读取国家…</option>}
-              {countries.countries.map((code) => (
-                <option key={code} value={code}>
-                  {countryLabel(code)}
-                </option>
-              ))}
-              <option value="unassigned">未分国</option>
-            </select>
-          </label>
-        )}
-        {role === "secondary" && countries.error && (
-          <ErrorNotice message={countries.error} onRetry={countries.retry} />
-        )}
-        {role === "secondary" && (
-          <label className="tea-field">
-            <span>关联到主文件</span>
-            <select
-              value={parent}
-              onChange={(e) => setParent(e.target.value)}
-              disabled={busy}
-            >
-              <option value="">选择主文件</option>
-              {docs.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.title}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
         <label
           className={`tea-file-drop tea-upload-drop ${dragging ? "is-dragging" : ""}`}
           onDragOver={(event) => {
@@ -422,19 +266,14 @@ export function UploadDialog({
           <span>
             {file
               ? `${documentSize(file.size)} · 点击更换`
-              : role === "primary"
-                ? "PDF、Word、HTML、TXT / Markdown · 最大 20 MB"
-                : "原始附件 · 最大 20 MB"}
+              : "PDF、Word、HTML、TXT / Markdown · 最大 20 MB"}
           </span>
           <input
-            key={role}
             className="sr-only"
             aria-label="选择上传文件"
             type="file"
             disabled={busy}
-            accept={
-              role === "primary" ? ".pdf,.docx,.html,.htm,.txt,.md" : undefined
-            }
+            accept=".pdf,.docx,.html,.htm,.txt,.md"
             onChange={(e) => {
               chooseFile(e.target.files?.[0] ?? null);
               e.target.value = "";
@@ -442,11 +281,7 @@ export function UploadDialog({
           />
         </label>
         {error && <ErrorNotice message={error} />}
-        <ActionButton
-          busy={busy}
-          disabled={!file || (role === "secondary" && !parent)}
-          onClick={upload}
-        >
+        <ActionButton busy={busy} disabled={!file} onClick={upload}>
           {busy ? "正在上传并处理…" : "上传并保存"}
         </ActionButton>
       </DialogContent>
@@ -507,7 +342,6 @@ function LibraryWorkspace({
   const [searchError, setSearchError] = useState("");
   const [nameQuery, setNameQuery] = useState("");
   const [searchMode, setSearchMode] = useState("name");
-  const [roleFilter, setRoleFilter] = useState("");
   const [hits, setHits] = useState<Citation[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Document>();
@@ -529,7 +363,7 @@ function LibraryWorkspace({
   const requests = useRef<{ search?: AbortController; more?: AbortController }>(
     {},
   );
-  const scopeKey = `${ownerId ?? "session"}:${scope}:${sourceScope}:${country}:${nameQuery}:${roleFilter}`;
+  const scopeKey = `${ownerId ?? "session"}:${scope}:${sourceScope}:${country}:${nameQuery}`;
   const currentScope = useRef(scopeKey);
   currentScope.current = scopeKey;
   const notifyDocumentsChange = useRef(onDocumentsChange);
@@ -556,7 +390,7 @@ function LibraryWorkspace({
       active.search?.abort();
       active.more?.abort();
     };
-  }, [scope, country, sourceScope, nameQuery, roleFilter, ownerId]);
+  }, [scope, country, sourceScope, nameQuery, ownerId]);
   const updateDocuments = useCallback((updates: Document[]) => {
     const byId = new Map(updates.map((item) => [item.id, item]));
     const update = (current: Document) => {
@@ -591,7 +425,6 @@ function LibraryWorkspace({
     setCountrySelection("all");
     setQuery("");
     setNameQuery("");
-    setRoleFilter("");
     setReceipt(uploadedDocument);
   }, [uploadedDocument, initialCaseId, scopeLocked, resetReads]);
   useEffect(() => {
@@ -606,7 +439,6 @@ function LibraryWorkspace({
     if (scope) params.set("case_id", scope);
     else if (country !== "all") params.set("country", country);
     if (nameQuery) params.set("q", nameQuery);
-    if (roleFilter) params.set("role", roleFilter);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
       signal: controller.signal,
     })
@@ -630,7 +462,6 @@ function LibraryWorkspace({
     country,
     sourceScope,
     nameQuery,
-    roleFilter,
     countries.ready,
     ownerId,
   ]);
@@ -649,7 +480,6 @@ function LibraryWorkspace({
       if (scope) params.set("case_id", scope);
       else if (country !== "all") params.set("country", country);
       if (nameQuery) params.set("q", nameQuery);
-      if (roleFilter) params.set("role", roleFilter);
       const data = await teaRequest<ListResult<Document>>(
         `/documents?${params}`,
         { signal: abort.signal },
@@ -933,30 +763,7 @@ function LibraryWorkspace({
       ) : (
         <>
           <div className="tea-library-list-heading">
-            <div
-              className="tea-library-filters"
-              role="group"
-              aria-label="文件用途筛选"
-            >
-              {[
-                ["", "全部"],
-                ["primary", "主文件"],
-                ["secondary", "附件"],
-              ].map(([value, label]) => (
-                <button
-                  key={value}
-                  aria-pressed={roleFilter === value}
-                  onClick={() => {
-                    if (roleFilter === value) return;
-                    resetReads();
-                    setRoleFilter(value!);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <span>{total} 份</span>
+            <span>{total} 份资料</span>
             <Button
               size="icon"
               variant="ghost"
@@ -979,11 +786,7 @@ function LibraryWorkspace({
                   onClick={() => setSelected(doc)}
                 >
                   <span className="tea-file-icon">
-                    {doc.role === "secondary" ? (
-                      <Paperclip size={20} />
-                    ) : (
-                      <FileText size={21} />
-                    )}
+                    <FileText size={21} />
                   </span>
                   <div>
                     <strong title={doc.title || doc.filename}>
@@ -994,9 +797,7 @@ function LibraryWorkspace({
                         {doc.filename.split(".").pop()?.toUpperCase()} ·{" "}
                         {documentSize(doc.size)}
                       </span>
-                      <span>
-                        v{doc.version} · {dateLabel(doc.created_at)}
-                      </span>
+                      <span>{dateLabel(doc.created_at)}</span>
                       {!scope && doc.case_id && (
                         <span>
                           {cases.find((item) => item.id === doc.case_id)
@@ -1018,13 +819,7 @@ function LibraryWorkspace({
           ) : (
             <Empty
               icon={<BookOpen size={32} />}
-              title={
-                nameQuery
-                  ? "没有找到匹配文件"
-                  : roleFilter
-                    ? "暂无此类文件"
-                    : "暂无资料"
-              }
+              title={nameQuery ? "没有找到匹配文件" : "暂无资料"}
             >
               {nameQuery ? (
                 "调整资料名称或国家筛选后重试。"
@@ -1058,29 +853,15 @@ function LibraryWorkspace({
         <DialogContent className="tea-theme tea-dialog tea-document-dialog">
           <DialogHeader>
             <DialogTitle>{selected?.title}</DialogTitle>
-            <DialogDescription>{selected?.filename}</DialogDescription>
+            <DialogDescription className="sr-only">
+              资料内容预览
+            </DialogDescription>
           </DialogHeader>
           {selected && (
-            <LibraryDocumentDetails
-              key={`${selected.id}:${selected.version}`}
+            <DocumentPreview
+              key={`${ownerId}:${selected.id}`}
               document={selected}
-              ownerId={ownerId}
-              revision={revision}
-              onSelect={setSelected}
-              onSaved={(next) => {
-                setSelected(next);
-                setDocs((current) =>
-                  current.map((item) => (item.id === next.id ? next : item)),
-                );
-                setReceipt((current) =>
-                  current?.id === next.id ? next : current,
-                );
-                notifyDocumentsChange.current?.([next]);
-              }}
-              onUpload={() => {
-                setSelected(undefined);
-                onUpload(scope || undefined);
-              }}
+              processing={processing}
             />
           )}
         </DialogContent>
@@ -1095,226 +876,4 @@ function DocumentStatusIcon({ document }: { document: Document }) {
   if (document.status === "failed" || document.error)
     return <AlertCircle size={13} />;
   return <Check size={13} />;
-}
-
-function LibraryDocumentDetails({
-  document,
-  ownerId,
-  revision,
-  onSelect,
-  onSaved,
-  onUpload,
-}: {
-  document: Document;
-  ownerId?: string;
-  revision: number;
-  onSelect: (document: Document) => void;
-  onSaved: (document: Document) => void;
-  onUpload: () => void;
-}) {
-  const tabs = [
-    ["content", "正文"],
-    ["versions", "版本"],
-    ["attachments", "附件"],
-    ["relations", "法规关联"],
-  ] as const;
-  return (
-    <>
-      <div className="tea-document-meta">
-        <span>
-          {document.source_scope === "system" ? "共享法规 · 只读" : "私人资料"}
-        </span>
-        <span>版本 {document.version}</span>
-        <span>{documentSize(document.size)}</span>
-        <Button asChild size="sm" variant="outline">
-          <a href={downloadUrl(document.id)}>
-            <ArrowDownToLine size={14} />
-            下载原文
-          </a>
-        </Button>
-      </div>
-      <div
-        className={`tea-document-processing ${documentState(document).tone}`}
-        role="status"
-      >
-        <DocumentStatusIcon document={document} />
-        <strong>{documentState(document).label}</strong>
-        {document.status === "processing" && <span>完成后自动更新</span>}
-        {document.status === "failed" && document.source_scope !== "system" && (
-          <Button size="sm" variant="outline" onClick={onUpload}>
-            重新上传
-          </Button>
-        )}
-      </div>
-      {document.error && <ErrorNotice message={document.error} />}
-      <DocumentMetadataEditor
-        key={`${document.id}-${document.metadata_revision}`}
-        document={document}
-        onSaved={onSaved}
-      />
-      <Tabs defaultValue="content">
-        <TabsList aria-label="资料内容" className="w-full">
-          {tabs.map(([id, label]) => (
-            <TabsTrigger key={id} value={id}>
-              {label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value="content">
-          {document.role === "secondary" ? (
-            <div className="tea-note">
-              该文件为关联附件，仅保存原文，不参与解析或检索。
-            </div>
-          ) : (
-            <DocumentExcerpts
-              key={`${document.id}:${document.status}:${document.chunk_count}`}
-              documentId={document.id}
-            />
-          )}
-        </TabsContent>
-        <TabsContent value="versions">
-          <DocumentHistory document={document} onSelect={onSelect} />
-        </TabsContent>
-        <TabsContent value="attachments">
-          <DocumentAttachments
-            parent={document}
-            revision={revision}
-            onSelect={onSelect}
-          />
-        </TabsContent>
-        <TabsContent value="relations">
-          <DocumentRelations
-            document={document}
-            ownerId={ownerId}
-            onSelect={onSelect}
-          />
-        </TabsContent>
-      </Tabs>
-    </>
-  );
-}
-
-const DOCUMENT_PAGE_SIZE = 100;
-
-function DocumentExcerpts({ documentId }: { documentId: string }) {
-  const [page, setPage] = useState<{ offset: number; data: DocumentDetail }>();
-  const [request, setRequest] = useState({ offset: 0, attempt: 0 });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError("");
-    teaRequest<DocumentDetail>(
-      `/documents/${encodeURIComponent(documentId)}?element_offset=${request.offset}&chunk_offset=0&limit=${DOCUMENT_PAGE_SIZE}`,
-      { signal: controller.signal },
-    )
-      .then((data) => {
-        if (!controller.signal.aborted)
-          setPage({ offset: request.offset, data });
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(errorMessage(e));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [documentId, request]);
-  return (
-    <>
-      {error && (
-        <ErrorNotice
-          message={error}
-          onRetry={() =>
-            setRequest((current) => ({
-              ...current,
-              attempt: current.attempt + 1,
-            }))
-          }
-        />
-      )}
-      {loading && <Busy label="读取解析内容…" />}
-      {page && (
-        <>
-          <div className="tea-list-label" role="status">
-            {page.data.elements.length
-              ? `第 ${page.offset + 1}–${page.offset + page.data.elements.length} 段 / 共 ${page.data.element_total} 段`
-              : `共 ${page.data.element_total} 段`}
-          </div>
-          <div
-            className="tea-document-excerpts"
-            key={page.offset}
-            aria-busy={loading}
-          >
-            {page.data.elements.map((element, i) => (
-              <article key={element.element_key ?? element.id ?? i}>
-                <small>
-                  {Array.isArray(element.section_path)
-                    ? element.section_path.join(" / ")
-                    : typeof element.kind === "string"
-                      ? element.kind
-                      : "正文"}
-                </small>
-                <p>
-                  {typeof element.content_text === "string"
-                    ? element.content_text
-                    : typeof element.text === "string"
-                      ? element.text
-                      : ""}
-                </p>
-              </article>
-            ))}
-            {!page.data.elements.length && (
-              <Empty
-                title={
-                  page.data.document.status === "processing"
-                    ? "正在处理正文"
-                    : page.data.document.status === "failed"
-                      ? "正文解析失败"
-                      : "暂无解析内容"
-                }
-              >
-                可下载原始文件查看。
-              </Empty>
-            )}
-          </div>
-          {page.data.element_total > DOCUMENT_PAGE_SIZE && (
-            <div className="tea-form-row">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={loading || page.offset === 0}
-                onClick={() =>
-                  setRequest({
-                    offset: Math.max(0, page.offset - DOCUMENT_PAGE_SIZE),
-                    attempt: 0,
-                  })
-                }
-              >
-                上一页正文
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={
-                  loading ||
-                  page.offset + page.data.elements.length >=
-                    page.data.element_total
-                }
-                onClick={() =>
-                  setRequest({
-                    offset: page.offset + DOCUMENT_PAGE_SIZE,
-                    attempt: 0,
-                  })
-                }
-              >
-                下一页正文
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-    </>
-  );
 }

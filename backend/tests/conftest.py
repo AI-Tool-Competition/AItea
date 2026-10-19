@@ -11,11 +11,14 @@ def isolated_providers(monkeypatch):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             monkeypatch.setenv(f"{prefix}_{field}", "")
     monkeypatch.setenv("VISION_OCR_ENABLED", "false")
+    monkeypatch.setenv("VISION_OCR_WORKERS", "2")
+    monkeypatch.setenv("VISION_OCR_ADAPTIVE", "false")
     monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "64")
     # Real deployment quotas must never be opened by fake-model unit tests.
     # An empty value also prevents a later dotenv import from filling the path.
     monkeypatch.setenv("EMBEDDING_ADMISSION_PATH", "")
     monkeypatch.setenv("EMBEDDING_HTTP_WORKERS", "2")
+    monkeypatch.setenv("EMBEDDING_REQUEST_CONCURRENCY", "1")
 
 
 @pytest.fixture

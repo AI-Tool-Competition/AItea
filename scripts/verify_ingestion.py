@@ -123,6 +123,12 @@ def configure_models(models_env):
     for key in list(os.environ):
         if key.startswith(PROVIDER_PREFIXES):
             os.environ.pop(key)
+    # Later imports (including a restarted child) can load the project's .env.
+    # Empty sentinels stop that import from silently restoring provider access.
+    for prefix in ("LLM", "EMBEDDING", "RERANK", "VISION_OCR"):
+        for field in ("BASE_URL", "API_KEY", "MODEL"):
+            os.environ[f"{prefix}_{field}"] = ""
+    os.environ["VISION_OCR_ENABLED"] = "false"
     if models_env:
         from dotenv import dotenv_values
 

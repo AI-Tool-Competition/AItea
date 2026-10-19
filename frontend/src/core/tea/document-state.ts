@@ -28,7 +28,7 @@ export function documentState(document: Document) {
   };
 }
 
-// Background status reads must preserve the metadata editor's revision and draft.
+// Background status reads must preserve unrelated document metadata.
 export function mergeProcessingDocument(
   current: Document,
   next: Document,

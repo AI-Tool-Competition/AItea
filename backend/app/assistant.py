@@ -13,7 +13,7 @@ import os
 import re
 import threading
 from contextlib import closing
-from time import monotonic, perf_counter
+from time import perf_counter
 from urllib.parse import urlsplit
 
 import httpx
@@ -21,6 +21,14 @@ import httpx
 from .countries import resolve_country
 from .db import dump
 from .streaming import StreamCancelled
+from .tool_runtime import (
+    CHECK_MATERIALS,
+    GENERATE_GUIDANCE,
+    SEARCH_DOCUMENTS,
+    ToolFailure,
+    ToolRun,
+    call_tool,
+)
 
 logger = logging.getLogger(__name__)
 _PROVIDER_SLOTS = threading.BoundedSemaphore(4)
@@ -178,53 +186,71 @@ def generate_guidance(
         "messages": messages,
         "max_tokens": max_tokens,
     }
-    if on_delta is not None:
+    streaming = on_delta is not None or check_cancelled is not None
+    if streaming:
         body["stream"] = True
     if prompt_cache_key and _uses_openai_endpoint(base):
         body["prompt_cache_key"] = prompt_cache_key
-        if on_delta is not None:
+        if streaming:
             body["stream_options"] = {"include_usage": True}
-    if uses_aerisun_deepseek and on_delta is not None:
+    if uses_aerisun_deepseek and streaming:
         body["stream_options"] = {"include_usage": True}
-    if not _PROVIDER_SLOTS.acquire(blocking=False):
-        raise RuntimeError("provider busy")
-    try:
-        if on_delta is not None:
-            output = asyncio.run(stream_guidance(base, body, on_delta, check_cancelled, _log_prompt_usage))
-        else:
-            deadline = monotonic() + 45
-            with httpx.Client(timeout=45, trust_env=False) as client:
-                with client.stream(
-                    "POST",
-                    base + "/chat/completions",
-                    headers={"Authorization": "Bearer " + os.environ["LLM_API_KEY"]},
-                    json=body,
-                ) as response:
-                    response.raise_for_status()
-                    raw = bytearray()
-                    for part in response.iter_bytes():
-                        if check_cancelled:
-                            check_cancelled()
-                        if monotonic() > deadline:
-                            raise TimeoutError("provider response exceeded time budget")
-                        raw.extend(part)
-                        if len(raw) > _MAX_PROVIDER_BYTES:
-                            raise ValueError("provider response too large")
-            response_data = json.loads(raw)
-            _log_prompt_usage(response_data.get("usage"))
-            output = response_data["choices"][0]["message"]["content"]
-        if not isinstance(output, str) or not output.strip() or len(output) > 20000:
-            raise ValueError("invalid provider response")
-        return output
-    finally:
-        _PROVIDER_SLOTS.release()
+    if len(dump(body).encode("utf-8")) > 256 * 1024:
+        raise ToolFailure("input_limit", "模型输入超过预算，请缩小资料范围。")
+
+    def generate(args, attempt):
+        if not _PROVIDER_SLOTS.acquire(blocking=False):
+            raise ToolFailure("provider_busy", "当前模型调用较多，请稍后重试。")
+        try:
+
+            def check():
+                attempt.check()
+                if check_cancelled:
+                    check_cancelled()
+
+            def delta(text):
+                attempt.output_started = True
+                if on_delta:
+                    on_delta(text)
+
+            output = asyncio.run(
+                stream_guidance(base, body, delta, check, _log_prompt_usage, timeout=attempt.remaining)
+            )
+            if not isinstance(output, str) or not output.strip() or len(output) > 20000:
+                raise ToolFailure("invalid_response", "模型返回内容为空或超出限制。")
+            return output
+        finally:
+            _PROVIDER_SLOTS.release()
+
+    return call_tool(
+        GENERATE_GUIDANCE,
+        {"max_tokens": max_tokens, "stream": streaming},
+        generate,
+        summarize=lambda value: f"已生成 {len(value)} 字符；业务结果仍以服务端核验为准。",
+        check_cancelled=check_cancelled,
+    )
 
 
-async def stream_guidance(base, body, on_delta, check_cancelled, on_usage=None):
+def provider_choice(payload, *, allow_usage=False):
+    if not isinstance(payload, dict) or "error" in payload:
+        raise ValueError("provider error")
+    choices = payload.get("choices")
+    if choices == [] and allow_usage and isinstance(payload.get("usage"), dict):
+        return None
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        raise ValueError("invalid provider choices")
+    choice = choices[0]
+    # Explicit truncation, refusal or a tool request is never a finished answer.
+    if choice.get("finish_reason") not in (None, "stop"):
+        raise ValueError("provider did not finish the answer")
+    return choice
+
+
+async def stream_guidance(base, body, on_delta, check_cancelled, on_usage=None, *, timeout=45):
     async def read():
         decoder = codecs.getincrementaldecoder("utf-8")()
-        buffer, output, size, usage = "", "", 0, None
-        async with asyncio.timeout(45), httpx.AsyncClient(timeout=45, trust_env=False) as client:
+        buffer, output, size, usage, finished = "", "", 0, None, False
+        async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream(
                 "POST",
                 base + "/chat/completions",
@@ -232,42 +258,75 @@ async def stream_guidance(base, body, on_delta, check_cancelled, on_usage=None):
                 json=body,
             ) as response:
                 response.raise_for_status()
+                if not body.get("stream"):
+                    raw = bytearray()
+                    async for part in response.aiter_bytes():
+                        if check_cancelled:
+                            check_cancelled()
+                        raw.extend(part)
+                        if len(raw) > _MAX_PROVIDER_BYTES:
+                            raise ToolFailure("invalid_response", "模型返回内容过大。")
+                    try:
+                        payload = json.loads(raw)
+                        choice = provider_choice(payload)
+                        message = choice.get("message", {})
+                        if (
+                            not isinstance(message, dict)
+                            or message.get("tool_calls")
+                            or message.get("refusal")
+                        ):
+                            raise ValueError("unexpected provider message")
+                        if on_usage:
+                            on_usage(payload.get("usage"))
+                        return message.get("content")
+                    except (ValueError, TypeError, AttributeError) as exc:
+                        raise ToolFailure("invalid_response", "模型返回内容不完整或格式不正确。") from exc
                 async for part in response.aiter_bytes():
                     if check_cancelled:
                         check_cancelled()
                     size += len(part)
                     if size > _MAX_PROVIDER_BYTES:
-                        raise ValueError("provider response too large")
+                        raise ToolFailure("invalid_response", "模型返回内容过大。")
                     buffer += decoder.decode(part)
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.rstrip("\r")
-                        if not line.startswith("data:"):
+                    while boundary := re.search(r"\r?\n\r?\n", buffer):
+                        frame, buffer = buffer[: boundary.start()], buffer[boundary.end() :]
+                        # SSE data fields belong to a complete event, including multiline JSON.
+                        data = "\n".join(
+                            line[5:].lstrip(" ") for line in frame.splitlines() if line.startswith("data:")
+                        )
+                        if not data:
                             continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
+                        if data.strip() == "[DONE]":
+                            if not output.strip():
+                                raise ToolFailure("invalid_response", "模型没有返回有效正文。")
                             if usage is not None and on_usage:
                                 on_usage(usage)
                             return output
-                        if not data:
-                            continue
-                        payload = json.loads(data)
-                        if "error" in payload:
-                            raise ValueError("provider stream error")
-                        if isinstance(payload.get("usage"), dict):
-                            usage = payload["usage"]
-                        choices = payload.get("choices", [])
-                        if not choices:
-                            continue
-                        text = choices[0].get("delta", {}).get("content")
-                        if text is None:
-                            continue
-                        if not isinstance(text, str) or len(output) + len(text) > 20000:
-                            raise ValueError("invalid provider stream content")
-                        output += text
-                        if text:
-                            on_delta(text)
-        raise ValueError("provider stream ended before DONE")
+                        try:
+                            payload = json.loads(data)
+                            choice = provider_choice(payload, allow_usage=True)
+                            if isinstance(payload.get("usage"), dict):
+                                usage = payload["usage"]
+                            if choice is None:
+                                continue
+                            delta = choice.get("delta", {})
+                            if not isinstance(delta, dict) or delta.get("tool_calls") or delta.get("refusal"):
+                                raise ValueError("unexpected provider delta")
+                            text = delta.get("content")
+                            if text is not None:
+                                if (
+                                    not isinstance(text, str)
+                                    or len(output) + len(text) > 20000
+                                    or (finished and text)
+                                ):
+                                    raise ValueError("invalid provider stream content")
+                                output += text
+                                if text:
+                                    on_delta(text)
+                            finished = finished or choice.get("finish_reason") == "stop"
+                        except (ValueError, TypeError, AttributeError) as exc:
+                            raise ToolFailure("invalid_response", "模型流式内容不完整或格式不正确。") from exc
+        raise ToolFailure("invalid_response", "模型连接中断，回复尚未完成。")
 
     async def watch_cancellation():
         while True:
@@ -275,8 +334,6 @@ async def stream_guidance(base, body, on_delta, check_cancelled, on_usage=None):
                 check_cancelled()
             await asyncio.sleep(0.05)
 
-    # This loop belongs to the bounded workflow worker. Cancelling the read
-    # closes the upstream connection even while it is waiting for its first byte.
     reading = asyncio.create_task(read())
     watching = asyncio.create_task(watch_cancellation())
     try:
@@ -342,6 +399,7 @@ def run_workflow(
         "assistant_mode": mode,
         "retrieval_mode": "lexical",
     }
+    tool_run = ToolRun(emit, check_cancelled)
     stopped = False
     previous_output = ""
     guidance_citations = None
@@ -354,8 +412,7 @@ def run_workflow(
         if index < len(prefix):
             cached = reuse_trace(prefix[index])
             result["trace"].append(cached)
-            if emit and capture_data:
-                emit("step", cached)
+            tool_run.publish(cached)
             continue
         if check_cancelled:
             check_cancelled()
@@ -433,107 +490,136 @@ def run_workflow(
                     }
                 else:
                     trace["input_data"] = {"instructions": step.get("instructions", "")}
-                if emit:
-                    emit("step", copy.deepcopy(trace) | {"status": "running"})
-            try:
-                if kind == "retrieve":
-                    query = "\n".join(filter(None, [step.get("instructions", ""), content or stage["name"]]))[
-                        :2000
-                    ]
-                    search_options = {"country": country or "unassigned"}
-                    if document_ids is not None:
-                        search_options["document_ids"] = document_ids
-                    retrieval = service.search(
-                        owner, query, case_id, agent["retrieval_limit"], **search_options
-                    )
-                    result["citations"] = retrieval["items"]
-                    result["retrieval_mode"] = retrieval["mode"]
-                    trace["input"] = query
-                    trace["detail"] = (
-                        f"已执行{'混合' if retrieval['mode'] == 'hybrid' else '关键词'}检索，找到 {len(result['citations'])} 处实际资料片段。"
-                        + (retrieval.get("warning") or "")
-                    )
-                    trace["output"] = (
-                        "\n".join(
-                            f"{item['title']}：{item['excerpt'][:150]}" for item in result["citations"]
-                        )[:1500]
-                        or "没有匹配原文。"
-                    )
-                elif kind == "check":
-                    with closing(service.db.connect()) as conn:
-                        result["checks"] = [
-                            item | {"task_id": task["id"], "task_title": task["title"]}
-                            for task in tasks
-                            for item in service.checks(conn, task, task.get("confirmed", False))
-                        ]
-                    result["checks"].extend(reported_conflicts(content, result["citations"]))
-                    gaps = sum(item["status"] != "passed" for item in result["checks"])
-                    trace["detail"] = (
-                        f"已按服务端规则检查 {len(tasks)} 项任务，发现 {gaps} 项待补充或冲突事项；未修改任务状态。"
-                    )
-                    trace["output"] = (
-                        "\n".join(f"{item['label']}：{item['reason']}" for item in result["checks"])[:1500]
-                        or "当前任务未配置字段检查。"
-                    )
-                    if step.get("instructions"):
-                        trace["detail"] += " 自由文本说明不会改变核验规则。"
-                elif kind == "guide":
-                    if emit:
-                        emit("start", {"step_id": step["id"]})
-                    if mode == "live":
-                        stream_options = (
-                            {
-                                "on_delta": lambda text: emit("delta", {"text": text, "step_id": step["id"]}),
-                                "check_cancelled": check_cancelled,
-                            }
-                            if emit
-                            else {}
+            trace["status"] = "running"
+            tool_run.publish(trace)
+            with tool_run.step(trace):
+                try:
+                    if kind == "retrieve":
+                        query = "\n".join(
+                            filter(None, [step.get("instructions", ""), content or stage["name"]])
+                        )[:2000]
+                        search_options = {"country": country or "unassigned"}
+                        if document_ids is not None:
+                            search_options["document_ids"] = document_ids
+                        retrieval = call_tool(
+                            SEARCH_DOCUMENTS,
+                            {"query": query, "limit": agent["retrieval_limit"], **search_options},
+                            lambda args, attempt: service.search(
+                                owner,
+                                args.query,
+                                case_id,
+                                args.limit,
+                                country=args.country,
+                                **(
+                                    {"document_ids": args.document_ids}
+                                    if args.document_ids is not None
+                                    else {}
+                                ),
+                            ),
+                            summarize=lambda value: (
+                                f"找到 {len(value['items'])} 处原文片段。" + (value.get("warning") or "")
+                            ),
                         )
-                        result["output"] = generate_guidance(
-                            agent,
-                            step,
-                            content,
-                            context,
-                            result["citations"],
-                            result["checks"],
-                            previous_output,
-                            prompt_cache_key=prompt_cache_key,
-                            **stream_options,
-                        )
+                        result["citations"] = retrieval["items"]
+                        result["retrieval_mode"] = retrieval["mode"]
+                        trace["input"] = query
                         trace["detail"] = (
-                            "已调用配置的模型，使用此前步骤结果与本步骤指导要求生成建议；未修改任务状态。"
+                            f"已执行{'混合' if retrieval['mode'] == 'hybrid' else '关键词'}检索，找到 {len(result['citations'])} 处实际资料片段。"
+                            + (retrieval.get("warning") or "")
                         )
-                    else:
-                        result["output"] = rule_guidance(result["checks"], result["citations"])
+                        trace["output"] = (
+                            "\n".join(
+                                f"{item['title']}：{item['excerpt'][:150]}" for item in result["citations"]
+                            )[:1500]
+                            or "没有匹配原文。"
+                        )
+                    elif kind == "check":
+
+                        def check_materials(args, attempt):
+                            with closing(service.db.connect()) as conn:
+                                checks = []
+                                for task in tasks:
+                                    attempt.check()
+                                    checks.extend(
+                                        item | {"task_id": task["id"], "task_title": task["title"]}
+                                        for item in service.checks(conn, task, task.get("confirmed", False))
+                                    )
+                                return checks
+
+                        result["checks"] = call_tool(
+                            CHECK_MATERIALS,
+                            {"task_ids": [task["id"] for task in tasks]},
+                            check_materials,
+                            summarize=lambda value: f"已完成 {len(value)} 项材料检查，未修改任务状态。",
+                        )
+                        result["checks"].extend(reported_conflicts(content, result["citations"]))
+                        gaps = sum(item["status"] != "passed" for item in result["checks"])
+                        trace["detail"] = (
+                            f"已按服务端规则检查 {len(tasks)} 项任务，发现 {gaps} 项待补充或冲突事项；未修改任务状态。"
+                        )
+                        trace["output"] = (
+                            "\n".join(f"{item['label']}：{item['reason']}" for item in result["checks"])[
+                                :1500
+                            ]
+                            or "当前任务未配置字段检查。"
+                        )
+                        if step.get("instructions"):
+                            trace["detail"] += " 自由文本说明不会改变核验规则。"
+                    elif kind == "guide":
                         if emit:
-                            # Rule output is already available: no simulated typing delay.
-                            emit("delta", {"text": result["output"], "step_id": step["id"]})
+                            emit("start", {"step_id": step["id"]})
+                        if mode == "live":
+                            stream_options = {"check_cancelled": check_cancelled}
+                            if emit:
+                                stream_options["on_delta"] = lambda text: emit(
+                                    "delta", {"text": text, "step_id": step["id"]}
+                                )
+                            result["output"] = generate_guidance(
+                                agent,
+                                step,
+                                content,
+                                context,
+                                result["citations"],
+                                result["checks"],
+                                previous_output,
+                                prompt_cache_key=prompt_cache_key,
+                                **stream_options,
+                            )
+                            trace["detail"] = (
+                                "已调用配置的模型，使用此前步骤结果与本步骤指导要求生成建议；未修改任务状态。"
+                            )
+                        else:
+                            result["output"] = rule_guidance(result["checks"], result["citations"])
+                            if emit:
+                                # Rule output is already available: no simulated typing delay.
+                                emit("delta", {"text": result["output"], "step_id": step["id"]})
+                            trace["detail"] = (
+                                "未调用大模型；已按固定规则汇总此前检查和实际检索。自由文本指导要求需配置模型后才会参与生成。"
+                            )
+                        previous_output = result["output"]
+                        guidance_citations = list(result["citations"])
+                        trace["output"] = result["output"][:1500]
+                    else:
                         trace["detail"] = (
-                            "未调用大模型；已按固定规则汇总此前检查和实际检索。自由文本指导要求需配置模型后才会参与生成。"
+                            "此步骤只提示起草入口；文稿需在任务的起草入口独立创建，本次未生成或保存文稿。"
+                            if kind == "draft"
+                            else "此步骤只提示核验入口；请通过任务核验接口确认当前版本，本次未核验或完成任务。"
                         )
-                    previous_output = result["output"]
-                    guidance_citations = list(result["citations"])
-                    trace["output"] = result["output"][:1500]
-                else:
-                    trace["detail"] = (
-                        "此步骤只提示起草入口；文稿需在任务的起草入口独立创建，本次未生成或保存文稿。"
-                        if kind == "draft"
-                        else "此步骤只提示核验入口；请通过任务核验接口确认当前版本，本次未核验或完成任务。"
+                    trace["status"] = "skipped" if kind in ("draft", "verify") else "completed"
+                except StreamCancelled:
+                    trace.update(status="cancelled", detail="已停止运行；此前完成的步骤结果已保留。")
+                    trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
+                    result["trace"].append(trace)
+                    if on_checkpoint:
+                        on_checkpoint(step["id"], result, None)
+                    raise
+                except Exception:
+                    logger.warning("workflow_step_failed", exc_info=True)
+                    trace.update(
+                        status="failed", detail="此步骤服务暂时不可用，后续步骤未执行；可以稍后重试。"
                     )
-                if kind not in ("draft", "verify"):
-                    trace["status"] = "completed"
-            except StreamCancelled:
-                trace.update(status="cancelled", detail="已停止运行；此前完成的步骤结果已保留。")
-                trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
-                result["trace"].append(trace)
-                if on_checkpoint:
-                    on_checkpoint(step["id"], result, None)
-                raise
-            except Exception:
-                logger.warning("workflow_step_failed", exc_info=True)
-                trace.update(status="failed", detail="此步骤服务暂时不可用，后续步骤未执行；可以稍后重试。")
-                result["output"] = "模型或检索服务暂时不可用，请稍后重试。已完成的规则检查仍可查看。"
-                stopped = True
+                    result["output"] = "模型或检索服务暂时不可用，请稍后重试。已完成的规则检查仍可查看。"
+                    stopped = True
         if capture_data:
             trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
             if trace["status"] == "completed":
@@ -561,8 +647,8 @@ def run_workflow(
                     "guidance_citations": copy.deepcopy(guidance_citations),
                 }
             on_checkpoint(step["id"], result, state)
-        if capture_data and emit:
-            emit("step", copy.deepcopy(trace))
+        trace["duration_ms"] = round((perf_counter() - started) * 1000, 2)
+        tool_run.publish(trace)
         if step["id"] == stop_after_step_id:
             stopped = True
     if guidance_citations is not None:

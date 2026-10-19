@@ -267,6 +267,40 @@ export function streamMessage(
   );
 }
 
+function isToolCall(data: unknown): data is ToolCall {
+  return (
+    record(data) &&
+    typeof data.id === "string" &&
+    data.id.length > 0 &&
+    data.id.length <= 100 &&
+    [
+      "search_documents",
+      "search_legal_evidence",
+      "check_materials",
+      "generate_guidance",
+    ].includes(String(data.name)) &&
+    typeof data.label === "string" &&
+    data.label.length <= 100 &&
+    ["running", "retrying", "completed", "failed", "cancelled"].includes(
+      String(data.status),
+    ) &&
+    Number.isSafeInteger(data.position) &&
+    Number(data.position) > 0 &&
+    Number.isSafeInteger(data.attempt) &&
+    Number(data.attempt) > 0 &&
+    Number.isSafeInteger(data.max_attempts) &&
+    Number(data.max_attempts) <= 2 &&
+    Number(data.max_attempts) >= Number(data.attempt) &&
+    typeof data.detail === "string" &&
+    data.detail.length <= 400 &&
+    typeof data.duration_ms === "number" &&
+    Number.isFinite(data.duration_ms) &&
+    data.duration_ms >= 0 &&
+    (data.error_code === undefined ||
+      (typeof data.error_code === "string" && data.error_code.length <= 64))
+  );
+}
+
 function isTraceStep(data: unknown): data is TraceStep {
   return (
     record(data) &&
@@ -282,6 +316,16 @@ function isTraceStep(data: unknown): data is TraceStep {
       "cached",
       "cancelled",
     ].includes(data.status) &&
+    (data.run_id === undefined ||
+      (typeof data.run_id === "string" && data.run_id.length <= 64)) &&
+    (data.sequence === undefined ||
+      (Number.isSafeInteger(data.sequence) && Number(data.sequence) > 0)) &&
+    (data.tools === undefined ||
+      (Array.isArray(data.tools) &&
+        data.tools.length <= 128 &&
+        data.tools.every(isToolCall) &&
+        new Set(data.tools.map((tool) => tool.id)).size ===
+          data.tools.length)) &&
     (data.type === undefined ||
       (typeof data.type === "string" &&
         ["retrieve", "check", "guide", "draft", "verify"].includes(
@@ -435,6 +479,10 @@ export function patch<T>(path: string, body: unknown, signal?: AbortSignal) {
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "操作未完成，请重试。";
 }
+export function documentImageUrl(documentId: string, imageId: string) {
+  return `/api/tea/documents/${encodeURIComponent(documentId)}/images/${encodeURIComponent(imageId)}`;
+}
+
 export function downloadUrl(
   id: string,
   kind: "documents" | "artifacts" = "documents",
@@ -468,6 +516,7 @@ import type {
   MessageResult,
   MessageStreamEvent,
   TraceStep,
+  ToolCall,
   StageAnalysis,
   SearchResult,
 } from "./types";

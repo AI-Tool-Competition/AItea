@@ -15,11 +15,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { type Bootstrap, type Document, type Template } from "@/core/tea/types";
+import { type Bootstrap, type Template } from "@/core/tea/types";
 
 import { AdminAccounts } from "./admin-accounts";
 import { AdminLibrary } from "./admin-library";
-import { UploadDialog } from "./library";
 import { Brand } from "./shared";
 import { Sources } from "./sources";
 import { Studio } from "./studio";
@@ -42,7 +41,7 @@ const pages = {
     group: "流程配置",
   },
   library: {
-    title: "资料库",
+    title: "法律总库",
     icon: BookOpen,
     group: "内容管理",
   },
@@ -76,16 +75,6 @@ export function Admin({
     process.env.NODE_ENV === "development" &&
     searchParams.get("sample") === "1";
   const [menuOpen, setMenuOpen] = useState(false);
-  const [upload, setUpload] = useState<{
-    scope?: string;
-    parent?: string;
-    country?: string;
-  }>();
-  const [libraryRevision, setLibraryRevision] = useState(0);
-  const [uploadedDocument, setUploadedDocument] = useState<{
-    ownerId: string;
-    document: Document;
-  }>();
   const navigationPage = page === "sources" ? "library" : page;
   const current = pages[navigationPage];
   return (
@@ -179,7 +168,7 @@ export function Admin({
                 href={`/tea/admin/library${samples ? "?sample=1" : ""}`}
                 aria-current={page === "library" ? "page" : undefined}
               >
-                资料
+                法律总库
               </Link>
               <Link
                 href={`/tea/admin/sources${samples ? "?sample=1" : ""}`}
@@ -190,7 +179,7 @@ export function Admin({
               {samples && (
                 <span className="ta-sample-label">开发样例 · 仅预览</span>
               )}
-              {samples ? (
+              {samples && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -198,18 +187,7 @@ export function Admin({
                 >
                   退出样例
                 </Button>
-              ) : process.env.NODE_ENV === "development" ? (
-                <Button asChild variant="ghost" size="sm">
-                  <Link
-                    href={`/tea/admin/${page}?sample=1`}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="在新标签页查看开发样例"
-                  >
-                    开发样例
-                  </Link>
-                </Button>
-              ) : null}
+              )}
             </nav>
           )}
           {page === "workflow" || page === "analysis" ? (
@@ -229,17 +207,7 @@ export function Admin({
             <AdminLibrary
               key={`${bootstrap.user.id}:${samples}`}
               ownerId={bootstrap.user.id}
-              cases={bootstrap.cases}
-              revision={libraryRevision}
-              uploadedDocument={
-                uploadedDocument?.ownerId === bootstrap.user.id
-                  ? uploadedDocument.document
-                  : undefined
-              }
               samples={samples}
-              onUpload={(scope, parent, country) =>
-                setUpload({ scope, parent, country })
-              }
             />
           ) : page === "accounts" ? (
             <AdminAccounts />
@@ -253,21 +221,6 @@ export function Admin({
           )}
         </main>
       </div>
-      <UploadDialog
-        key={bootstrap.user.id}
-        open={!!upload}
-        onOpenChange={(open) => {
-          if (!open) setUpload(undefined);
-        }}
-        caseId={upload?.scope}
-        initialParentId={upload?.parent}
-        initialCountry={upload?.country}
-        cases={bootstrap.cases}
-        onDone={(document) => {
-          setUploadedDocument({ ownerId: bootstrap.user.id, document });
-          setLibraryRevision((value) => value + 1);
-        }}
-      />
     </div>
   );
 }

@@ -345,11 +345,14 @@ describe("shared regulations and isolated private library", () => {
 
   it("returns the uploaded private document and opens it in the private library", async () => {
     const done = rs.fn();
-    rs.spyOn(globalThis, "fetch").mockImplementation(async (input, options) =>
-      options?.method === "POST"
-        ? response(privateDocument)
-        : defaultRead(input),
-    );
+    let uploadBody: FormData | undefined;
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      if (options?.method === "POST") {
+        uploadBody = options.body as FormData;
+        return response(privateDocument);
+      }
+      return defaultRead(input);
+    });
     const { unmount } = render(
       <UploadDialog
         open
@@ -359,12 +362,16 @@ describe("shared regulations and isolated private library", () => {
       />,
     );
     expect(screen.getByRole("option", { name: "我的资料" })).toBeTruthy();
+    expect(screen.queryByLabelText("文件用途")).toBeNull();
+    expect(screen.queryByLabelText("关联到主文件")).toBeNull();
     const file = new File(["hello"], "private.txt", { type: "text/plain" });
     fireEvent.change(document.body.querySelector('input[type="file"]')!, {
       target: { files: [file] },
     });
     fireEvent.click(screen.getByRole("button", { name: "上传并保存" }));
     await waitFor(() => expect(done).toHaveBeenCalledWith(privateDocument));
+    expect(uploadBody?.get("role")).toBe("primary");
+    expect(uploadBody?.has("parent_id")).toBe(false);
     unmount();
     const library = render(
       <Library
@@ -431,32 +438,21 @@ describe("shared regulations and isolated private library", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it("uses the same ownership split in the management directory", async () => {
+  it("keeps the management directory restricted to system laws", async () => {
     const fetcher = rs
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input) => defaultRead(input));
-    render(
-      <AdminLibrary
-        ownerId="alice"
-        cases={cases}
-        revision={0}
-        onUpload={() => undefined}
-      />,
-    );
+    render(<AdminLibrary ownerId="alice" />);
     await screen.findByText(shared.title);
-    fireEvent.click(screen.getByRole("button", { name: "我的资料" }));
-    await screen.findByText(privateDocument.title);
-    expect(screen.getByLabelText<HTMLSelectElement>("资料国家").value).toBe(
-      "all",
-    );
+    expect(screen.queryByRole("button", { name: "我的资料" })).toBeNull();
+    expect(screen.queryByLabelText("资料范围")).toBeNull();
+    expect(screen.queryByText(privateDocument.title)).toBeNull();
+    const reads = fetcher.mock.calls
+      .map(([input]) => urlOf(input))
+      .filter((url) => url.pathname.endsWith("/documents"));
+    expect(reads.length).toBeGreaterThan(0);
     expect(
-      fetcher.mock.calls.some(([input]) => {
-        const url = urlOf(input);
-        return (
-          url.searchParams.get("source_scope") === "personal" &&
-          !url.searchParams.has("country")
-        );
-      }),
+      reads.every((url) => url.searchParams.get("source_scope") === "system"),
     ).toBe(true);
   });
 

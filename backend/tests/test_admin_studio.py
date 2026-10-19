@@ -539,9 +539,9 @@ def test_live_debug_receives_step_instructions_and_prior_step_outputs(client, mo
         requests.append(body)
         return httpx.Response(200, json={"choices": [{"message": {"content": f"建议 {len(requests)}"}}]})
 
-    original = httpx.Client
+    original = httpx.AsyncClient
     monkeypatch.setattr(
-        httpx, "Client", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs)
+        httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond), **kwargs)
     )
     response = client.post("/api/tea/templates/debug", json={"template": value, "input": "样例"})
     assert response.status_code == 200, response.text
@@ -568,28 +568,44 @@ def test_debug_rejects_numbers_outside_finite_range(client):
 
 
 def test_slow_stream_cannot_extend_model_generation_indefinitely(client, monkeypatch):
+    import asyncio
     import httpx
     import app.assistant as assistant
 
     value = template(client)
     value["agent"] = agent("guide")
     enable_live(monkeypatch)
-    moments = iter([0, 46])
-    monkeypatch.setattr(assistant, "monotonic", lambda: next(moments), raising=False)
-    original = httpx.Client
-    response_body = {"choices": [{"message": {"content": "这份答复已超过时间预算"}}]}
+    closed = []
+
+    class SlowStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"choices":'
+            await asyncio.sleep(1)
+            yield b"[]}"
+
+        async def aclose(self):
+            closed.append(True)
+
+    original_client = httpx.AsyncClient
+    original_read = assistant.stream_guidance
+
+    async def short_budget(*args, **options):
+        return await original_read(*args, **(options | {"timeout": 0.03}))
+
+    monkeypatch.setattr(assistant, "stream_guidance", short_budget)
     monkeypatch.setattr(
         httpx,
-        "Client",
-        lambda **kwargs: original(
-            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=response_body)),
+        "AsyncClient",
+        lambda **kwargs: original_client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=SlowStream())),
             **kwargs,
         ),
     )
     result = client.post("/api/tea/templates/debug", json={"template": value, "input": "请分析"})
     assert result.status_code == 200, result.text
     assert result.json()["trace"][0]["status"] == "failed"
-    assert "超过时间预算" not in result.json()["output"]
+    assert result.json()["trace"][0]["tools"][0]["error_code"] == "timeout"
+    assert closed == [True]
 
 
 def test_retrieval_after_guidance_is_not_presented_as_its_supporting_evidence(client):

@@ -359,6 +359,13 @@ def _render(content, manifest, value, archive_path=None, archive_size=None, imag
     }
 
 
+def render_native_asset_bounded(manifest, asset, archive_path, archive_size):
+    """Render an already mapped image without OCR or manifest mutation."""
+    from .parsing import _run_bounded
+
+    return _run_bounded(_worker, ("render", (None, manifest, asset, archive_path, archive_size, None)), 45)
+
+
 def _worker(connection, operation, args):
     try:
         import resource

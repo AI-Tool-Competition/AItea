@@ -47,7 +47,7 @@ make dev WEB_PORT=3001 API_PORT=8001
 
 复制 `.env.example` 为 `.env`，设置后端模型接口、密钥和模型名称，然后重启。所有模型凭据只在后端使用，不能放进 `NEXT_PUBLIC_*`。
 
-- `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`：OpenAI-compatible 生成接口。
+- `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`：OpenAI-compatible 生成接口；示例默认使用 Aerisun 的 `deepseek-v4.1-flash`，需填写该网关密钥。聊天将稳定案情放在提示前缀供网关自动缓存，并记录供应商返回的缓存命中/未命中 token 数。
 - `EMBEDDING_BASE_URL`、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`：向量接口。
 - `RERANK_BASE_URL`、`RERANK_API_KEY`、`RERANK_MODEL`：可选的 `/rerank` 重排接口，仅排序已经通过权限与法规有效性过滤的候选；失败时保留原结果并提示。
 - 未配置生成接口时，页面标为演示助手；未配置向量接口时，使用词项检索。

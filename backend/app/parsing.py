@@ -665,12 +665,9 @@ def ocr_bounded(
         )
     ][:max_pages]
     if pending and vision_ocr_configured():
-        executor = ThreadPoolExecutor(
-            max_workers=min(vision_ocr_worker_limit(), len(pending)), thread_name_prefix="page-ocr"
-        )
-        futures = [
-            executor.submit(
-                _ocr_one_page,
+
+        def process_page(page):
+            completed = _ocr_one_page(
                 content,
                 page,
                 on_image,
@@ -680,13 +677,20 @@ def ocr_bounded(
                 archive_size,
                 on_reuse,
             )
-            for page in pending
-        ]
+            # A sibling may interrupt the batch while this page is in flight.
+            # Persist its result before returning the future, including during
+            # executor shutdown; callback failures still propagate to the job.
+            if on_page is not None:
+                on_page(deepcopy(completed))
+            return completed
+
+        executor = ThreadPoolExecutor(
+            max_workers=min(vision_ocr_worker_limit(), len(pending)), thread_name_prefix="page-ocr"
+        )
+        futures = [executor.submit(process_page, page) for page in pending]
         try:
             for future in as_completed(futures):
                 page = future.result()
-                if on_page is not None:
-                    on_page(deepcopy(page))
                 pages[page["page"] - 1] = page
         finally:
             executor.shutdown(wait=True, cancel_futures=True)

@@ -1,0 +1,551 @@
+"""Resume a fixed owner/model document plan, preserving each successful HTTP batch.
+
+Run with uv and an explicit private models file. The plan is frozen before any
+work and contains document IDs, original versions/hashes and the fingerprint.
+This command never discovers new documents, downloads, parses, OCRs or approves.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import math
+import os
+import signal
+import sqlite3
+import statistics
+import sys
+import threading
+import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+
+
+def digest(value):
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def stable_manifest(raw):
+    result = json.loads(raw)
+    result.pop("embedding_fingerprint", None)
+    result.pop("embedding_reuse", None)
+    return digest(result)
+
+
+class Observations:
+    def __init__(self, output):
+        self.output = output
+        self.lock = threading.Lock()
+        self.active = self.peak = 0
+        self.records = []
+        self.run_id = None
+        self.stop = threading.Event()
+        self.failure = None
+
+    def install(self):
+        from app import ingestion, parsing, vision
+        from app.retrieval import input_hash
+
+        original = ingestion._embedding_response
+        expected = ingestion.model_service_config("EMBEDDING")[0] + "/embeddings"
+        recorder = self
+
+        class Client:
+            def __init__(self, client, record):
+                self.client, self.record = client, record
+
+            @contextmanager
+            def stream(self, method, url, **kwargs):
+                if method != "POST" or url != expected:
+                    raise ValueError("Unexpected embedding endpoint")
+                record = self.record
+                started = time.monotonic()
+                record["started_at"] = time.time()
+                record["http_started"] = True
+                with recorder.lock:
+                    recorder.active += 1
+                    recorder.peak = max(recorder.peak, recorder.active)
+                try:
+                    with self.client.stream(method, url, **kwargs) as response:
+                        record["http_status"] = response.status_code
+                        if response.status_code == 429:
+                            record["rate_limited"] = True
+                        yield response
+                finally:
+                    record["seconds"] = round(time.monotonic() - started, 6)
+                    with recorder.lock:
+                        recorder.active -= 1
+
+        def observed(client, batch, base, key, model, call):
+            record = {
+                "run_id": self.run_id,
+                "input_hashes": [input_hash(t) for t in batch],
+                "inputs": len(batch),
+                "input_characters": sum(len(t) for t in batch),
+                "http_started": False,
+            }
+            try:
+                result = original(Client(client, record), batch, base, key, model, call)
+                record["outcome"] = "response"
+                return result
+            except Exception as error:
+                record["outcome"] = type(error).__name__
+                if record["http_started"] and type(error).__name__ in {
+                    "ReadTimeout",
+                    "WriteTimeout",
+                    "RemoteProtocolError",
+                }:
+                    self.failure = "issued_request_result_unknown"
+                    self.stop.set()
+                raise
+            finally:
+                with self.lock:
+                    self.records.append(record)
+                    with (self.output / "requests.jsonl").open("a") as stream:
+                        os.chmod(stream.name, 0o600)
+                        stream.write(json.dumps(record) + "\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+
+        ingestion._embedding_response = observed
+
+        def forbid(*args, **kwargs):
+            self.failure = "non_embedding_operation_prevented"
+            self.stop.set()
+            raise AssertionError(
+                "This fixed embedding plan cannot download, parse or OCR"
+            )
+
+        ingestion._download = forbid
+        parsing.parse_bounded = parsing.ocr_bounded = forbid
+        vision.transcribe_page = vision.transcribe_image = forbid
+
+    def summary(self):
+        with self.lock:
+            rows = [r for r in self.records if r["http_started"]]
+            times = sorted(r["seconds"] for r in rows)
+            inputs = [value for r in rows for value in r["input_hashes"]]
+            return {
+                "http_requests": len(rows),
+                "http_peak": self.peak,
+                "active_http": self.active,
+                "http_statuses": dict(Counter(str(r.get("http_status")) for r in rows)),
+                "outcomes": dict(Counter(r["outcome"] for r in rows)),
+                "requested_inputs": sum(r["inputs"] for r in rows),
+                "unique_requested_inputs": len(set(inputs)),
+                "repeated_requested_inputs": len(inputs) - len(set(inputs)),
+                "latency_median": statistics.median(times) if times else None,
+                "latency_p95": times[math.ceil(len(times) * 0.95) - 1]
+                if times
+                else None,
+            }
+
+
+def capture(service, ids):
+    with closing(service.db.connect()) as conn:
+        documents = {}
+        for ident in ids:
+            row = dict(
+                conn.execute("SELECT * FROM documents WHERE id=?", (ident,)).fetchone()
+            )
+            documents[ident] = {
+                "source": {
+                    k: row[k]
+                    for k in (
+                        "owner_id",
+                        "role",
+                        "version",
+                        "content_hash",
+                        "source_url",
+                        "storage_path",
+                        "size",
+                    )
+                },
+                "text_sha256": stable_manifest(row["manifest"]),
+            }
+        vectors = {
+            str(r["chunk_rowid"]): {
+                "fingerprint": r["fingerprint"],
+                "input_hash": r["input_hash"],
+                "dimension": r["dimension"],
+                "sha256": hashlib.sha256(r["vector"]).hexdigest(),
+            }
+            for r in conn.execute(
+                "SELECT * FROM retrieval_vectors ORDER BY chunk_rowid"
+            )
+        }
+        metadata = {}
+        for table in (
+            "document_metadata",
+            "document_metadata_history",
+            "legal_classifications",
+            "legal_relations",
+        ):
+            metadata[table] = digest(
+                [
+                    dict(r)
+                    for r in conn.execute(
+                        'SELECT * FROM "' + table + '" ORDER BY rowid'
+                    )
+                ]
+            )
+    return {"documents": documents, "vectors": vectors, "metadata": metadata}
+
+
+def metadata_rows(service):
+    keys = {
+        "document_metadata": ("document_id",),
+        "document_metadata_history": ("document_id", "revision"),
+        "legal_classifications": ("document_id", "collection"),
+        "legal_relations": ("id",),
+    }
+    with closing(service.db.connect()) as conn:
+        return {
+            table: {
+                json.dumps([row[key] for key in columns]): digest(dict(row))
+                for row in conn.execute('SELECT * FROM "' + table + '"')
+            }
+            for table, columns in keys.items()
+        }
+
+
+def existing_metadata_intact(service, guard):
+    current = metadata_rows(service)
+    return all(
+        current[table].get(key) == value
+        for table, rows in guard["rows"].items()
+        for key, value in rows.items()
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--models-env", type=Path, required=True)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--http-workers", type=int, choices=range(1, 65), default=2)
+    parser.add_argument("--batch-size", type=int, choices=range(1, 65), default=6)
+    parser.add_argument("--request-concurrency", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--stop-after-claims", type=int, default=0)
+    parser.add_argument("--http-timeout", type=int, choices=range(1, 61), default=30)
+    parser.add_argument(
+        "--retry-unresolved",
+        action="store_true",
+        help="Explicitly allow inputs from earlier issued requests with no saved result; billing may recur",
+    )
+    args = parser.parse_args()
+    document_workers = (
+        args.http_workers + args.request_concurrency - 1
+    ) // args.request_concurrency
+    if document_workers > 32:
+        parser.error("More than 32 HTTP workers requires --request-concurrency 2")
+    from verify_ingestion import configure_models, write_report
+
+    configure_models(args.models_env)
+    for key in tuple(os.environ):
+        if key.startswith(("LLM_", "RERANK_", "VISION_")):
+            os.environ.pop(key)
+    os.environ.update(
+        VISION_OCR_ENABLED="false",
+        TEA_PROCESS_WORKERS="32",
+        TEA_EMBED_WORKERS=str(document_workers),
+        EMBEDDING_INPUT_CACHE="true",
+        EMBEDDING_BATCH_SIZE=str(args.batch_size),
+        EMBEDDING_HTTP_WORKERS=str(args.http_workers),
+        EMBEDDING_REQUEST_CONCURRENCY=str(args.request_concurrency),
+        EMBEDDING_HTTP_TIMEOUT_SECONDS=str(args.http_timeout),
+        EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS="false",
+    )
+    from app import ingestion
+    from app.embedding_reuse import InputCheckpointCache
+    from app.ingestion_quality import text_complete
+    from app.retrieval import embedding_text, input_hash
+    from app.service import Service
+
+    plan = json.loads(args.plan.read_text())
+    ids = [d["id"] for d in plan["documents"]]
+    assert ids and len(ids) == len(set(ids))
+    data = Path(plan["data_dir"]).resolve()
+    output = args.output.resolve()
+    output.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = (output / "runner.lock").open("a")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    service = Service(data)
+    owner, fingerprint = plan["owner"], service.embedding_fingerprint()
+    assert fingerprint and fingerprint == plan["fingerprint"]
+    for item in plan["documents"]:
+        with closing(service.db.connect()) as conn:
+            doc = service.own_document(conn, owner, item["id"])
+            assert all(
+                doc[k] == item[k]
+                for k in (
+                    "version",
+                    "content_hash",
+                    "source_url",
+                    "size",
+                    "storage_path",
+                )
+            )
+            assert service.archive.can_index(conn, doc["id"])
+            manifest = json.loads(doc["manifest"])
+            assert doc["role"] == "primary" and text_complete(manifest)
+            assert (
+                service.catalog.metadata_for(doc["id"], conn=conn)["metadata"][
+                    "review_status"
+                ]
+                == "draft"
+            )
+            chunks = conn.execute(
+                "SELECT * FROM retrieval_chunks WHERE document_id=? ORDER BY ordinal,rowid",
+                (doc["id"],),
+            ).fetchall()
+            expected = [c for c in manifest["chunks"] if str(c.get("text", "")).strip()]
+            assert len(chunks) == len(expected)
+            for chunk, expected_chunk in zip(chunks, expected, strict=True):
+                assert chunk["retrieval_text"] == embedding_text(expected_chunk)
+                assert chunk["input_hash"] == input_hash(chunk["retrieval_text"])
+                assert (
+                    chunk["text"] == expected_chunk["text"]
+                    and json.loads(chunk["locator"]) == expected_chunk["locator"]
+                )
+        with Path(item["storage_path"]).open("rb") as stream:
+            assert (
+                hashlib.file_digest(stream, "sha256").hexdigest()
+                == item["content_hash"]
+            )
+    baseline_path = output / "baseline.json"
+    baseline = (
+        json.loads(baseline_path.read_text())
+        if baseline_path.exists()
+        else capture(service, ids)
+    )
+    if not baseline_path.exists():
+        write_report(output, baseline, "baseline.json")
+    current = capture(service, ids)
+    assert current["documents"] == baseline["documents"]
+    assert all(current["vectors"].get(k) == v for k, v in baseline["vectors"].items())
+    guard_path = output / "existing-metadata-guard.json"
+    if guard_path.exists():
+        metadata_guard = json.loads(guard_path.read_text())
+        assert metadata_guard["legacy_metadata"] == baseline["metadata"]
+    else:
+        # Upgrade only while all pre-existing rows still match the original
+        # whole-table evidence. Keep that original baseline file untouched.
+        assert current["metadata"] == baseline["metadata"]
+        with closing(service.db.connect()) as conn:
+            old_ids = [
+                r[0] for r in conn.execute("SELECT id FROM documents ORDER BY id")
+            ]
+        metadata_guard = {
+            "protocol": "existing-metadata-stable-keys-v1",
+            "legacy_metadata": baseline["metadata"],
+            "document_ids": old_ids,
+            "rows": metadata_rows(service),
+        }
+        write_report(output, metadata_guard, guard_path.name)
+    assert existing_metadata_intact(service, metadata_guard)
+    cache = InputCheckpointCache(
+        output / "successful-inputs.sqlite3",
+        {"owner": owner, "fingerprint": fingerprint, "source_plan": digest(plan)},
+    )
+    attempted = set()
+    requests_path = output / "requests.jsonl"
+    if requests_path.exists():
+        for line in requests_path.read_text().splitlines():
+            record = json.loads(line)
+            if record.get("http_started") and record.get("http_status") not in {
+                400,
+                401,
+                403,
+                404,
+                413,
+                429,
+            }:
+                attempted.update(record["input_hashes"])
+    with closing(sqlite3.connect(cache.path)) as conn:
+        saved = {row[0] for row in conn.execute("SELECT input_hash FROM inputs")}
+    unresolved = attempted - saved
+    deferred_documents = set()
+    if unresolved and not args.retry_unresolved:
+        with closing(service.db.connect()) as conn:
+            for ident in ids:
+                if any(
+                    row[0] in unresolved
+                    for row in conn.execute(
+                        "SELECT input_hash FROM retrieval_chunks WHERE document_id=?",
+                        (ident,),
+                    )
+                ):
+                    deferred_documents.add(ident)
+    observations = Observations(output)
+    observations.install()
+    original_embed = ingestion.embed_texts
+
+    def cached(texts):
+        try:
+            return cache.embed(texts, original_embed)
+        except (OSError, sqlite3.Error) as error:
+            observations.failure = type(error).__name__
+            observations.stop.set()
+            raise
+
+    ingestion.embed_texts = cached
+    signal.signal(signal.SIGTERM, lambda *_: observations.stop.set())
+    signal.signal(signal.SIGINT, lambda *_: observations.stop.set())
+    placeholders = ",".join("?" for _ in ids)
+    admission_ids = [ident for ident in ids if ident not in deferred_documents]
+    admission_placeholders = ",".join("?" for _ in admission_ids)
+    started = time.monotonic()
+    finished = 0
+    active = {}
+    run_id = str(time.time_ns())
+    observations.run_id = run_id
+    write_report(
+        output,
+        {
+            "input_hashes": sorted(unresolved),
+            "deferred_document_ids": sorted(deferred_documents),
+        },
+        "unresolved-" + run_id + ".json",
+    )
+
+    def progress():
+        with closing(service.db.connect()) as conn:
+            jobs = [
+                dict(r)
+                for r in conn.execute(
+                    f"SELECT * FROM processing_jobs WHERE document_id IN ({placeholders})",
+                    ids,
+                )
+            ]
+            pending = conn.execute(
+                f"""SELECT count(*),count(distinct c.input_hash) FROM retrieval_chunks c
+              LEFT JOIN retrieval_vectors v ON v.chunk_rowid=c.rowid
+              WHERE c.document_id IN ({placeholders}) AND (v.chunk_rowid IS NULL OR v.fingerprint!=? OR v.input_hash!=c.input_hash)""",
+                (*ids, fingerprint),
+            ).fetchone()
+            count = conn.execute("SELECT count(*) FROM retrieval_vectors").fetchone()[0]
+        report = {
+            "run_id": run_id,
+            "pid": os.getpid(),
+            "configuration": {
+                "http_workers": args.http_workers,
+                "document_workers": document_workers,
+                "batch_size": args.batch_size,
+                "request_concurrency": args.request_concurrency,
+                "http_timeout": args.http_timeout,
+                "retry_unresolved": args.retry_unresolved,
+            },
+            "status": "running" if active else "idle",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "fixed_documents": len(ids),
+            "completed_documents": sum(j["status"] == "completed" for j in jobs),
+            "failed_documents": sum(j["status"] == "failed" for j in jobs),
+            "unresolved_issued_inputs_at_start": len(unresolved),
+            "deferred_documents": len(deferred_documents),
+            "active_claims": len(active),
+            "finished_claims_this_process": finished,
+            "missing_rows": pending[0],
+            "unique_missing_inputs": pending[1],
+            "total_vectors": count,
+            "provider": observations.summary(),
+            "checkpoint_cache": cache.snapshot(),
+        }
+        write_report(output, report, "progress.json")
+        return report, jobs
+
+    report, jobs = progress()
+    write_report(output, report, "preflight-" + run_id + ".json")
+    print(json.dumps(report), flush=True)
+    if not args.apply:
+        return 0
+    next_report = 0
+    with ThreadPoolExecutor(max_workers=document_workers) as pool:
+        while True:
+            for future in list(active):
+                if future.done():
+                    future.result()
+                    active.pop(future)
+                    finished += 1
+            if (
+                args.stop_after_claims
+                and finished + len(active) >= args.stop_after_claims
+            ):
+                observations.stop.set()
+            if not observations.stop.is_set() and len(active) < document_workers:
+                with closing(service.db.connect()) as conn:
+                    queued = [
+                        r[0]
+                        for r in conn.execute(
+                            f"""SELECT document_id FROM processing_jobs
+                      WHERE owner_id=? AND document_id IN ({admission_placeholders}) AND phase='embed' AND status='queued'
+                      AND available_at<=? ORDER BY updated_at,document_id LIMIT ?""",
+                            (owner, *admission_ids, time.time(), document_workers),
+                        )
+                    ]
+                for ident in queued:
+                    if ident in deferred_documents:
+                        continue
+                    if len(active) >= document_workers:
+                        break
+                    claim = service.collection.claim_processing(
+                        owner_id=owner, document_ids=[ident]
+                    )
+                    if claim:
+                        assert claim["phase"] == "embed"
+                        active[pool.submit(service.collection.process_item, claim)] = (
+                            claim
+                        )
+            service.collection.heartbeat([(True, c) for c in active.values()])
+            if time.monotonic() >= next_report:
+                report, jobs = progress()
+                print(json.dumps(report), flush=True)
+                next_report = time.monotonic() + 20
+            if not active:
+                report, jobs = progress()
+                if observations.stop.is_set() or not any(
+                    j["status"] == "queued"
+                    and j["document_id"] not in deferred_documents
+                    for j in jobs
+                ):
+                    break
+            time.sleep(0.5)
+    after = capture(service, ids)
+    report, jobs = progress()
+    integrity = {
+        "selected_originals_and_all_text_unchanged": after["documents"]
+        == baseline["documents"],
+        "all_old_vectors_exact_bytes": all(
+            after["vectors"].get(k) == v for k, v in baseline["vectors"].items()
+        ),
+        "metadata_classifications_relations_unchanged": existing_metadata_intact(
+            service, metadata_guard
+        ),
+    }
+    report.update(
+        status="complete" if report["missing_rows"] == 0 else "stopped",
+        workers_running=False,
+        integrity=integrity,
+        failure=observations.failure,
+    )
+    write_report(output, report, "report-" + run_id + ".json")
+    write_report(output, report, "report.json")
+    print(json.dumps(report), flush=True)
+    assert all(integrity.values()) and not active and observations.active == 0
+    return 0 if not report["failed_documents"] and not observations.failure else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

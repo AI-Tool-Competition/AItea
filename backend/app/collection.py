@@ -65,6 +65,7 @@ class CollectionService:
         self.download_workers = _setting("TEA_COLLECT_WORKERS", 8, 16)
         self.host_workers = min(_setting("TEA_COLLECT_PER_HOST", 2, 4), self.download_workers)
         self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 32)
+        self.embedding_workers = min(_setting("TEA_EMBED_WORKERS", 2, 32), self.processing_workers)
         parse_worker_limit()  # Reject invalid parser capacity before claiming work.
         self.worker_health = {"status": "stopped", "last_error_at": None}
         self._migrate()
@@ -646,14 +647,16 @@ class CollectionService:
                 elif active_phases == {"embed"}:
                     preferred = "parse"
             order = "CASE WHEN phase=? THEN 0 ELSE 1 END," if preferred else ""
-            # The embedding transport has two shared HTTP slots. Claiming
-            # dozens of embed jobs would spend their finite provider budget
-            # waiting locally and exhaust retries without useful requests.
-            # Keep excess work durable and leave the other slots for parsing.
-            embedding_available = conn.execute(
-                "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?",
-                (timestamp,),
-            ).fetchone()[0] < min(self.processing_workers, 2)
+            # Keep embed admission durable and bounded independently of parser
+            # capacity. Explicit transport tuning must also opt into more live
+            # document leases; the default remains two.
+            embedding_available = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?",
+                    (timestamp,),
+                ).fetchone()[0]
+                < self.embedding_workers
+            )
             row = conn.execute(
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope

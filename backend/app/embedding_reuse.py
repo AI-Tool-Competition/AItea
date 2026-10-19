@@ -1,16 +1,21 @@
-"""Bounded warm numerical reuse between one owner's identical legal originals.
+"""Bounded numerical reuse within one owner, model and validated input.
 
-No global cache, approval, source text or locator is copied. The caller owns the
-live target lease and transaction. Cold misses still use the existing provider;
-parallel cold calls are not deduplicated by this warm-cache optimization.
+Warm reuse defaults to identical legal originals; explicit input-cache mode
+also accepts exact retrieval inputs from other verified originals. An operator
+may keep durable HTTP receipts for a frozen plan. Neither path copies approval,
+source text or locators. The caller retains its live target lease/transaction.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sqlite3
 import stat
+from contextlib import closing
 from pathlib import Path
+from threading import Condition, Lock
 
 from .blob_store import _verify_existing
 from .db import dump, now
@@ -18,6 +23,7 @@ from .ingestion_quality import text_complete
 from .retrieval import input_hash, stored_vector
 
 PROTOCOL = "same-owner-original-embedding-reuse-v1"
+INPUT_PROTOCOL = "same-owner-input-embedding-reuse-v1"
 MAX_DONORS = 8
 MAX_BATCH = 128
 MAX_MANIFEST_BYTES = 40 * 1024 * 1024
@@ -26,11 +32,127 @@ MAX_PROVENANCE_BYTES = 4 * 1024 * 1024
 MAX_PROVENANCE_RECORDS = 4096
 
 
+class InputCheckpointCache:
+    """Private operator-run receipts, scoped to a frozen owner/model/source plan.
+
+    A successful HTTP batch is fsynced independently of the application's claim.
+    A later failed sibling can therefore resume without paying for that result
+    again. This cache transfers numbers only, never authorization or citations.
+    """
+
+    def __init__(self, path, scope):
+        self.path = Path(path)
+        self.condition = Condition(Lock())
+        self.inflight = set()
+        self.hits = self.saved = 0
+        if not isinstance(scope, dict) or not all(
+            scope.get(k) for k in ("owner", "fingerprint", "source_plan")
+        ):
+            raise ValueError("向量检查点必须限定账号、模型和原件计划")
+        encoded = dump(scope)
+        with closing(self._connect()) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS scope(version INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS inputs(input_hash TEXT PRIMARY KEY,text_sha256 TEXT NOT NULL,"
+                "dimension INTEGER NOT NULL,vector BLOB NOT NULL,vector_sha256 TEXT NOT NULL)"
+            )
+            rows = conn.execute("SELECT version,payload FROM scope").fetchall()
+            if rows and rows != [(1, encoded)]:
+                raise ValueError("向量检查点账号、模型或原件计划不一致")
+            conn.execute("INSERT OR IGNORE INTO scope VALUES(1,?)", (encoded,))
+            conn.commit()
+        self.path.chmod(0o600)
+
+    def _connect(self):
+        conn = sqlite3.connect(self.path, timeout=30)
+        conn.execute("PRAGMA synchronous=FULL")
+        return conn
+
+    def _read(self, conn, text):
+        row = conn.execute(
+            "SELECT text_sha256,dimension,vector,vector_sha256 FROM inputs WHERE input_hash=?",
+            (input_hash(text),),
+        ).fetchone()
+        if row is None:
+            return None
+        text_sha, dimension, vector, vector_sha = row
+        if text_sha != _hash(text.encode()) or vector_sha != _hash(vector):
+            raise ValueError("向量检查点正文或向量校验失败")
+        return stored_vector(vector, dimension, dimension)
+
+    def save(self, texts, vectors):
+        from .retrieval import normalized_vector
+
+        if len(texts) != len(vectors) or not 1 <= len(texts) <= 128:
+            raise ValueError("向量检查点批次无效")
+        prepared = [normalized_vector(v) for v in vectors]
+        if len({len(v) for v in prepared}) != 1:
+            raise ValueError("向量检查点批次维度不一致")
+        with self.condition, closing(self._connect()) as conn, conn:
+            existing = conn.execute("SELECT dimension FROM inputs LIMIT 1").fetchone()
+            if existing and existing[0] != len(prepared[0]):
+                raise ValueError("向量检查点模型维度发生变化")
+            for text, vector in zip(texts, prepared, strict=True):
+                if self._read(conn, text) is not None:
+                    continue
+                raw = vector.tobytes()
+                conn.execute(
+                    "INSERT INTO inputs VALUES(?,?,?,?,?)",
+                    (input_hash(text), _hash(text.encode()), len(vector), raw, _hash(raw)),
+                )
+                self.saved += 1
+
+    def embed(self, texts, provider):
+        if not texts:
+            return []
+        if len(texts) > 128 or any(
+            not isinstance(t, str) or len(t.encode()) > MAX_INPUT_BYTES for t in texts
+        ):
+            raise ValueError("向量检查点输入超过限制")
+        unique = dict(zip((input_hash(t) for t in texts), texts, strict=True))
+        with self.condition:
+            self.condition.wait_for(lambda: not self.inflight.intersection(unique))
+            with closing(self._connect()) as conn:
+                resolved = {key: self._read(conn, text) for key, text in unique.items()}
+            missing = {key: unique[key] for key, result in resolved.items() if result is None}
+            self.hits += len(texts) - len(missing)
+            self.inflight.update(missing)
+        try:
+            if missing:
+                # The provider checkpoints every validated HTTP batch, not only
+                # the aggregate return from multiple potentially failing lanes.
+                values = provider(list(missing.values()), on_batch=self.save)
+                if values is None or len(values) != len(missing):
+                    raise ValueError("向量检查点未收到完整结果")
+                self.save(list(missing.values()), values)
+            with closing(self._connect()) as conn:
+                result = [self._read(conn, text) for text in texts]
+            if any(value is None for value in result):
+                raise ValueError("成功响应缺少持久向量检查点")
+            return result
+        finally:
+            with self.condition:
+                self.inflight.difference_update(missing)
+                self.condition.notify_all()
+
+    def snapshot(self):
+        with self.condition, closing(self._connect()) as conn:
+            return {
+                "saved_inputs": conn.execute("SELECT COUNT(*) FROM inputs").fetchone()[0],
+                "cache_hits_this_process": self.hits,
+                "new_saved_this_process": self.saved,
+                "inflight_inputs": len(self.inflight),
+            }
+
+
 def _hash(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _document(service, conn, document_id, owner):
+def _document(service, conn, document_id, owner, *, input_cache=False):
     row = conn.execute(
         """SELECT id,owner_id,role,version,family_id,content_hash,source_url,size,
         storage_path,status,CASE WHEN length(CAST(manifest AS BLOB))<=? THEN manifest END manifest
@@ -74,7 +196,7 @@ def _document(service, conn, document_id, owner):
     manifest = json.loads(row["manifest"])
     eligible = (
         row["role"] == "primary"
-        and row["status"] == "ready"
+        and row["status"] in ({"ready", "processing"} if input_cache else {"ready"})
         and bool(country)
         and any(
             r["collection"] == "country:" + country["country"] and r["level"] == "primary" for r in classes
@@ -129,7 +251,11 @@ def prepare_batch(service, conn, target, fingerprint, batch):
     if not isinstance(fingerprint, str) or not 0 < len(fingerprint) <= 200:
         raise ValueError("向量复用模型标识无效")
     target = dict(target)
-    current = _document(service, conn, target["id"], target["owner_id"])
+    setting = os.getenv("EMBEDDING_INPUT_CACHE", "false").strip().lower()
+    if setting not in {"true", "false"}:
+        raise ValueError("EMBEDDING_INPUT_CACHE 必须为 true 或 false。")
+    input_cache = setting == "true"
+    current = _document(service, conn, target["id"], target["owner_id"], input_cache=input_cache)
     if any(
         current[k] != target[k]
         for k in ("owner_id", "role", "version", "content_hash", "source_url", "size", "storage_path")
@@ -153,9 +279,12 @@ def prepare_batch(service, conn, target, fingerprint, batch):
         "misses": list(range(len(chunks))),
         "files": [],
         "raw_verified": False,
+        "input_cache": input_cache,
     }
     if not current["eligible"]:
         return plan
+    if input_cache:
+        return _prepare_input_hits(service, conn, plan)
     rows = conn.execute(
         """SELECT id FROM documents INDEXED BY documents_source
         WHERE owner_id=? AND source_url IS ? AND content_hash=? AND version=? AND role='primary'
@@ -183,6 +312,68 @@ def prepare_batch(service, conn, target, fingerprint, batch):
             if dc is None or any(
                 dc[k] != chunk[k] for k in ("input_hash", "retrieval_text", "text", "content_hash")
             ):
+                continue
+            vector = conn.execute(
+                "SELECT fingerprint,input_hash,dimension,vector FROM retrieval_vectors WHERE chunk_rowid=?",
+                (dc["rowid"],),
+            ).fetchone()
+            if (
+                vector is None
+                or vector["fingerprint"] != fingerprint
+                or vector["input_hash"] != chunk["input_hash"]
+            ):
+                continue
+            if dimension is None:
+                raise ValueError("缓存向量模型维度不存在")
+            values = stored_vector(vector["vector"], vector["dimension"], dimension["dimension"])
+            plan["hits"][n] = {
+                "donor": donor,
+                "donor_chunk": dc,
+                "dimension": vector["dimension"],
+                "donor_vector_sha256": _hash(vector["vector"]),
+                "values": values,
+            }
+            break
+    plan["misses"] = [n for n in range(len(chunks)) if n not in plan["hits"]]
+    return plan
+
+
+def _prepare_input_hits(service, conn, plan):
+    """Copy only numerical inputs within an owner, retaining both source fences.
+
+    Scan the current model once for this bounded batch, and return at most eight
+    source candidates per input. No source text, locator or approval is copied.
+    """
+    current, chunks, fingerprint = plan["target"], plan["chunks"], plan["fingerprint"]
+    hashes = list(dict.fromkeys(c["input_hash"] for c in chunks))
+    placeholders = ",".join("?" for _ in hashes)
+    rows = conn.execute(
+        f"""SELECT input_hash,document_id,chunk_id FROM (
+          SELECT v.input_hash,c.document_id,c.chunk_id,
+            ROW_NUMBER() OVER(PARTITION BY v.input_hash ORDER BY c.document_id,c.rowid) candidate
+          FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid
+          JOIN documents d ON d.id=c.document_id
+          WHERE v.fingerprint=? AND v.input_hash IN ({placeholders})
+            AND v.input_hash=c.input_hash AND d.owner_id=? AND d.role='primary'
+        ) WHERE candidate<=?""",
+        (fingerprint, *hashes, current["owner_id"], MAX_DONORS),
+    ).fetchall()
+    candidates, documents = {}, {}
+    dimension = conn.execute(
+        "SELECT dimension FROM retrieval_models WHERE fingerprint=?", (fingerprint,)
+    ).fetchone()
+    for row in rows:
+        candidates.setdefault(row["input_hash"], []).append(row)
+    for n, chunk in enumerate(chunks):
+        for row in candidates.get(chunk["input_hash"], []):
+            ident = row["document_id"]
+            if ident not in documents:
+                documents[ident] = _document(service, conn, ident, current["owner_id"], input_cache=True)
+            donor = documents[ident]
+            if not donor["eligible"]:
+                continue
+            dc = _chunk(conn, ident, row["chunk_id"])
+            if dc is None or any(dc[k] != chunk[k] for k in ("input_hash", "retrieval_text")):
                 continue
             vector = conn.execute(
                 "SELECT fingerprint,input_hash,dimension,vector FROM retrieval_vectors WHERE chunk_rowid=?",
@@ -266,7 +457,8 @@ def assert_current(service, conn, plan):
         raise ValueError("向量处理原件尚未完成核验")
     if (
         service.embedding_fingerprint() != plan["fingerprint"]
-        or _document(service, conn, target["id"], target["owner_id"]) != target
+        or _document(service, conn, target["id"], target["owner_id"], input_cache=plan["input_cache"])
+        != target
     ):
         raise ValueError("向量处理资料、模型或索引已变更")
     for file in plan["files"]:
@@ -279,7 +471,10 @@ def assert_current(service, conn, plan):
     for hit in plan["hits"].values():
         donor = hit["donor"]
         if donor["id"] not in checked_donors:
-            if _document(service, conn, donor["id"], donor["owner_id"]) != donor:
+            if (
+                _document(service, conn, donor["id"], donor["owner_id"], input_cache=plan["input_cache"])
+                != donor
+            ):
                 raise ValueError("复用来源资料或索引已变更")
             checked_donors.add(donor["id"])
         if _chunk(conn, donor["id"], hit["donor_chunk"]["chunk_id"]) != hit["donor_chunk"]:
@@ -302,7 +497,9 @@ def assert_current(service, conn, plan):
 def record_commit(conn, plan, manifest):
     """Record actual normalized target bytes after existing store_vectors succeeds."""
     previous = manifest.get("embedding_reuse")
-    if previous is not None and (not isinstance(previous, dict) or previous.get("protocol") != PROTOCOL):
+    if previous is not None and (
+        not isinstance(previous, dict) or previous.get("protocol") not in {PROTOCOL, INPUT_PROTOCOL}
+    ):
         raise ValueError("向量复用检查点无效")
     records = (
         dict(previous.get("records", {}))
@@ -322,6 +519,7 @@ def record_commit(conn, plan, manifest):
         ).fetchone()
         donor = hit["donor"]
         records[chunk["chunk_id"]] = {
+            "match_policy": "exact_input" if plan["input_cache"] else "same_original",
             "source_document_id": donor["id"],
             "source_document_version": donor["version"],
             "source_hash": donor["content_hash"],
@@ -348,7 +546,7 @@ def record_commit(conn, plan, manifest):
             "target_locators_or_approval_copied": False,
         }
     checkpoint = {
-        "protocol": PROTOCOL,
+        "protocol": INPUT_PROTOCOL if plan["input_cache"] else PROTOCOL,
         "fingerprint": plan["fingerprint"],
         "records": records,
         "current_reused_vector_records": len(records),

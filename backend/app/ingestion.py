@@ -547,7 +547,56 @@ def lexical_search(query: str, chunks: list[dict], limit: int = 5) -> list[dict]
 _EMBEDDING_PROFILES: dict[str, dict] = {}
 _EMBEDDING_PROFILE_LOCK = threading.Lock()
 _EMBEDDING_PROFILE_LIMIT = 32
-_EMBEDDING_HTTP_SLOTS = threading.BoundedSemaphore(2)
+
+
+def embedding_http_worker_limit() -> int:
+    value = os.getenv("EMBEDDING_HTTP_WORKERS", "2").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 64:
+        raise ValueError("EMBEDDING_HTTP_WORKERS 必须为 1 至 64 的整数。")
+    return int(value)
+
+
+def embedding_http_timeout() -> int:
+    value = os.getenv("EMBEDDING_HTTP_TIMEOUT_SECONDS", "30").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 60:
+        raise ValueError("EMBEDDING_HTTP_TIMEOUT_SECONDS 必须为 1 至 60 的整数。")
+    return int(value)
+
+
+def embedding_retry_ambiguous_timeouts() -> bool:
+    value = os.getenv("EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS", "true").strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError("EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS 必须为 true 或 false。")
+    return value == "true"
+
+
+class _EmbeddingSlots:
+    """Resolve one immutable process-wide ceiling before the first HTTP call."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.limit = self.semaphore = None
+
+    def acquire(self, blocking=True, timeout=None):
+        limit = embedding_http_worker_limit()
+        with self.lock:
+            if self.semaphore is None:
+                self.limit = limit
+                self.semaphore = threading.BoundedSemaphore(limit)
+            elif limit != self.limit:
+                raise ValueError("EMBEDDING_HTTP_WORKERS 已变更，请重启处理进程。")
+            semaphore = self.semaphore
+        return semaphore.acquire(blocking) if timeout is None else semaphore.acquire(blocking, timeout)
+
+    def release(self):
+        with self.lock:
+            semaphore = self.semaphore
+        if semaphore is None:
+            raise ValueError("尚未取得向量请求并发名额。")
+        semaphore.release()
+
+
+_EMBEDDING_HTTP_SLOTS = _EmbeddingSlots()
 
 
 class EmbeddingServiceError(ValueError):
@@ -603,7 +652,7 @@ def embedding_batch_size() -> int:
 
 
 def embedding_request_concurrency() -> int:
-    """Operator opt-in; all callers still share two process-wide HTTP slots."""
+    """Operator opt-in; all callers share the configured process-wide HTTP slots."""
     value = os.getenv("EMBEDDING_REQUEST_CONCURRENCY", "1").strip()
     if value not in {"1", "2"}:
         raise ValueError("EMBEDDING_REQUEST_CONCURRENCY 必须为 1 或 2。")
@@ -678,8 +727,9 @@ def _embedding_response(client, batch: list[str], base: str, key: str, model: st
         call.begin_request()
         begun = True
         # Slot waiting consumes the same complete-call budget as HTTP/retries.
-        response_deadline = min(call.deadline, time.monotonic() + 35)
-        request_timeout = max(0.001, min(30.0, call.deadline - time.monotonic()))
+        timeout = embedding_http_timeout()
+        response_deadline = min(call.deadline, time.monotonic() + timeout + 5)
+        request_timeout = max(0.001, min(timeout, call.deadline - time.monotonic()))
         with client.stream(
             "POST",
             base.rstrip("/") + "/embeddings",
@@ -707,7 +757,9 @@ def _embedding_response(client, batch: list[str], base: str, key: str, model: st
         _EMBEDDING_HTTP_SLOTS.release()
 
 
-def _embedding_batches(client, texts: list[str], base: str, key: str, model: str, call: _EmbeddingCall):
+def _embedding_batches(
+    client, texts: list[str], base: str, key: str, model: str, call: _EmbeddingCall, on_batch=None
+):
     import httpx
 
     vectors: list[list[float]] = []
@@ -735,6 +787,13 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                     delay = retry_after if retry_after is not None else 2.0
                     _embedding_profile(call.profile_key, cooldown=delay)
                     raise EmbeddingServiceError(retryable=True, retry_after=delay) from None
+                if (
+                    isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout))
+                    and not embedding_retry_ambiguous_timeouts()
+                ):
+                    # A timed-out request may already have been billed. Operators
+                    # can preserve its unresolved inputs instead of resending.
+                    raise EmbeddingServiceError(retryable=True, retry_after=60) from None
                 shrink = isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)) or status in {408, 413, 504}
                 with call.lock:
                     can_retry = call.failures < 8
@@ -763,6 +822,7 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                 entry["index"] for entry in data
             } != set(range(len(batch))):
                 raise ValueError("Embedding 服务返回索引无效。")
+            completed = []
             for entry in sorted(data, key=lambda item: item["index"]):
                 vector = entry.get("embedding")
                 if (
@@ -780,7 +840,13 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                 dimension = dimension or len(vector)
                 if len(vector) != dimension:
                     raise ValueError("Embedding 向量维度不一致。")
-                vectors.append([float(value) for value in vector])
+                completed.append([float(value) for value in vector])
+            # A durable operator callback can retain this successful response
+            # even if a later batch or parallel sibling fails. No partial or
+            # unvalidated provider payload crosses this checkpoint boundary.
+            if on_batch is not None:
+                on_batch(list(batch), completed)
+            vectors.extend(completed)
             start += len(batch)
             singleton_failures = 0
         return vectors
@@ -812,7 +878,7 @@ def model_service_config(prefix: str) -> tuple[str, str, str] | None:
     return base.rstrip("/"), key, model
 
 
-def embed_texts(texts: list[str]) -> list[list[float]] | None:
+def embed_texts(texts: list[str], *, on_batch=None) -> list[list[float]] | None:
     configuration = model_service_config("EMBEDDING")
     if configuration is None:
         return None
@@ -824,16 +890,19 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
     import httpx
     from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
+    embedding_http_worker_limit()
+    embedding_http_timeout()
+    embedding_retry_ambiguous_timeouts()
     concurrency = embedding_request_concurrency()
     batch_size = embedding_batch_size()
     call = _EmbeddingCall(_embedding_profile_key())
     # HTTPX read timeouts bound inactivity, not a complete trickling response.
     # The existing response/call deadlines remain shared across both lanes.
     with httpx.Client(
-        timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=False
+        timeout=httpx.Timeout(embedding_http_timeout(), connect=10.0), follow_redirects=False, trust_env=False
     ) as client:
         if concurrency == 1 or len(texts) <= batch_size:
-            return _embedding_batches(client, texts, base, key, model, call)
+            return _embedding_batches(client, texts, base, key, model, call, on_batch)
         vectors, start, dimension = [], 0, None
         # Only one wave of at most two futures exists. HTTPX clients are thread
         # safe; drain workers before closing the shared client on every exit.
@@ -846,7 +915,7 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
                     for offset in range(start, min(len(texts), start + 2 * size), size)
                 ]
                 futures = {
-                    pool.submit(_embedding_batches, client, batch, base, key, model, call): index
+                    pool.submit(_embedding_batches, client, batch, base, key, model, call, on_batch): index
                     for index, batch in enumerate(batches)
                 }
                 results, errors = {}, []

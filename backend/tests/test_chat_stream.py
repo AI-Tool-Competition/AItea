@@ -189,6 +189,74 @@ def test_openai_specific_cache_fields_are_omitted_for_custom_provider(monkeypatc
     assert "stream_options" not in sent[0]
 
 
+def test_aerisun_deepseek_requests_usage_and_keeps_case_context_in_cache_prefix(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("LLM_BASE_URL", "https://aerisun.top/sub2api")
+    caplog.set_level(logging.INFO, logger="app.assistant")
+    usage = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 1800,
+            "prompt_tokens_details": {"cached_tokens": 1280},
+            "prompt_cache_miss_tokens": 520,
+        },
+    }
+
+    def chunks():
+        yield delta("先整理材料。")
+        yield ("data: " + json.dumps(usage) + "\n\n").encode()
+        yield b"data: [DONE]\n\n"
+
+    sent = provider(monkeypatch, chunks)
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4.1-flash")
+    agent = {"language": "zh-CN", "instructions": ""}
+    step = {"instructions": "列出下一步"}
+    common = {"business_name": "六堡茶出口", "recent_messages": []}
+    assistant.generate_guidance(
+        agent,
+        step,
+        "先准备什么？",
+        common | {"recent_messages": [{"role": "user", "content": "你好"}]},
+        [],
+        [],
+        "",
+        on_delta=lambda _: None,
+        prompt_cache_key="opaque-key-that-must-not-be-forwarded",
+    )
+    assistant.generate_guidance(
+        agent,
+        step,
+        "还需要哪些材料？",
+        common
+        | {
+            "recent_messages": [
+                {"role": "user", "content": "你好"},
+                {"role": "assistant", "content": "请说明产品信息。"},
+            ]
+        },
+        [],
+        [],
+        "",
+        on_delta=lambda _: None,
+        prompt_cache_key="opaque-key-that-must-not-be-forwarded",
+    )
+
+    assert len(sent) == 2
+    assert all(body["model"] == "deepseek-v4.1-flash" for body in sent)
+    assert all(body["stream_options"] == {"include_usage": True} for body in sent)
+    assert all("prompt_cache_key" not in body for body in sent)
+    assert sent[0]["messages"][:2] == sent[1]["messages"][:2]
+    assert json.loads(sent[0]["messages"][1]["content"]) == {
+        "case_context": {"business_name": "六堡茶出口"}
+    }
+    assert sent[0]["messages"][-1] != sent[1]["messages"][-1]
+    usage_records = [record for record in caplog.records if record.getMessage() == "provider_prompt_usage"]
+    assert len(usage_records) == 2
+    assert usage_records[-1].cached_tokens == 1280
+    assert usage_records[-1].cache_miss_tokens == 520
+
+
 def test_truncated_provider_stream_fails_without_saving_a_reply(chat, monkeypatch):
     client, case, payload, _ = chat
     provider(monkeypatch, lambda: iter([delta("未完成的片段")]))

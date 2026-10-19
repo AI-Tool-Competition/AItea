@@ -9,7 +9,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
 
 import { Button } from "@/components/ui/button";
@@ -27,10 +27,12 @@ import {
 } from "@/components/ui/sheet";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { errorMessage, post, teaRequest } from "@/core/tea/api";
+import { mergeProcessingDocument } from "@/core/tea/document-state";
 import type {
   Artifact,
   Capabilities,
   CaseDetail,
+  Document,
   NodeConversation,
 } from "@/core/tea/types";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -51,6 +53,7 @@ export function Workspace({
   capabilities,
   onUpdate,
   onUpload,
+  uploadedDocument,
 }: {
   accountId: string;
   record: CaseDetail;
@@ -61,6 +64,7 @@ export function Workspace({
   capabilities: Capabilities;
   onUpdate: (record: CaseDetail) => void;
   onUpload: () => void;
+  uploadedDocument?: Document;
 }) {
   const [panelOpen, setPanelOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -79,6 +83,19 @@ export function Workspace({
   const [guideAttempt, setGuideAttempt] = useState(0);
   const isMobile = useIsMobile();
   const overlay = isMobile || narrow;
+  const panelVisible = overlay ? mobileOpen : panelOpen;
+  const lastUpload = useRef<Document | undefined>(undefined);
+  useEffect(() => {
+    if (
+      uploadedDocument?.case_id !== record.id ||
+      lastUpload.current === uploadedDocument
+    )
+      return;
+    lastUpload.current = uploadedDocument;
+    setTab("library");
+    setMobileOpen(true);
+    setPanelOpen(true);
+  }, [uploadedDocument, record.id]);
   const panelRef = usePanelRef();
   const panelOpenRef = useRef(false);
   const previousDetailSize = useRef(0);
@@ -90,6 +107,26 @@ export function Workspace({
   const isGuide = conversationId === "guide";
   const guideStageId = stage?.id;
   const guideStageStatus = stage?.status;
+  const updateLibraryDocuments = useCallback(
+    (updates: Document[]) => {
+      const byId = new Map(updates.map((item) => [item.id, item]));
+      let changed = false;
+      const documents = record.documents.map((current) => {
+        const next = byId.get(current.id);
+        if (
+          !next ||
+          (current.status === next.status &&
+            current.error === next.error &&
+            current.chunk_count === next.chunk_count)
+        )
+          return current;
+        changed = true;
+        return mergeProcessingDocument(current, next);
+      });
+      if (changed) onUpdate({ ...record, documents });
+    },
+    [record, onUpdate],
+  );
   useEffect(() => {
     const media = window.matchMedia("(max-width: 1100px)");
     const update = () => setNarrow(media.matches);
@@ -309,6 +346,9 @@ export function Workspace({
             initialCaseId={record.id}
             scopeLocked
             businessOnly
+            active={tab === "library" && panelVisible}
+            uploadedDocument={uploadedDocument}
+            onDocumentsChange={updateLibraryDocuments}
             revision={record.revision + record.documents.length}
             onUpload={onUpload}
           />
@@ -371,26 +411,29 @@ export function Workspace({
     </div>
   );
   return (
-    <div className="tea-workspace tea-node-workspace">
-      <header className="tea-workspace-topbar">
-        <SidebarTrigger className="md:hidden" aria-label="展开导航" />
-        <div>
-          <span>{stage.name}</span>
-          <strong>{isGuide ? "引导会话" : "节点会话"}</strong>
-        </div>
+    <div
+      className={`tea-workspace tea-node-workspace ${panelVisible ? "" : "tea-panel-hidden"}`}
+    >
+      <SidebarTrigger
+        className="tea-workspace-nav-trigger md:hidden"
+        aria-label="展开导航"
+      />
+      {((overlay && !mobileOpen) || (!overlay && !panelOpen)) && (
         <Button
+          className="tea-workspace-panel-trigger"
           variant="ghost"
           size="icon"
+          style={{ position: "absolute", top: 8, right: 20, left: "auto" }}
           aria-label="展开业务工作区"
           aria-expanded={overlay ? mobileOpen : panelOpen}
           onClick={() => {
             if (overlay) setMobileOpen(true);
-            else setPanelOpen((value) => !value);
+            else setPanelOpen(true);
           }}
         >
           <PanelRightOpen size={17} />
         </Button>
-      </header>
+      )}
       <ResizablePanelGroup
         orientation="horizontal"
         className="tea-workspace-panels"

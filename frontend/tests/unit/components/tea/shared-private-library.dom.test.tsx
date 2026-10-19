@@ -108,7 +108,7 @@ describe("shared regulations and isolated private library", () => {
         .getByRole("button", { name: "法规总库" })
         .getAttribute("aria-pressed"),
     ).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "上传到我的资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "上传资料" }));
     expect(onUpload).toHaveBeenCalledWith(undefined);
     fireEvent.click(screen.getByRole("button", { name: "我的资料" }));
     await screen.findByRole("button", { name: /我的未分国资料/ });
@@ -122,9 +122,15 @@ describe("shared regulations and isolated private library", () => {
     fireEvent.change(screen.getByLabelText("搜索资料"), {
       target: { value: "合同" },
     });
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "content" },
+    });
     expect(
       screen.getByRole<HTMLButtonElement>("button", { name: "检索" }).disabled,
     ).toBe(true);
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "name" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "查找文件" }));
     await waitFor(() =>
       expect(
@@ -177,6 +183,9 @@ describe("shared regulations and isolated private library", () => {
     fireEvent.change(screen.getByLabelText("搜索资料"), {
       target: { value: "alice" },
     });
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "name" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "查找文件" }));
     await screen.findByRole("heading", { name: "没有找到匹配文件" });
     expect(screen.getByText("调整资料名称或国家筛选后重试。")).toBeTruthy();
@@ -186,6 +195,9 @@ describe("shared regulations and isolated private library", () => {
     ).toBeNull();
     fireEvent.change(screen.getByLabelText("搜索资料"), {
       target: { value: "" },
+    });
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "name" },
     });
     fireEvent.click(screen.getByRole("button", { name: "查找文件" }));
     await screen.findByRole("button", { name: /我的未分国资料/ });
@@ -222,6 +234,9 @@ describe("shared regulations and isolated private library", () => {
     await screen.findByRole("button", { name: /共享食品法规/ });
     fireEvent.change(screen.getByLabelText("搜索资料"), {
       target: { value: "食品" },
+    });
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "content" },
     });
     fireEvent.click(screen.getByRole("button", { name: "检索" }));
     await waitFor(() => expect(submitted.source_scope).toBe("system"));
@@ -343,9 +358,7 @@ describe("shared regulations and isolated private library", () => {
         onDone={done}
       />,
     );
-    expect(
-      screen.getByRole("option", { name: "我的资料 · 仅当前账号" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("option", { name: "我的资料" })).toBeTruthy();
     const file = new File(["hello"], "private.txt", { type: "text/plain" });
     fireEvent.change(document.body.querySelector('input[type="file"]')!, {
       target: { files: [file] },
@@ -362,6 +375,8 @@ describe("shared regulations and isolated private library", () => {
         onUpload={() => undefined}
       />,
     );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "查看" }));
     await screen.findByRole("dialog", { name: privateDocument.title });
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(
@@ -378,6 +393,7 @@ describe("shared regulations and isolated private library", () => {
         onUpload={() => undefined}
       />,
     );
+    fireEvent.click(await screen.findByRole("button", { name: "查看" }));
     await screen.findByRole("dialog", { name: caseDocument.title });
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(

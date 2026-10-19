@@ -242,18 +242,6 @@ export interface NodeConversation {
   created_at: string;
   updated_at: string;
 }
-export interface GuideRun {
-  id: string;
-  stage_id: string;
-  title: string;
-  status: "queued" | "running" | "completed" | "failed";
-  case_revision: number;
-  created_at: string;
-  completed_at: string | null;
-  result: (LegalResult & { status: string }) | null;
-  trace: TraceStep[];
-  error: string;
-}
 export interface MessageInput {
   stage_id: string;
   task_id?: string;

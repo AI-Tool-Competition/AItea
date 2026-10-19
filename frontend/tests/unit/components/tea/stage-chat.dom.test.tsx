@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 
 import { StageChat } from "@/components/tea/stage-chat";
 import { Workspace } from "@/components/tea/workspace";
-import type { CaseDetail, Capabilities } from "@/core/tea/types";
+import type { CaseDetail, Capabilities, Document } from "@/core/tea/types";
 import { clearChatDrafts } from "@/core/tea/use-stage-chat";
 
 rs.mock("@/components/ai-elements/conversation", () => ({
@@ -78,6 +78,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  rs.useRealTimers();
   rs.restoreAllMocks();
 });
 
@@ -210,6 +211,78 @@ describe("stage chat experience", () => {
     mounted.unmount();
     expect(stream.fetcher.mock.calls[1]![1]!.signal?.aborted).toBe(true);
     expect(props.onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("opens uploaded materials and synchronizes completed processing with task evidence", async () => {
+    const uploaded: Document = {
+      id: "uploaded",
+      title: "上传的业务资料",
+      filename: "material.md",
+      role: "primary",
+      status: "processing",
+      mime_type: "text/markdown",
+      size: 50,
+      version: 1,
+      case_id: record.id,
+      parent_id: null,
+      tags: [],
+      created_at: "2026-10-19T00:00:00Z",
+      source_url: null,
+      error: null,
+      chunk_count: 0,
+    };
+    const processed = {
+      ...uploaded,
+      status: "ready",
+      chunk_count: 2,
+    } as Document;
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      return new Response(
+        JSON.stringify(
+          path.includes("/documents/uploaded")
+            ? { document: processed }
+            : path.includes("/documents?")
+              ? { items: [uploaded], total: 1 }
+              : { items: [], total: 0 },
+        ),
+      );
+    });
+    rs.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    render(
+      <Workspace
+        accountId="owner"
+        record={{ ...record, documents: [uploaded] }}
+        uploadedDocument={uploaded}
+        conversationId="chat-test"
+        stageId="stage"
+        setStageId={() => undefined}
+        capabilities={capabilities}
+        onUpdate={props.onUpdate}
+        onUpload={() => undefined}
+      />,
+    );
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(0);
+    });
+    expect(
+      screen.getByRole("tab", { name: "资料库" }).getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("button", { name: /上传的业务资料.*处理中/ }),
+    ).toBeTruthy();
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(3000);
+    });
+    expect(props.onUpdate).toHaveBeenCalledWith({
+      ...record,
+      documents: [processed],
+    });
   });
 
   it("keeps the same live conversation when crossing the mobile breakpoint", async () => {

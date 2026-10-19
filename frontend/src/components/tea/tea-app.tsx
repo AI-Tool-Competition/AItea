@@ -458,6 +458,7 @@ export function TeaApp({
       setBootstrap(undefined);
       setConversationId("guide");
       setConversationError("");
+      setUploadedDocument(undefined);
       setLibraryCaseId("");
       setView("workspace");
       setError("登录已过期，请重新登录。未保存的任务与文稿草稿已保留。");
@@ -621,6 +622,7 @@ export function TeaApp({
     );
   }, []);
   function selectCase(id: string) {
+    setUploadedDocument(undefined);
     setConversationId("guide");
     if (id !== caseId) {
       setRecord(undefined);
@@ -643,6 +645,7 @@ export function TeaApp({
       setBootstrap(undefined);
       setRecord(undefined);
       setCaseId("");
+      setUploadedDocument(undefined);
       setConversationId("guide");
       setConversationError("");
       setLibraryCaseId("");
@@ -766,6 +769,7 @@ export function TeaApp({
         }}
         onCase={selectCase}
         onStage={(id) => {
+          setUploadedDocument(undefined);
           setConversationId("guide");
           setStageId(id);
           setView("workspace");
@@ -829,6 +833,11 @@ export function TeaApp({
               conversationId={conversationId}
               onConversation={(id) => setConversationId(id)}
               capabilities={bootstrap.capabilities}
+              uploadedDocument={
+                uploadedDocument?.ownerId === bootstrap.user.id
+                  ? uploadedDocument.document
+                  : undefined
+              }
               onUpdate={updateRecord}
               onUpload={() => setUploadOpen(true)}
             />
@@ -932,6 +941,10 @@ export function TeaApp({
         onDone={(document) => {
           setUploadedDocument({ ownerId: bootstrap.user.id, document });
           if (view === "library") setLibraryCaseId(document.case_id ?? "");
+          else if (view === "workspace" && document.case_id !== caseId) {
+            setLibraryCaseId(document.case_id ?? "");
+            setView("library");
+          }
           setLibraryRevision((r) => r + 1);
           setRecordReload((r) => r + 1);
         }}

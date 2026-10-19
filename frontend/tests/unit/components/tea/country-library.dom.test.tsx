@@ -208,6 +208,9 @@ describe("country boundaries in document management", () => {
     fireEvent.change(screen.getByLabelText("搜索资料"), {
       target: { value: "进口规则" },
     });
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "content" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "检索" }));
     await waitFor(() => expect(signal).toBeTruthy());
     expect(submitted.country).toBe("ID");
@@ -252,6 +255,9 @@ describe("country boundaries in document management", () => {
     );
     fireEvent.change(screen.getByLabelText("搜索资料"), {
       target: { value: "条款" },
+    });
+    fireEvent.change(screen.getByLabelText("搜索方式"), {
+      target: { value: "content" },
     });
     fireEvent.click(screen.getByRole("button", { name: "检索" }));
     await waitFor(() => expect(submitted.case_id).toBe("case-1"));

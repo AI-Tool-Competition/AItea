@@ -327,33 +327,6 @@ export function StageChat({
       </Conversation>
       <div className="tea-composer-area">
         <div className="tea-composer-content">
-          {guide && (
-            <div className="tea-guide-actions">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={onUpload}
-              >
-                <Paperclip size={14} />
-                上传材料
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={chat.sending || chat.loading || !!chat.historyError}
-                onClick={() =>
-                  chat.send(
-                    taskId,
-                    "现有情况和资料就这些，请开始分析，给出结论与下一步；缺少的材料请明确列出。",
-                  )
-                }
-              >
-                开始分析并生成报告
-              </Button>
-            </div>
-          )}
           {chat.historyError && (
             <ErrorNotice message={chat.historyError} onRetry={chat.reload} />
           )}

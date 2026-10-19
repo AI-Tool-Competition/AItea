@@ -4755,17 +4755,6 @@
   font-weight: 400;
   color: var(--muted-foreground);
 }
-.tea-guide-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 0 0 6px;
-}
-.tea-guide-actions > button {
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
 .tea-composer-toolbar .tea-composer-shortcut {
   display: none;
 }
@@ -4801,9 +4790,6 @@
     min-height: 40px;
     padding: 0 7px;
     font-size: 12px;
-  }
-  .tea-guide-actions > button {
-    min-height: 40px;
   }
   .tea-node-workspace .tea-composer-toolbar {
     gap: 3px;

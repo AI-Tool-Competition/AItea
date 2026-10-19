@@ -77,6 +77,40 @@ def arguments(tmp_path):
     )
 
 
+@pytest.mark.parametrize("budget", [None, 32 * 1024**3, 64 * 1024**3])
+def test_cli_accepts_explicit_large_cumulative_budget_and_preserves_default(tmp_path, monkeypatch, budget):
+    argv = ["collect_indonesia_official.py", "--output", str(tmp_path / "unused")]
+    if budget is not None:
+        argv += ["--original-byte-budget", str(budget)]
+    observed = []
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(collector, "run", lambda args: observed.append(args.original_byte_budget) or 0)
+    assert collector.main() == 0
+    assert observed == [budget or 0]
+    assert not (tmp_path / "unused").exists()
+
+
+@pytest.mark.parametrize("budget", [-1, 64 * 1024**3 + 1])
+def test_cli_rejects_original_budget_outside_explicit_limit(tmp_path, monkeypatch, budget):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "collect_indonesia_official.py",
+            "--output",
+            str(tmp_path / "unused"),
+            "--original-byte-budget",
+            str(budget),
+        ],
+    )
+    monkeypatch.setattr(
+        collector, "run", lambda _: pytest.fail("invalid capacity must stop before opening a journal")
+    )
+    with pytest.raises(SystemExit) as exc:
+        collector.main()
+    assert exc.value.code == 2
+
+
 def mock_catalogue(monkeypatch):
     requested, fail_once = [], {("PP", 50)}
 
@@ -149,6 +183,23 @@ def test_corrupted_cached_receipt_stops_before_another_request(tmp_path, monkeyp
     with pytest.raises(ValueError, match="receipt size changed"):
         collector.run(args)
     assert len(requested) == before
+
+
+def test_catalogue_disk_pressure_preserves_unattempted_queue(tmp_path, monkeypatch):
+    requested = mock_catalogue(monkeypatch)
+    args = arguments(tmp_path)
+    monkeypatch.setattr(
+        collector.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(free=args.min_free_bytes + collector.MAX_HTML_BYTES - 1),
+    )
+    assert collector.run(args) == 2
+    assert not requested
+    with sqlite3.connect(args.output / "journal.sqlite3") as connection:
+        assert connection.execute("SELECT count(*) FROM attempts").fetchone()[0] == 0
+        assert connection.execute("SELECT status,attempts FROM tasks").fetchall() == [("queued", 0)] * 4
+    report = json.loads((args.output / "report.json").read_text())
+    assert report["requested_scope"]["storage_backpressure"] is True
 
 
 def test_whole_transport_failure_batch_cools_source_without_consuming_detail_queue(tmp_path, monkeypatch):
@@ -332,15 +383,15 @@ def test_resume_rejects_changed_historical_response_proof(tmp_path):
         current.close()
 
 
-def association_record(tmp_path):
+def association_record(tmp_path, owner=collector.SOURCE_OWNER):
     from app.blob_store import BlobStore
 
     blobs = BlobStore(tmp_path / "files", max_bytes=1024 * 1024)
-    catalogue = blobs.put(collector.SOURCE_OWNER, [b'{"catalogue":"source evidence"}'])
-    detail = blobs.put(collector.SOURCE_OWNER, [b'{"detail":"source evidence"}'])
+    catalogue = blobs.put(owner, [b'{"catalogue":"source evidence"}'])
+    detail = blobs.put(owner, [b'{"detail":"source evidence"}'])
     assets = []
     for index, filename in enumerate(("PERPU 3 Tahun 2005.pdf", "PERPU 3 Tahun 2005_Lampiran.pdf")):
-        blob = blobs.put(collector.SOURCE_OWNER, [b"%PDF-1.4\n" + filename.encode()])
+        blob = blobs.put(owner, [b"%PDF-1.4\n" + filename.encode()])
         assets.append(
             {
                 "url": "https://jdih.setneg.go.id/api/hukumproduk/pdf?f=" + str(index),
@@ -456,13 +507,27 @@ def test_pending_alternative_main_file_prevents_ambiguous_association(tmp_path):
     assert original_file_relations(record) == []
 
 
-@pytest.mark.parametrize("per_host,budget_mb,expected", [(2, 1024, 2), (4, 1024, 4), (4, 128, 1)])
+@pytest.mark.parametrize(
+    "per_host,budget_mb,free_mb,expected",
+    [
+        (2, 1024, 1024, 2),
+        (4, 1024, 1024, 4),
+        (4, 128, 1024, 1),
+        (4, 1024, 256, 2),
+        (4, 1024, 128, 1),
+        (4, 64, 64, 1),
+        (4, 32768, 127, 0),
+    ],
+)
 def test_original_concurrency_is_bounded_by_host_and_reserved_bytes(
-    tmp_path, monkeypatch, per_host, budget_mb, expected
+    tmp_path, monkeypatch, per_host, budget_mb, free_mb, expected
 ):
-    barrier = threading.Barrier(expected)
+    barrier = threading.Barrier(expected or 4)
     lock = threading.Lock()
     active = peak = 0
+    calls = []
+    free = collector.MIN_FREE_BYTES + free_mb * 1024 * 1024
+    monkeypatch.setattr(collector.shutil, "disk_usage", lambda _: SimpleNamespace(free=free))
 
     def source_row(instrument):
         return {
@@ -475,6 +540,7 @@ def test_original_concurrency_is_bounded_by_host_and_reserved_bytes(
 
     def download(url, *, consume, **options):
         nonlocal active, peak
+        calls.append(url)
         body = options.get("json_body")
         if body and isinstance(body["jns"], list):
             instrument = body["jns"][0]
@@ -506,8 +572,63 @@ def test_original_concurrency_is_bounded_by_host_and_reserved_bytes(
     args.detail_types = list(SETNEG_ITEMS.values())
     args.per_host = per_host
     args.original_byte_budget = budget_mb * 1024 * 1024
+    if not expected:
+        assert collector.run(args) == 2
+        assert peak == 0
+        report = json.loads((args.output / "report.json").read_text())
+        assert report["requested_scope"]["storage_backpressure"] is True
+        assert report["tasks"]["document"]["queued"] == 4
+        count = len(calls)
+        free = collector.MIN_FREE_BYTES + 512 * 1024 * 1024
+        args.resume = True
+        assert collector.run(args) == 0
+        assert peak == 4 and len(calls) == count + 4
+        count = len(calls)
+        assert collector.run(args) == 0
+        assert len(calls) == count  # Resume verifies originals; no network repetition.
+        return
     assert collector.run(args) == 0
     assert peak == expected
+
+
+def test_prepare_library_reuses_owned_originals_without_a_second_blob_write(tmp_path, monkeypatch):
+    from app.blob_store import BlobStore
+
+    record = association_record(tmp_path)
+    (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
+    monkeypatch.setattr(
+        BlobStore, "put", lambda *_: pytest.fail("owned originals/proofs must be reused in place")
+    )
+    assert collector.prepare_library(tmp_path)["documents"] == 2
+
+
+def test_prepare_library_defers_cross_owner_copy_at_reserve_and_copies_shared_proof_once(
+    tmp_path, monkeypatch
+):
+    from app.blob_store import BlobStore
+
+    record = association_record(tmp_path, owner="historical-other-owner")
+    (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
+    free = collector.MIN_FREE_BYTES
+    monkeypatch.setattr(collector.shutil, "disk_usage", lambda _: SimpleNamespace(free=free))
+    with pytest.raises(ValueError, match="disk reserve"):
+        collector.prepare_library(tmp_path)
+    with sqlite3.connect(tmp_path / "tea.sqlite3") as connection:
+        assert connection.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
+    free += 1024 * 1024
+    original_put = BlobStore.put
+    copied = []
+
+    def count_copy(self, owner, chunks):
+        blob = original_put(self, owner, chunks)
+        copied.append(blob.digest)
+        return blob
+
+    monkeypatch.setattr(BlobStore, "put", count_copy)
+    assert collector.prepare_library(tmp_path)["documents"] == 2
+    assert len(copied) == len(set(copied)) == 4  # Two originals, one shared catalogue, one shared detail.
+    assert collector.prepare_library(tmp_path)["documents"] == 2
+    assert len(copied) == 4
 
 
 @pytest.mark.parametrize("files_available", [True, False])

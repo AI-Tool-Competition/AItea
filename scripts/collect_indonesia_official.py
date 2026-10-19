@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from app.blob_store import Blob, BlobStore  # noqa: E402 -- repository script bootstrap
+from app.blob_store import Blob, BlobStore, _verify_existing  # noqa: E402 -- repository script bootstrap
 from app.checklists import load_blueprints  # noqa: E402
 from app.data_backup import _safe_absolute  # noqa: E402
 from app.discovery import (  # noqa: E402
@@ -45,6 +45,9 @@ from app.indonesia_official import (  # noqa: E402
 from verify_collection_sources import SourceVerifier, write_report  # noqa: E402
 
 SOURCE_OWNER = "setneg-official-corpus-20261019"
+MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
+MAX_ORIGINAL_BYTE_BUDGET = 64 * 1024**3
+MIN_FREE_BYTES = 256 * 1024 * 1024
 
 
 class CorpusBlobs(BlobStore):
@@ -470,7 +473,7 @@ def export_state(c: sqlite3.Connection, output: Path) -> dict:
     return report
 
 
-def prepare_library(output: Path) -> dict:
+def prepare_library(output: Path, *, min_free_bytes=MIN_FREE_BYTES) -> dict:
     """Create original versions and durable processing jobs, without model calls."""
     from app.db import dump, now
     from app.service import Service
@@ -521,6 +524,15 @@ def prepare_library(output: Path) -> dict:
         )
         if path.absolute() == target.absolute():
             return Blob(path, digest, path.stat().st_size)
+        source_size = path.stat().st_size
+        if size is not None and source_size != size:
+            raise ValueError("source original changed during preparation")
+        if target.exists():
+            _verify_existing(path, digest, source_size)
+            _verify_existing(target, digest, source_size)
+            return Blob(target, digest, source_size)
+        if shutil.disk_usage(output).free < min_free_bytes + source_size:
+            raise ValueError("library preparation paused at the disk reserve; resume after freeing space")
         with path.open("rb") as handle:
             blob = service.archive.blobs.put(SOURCE_OWNER, iter(lambda: handle.read(64 * 1024), b""))
         if blob.digest != digest or (size is not None and blob.size != size):
@@ -699,14 +711,15 @@ def run(args) -> int:
             time_budget=args.time_budget,
             workers=args.workers,
             per_host=args.per_host,
-            max_original_bytes=128 * 1024 * 1024,
+            max_original_bytes=MAX_ORIGINAL_BYTES,
         )
-        verifier.blobs = CorpusBlobs(output / "files", max_bytes=128 * 1024 * 1024)
+        verifier.blobs = CorpusBlobs(output / "files", max_bytes=MAX_ORIGINAL_BYTES)
         original_bytes = sum(
             json.loads(r[0])["size"]
             for r in c.execute("SELECT result FROM tasks WHERE purpose='document' AND status='downloaded'")
         )
         next_export = time.monotonic() + 15
+        storage_backpressure = False
         for stage in ("catalog", "content"):
             while time.monotonic() < verifier.deadline:
                 cooldown = c.execute("SELECT value FROM config WHERE key='cooldown_until'").fetchone()
@@ -722,11 +735,26 @@ def run(args) -> int:
                 if stage != "catalog":
                     pending = [r for r in pending if SETNEG_ITEMS[r["item_code"]] in args.detail_types]
                 remaining = args.original_byte_budget - original_bytes
-                original_allowed = remaining > 0 and shutil.disk_usage(output).free >= (
-                    min(remaining, 256 * 1024 * 1024) + args.min_free_bytes
+                available_disk = max(0, shutil.disk_usage(output).free - args.min_free_bytes)
+                original_limit = min(remaining, MAX_ORIGINAL_BYTES) if remaining > 0 else 0
+                # Every queued future may publish its maximum response. Reserve
+                # the whole batch, including futures waiting for a host slot.
+                document_slots = (
+                    min(
+                        args.per_host,
+                        args.workers,
+                        remaining // original_limit,
+                        available_disk // original_limit,
+                    )
+                    if original_limit
+                    else 0
                 )
                 if stage == "content":
-                    originals = [r for r in pending if r["purpose"] == "document"] if original_allowed else []
+                    originals = [r for r in pending if r["purpose"] == "document"]
+                    if originals and original_limit and not document_slots:
+                        storage_backpressure = True
+                    if not document_slots:
+                        originals = []
                     # Consume discovered originals before expanding another set
                     # of details; no type waits behind another type's full list.
                     pending = originals or [r for r in pending if r["purpose"] == "detail"]
@@ -734,12 +762,14 @@ def run(args) -> int:
                     break
                 purpose = pending[0]["purpose"]
                 if purpose == "document":
-                    verifier.max_original_bytes = min(remaining, 128 * 1024 * 1024)
-                document_slots = max(
-                    1,
-                    min(args.per_host, args.workers, remaining // (128 * 1024 * 1024)),
-                )
-                slots = min(document_slots, args.workers) if purpose == "document" else args.workers
+                    verifier.max_original_bytes = original_limit
+                    slots = document_slots
+                else:
+                    verifier.max_original_bytes = MAX_ORIGINAL_BYTES
+                    slots = min(args.workers, available_disk // MAX_HTML_BYTES)
+                if not slots:
+                    storage_backpressure = True
+                    break
                 batch, selected = [], set()
                 for row in pending:
                     if row["item_code"] not in selected:
@@ -787,7 +817,7 @@ def run(args) -> int:
                     )
                     next_export = time.monotonic() + 15
                     if args.prepare_library:
-                        prepare_library(output)
+                        prepare_library(output, min_free_bytes=args.min_free_bytes)
         report = export_state(c, output)
         verify_receipts(c, output)
         requested = set(args.detail_types)
@@ -813,6 +843,8 @@ def run(args) -> int:
             "catalogue_types": list(SETNEG_ITEMS.values()),
             "detail_types": args.detail_types,
             "original_byte_budget": args.original_byte_budget,
+            "storage_backpressure": storage_backpressure,
+            "min_free_bytes": args.min_free_bytes,
             "unfinished_details": unfinished_details,
             "unfinished_originals": unfinished_originals,
             "original_scope_gaps": original_scope_gaps,
@@ -826,7 +858,10 @@ def run(args) -> int:
         write_report(output, report)
         if args.prepare_library:
             print(
-                json.dumps({"prepared_library": prepare_library(output)}, ensure_ascii=False),
+                json.dumps(
+                    {"prepared_library": prepare_library(output, min_free_bytes=args.min_free_bytes)},
+                    ensure_ascii=False,
+                ),
                 flush=True,
             )
         return 0 if report["requested_scope"]["complete"] else 2
@@ -853,8 +888,13 @@ def main():
         help="reuse verified historical detail/original responses from another explicit collection journal",
     )
     parser.add_argument("--detail-types", type=lambda value: value.split(","), default=["PERPU"])
-    parser.add_argument("--original-byte-budget", type=int, default=0)
-    parser.add_argument("--min-free-bytes", type=int, default=256 * 1024 * 1024)
+    parser.add_argument(
+        "--original-byte-budget",
+        type=int,
+        default=0,
+        help="cumulative original bytes across resumes, 0 disables originals; maximum 64 GiB",
+    )
+    parser.add_argument("--min-free-bytes", type=int, default=MIN_FREE_BYTES)
     parser.add_argument(
         "--prepare-library",
         action="store_true",
@@ -867,10 +907,10 @@ def main():
     args = parser.parse_args()
     if (
         not set(args.detail_types) <= set(SETNEG_ITEMS.values())
-        or not 0 <= args.original_byte_budget <= 10 * 1024**3
+        or not 0 <= args.original_byte_budget <= MAX_ORIGINAL_BYTE_BUDGET
     ):
-        parser.error("detail types must be UU, PERPU, PP or PERPRES; original byte budget is 0–10 GiB")
-    if args.min_free_bytes < 256 * 1024 * 1024:
+        parser.error("detail types must be UU, PERPU, PP or PERPRES; original byte budget is 0–64 GiB")
+    if args.min_free_bytes < MIN_FREE_BYTES:
         parser.error("minimum free space must be at least 256 MiB")
     try:
         return run(args)

@@ -21,6 +21,12 @@ uv run --project backend python scripts/process_frozen_parse.py \
 
 每次使用新的 `run-id`。`--document-ids` 可进一步限定最多 20 个冻结 ID。
 同一快照有进程锁；报告保存领取范围、实际 HTTP 状态、并发峰值、页完成数和未通过质量门禁的页数。
+`metric_schema_version: 2` 的报告以本次运行每份文档首次领取前的状态为增量基线，
+保存在原子写入的 `run-baseline.json`，同时绑定版本、原件与 manifest SHA256。
+同一次运行重复领取不会重置基线；正文和识别页的增量不会重复计算以前运行的成果。
+`new_request_pages_not_accepted` 只统计本次调用模型所涉及、当前仍失败或待核对的物理页，
+同页多次局部请求只算一页；`request_started` 事件记录调用范围，旧失败无新请求时不计入该字段。
+缺少该版本字段的旧报告使用初始冻结快照作为页统计基线，不能直接当作本轮增量相加。
 轮转计数持久化，长文不会因短文优先被永久排除。运行中收到 SIGTERM/SIGINT 后停止新领取，
 等待已有请求和受限解析结束，继续维护租约并保存检查点。
 领取和心跳使用共用的本地事务重试：只重试已回滚的 SQLite 忙锁，最多 3 次，

@@ -36,6 +36,38 @@ def digest(value):
     ).hexdigest()
 
 
+def document_progress(manifest):
+    from app.ingestion_quality import pdf_page_status, text_complete
+
+    pages = manifest.get("pages", [])
+    return {
+        "text_complete": text_complete(manifest),
+        "page_states": dict(Counter(pdf_page_status(page) for page in pages)),
+        "unaccepted_pages": [
+            page["page"]
+            for page in pages
+            if page.get("ocr", {}).get("uncertain_spans")
+            or pdf_page_status(page) in {"ocr_uncertain", "ocr_failed"}
+        ],
+    }
+
+
+def progress_delta(before, after, requested_pages):
+    """Count this run's transitions, keeping older requests out of new failures."""
+    return {
+        "new_complete_documents": int(after["text_complete"])
+        - int(before["text_complete"]),
+        "new_request_pages_not_accepted": len(
+            set(after["unaccepted_pages"]) & set(requested_pages)
+        ),
+        **{
+            "new_" + status + "_pages": after["page_states"].get(status, 0)
+            - before["page_states"].get(status, 0)
+            for status in ("ocr_complete", "ocr_uncertain")
+        },
+    }
+
+
 def verify_successful_pages(initial_pages, current_pages):
     current = {page["page"]: page for page in current_pages}
     if len(current) != len(current_pages):
@@ -209,6 +241,7 @@ def main():
     log_lock = Lock()
     counters = Counter()
     touched, claims, completed = set(), {}, []
+    baselines, requested_pages = {}, set()
     original_invoke, original_feedback = vision._invoke, vision._report_provider_result
     started = time.monotonic()
     events = (output / "events.jsonl").open("x", buffering=1)
@@ -248,13 +281,17 @@ def main():
         return original_feedback(**kwargs)
 
     def invoke(body):
+        scope = SCOPE.get() or {}
         with log_lock:
             counters["requests"] += 1
             counters["inflight"] += 1
             counters["peak_inflight"] = max(
                 counters["peak_inflight"], counters["inflight"]
             )
+            if "document_id" in scope and "page" in scope:
+                requested_pages.add((scope["document_id"], scope["page"]))
         try:
+            event("request_started", **scope)
             return original_invoke(body)
         except vision.OCRResponseError as exc:
             hold_ambiguous_response(exc)
@@ -378,49 +415,38 @@ def main():
 
     def progress():
         pages = Counter()
-        complete = 0
-        unaccepted = 0
+        changes = Counter(
+            new_complete_documents=0,
+            new_request_pages_not_accepted=0,
+            new_ocr_complete_pages=0,
+            new_ocr_uncertain_pages=0,
+        )
+        with log_lock:
+            transport = dict(counters)
+            requested = set(requested_pages)
         with closing(read_db(args.data_dir)) as conn:
+            conn.execute("BEGIN")
             for identifier in touched:
                 raw = conn.execute(
                     "SELECT manifest FROM documents WHERE id=?", (identifier,)
                 ).fetchone()[0]
-                manifest = json.loads(raw)
-                complete += text_complete(manifest)
-                before_pages = {p["page"]: p for p in initial[identifier]["pages"]}
-                unaccepted += sum(
-                    bool(page.get("ocr", {}).get("uncertain_spans"))
-                    or page.get("status") == "ocr_failed"
-                    for page in manifest.get("pages", [])
-                    if page.get("ocr", {}).get("attempts", 0)
-                    > before_pages.get(page["page"], {}).get("attempts", 0)
+                current = document_progress(json.loads(raw))
+                changes.update(
+                    progress_delta(
+                        baselines[identifier],
+                        current,
+                        {page for doc, page in requested if doc == identifier},
+                    )
                 )
-                pages.update(
-                    pdf_page_status(page) for page in manifest.get("pages", [])
-                )
-        initial_complete = sum(
-            sum(
-                page["validated_status"] == "ocr_complete"
-                for page in initial[identifier]["pages"]
-            )
-            for identifier in touched
-        )
-        with log_lock:
-            transport = dict(counters)
+                pages.update(current["page_states"])
         summary = {
+            "metric_schema_version": 2,
+            "progress_baseline": "first_claim_in_run",
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "claimed_documents": len(touched),
             "claims": claim_count,
             "transport": transport,
-            "new_complete_documents": complete,
-            "new_request_pages_not_accepted": unaccepted,
-            "new_ocr_complete_pages": pages["ocr_complete"] - initial_complete,
-            "new_ocr_uncertain_pages": pages["ocr_uncertain"]
-            - sum(
-                page["validated_status"] == "ocr_uncertain"
-                for identifier in touched
-                for page in initial[identifier]["pages"]
-            ),
+            **changes,
             "current_page_states_in_touched_documents": dict(pages),
             "capacity": vision.vision_ocr_capacity_state(),
         }
@@ -517,7 +543,7 @@ def main():
                             args.claim_limit - claim_count,
                         )
                     ]:
-                        row, _ = inspect_document(identifier)
+                        row, manifest = inspect_document(identifier)
                         if not parse_job_due(row, time.time()):
                             continue
                         claim = retry_local_database(
@@ -537,6 +563,16 @@ def main():
                             raise RuntimeError(
                                 "Unexpected non-parse claim; frozen scope ownership violated"
                             )
+                        if identifier not in baselines:
+                            baselines[identifier] = {
+                                **document_progress(manifest),
+                                "document_version": row["version"],
+                                "original_sha256": row["content_hash"],
+                                "manifest_sha256": hashlib.sha256(
+                                    row["manifest"].encode()
+                                ).hexdigest(),
+                            }
+                            save("run-baseline.json", baselines)
                         dispatch[identifier] = dispatch.get(identifier, 0) + 1
                         temporary = dispatch_path.with_suffix(".json.tmp")
                         with temporary.open("w") as stream:

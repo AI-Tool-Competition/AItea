@@ -19,6 +19,92 @@ RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
 
 
+def test_run_progress_counts_only_new_text_across_multiple_claims():
+    manifest = {
+        "pages": [
+            {"page": 1, "status": "ocr_complete", "text": "Previously paid text"},
+            {"page": 2, "status": "pending_ocr"},
+            {"page": 3, "status": "pending_ocr"},
+        ],
+        "quality": {"complete": False},
+    }
+    baseline = RUNNER.document_progress(manifest)
+    manifest["pages"][1].update(status="ocr_complete", text="First new page")
+    assert RUNNER.progress_delta(baseline, RUNNER.document_progress(manifest), {2}) == {
+        "new_complete_documents": 0,
+        "new_request_pages_not_accepted": 0,
+        "new_ocr_complete_pages": 1,
+        "new_ocr_uncertain_pages": 0,
+    }
+    manifest["pages"][2].update(status="ocr_complete", text="Second new page")
+    manifest["quality"]["complete"] = True
+    assert RUNNER.progress_delta(baseline, RUNNER.document_progress(manifest), {2, 3}) == {
+        "new_complete_documents": 1,
+        "new_request_pages_not_accepted": 0,
+        "new_ocr_complete_pages": 2,
+        "new_ocr_uncertain_pages": 0,
+    }
+    # A later run starts from the saved complete document, not the initial scope.
+    later_baseline = RUNNER.document_progress(manifest)
+    assert set(RUNNER.progress_delta(later_baseline, later_baseline, set()).values()) == {0}
+
+
+@pytest.mark.parametrize("status", ["pending_ocr", "ocr_uncertain", "ocr_failed"])
+def test_run_without_http_does_not_count_old_uncertainty_as_a_new_request(status):
+    manifest = {
+        "pages": [
+            {
+                "page": 4,
+                "status": status,
+                "ocr": {"attempts": 1, "request_id": "earlier-run", "uncertain_spans": ["name"]},
+            }
+        ],
+        "quality": {"complete": False},
+    }
+    baseline = RUNNER.document_progress(manifest)
+    manifest["pages"][0]["status"] = "ocr_uncertain"
+    current = RUNNER.document_progress(manifest)
+    assert RUNNER.progress_delta(baseline, current, set())["new_request_pages_not_accepted"] == 0
+    # Repeated region requests for one physical page count that page once.
+    assert RUNNER.progress_delta(baseline, current, [4, 4])["new_request_pages_not_accepted"] == 1
+
+
+def test_progress_uses_validated_status_and_attributes_failures_to_requested_pages():
+    manifest = {
+        "pages": [
+            {"page": 1, "status": "ocr_failed", "ocr": {"request_id": "earlier-failure"}},
+            {"page": 2, "status": "pending_ocr"},
+        ],
+        "quality": {"complete": False},
+    }
+    baseline = RUNNER.document_progress(manifest)
+    manifest["pages"][1].update(
+        status="ocr_complete", text="New but unverified", ocr={"validation_warnings": ["conflict"]}
+    )
+    current = RUNNER.document_progress(manifest)
+    assert RUNNER.progress_delta(baseline, current, {2}) == {
+        "new_complete_documents": 0,
+        "new_request_pages_not_accepted": 1,
+        "new_ocr_complete_pages": 0,
+        "new_ocr_uncertain_pages": 1,
+    }
+    # A request for a different page cannot turn an old failure into a new one.
+    assert RUNNER.progress_delta(baseline, current, {3})["new_request_pages_not_accepted"] == 0
+
+
+def test_offline_reuse_can_complete_text_without_counting_a_model_request():
+    manifest = {"pages": [{"page": 1, "status": "pending_ocr"}], "quality": {"complete": False}}
+    baseline = RUNNER.document_progress(manifest)
+    manifest["pages"][0].update(status="ocr_complete", text="Reused paid response")
+    manifest["quality"]["complete"] = True
+    assert RUNNER.progress_delta(baseline, RUNNER.document_progress(manifest), set()) == {
+        "new_complete_documents": 1,
+        "new_request_pages_not_accepted": 0,
+        "new_ocr_complete_pages": 1,
+        "new_ocr_uncertain_pages": 0,
+    }
+
+
 @pytest.mark.parametrize("damage", [None, "ids", "documents", "directory", "owner"])
 def test_frozen_input_hash_owner_and_database_guards(tmp_path, damage):
     data_dir = tmp_path / "data"

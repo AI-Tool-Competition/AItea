@@ -16,6 +16,8 @@ from app.defaults import DEFAULT_TEMPLATE
 from app.service import Service
 from app.system_library import SYSTEM_OWNER_ID, ensure_principal
 
+AUTOMATIC_STREAM_REQUIRED = module._stream_required
+
 
 def private_state(service):
     with closing(service.db.connect()) as conn:
@@ -68,8 +70,11 @@ def downgrade9(service):
         conn.execute("DELETE FROM schema_migrations WHERE version>9")
 
 
-@pytest.fixture
-def pair(tmp_path, monkeypatch):
+@pytest.fixture(params=["legacy", "streaming"])
+def pair(tmp_path, monkeypatch, request):
+    if request.param == "streaming":
+        monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
+        monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 2)
     for key in ["EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_API_KEY"]:
         monkeypatch.setenv(key, "unit-test-model")
     source, target = Service(tmp_path / "source"), Service(tmp_path / "target")
@@ -449,14 +454,26 @@ def test_late_copy_failure_rolls_back_only_corpus_and_keeps_backup_upgrade(pair,
     monkeypatch.setattr(module, "_insert", fail)
     with pytest.raises(RuntimeError, match="relationship failure"):
         module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
-    assert private_state(target) == before
+    streaming = json.loads((exported / "snapshot.json").read_text())["protocol"] == module.STREAM_PROTOCOL
+    after = private_state(target)
+    if streaming:
+        after["users"] = [row for row in after["users"] if row[0] != SYSTEM_OWNER_ID]
+    assert after == before
     with closing(target.db.connect()) as conn:
-        assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == (6 if streaming else 0)
         assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 19
     backups = list((target.db.data_dir / "migration-backups").glob("*/tea.sqlite3"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as conn:
         assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 9
+    if streaming:
+        progress = json.loads((backups[0].parent / "migration-progress.json").read_text())
+        assert progress["mode"] == "interrupted" and progress["completed_documents"] == 6
+        monkeypatch.setattr(module, "_insert", original)
+        result = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+        assert result["target_writes"] == 0 and result["unchanged_documents"] == 6
+        with closing(target.db.connect()) as conn:
+            assert conn.execute("SELECT count(*) FROM legal_relations").fetchone()[0] == 3
 
 
 def test_private_document_primary_key_collision_is_not_adopted(pair, tmp_path):
@@ -505,3 +522,253 @@ def test_invalid_checkpoint_identity_is_rejected_before_copy(pair, tmp_path, cor
     with closing(target.db.connect()) as conn:
         assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
     assert not (target.db.data_dir / "migration-backups").exists()
+
+
+def test_streaming_committed_batches_resume_with_cross_batch_proof_and_private_data(
+    pair, tmp_path, monkeypatch
+):
+    source, target, _docs = pair
+    monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
+    monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 1)
+    before = private_state(target)
+    exported = snapshot(source, tmp_path)
+    original, calls = module._copy_batch, []
+
+    def fail_second(conn, expected, existing_ids):
+        calls.append(expected["documents"][0]["id"])
+        if len(calls) == 2:
+            raise RuntimeError("bounded interruption")
+        return original(conn, expected, existing_ids)
+
+    monkeypatch.setattr(module, "_copy_batch", fail_second)
+    with pytest.raises(RuntimeError, match="bounded interruption"):
+        module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    with closing(target.db.connect()) as conn:
+        assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 1
+    original_backup = next((target.db.data_dir / "migration-backups").glob("*/tea.sqlite3"))
+    backup_sha = module._file_sha(original_backup)
+    monkeypatch.setattr(module, "_copy_batch", original)
+    # Resume may use another safe batch size; durable data, not a saved offset,
+    # determines what was committed before the interruption.
+    monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 3)
+    result = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    assert result["target_writes"] == 5 and result["unchanged_documents"] == 1
+    assert result["maximum_transaction_seconds"] < module.MAX_TRANSACTION_SECONDS
+    repeated = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    assert repeated["target_writes"] == 0
+    assert module._file_sha(original_backup) == backup_sha
+    after = private_state(target)
+    after["users"] = [row for row in after["users"] if row[0] != SYSTEM_OWNER_ID]
+    assert after == before
+
+
+def test_streaming_detects_source_resume_between_batches(pair, tmp_path, monkeypatch):
+    source, target, docs = pair
+    monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
+    monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 1)
+    exported = snapshot(source, tmp_path)
+    original = module._copy_batch
+
+    def resume_source(conn, expected, existing_ids):
+        original(conn, expected, existing_ids)
+        with source.db.transaction() as other:
+            other.execute(
+                "UPDATE document_metadata SET revision=revision+1 WHERE document_id=?", (docs["a"]["id"],)
+            )
+
+    monkeypatch.setattr(module, "_copy_batch", resume_source)
+    with pytest.raises(module.SystemCorpusMigrationError, match="source_resumed_or_changed"):
+        module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    with closing(target.db.connect()) as conn:
+        assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 1
+
+
+def test_streaming_single_document_deadline_rolls_back_and_keeps_resume_evidence(pair, tmp_path, monkeypatch):
+    source, target, _docs = pair
+    monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
+    exported = snapshot(source, tmp_path)
+    monkeypatch.setattr(module, "MAX_TRANSACTION_SECONDS", 0)
+    with pytest.raises(module.SystemCorpusMigrationError, match="single_document_transaction_limit"):
+        module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    with closing(target.db.connect()) as conn:
+        assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
+    progress = json.loads(
+        next((target.db.data_dir / "migration-backups").glob("*/migration-progress.json")).read_text()
+    )
+    assert progress["mode"] == "interrupted" and progress["completed_documents"] == 0
+
+
+@pytest.mark.parametrize("limit", ["MAX_STREAM_DOCUMENTS", "MAX_STREAM_BYTES", "MAX_BATCH_BYTES"])
+def test_streaming_explicit_bounds_refuse_before_target_writes(pair, tmp_path, monkeypatch, limit):
+    source, target, _docs = pair
+    monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
+    monkeypatch.setattr(module, limit, 1)
+    before = private_state(target)
+    with pytest.raises(module.SystemCorpusMigrationError, match="too_large"):
+        snapshot(source, tmp_path)
+    assert private_state(target) == before
+    assert not (target.db.data_dir / "migration-backups").exists()
+
+
+def test_more_than_one_thousand_documents_use_bounded_migration(pair, tmp_path, monkeypatch):
+    source, target, _docs = pair
+    # Exercise the real automatic dispatch rather than just the forced test path.
+    monkeypatch.setattr(module, "_stream_required", AUTOMATIC_STREAM_REQUIRED)
+    monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 40)
+    blob = source.archive.blobs.put_bytes(SYSTEM_OWNER_ID, b"official pending original")
+    with source.db.transaction() as conn:
+        for number in range(1001):
+            document = source.archive.store_original(
+                conn,
+                SYSTEM_OWNER_ID,
+                blob,
+                f"pending-{number}.txt",
+                "text/plain",
+                f"https://www.bi.go.id/pending-{number}",
+                collection="country:ID",
+                level="primary",
+                tags=[],
+                identity_key=f"large-{number}",
+            )
+            conn.execute(
+                "UPDATE documents SET manifest=? WHERE id=?",
+                (dump({"source_hash": blob.digest, "quality": {"complete": False}}), document["id"]),
+            )
+    exported = snapshot(source, tmp_path)
+    result = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    assert result["protocol"] == module.STREAM_PROTOCOL
+    assert result["documents"] == result["target_writes"] == 1007
+    assert result["completed_document_batches"] >= 26
+    assert result["model_calls"] == result["HTTP_calls"] == 0
+    assert result["document_limit"] >= 30000
+
+
+def test_streaming_splits_over_budget_batch_and_never_replays_committed_pages(pair, tmp_path, monkeypatch):
+    import time
+
+    source, target, _docs = pair
+    monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
+    monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 2)
+    exported = snapshot(source, tmp_path)
+    original = module._copy_batch
+    timed_out = []
+
+    def slow_group(conn, expected, existing_ids):
+        original(conn, expected, existing_ids)
+        if len(expected["documents"]) > 1:
+            timed_out.append([row["id"] for row in expected["documents"]])
+            time.sleep(0.3)
+
+    monkeypatch.setattr(module, "_copy_batch", slow_group)
+    monkeypatch.setattr(module, "MAX_TRANSACTION_SECONDS", 0.2)
+    result = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+    assert len(timed_out) == 3
+    assert result["completed_document_batches"] == 6
+    assert result["target_writes"] == 6 and result["true_vectors"] == 2
+    assert result["transaction_execution_budget_seconds"] == 0.2
+    assert result["commit_duration_hard_limit"] is False
+
+
+@pytest.mark.parametrize(
+    "corruption", [None, "input_hash", "target_vector", "donor_vector", "unknown_protocol", "copied_approval"]
+)
+def test_exact_input_reuse_protocol_preserves_or_rejects_precise_vector_binding(
+    pair, tmp_path, monkeypatch, corruption
+):
+    source, target, docs = pair
+    monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 1)
+    with source.db.transaction() as conn:
+        donor = docs["a"]
+        document = docs["b"]
+        chunk = dict(
+            conn.execute("SELECT * FROM retrieval_chunks WHERE document_id=?", (document["id"],)).fetchone()
+        )
+        vector = dict(
+            conn.execute("SELECT * FROM retrieval_vectors WHERE chunk_rowid=?", (chunk["rowid"],)).fetchone()
+        )
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        record = {
+            "match_policy": "exact_input",
+            "source_document_id": donor["id"],
+            "source_document_version": 1,
+            "source_hash": donor["content_hash"],
+            "source_url": donor["source_url"],
+            "target_document_id": document["id"],
+            "target_document_version": 1,
+            "target_source_hash": document["content_hash"],
+            "target_country": "ID",
+            "chunk_id": chunk["chunk_id"],
+            "input_hash": chunk["input_hash"],
+            "retrieval_text_sha256": module._sha(chunk["retrieval_text"].encode()),
+            "fingerprint": vector["fingerprint"],
+            "dimension": vector["dimension"],
+            "target_vector_sha256": module._sha(vector["vector"]),
+            "donor_vector_sha256": module._sha(vector["vector"]),
+            "target_locators_or_approval_copied": False,
+        }
+        provenance = {
+            "protocol": "same-owner-input-embedding-reuse-v1",
+            "fingerprint": vector["fingerprint"],
+            "records": {chunk["chunk_id"]: record},
+            "last_batch": {"provider_input_chunks": 0},
+        }
+        if corruption == "input_hash":
+            record["input_hash"] = "0" * 64
+        if corruption == "target_vector":
+            record["target_vector_sha256"] = "0" * 64
+        if corruption == "donor_vector":
+            record["donor_vector_sha256"] = "0" * 64
+        if corruption == "unknown_protocol":
+            provenance["protocol"] = "unrecognized-v2"
+        if corruption == "copied_approval":
+            record["target_locators_or_approval_copied"] = True
+        manifest["embedding_reuse"] = provenance
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document["id"]))
+        source.index.sync_document(conn, document["id"], manifest)
+    exported = snapshot(source, tmp_path)
+    if corruption:
+        with pytest.raises(module.SystemCorpusMigrationError, match="embedding"):
+            module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+        assert not (target.db.data_dir / "migration-backups").exists()
+    else:
+        result = module.migrate_system_corpus(exported, target.db.data_dir, apply=True, source_stopped=True)
+        assert result["true_vectors"] == 2
+        with closing(target.db.connect()) as conn:
+            assert (
+                json.loads(
+                    conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+                )["embedding_reuse"]
+                == provenance
+            )
+
+
+def test_vector_validation_checks_full_text_once_per_document(pair, monkeypatch):
+    source, _target, docs = pair
+    with source.db.transaction() as conn:
+        ident = docs["a"]["id"]
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (ident,)).fetchone()[0]
+        )
+        manifest["chunks"].append(
+            {"id": "chunk-2", "text": "original", "retrieval_text": "original", "locator": {"page": 1}}
+        )
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), ident))
+        source.index.sync_document(conn, ident, manifest)
+        pending = source.index.pending(conn, ident, source.embedding_fingerprint())
+        source.index.store_vectors(
+            conn, ident, source.embedding_fingerprint(), pending, [[0.6, 0.8] for _ in pending]
+        )
+    with closing(source.db.connect()) as conn:
+        scope = module._scope(conn)
+        assert len(scope["rows"]["retrieval_vectors"]) == 3
+    original, calls = module.text_complete, {}
+
+    def counted(manifest):
+        calls[id(manifest)] = calls.get(id(manifest), 0) + 1
+        return original(manifest)
+
+    monkeypatch.setattr(module, "text_complete", counted)
+    module._validate_source(scope, source.db.data_dir, module._inventory(source.db.data_dir))
+    assert calls and max(calls.values()) == 1

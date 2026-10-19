@@ -77,6 +77,28 @@ def read_db(data_dir):
     return conn
 
 
+def parse_job_due(row, timestamp):
+    return row["phase"] == "parse" and (
+        row["job_status"] == "queued"
+        and row["available_at"] <= timestamp
+        or row["job_status"] == "processing"
+        and row["lease_until"] is not None
+        and row["lease_until"] <= timestamp
+    )
+
+
+def available_parse_ids(conn, owner_id, timestamp):
+    return {
+        row["document_id"]
+        for row in conn.execute(
+            "SELECT document_id FROM processing_jobs WHERE owner_id=? AND phase='parse' "
+            "AND ((status='queued' AND available_at<=?) "
+            "OR (status='processing' AND lease_until<=?))",
+            (owner_id, timestamp, timestamp),
+        )
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -201,7 +223,10 @@ def main():
         try:
             return original_invoke(body)
         except vision.OCRResponseError as exc:
-            if exc.http_status is None and not exc.retryable:
+            if exc.request_outcome_unknown:
+                with log_lock:
+                    counters["unknown_paid_outcome"] += 1
+            elif exc.http_status is None and not exc.retryable:
                 with log_lock:
                     counters["invalid_response"] += 1
             raise
@@ -247,7 +272,7 @@ def main():
     def inspect_document(identifier, *, protect=True):
         with closing(read_db(args.data_dir)) as conn:
             row = conn.execute(
-                "SELECT d.*,j.phase,j.status job_status,j.available_at,j.lease_token,m.payload metadata,m.revision metadata_revision FROM documents d JOIN processing_jobs j ON j.document_id=d.id LEFT JOIN document_metadata m ON m.document_id=d.id WHERE d.id=?",
+                "SELECT d.*,j.phase,j.status job_status,j.available_at,j.lease_token,j.lease_until,m.payload metadata,m.revision metadata_revision FROM documents d JOIN processing_jobs j ON j.document_id=d.id LEFT JOIN document_metadata m ON m.document_id=d.id WHERE d.id=?",
                 (identifier,),
             ).fetchone()
         old = initial[identifier]
@@ -417,13 +442,9 @@ def main():
                     and time.time() >= cooldown
                 ):
                     with closing(read_db(args.data_dir)) as conn:
-                        available = {
-                            row["document_id"]
-                            for row in conn.execute(
-                                "SELECT document_id FROM processing_jobs WHERE owner_id=? AND phase='parse' AND status='queued' AND available_at<=?",
-                                (report["owner_id"], time.time()),
-                            )
-                        }
+                        available = available_parse_ids(
+                            conn, report["owner_id"], time.time()
+                        )
                     candidates = [
                         identifier
                         for identifier in selected
@@ -453,7 +474,7 @@ def main():
                         )
                     ]:
                         row, _ = inspect_document(identifier)
-                        if row["phase"] != "parse" or row["job_status"] != "queued":
+                        if not parse_job_due(row, time.time()):
                             continue
                         claim = retry_local_database(
                             lambda identifier=identifier: (

@@ -116,6 +116,10 @@ def decide(state, report, *, timestamp, retry_after=0):
         return {
             "status": "completed",
             "reason": "all_fixed_vectors_present",
+            "missing_rows": report["missing_rows"],
+            "quarantined_inputs": report.get("quarantined_inputs", 0),
+            "failed_documents": report.get("failed_documents", 0),
+            "next_run_at": 0,
             "halt": True,
         }
     failures = state.get("consecutive_failures", 0)

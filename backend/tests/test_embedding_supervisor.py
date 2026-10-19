@@ -148,6 +148,76 @@ def wait_for(predicate, timeout=10):
         time.sleep(0.02)
 
 
+@pytest.mark.parametrize(("quarantined_inputs", "failed_documents"), [(0, 0), (3, 2)])
+def test_completed_state_replaces_previous_window_counts_and_schedule(
+    tmp_path, quarantined_inputs, failed_documents
+):
+    # Exercise the real supervisor, two child processes, and durable state/event
+    # merging. Local reports replace the provider; no corpus or model is used.
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"owner": "owner", "fingerprint": "model", "documents": []}))
+    (tmp_path / "models.env").write_text("")
+    reports = [
+        completed_report(run_id="window-one", missing_rows=204, quarantined_inputs=9, failed_documents=5),
+        completed_report(
+            run_id="window-two",
+            missing_rows=0,
+            runnable_documents=0,
+            quarantined_inputs=quarantined_inputs,
+            failed_documents=failed_documents,
+        ),
+    ]
+    (tmp_path / "reports.json").write_text(json.dumps(reports))
+    (tmp_path / "fake_runner.py").write_text("""
+import fcntl,json,os
+from pathlib import Path
+from embedding_supervisor import persist
+root=Path(__file__).parent
+with (root/'runner.lock').open('a') as lock:
+ fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+ started=root/'started.jsonl'
+ window=len(started.read_text().splitlines()) if started.exists() else 0
+ reports=json.loads((root/'reports.json').read_text())
+ with started.open('a') as stream:
+  stream.write(json.dumps({'window':window,'pid':os.getpid()})+'\\n')
+  stream.flush();os.fsync(stream.fileno())
+ persist(root/'report.json',reports[window])
+""")
+    driver = tmp_path / "driver.py"
+    driver.write_text("""
+from argparse import Namespace
+from pathlib import Path
+from embedding_supervisor import supervise
+root=Path(__file__).parent
+args=Namespace(output=root,plan=root/'plan.json',models_env=root/'models.env',retry_unresolved_selection=None,http_workers=64,request_concurrency=2,supervisor_max_document_workers=12,supervisor_window_seconds=300)
+raise SystemExit(supervise(args,root/'fake_runner.py',['--apply','--http-workers','64'],12))
+""")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT / "backend"), str(ROOT / "scripts")])}
+    result = subprocess.run(
+        [sys.executable, str(driver)], env=env, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    started = [json.loads(line) for line in (tmp_path / "started.jsonl").read_text().splitlines()]
+    assert [row["window"] for row in started] == [0, 1]
+    assert len({row["pid"] for row in started}) == 2
+    events = [json.loads(line) for line in (tmp_path / "supervisor-events.jsonl").read_text().splitlines()]
+    first = next(row for row in events if row["status"] == "cooldown" and row["last_run_id"] == "window-one")
+    assert (first["missing_rows"], first["quarantined_inputs"], first["failed_documents"]) == (204, 9, 5)
+    assert first["next_run_at"] > 0 and not first["halt"]
+    final = json.loads((tmp_path / "supervisor-state.json").read_text())
+    assert final == events[-1]
+    assert final["status"] == "completed" and final["reason"] == "all_fixed_vectors_present"
+    assert final["last_run_id"] == "window-two" and final["halt"] and final["child_pid"] is None
+    assert (final["missing_rows"], final["quarantined_inputs"], final["failed_documents"]) == (
+        0,
+        quarantined_inputs,
+        failed_documents,
+    )
+    assert final["next_run_at"] == 0
+    assert final["document_workers"] == final["maximum_document_workers"] == 12
+    assert final["http_ceiling"] == 64 and final["selection_sha256"] is None
+
+
 def test_supervisor_hard_kill_adopts_child_without_repaying_success(tmp_path):
     # Real SQLite receipt persistence and OS process/lock recovery; the provider
     # writes a paid-input ledger locally, with no external network/model calls.

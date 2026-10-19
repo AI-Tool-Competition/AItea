@@ -463,6 +463,17 @@ def mappings(manifest, manifest_hash):
                 "text_sha256 origin_attempts target_model_calls local_bounded_render_verified",
             )
             yield emit("pdf_ocr_reuse", base + "/ocr/reuse", record)
+        if "reuse_import" in ocr:
+            yield emit(
+                "pdf_ocr_reuse_import",
+                base + "/ocr/reuse_import",
+                _select(
+                    ocr["reuse_import"],
+                    "protocol archive_sha256 archive_size archive_path source_owner_sha256 "
+                    "target_owner_sha256 source_proof_sha256 derived_proof_sha256 "
+                    "derived_page_sha256 import_model_calls",
+                ),
+            )
         if "provider_profile" in ocr:
             yield emit(
                 "pdf_ocr_provider_profile",

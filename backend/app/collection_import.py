@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .db import dump, now
 from .ingestion_quality import text_complete
-from .retrieval import embedding_text, input_hash, normalized_vector
+from .retrieval import embedding_text, input_hash
 from .system_library import SYSTEM_OWNER_ID, official_source_allowed
 
 PROTOCOL = "collected-resource-import-v1"
@@ -72,6 +72,71 @@ def _asset_pointer(key, value):
 
 def _sha(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def validate_relation_import(locator, source, target, paths, directory, *, relation):
+    """Check imported endpoint identity and immutable original locator bytes."""
+    receipt = locator.get("collection_relation_import")
+    if receipt is None:
+        return
+    if not isinstance(receipt, dict) or receipt.get("protocol") != "collected-relation-import-v1":
+        raise CollectionImportError("invalid_relation_import_receipt")
+    for side, doc in (("source", source), ("target", target)):
+        origin = json.loads(doc["manifest"]).get("collection_import", {})
+        if (
+            locator.get(side + "_version") != doc["version"]
+            or locator.get(side + "_hash") != doc["content_hash"]
+            or doc["id"] != relation[side + "_document_id"]
+            or doc["owner_id"] != relation["owner_id"]
+            or origin.get("source_owner_sha256") != receipt.get("source_owner_sha256")
+            or origin.get("source_document_id") != receipt.get(side + "_document_id")
+            or origin.get("source_version") != receipt.get(side + "_version")
+            or origin.get("source_hash") != receipt.get(side + "_hash")
+        ):
+            raise CollectionImportError("imported_relation_endpoint_changed")
+    digest = receipt.get("archive_sha256")
+    path = paths.get(digest)
+    if (
+        path is None
+        or receipt.get("archive_path") != str(path.relative_to(directory))
+        or str(path.relative_to(directory))
+        != str(Path("files/blobs") / _sha(source["owner_id"].encode()) / digest[:2] / digest[2:4] / digest)
+        or path.stat().st_size != receipt.get("archive_size")
+        or path.stat().st_size > MAX_PROVENANCE_BYTES
+        or _sha(path.read_bytes()) != digest
+    ):
+        raise CollectionImportError("invalid_relation_source_locator_archive")
+    archive = json.loads(path.read_bytes())
+    if (
+        archive.get("protocol") != "collected-relation-locator-v1"
+        or not isinstance(archive.get("source_locator"), str)
+        or any(
+            archive.get(key) != receipt.get(key)
+            for key in (
+                "source_owner_sha256",
+                "source_relation_id",
+                "source_document_id",
+                "target_document_id",
+                "source_version",
+                "target_version",
+                "source_hash",
+                "target_hash",
+                "source_locator_sha256",
+                "source_locator_size",
+                "collection",
+                "relation",
+            )
+        )
+        or archive["source_locator_sha256"] != _sha(archive["source_locator"].encode())
+        or archive["source_locator_size"] != len(archive["source_locator"].encode())
+        or archive["source_hash"] != source["content_hash"]
+        or archive["target_hash"] != target["content_hash"]
+        or archive.get("collection") != relation["collection"]
+        or archive.get("relation") != relation["relation"]
+        or archive.get("derived_locator")
+        != {key: value for key, value in locator.items() if key != "collection_relation_import"}
+    ):
+        raise CollectionImportError("relation_source_identity_archive_mismatch")
 
 
 def _selected_ids(document_ids):
@@ -286,10 +351,16 @@ def _rewrite(value, aliases, destinations, identities, *, bound_hash=None, targe
         ]
     if not isinstance(value, dict):
         return value
+    # A v1 reuse proof binds the exact donor page, including account CAS paths.
+    # Its import derivation is explicit and occurs only after all IDs exist.
+    from .pdf_ocr_reuse_import import PROTOCOL as REUSE_IMPORT_PROTOCOL
+
+    if value.get("protocol") in {"same-owner-pdf-page-reuse-v1", REUSE_IMPORT_PROTOCOL}:
+        return copy.deepcopy(value)
     bound_hash = value.get("source_hash", bound_hash)
     result = {}
     for key, item in value.items():
-        if key == "collection_import":
+        if key in {"collection_import", "collection_relation_import"}:
             result[key] = copy.deepcopy(item)
             continue  # Fixed source identity must never become the target ID.
         if key == "embedding_reuse":
@@ -660,8 +731,6 @@ def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=No
         if "corpus_import_aliases" in manifest:
             blockers.append("source_corpus_alias_history_requires_system_migration:" + ident)
         _validate_retry_evidence(manifest, doc["content_hash"])
-        if "same-owner-pdf-page-reuse-v1" in doc["manifest"]:
-            blockers.append("source_same_owner_OCR_reuse_unsupported:" + ident)
         if doc["role"] == "secondary" and (manifest.get("pages") or manifest.get("chunks")):
             raise CollectionImportError("ordinary_attachment_contains_parsed_body")
         if doc["role"] == "primary":
@@ -690,6 +759,7 @@ def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=No
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(locator, dict):
+            _path_refs(locator, source_dir, source_owner, found, aliases)
             for key in ("registry_sha256", "source_registry_sha256"):
                 if key in locator:
                     digest = locator[key]
@@ -730,6 +800,32 @@ def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=No
     for original, digest in list(aliases.items()):
         if not Path(original).is_absolute():
             _add_alias(aliases, str(source_dir.parents[2] / original), digest)
+    from .pdf_ocr_reuse_import import prepare
+
+    try:
+        source["pdf_reuse_imports"] = prepare(documents, paths)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        blockers.append("source_same_owner_OCR_reuse_unsupported:" + str(exc))
+        source["pdf_reuse_imports"] = {}
+    by_id = {doc["id"]: doc for doc in documents}
+    for relation in source["relations"]:
+        try:
+            locator = json.loads(relation["locator"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(locator, dict):
+            for side in ("source", "target"):
+                endpoint = by_id.get(relation[side + "_document_id"])
+                if endpoint is None:
+                    raise CollectionImportError("relation_endpoint_outside_import_scope")
+                for suffix, expected in (
+                    ("version", endpoint["version"]),
+                    ("hash", endpoint["content_hash"]),
+                    ("document_id", endpoint["id"]),
+                ):
+                    key = side + "_" + suffix
+                    if key in locator and locator[key] != expected:
+                        raise CollectionImportError("relation_endpoint_binding_mismatch:" + key)
     fingerprint = _fingerprint()
     vectors = {}
     for doc in documents:
@@ -784,7 +880,9 @@ def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=No
                 or not np.isclose(np.linalg.norm(vector), 1, atol=1e-5)
             ):
                 raise CollectionImportError("invalid_source_vector")
-            validated[row["chunk_id"]] = normalized_vector(vector)
+            # A valid paid checkpoint transfers verbatim, not through another
+            # float32 normalization that can alter otherwise valid BLOB bytes.
+            validated[row["chunk_id"]] = vector
         if len({len(v) for v in validated.values()}) != 1:
             raise CollectionImportError("source_vector_dimension_drift")
         vectors[ident] = validated
@@ -832,6 +930,7 @@ def _plan(source_dir, target_dir, source_owner, target_owner, *, document_ids=No
             d["role"] == "primary" and text_complete(d["parsed_manifest"]) for d in documents
         ),
         "reusable_vectors": sum(len(v) for v in vectors.values()),
+        "verified_pdf_reuse_pages": len(source["pdf_reuse_imports"]),
         "partial_vector_cache_documents": sum(
             bool(vectors.get(doc["id"]))
             and (
@@ -1224,6 +1323,18 @@ def import_collected_resources(
                         chunks,
                         [target_vectors[r["chunk_id"]] for r in chunks],
                     )
+                    # Reuse store_vectors' current owner/input/model guards,
+                    # then retain the already validated source bytes exactly.
+                    for chunk in chunks:
+                        conn.execute(
+                            "UPDATE retrieval_vectors SET vector=? WHERE chunk_rowid=? AND fingerprint=? AND input_hash=?",
+                            (
+                                target_vectors[chunk["chunk_id"]].tobytes(),
+                                chunk["rowid"],
+                                _fingerprint(),
+                                chunk["input_hash"],
+                            ),
+                        )
                 service.collection.queue_processing(conn, target["id"], target_owner)
                 if text_complete(manifest):
                     # A validated text checkpoint is already the result of
@@ -1298,6 +1409,70 @@ def import_collected_resources(
             ):
                 service.index.sync_document(conn, identity["document_id"], current, strict_vectors=True)
             conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (identity["document_id"],))
+        if source["pdf_reuse_imports"]:
+            from .pdf_ocr_reuse_import import derive, validate_imported
+
+            target_docs = {}
+            for source_id, identity in identities.items():
+                row = dict(
+                    conn.execute(
+                        "SELECT * FROM documents WHERE id=? AND owner_id=?",
+                        (identity["document_id"], target_owner),
+                    ).fetchone()
+                )
+                row["parsed_manifest"] = json.loads(row["manifest"])
+                target_docs[source_id] = row
+            target_paths = {digest: blob.path for digest, blob in published.items()}
+            for (source_id, number), archive in source["pdf_reuse_imports"].items():
+                if source_id in dependencies:
+                    raise CollectionImportError("OCR_reuse_readonly_target_requires_system_migration")
+                target = target_docs[source_id]
+                donor = target_docs[archive["source_donor"]["document_id"]]
+                manifest = target["parsed_manifest"]
+                page = next(p for p in manifest["pages"] if p["page"] == number)
+                donor_page = next(p for p in donor["parsed_manifest"]["pages"] if p["page"] == number)
+                try:
+                    derived = derive(
+                        archive,
+                        target,
+                        donor,
+                        page,
+                        donor_page,
+                        expected_page=_rewrite(
+                            archive["source_page"],
+                            aliases,
+                            destinations,
+                            identities,
+                            bound_hash=target["content_hash"],
+                            target_owner=target_owner,
+                        ),
+                        expected_donor=_rewrite(
+                            archive["source_donor_page"],
+                            aliases,
+                            destinations,
+                            identities,
+                            bound_hash=donor["content_hash"],
+                            target_owner=target_owner,
+                        ),
+                        blobs=blobs,
+                        target_dir=target_dir,
+                    )
+                    receipt = derived["ocr"]["reuse_import"]
+                    target_paths[receipt["archive_sha256"]] = (
+                        Path(target_dir).resolve() / receipt["archive_path"]
+                    )
+                    validate_imported(
+                        target, donor, derived, donor_page, target_paths, Path(target_dir).resolve()
+                    )
+                except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    raise CollectionImportError("invalid_derived_OCR_reuse:" + str(exc)) from exc
+                if derived != page:
+                    page.clear()
+                    page.update(derived)
+                    conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), target["id"]))
+                    manifest["collection_import"]["guard"] = _guard(conn, target["id"])
+                    conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), target["id"]))
+                    conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (target["id"],))
         registry_blobs = {}
         for source_digest, registry in registries.items():
             transferred_registry = _rewrite(
@@ -1329,6 +1504,8 @@ def import_collected_resources(
                 parsed = json.loads(locator)
             except (json.JSONDecodeError, TypeError):
                 parsed = {"source_locator": locator}
+            if not isinstance(parsed, dict):
+                parsed = {"source_locator": locator}
             if isinstance(parsed, dict) and (
                 "registry_sha256" in parsed or "source_registry_sha256" in parsed
             ):
@@ -1344,10 +1521,63 @@ def import_collected_resources(
                         parsed[path_key] = str(registry_blob.path.relative_to(Path(target_dir).resolve()))
             parsed = _rewrite(parsed, aliases, destinations, identities)
             sid, tid = relation["source_document_id"], relation["target_document_id"]
-            if isinstance(parsed, dict):
-                parsed.update(
-                    source_version=identities[sid]["version"], target_version=identities[tid]["version"]
-                )
+            legacy_locator = dump(
+                parsed
+                | {"source_version": identities[sid]["version"], "target_version": identities[tid]["version"]}
+            )
+            if conn.execute(
+                "SELECT 1 FROM legal_relations WHERE owner_id=? AND source_document_id=? AND target_document_id=? AND collection=? AND relation=? AND locator=?",
+                (
+                    target_owner,
+                    identities[sid]["document_id"],
+                    identities[tid]["document_id"],
+                    relation["collection"],
+                    relation["relation"],
+                    legacy_locator,
+                ),
+            ).fetchone():
+                raise CollectionImportError("legacy_relation_binding_requires_explicit_migration")
+            source_doc = next(d for d in source["documents"] if d["id"] == sid)
+            target_doc = next(d for d in source["documents"] if d["id"] == tid)
+            original_binding = {
+                "source_owner_sha256": source_owner_hash,
+                "source_relation_id": relation["id"],
+                "collection": relation["collection"],
+                "relation": relation["relation"],
+                "source_document_id": sid,
+                "target_document_id": tid,
+                "source_version": source_doc["version"],
+                "target_version": target_doc["version"],
+                "source_hash": source_doc["content_hash"],
+                "target_hash": target_doc["content_hash"],
+                "source_locator_sha256": _sha(locator.encode()),
+                "source_locator_size": len(locator.encode()),
+            }
+            parsed.update(
+                source_version=identities[sid]["version"],
+                target_version=identities[tid]["version"],
+                source_hash=source_doc["content_hash"],
+                target_hash=target_doc["content_hash"],
+            )
+            parsed.pop("collection_relation_import", None)
+            locator_archive = dump(
+                original_binding
+                | {
+                    "protocol": "collected-relation-locator-v1",
+                    "source_locator": locator,
+                    "derived_locator": parsed,
+                }
+            ).encode()
+            if len(locator_archive) > MAX_PROVENANCE_BYTES:
+                raise CollectionImportError("relation_source_locator_too_large")
+            locator_blob = blobs.put_bytes(target_owner, locator_archive)
+            parsed["collection_relation_import"] = {
+                **original_binding,
+                "protocol": "collected-relation-import-v1",
+                "archive_sha256": locator_blob.digest,
+                "archive_size": locator_blob.size,
+                "archive_path": str(locator_blob.path.relative_to(Path(target_dir).resolve())),
+            }
             service.archive.add_relation(
                 target_owner,
                 identities[sid]["document_id"],

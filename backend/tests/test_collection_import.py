@@ -678,6 +678,202 @@ def test_selected_attachment_requires_parent_and_retains_mapping(pair):
         assert mapped["parent_id"] == result["document_versions"][parent["id"]]["document_id"]
 
 
+def dependency_facts(service, ident):
+    with closing(service.db.connect()) as conn:
+        result = {"document": dict(conn.execute("SELECT * FROM documents WHERE id=?", (ident,)).fetchone())}
+        for table in (
+            "document_metadata",
+            "document_metadata_history",
+            "document_countries",
+            "legal_classifications",
+            "processing_jobs",
+            "retrieval_documents",
+            "retrieval_dirty",
+            "retrieval_chunks",
+        ):
+            result[table] = [
+                dict(r)
+                for r in conn.execute(f"SELECT * FROM {table} WHERE document_id=? ORDER BY rowid", (ident,))
+            ]
+        result["vectors"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT v.* FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=? ORDER BY v.chunk_rowid",
+                (ident,),
+            )
+        ]
+        return result
+
+
+def test_existing_dependency_preserves_paid_checkpoints_active_lease_and_relations(pair):
+    src, dst = pair
+    base = original(src)
+    initial = transfer(src, dst, document_ids=[base["id"]], apply=True)
+    target_id = initial["document_versions"][base["id"]]["document_id"]
+    with dst.db.transaction() as conn:
+        manifest = json.loads(dst.own_document(conn, "target", target_id)["manifest"])
+        manifest["paid_ocr_checkpoint"] = {"request_id": "already-paid", "text": "Recovered text"}
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='processing' WHERE id=?", (dump(manifest), target_id)
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET status='processing',lease_token='live',lease_until=9999999999 WHERE document_id=?",
+            (target_id,),
+        )
+    supplement = original(src, "supplement")
+    attachment = original(src, "attachment", level="attachment", parent=base["id"])
+    src.archive.add_relation(
+        "source",
+        base["id"],
+        {
+            "target_document_id": supplement["id"],
+            "collection": "country:ID",
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    selection = [base["id"], supplement["id"], attachment["id"]]
+    before = dependency_facts(dst, target_id)
+    with pytest.raises(CollectionImportError, match="target_has_active_processing_lease"):
+        transfer(src, dst, document_ids=selection, apply=True)
+    assert dependency_facts(dst, target_id) == before
+    options = {"document_ids": selection, "existing_dependency_ids": [base["id"]]}
+    dry = transfer(src, dst, **options)
+    assert dry["existing_dependency_documents"] == 1 and dry["import_documents"] == 2
+    assert dry["target_writes"] == 0
+    result = transfer(src, dst, **options, apply=True)
+    assert result["target_writes"] == 2 and result["unchanged_documents"] == 0
+    assert result["document_versions"][base["id"]]["document_id"] == target_id
+    assert dependency_facts(dst, target_id) == before
+    with closing(dst.db.connect()) as conn:
+        relation = dict(conn.execute("SELECT * FROM legal_relations").fetchone())
+        assert relation["source_document_id"] == target_id
+        assert relation["target_document_id"] == result["document_versions"][supplement["id"]]["document_id"]
+        assert (
+            dst.own_document(conn, "target", result["document_versions"][attachment["id"]]["document_id"])[
+                "parent_id"
+            ]
+            == target_id
+        )
+    again = transfer(src, dst, **options, apply=True)
+    assert again["target_writes"] == 0 and again["unchanged_documents"] == 2
+    assert dependency_facts(dst, target_id) == before
+    with closing(dst.db.connect()) as conn:
+        assert [dict(r) for r in conn.execute("SELECT * FROM legal_relations")] == [relation]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "foreign_owner",
+        "protocol",
+        "source_family",
+        "source_version",
+        "hash",
+        "source_url",
+        "country",
+        "classification",
+        "duplicate",
+        "original_bytes",
+    ],
+)
+def test_existing_dependency_refuses_unverified_identity_before_copy(pair, change):
+    src, dst = pair
+    base = original(src)
+    if change != "missing":
+        initial = transfer(src, dst, document_ids=[base["id"]], apply=True)
+        target_id = initial["document_versions"][base["id"]]["document_id"]
+        with dst.db.transaction() as conn:
+            row = dict(dst.own_document(conn, "target", target_id))
+            manifest = json.loads(row["manifest"])
+            if change in {"protocol", "source_family", "source_version"}:
+                key = {
+                    "protocol": "protocol",
+                    "source_family": "source_family_id",
+                    "source_version": "source_version",
+                }[change]
+                manifest["collection_import"][key] = "wrong"
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), target_id))
+            elif change == "foreign_owner":
+                conn.execute("UPDATE documents SET owner_id='unrelated' WHERE id=?", (target_id,))
+            elif change == "hash":
+                conn.execute("UPDATE documents SET content_hash=? WHERE id=?", ("f" * 64, target_id))
+            elif change == "source_url":
+                conn.execute(
+                    "UPDATE documents SET source_url='https://official.example/wrong' WHERE id=?",
+                    (target_id,),
+                )
+            elif change == "country":
+                # Simulate a damaged backup; ordinary writes cannot change country.
+                conn.execute("DROP TRIGGER country_immutable_update")
+                conn.execute("UPDATE document_countries SET country='SG' WHERE document_id=?", (target_id,))
+            elif change == "classification":
+                conn.execute("DELETE FROM legal_classifications WHERE document_id=?", (target_id,))
+            elif change == "duplicate":
+                row.update(id="duplicate", family_id="duplicate")
+                conn.execute(
+                    "INSERT INTO documents ("
+                    + ",".join(row)
+                    + ") VALUES("
+                    + ",".join("?" for _ in row)
+                    + ")",
+                    list(row.values()),
+                )
+            elif change == "original_bytes":
+                Path(row["storage_path"]).chmod(0o600)
+                Path(row["storage_path"]).write_bytes(b"corrupt")
+    supplement = original(src, "supplement")
+    src.archive.add_relation(
+        "source",
+        supplement["id"],
+        {
+            "target_document_id": base["id"],
+            "collection": "country:ID",
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    before = facts(dst)
+    files = {str(p): p.read_bytes() for p in dst.archive.blobs.blobs_dir.rglob("*") if p.is_file()}
+    with pytest.raises(CollectionImportError):
+        transfer(
+            src,
+            dst,
+            document_ids=[base["id"], supplement["id"]],
+            existing_dependency_ids=[base["id"]],
+            apply=True,
+        )
+    assert facts(dst) == before
+    assert {str(p): p.read_bytes() for p in dst.archive.blobs.blobs_dir.rglob("*") if p.is_file()} == files
+
+
+@pytest.mark.parametrize(
+    "selection,dependencies,refresh",
+    [
+        (None, ["base"], False),
+        (["base"], ["base"], False),
+        (["base", "new"], ["other"], False),
+        (["base", "new"], ["base"], True),
+    ],
+)
+def test_existing_dependency_requires_explicit_scope_and_cannot_refresh(
+    pair, selection, dependencies, refresh
+):
+    src, dst = pair
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="existing_dependencies_"):
+        transfer(
+            src,
+            dst,
+            document_ids=selection,
+            existing_dependency_ids=dependencies,
+            refresh=refresh,
+            apply=True,
+        )
+    assert facts(dst) == before
+
+
 def test_selected_import_limits_manifest_bytes_to_selected_documents(pair, monkeypatch):
     from app import collection_import
 
@@ -734,7 +930,7 @@ def test_user_metadata_edit_refuses_refresh(pair):
     "registry_key,path_key",
     [("registry_sha256", "registry_path"), ("source_registry_sha256", "source_registry_path")],
 )
-@pytest.mark.parametrize("selected", [False, True])
+@pytest.mark.parametrize("selected", [False, True, "existing"])
 def test_typed_relation_transfers_owned_registry_and_both_page_mappings(
     pair, registry_key, path_key, selected
 ):
@@ -742,6 +938,11 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(
 
     src, dst = pair
     a, b = original(src, "amendment"), original(src, "base")
+    dependency_before = None
+    if selected == "existing":
+        previous = transfer(src, dst, document_ids=[b["id"]], apply=True)
+        existing_id = previous["document_versions"][b["id"]]["document_id"]
+        dependency_before = dependency_facts(dst, existing_id)
     buf = io.BytesIO()
     Image.new("RGB", (2, 3), "white").save(buf, format="PNG")
     png = src.archive.blobs.put_bytes("source", buf.getvalue())
@@ -808,6 +1009,8 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(
             }
         )
         options["document_ids"] = [a["id"], b["id"]]
+        if selected == "existing":
+            options["existing_dependency_ids"] = [b["id"]]
     blob = src.archive.blobs.put_bytes("source", dump(registry).encode())
     src.archive.add_relation(
         "source",
@@ -830,6 +1033,9 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(
     assert dry["relations"] == 1
     result = transfer(src, dst, apply=True, **options)
     assert result["documents"] == 2
+    if selected == "existing":
+        assert result["target_writes"] == 1
+        assert dependency_facts(dst, existing_id) == dependency_before
     with closing(dst.db.connect()) as conn:
         relation = dict(conn.execute("SELECT * FROM legal_relations").fetchone())
         assert relation["source_document_id"] == result["document_versions"][a["id"]]["document_id"]
@@ -855,7 +1061,9 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(
             assert mapped["PNG_CAS_path"] == ref["full_page_PNG"]
             assert b"verification-owner" not in mapping
     before = facts(dst)
-    assert transfer(src, dst, apply=True, **options)["unchanged_documents"] == 2
+    assert transfer(src, dst, apply=True, **options)["unchanged_documents"] == (
+        1 if selected == "existing" else 2
+    )
     assert facts(dst) == before
 
 

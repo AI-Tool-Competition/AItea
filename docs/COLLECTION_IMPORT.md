@@ -18,6 +18,10 @@ uv run --project backend --locked python scripts/import_collected_resources.py \
 
 选择范围必须包含普通附件的父文档，以及所选资料现有法规关系的另一端。缺少关系端点时返回 `selected_relation_dependencies_required` 和应补充的来源 ID；工具不静默丢弃关系，也不自行扩大迁移范围。整套关系登记证据仍校验原件和固定版本。选择单个版本不能绕过家族历史检查：来源家族存在其他版本时仍拒绝，直到支持保留完整版本链的迁移流程。
 
+增量采集发现的新资料可能关联已导入的法规。此时把旧法规的来源 ID 同时列入 `--document-id` 和 `--existing-dependency-id`，后者可重复；总选择范围仍不超过 200，必须另有至少一份非依赖资料，并且不能与 `--refresh` 同用。工具核对旧法规唯一的导入出处、原件字节、账号、家族、版本、来源 URL、国家和所需采集组，仅绑定其既有目标 ID。不会重写旧法规的正文、识别结果、向量、元数据、分类或处理任务，因此允许该依赖正在识别或向量化。预检后在写事务内再次核对身份；依赖缺失、歧义或不一致时拒绝，不临时创建替代资料。
+
+`existing_dependency_documents` 与 `existing_dependency_ids` 单列这些只读依赖，`import_documents` 为其余资料数，`target_writes` 继续表示新建文档数。新关联仍绑定具体原件版本和未审核证据，不改变已有法规的等级或效力。未声明为依赖的旧资料继续执行原有修改冲突和活动租约检查；该选项不能用来刷新或覆盖已完成的 OCR。
+
 选择模式也会从关系 registry 派生所选端点的完整子图，保存 `selection_provenance.source_registry_sha256`、来源关系数和本次关系数。涉及已选端点的边必须完整保留；边的另一端未选择时以 `selected_registry_dependencies_required` 拒绝，不导入其他无关资料的原件、页面图或关系。原 registry 的 CAS 字节与摘要保留，所选子图另存为目标账号的派生证据。
 
 同一批可以包含最多 32 份独立关系 registry，每份不超过 4 MiB，总计不超过 32 MiB。每份各自校验来源归属、摘要和子图，不把独立登记记录混成无法溯源的单一证据。`registry_sha256_by_source` 给出来源摘要到目标派生摘要的映射；只有单份 registry 时兼容字段 `registry_sha256` 才非空。

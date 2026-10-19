@@ -26,6 +26,12 @@ def main():
         dest="document_ids",
         help="Import only these source documents; repeat for dependencies and related originals",
     )
+    parser.add_argument(
+        "--existing-dependency-id",
+        action="append",
+        dest="existing_dependency_ids",
+        help="Bind a selected, previously imported original without modifying its text, vectors or jobs",
+    )
     args = parser.parse_args()
     if args.models_env:
         from verify_ingestion import configure_models
@@ -42,6 +48,7 @@ def main():
             apply=args.apply,
             refresh=args.refresh,
             document_ids=args.document_ids,
+            existing_dependency_ids=args.existing_dependency_ids,
         )
     except (CollectionImportError, sqlite3.Error) as exc:
         print(json.dumps({"status": "refused", "reason": str(exc)}, ensure_ascii=False))

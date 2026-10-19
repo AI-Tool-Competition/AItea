@@ -429,7 +429,7 @@ def _validate_retry_evidence(value, source_hash):
             _validate_retry_evidence(item, source_hash)
 
 
-def _target_import_ids(conn, target_owner, source_owner_hash, document_ids):
+def _target_import_ids(conn, target_owner, source_owner_hash, document_ids, *, unique_ids=()):
     """Read provenance once in the write transaction; retain only selected IDs."""
     selected = set(document_ids)
     if not selected:
@@ -446,9 +446,85 @@ def _target_import_ids(conn, target_owner, source_owner_hash, document_ids):
     ):
         owner_hash, source_id = json.loads(row["provenance"])
         if owner_hash == source_owner_hash and isinstance(source_id, str) and source_id in selected:
+            if source_id in unique_ids and source_id in matches:
+                raise CollectionImportError("ambiguous_existing_dependency:" + source_id)
             # Preserve the existing first-match behavior for duplicate markers.
             matches.setdefault(source_id, row["id"])
     return matches
+
+
+def _existing_dependencies(
+    conn, target_dir, target_owner, source_owner_hash, source, dependencies, *, verify_blobs
+):
+    """Bind immutable originals only; paid derived checkpoints may have advanced."""
+    from .archive import family_key
+
+    imported = _target_import_ids(
+        conn, target_owner, source_owner_hash, dependencies, unique_ids=dependencies
+    )
+    identities = {}
+    for doc in source["documents"]:
+        ident = doc["id"]
+        if ident not in dependencies:
+            continue
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id=? AND owner_id=?",
+            (imported.get(ident), target_owner),
+        ).fetchone()
+        if row is None:
+            raise CollectionImportError("existing_dependency_not_found:" + ident)
+        mark = json.loads(row["manifest"]).get("collection_import", {})
+        origin = {
+            "protocol": PROTOCOL,
+            "source_owner_sha256": source_owner_hash,
+            "source_document_id": ident,
+            "source_family_id": doc["family_id"],
+            "source_version": doc["version"],
+            "source_hash": doc["content_hash"],
+        }
+        country = conn.execute(
+            "SELECT country FROM document_countries WHERE document_id=?", (row["id"],)
+        ).fetchone()
+        expected_family = family_key(
+            target_owner,
+            doc["filename"],
+            doc["source_url"],
+            identity_key=PROTOCOL + ":" + source_owner_hash + ":" + doc["family_id"],
+            country=doc["country"],
+        )
+        if (
+            any(mark.get(k) != v for k, v in origin.items())
+            or doc["role"] != "primary"
+            or any(row[k] != doc[k] for k in ("role", "version", "content_hash", "source_url", "size"))
+            or row["case_id"] is not None
+            or row["parent_id"] is not None
+            or row["family_id"] != expected_family
+            or country is None
+            or country[0] != doc["country"]
+        ):
+            raise CollectionImportError("existing_dependency_identity_mismatch:" + ident)
+        # add_relation may otherwise classify its source endpoint. A read-only
+        # dependency must already belong to every collection used by the import.
+        collections = {"country:" + doc["country"]} | {
+            relation["collection"]
+            for relation in source["relations"]
+            if ident in (relation["source_document_id"], relation["target_document_id"])
+        }
+        for collection in collections:
+            if not conn.execute(
+                "SELECT 1 FROM legal_classifications WHERE document_id=? AND collection=?",
+                (row["id"], collection),
+            ).fetchone():
+                raise CollectionImportError("existing_dependency_collection_missing:" + ident)
+        if verify_blobs:
+            path = _blob(target_dir, target_owner, doc["content_hash"])
+            stored = Path(row["storage_path"])
+            if not stored.is_absolute():
+                stored = Path(target_dir).resolve() / stored
+            if stored != path or path.stat().st_size != row["size"]:
+                raise CollectionImportError("existing_dependency_original_path_mismatch:" + ident)
+        identities[ident] = {"document_id": row["id"], "version": row["version"]}
+    return identities
 
 
 def _guard(conn, ident):
@@ -882,13 +958,43 @@ def _validate_registry(registry, documents, paths):
 
 
 def import_collected_resources(
-    source_dir, target_dir, source_owner, target_owner, *, apply=False, refresh=False, document_ids=None
+    source_dir,
+    target_dir,
+    source_owner,
+    target_owner,
+    *,
+    apply=False,
+    refresh=False,
+    document_ids=None,
+    existing_dependency_ids=None,
 ):
     """Dry-run never creates target directories, databases, users or sessions."""
+    dependencies = set(_selected_ids(existing_dependency_ids) or [])
+    selected = _selected_ids(document_ids)
+    if dependencies and (selected is None or not dependencies < set(selected)):
+        raise CollectionImportError("existing_dependencies_require_selected_new_documents")
+    if dependencies and refresh:
+        raise CollectionImportError("existing_dependencies_cannot_refresh")
     plan = _plan(source_dir, target_dir, source_owner, target_owner, document_ids=document_ids)
     source, metadata, classes, paths, aliases, registries, vectors, report, evidence = plan
     for registry in registries.values():
         _validate_registry(registry, source["documents"], paths)
+    source_owner_hash = _sha(source_owner.encode())
+    bound = {}
+    if dependencies and not report["blockers"]:
+        database = Path(target_dir).resolve() / "tea.sqlite3"
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("BEGIN")
+            bound = _existing_dependencies(
+                conn, target_dir, target_owner, source_owner_hash, source, dependencies, verify_blobs=True
+            )
+    report.update(
+        existing_dependency_documents=len(dependencies),
+        existing_dependency_ids=sorted(dependencies),
+        import_documents=len(source["documents"]) - len(dependencies),
+    )
     if not apply:
         return report
     if report["blockers"]:
@@ -909,15 +1015,23 @@ def import_collected_resources(
         digest: str(blob.path.relative_to(Path(target_dir).resolve())) for digest, blob in published.items()
     }
     identities, created, unchanged = {}, 0, 0
-    source_owner_hash = _sha(source_owner.encode())
     with service.db.transaction() as conn:
         if not conn.execute("SELECT 1 FROM users WHERE id=?", (target_owner,)).fetchone():
             raise CollectionImportError("target_owner_not_found")
+        if dependencies:
+            current_bound = _existing_dependencies(
+                conn, target_dir, target_owner, source_owner_hash, source, dependencies, verify_blobs=True
+            )
+            if current_bound != bound:
+                raise CollectionImportError("existing_dependency_changed_during_import")
+            identities.update(current_bound)
         imported_ids = _target_import_ids(
             conn, target_owner, source_owner_hash, (doc["id"] for doc in source["documents"])
         )
         for doc in source["documents"]:
             ident = doc["id"]
+            if ident in dependencies:
+                continue
             origin = {
                 "protocol": PROTOCOL,
                 "source_owner_sha256": source_owner_hash,
@@ -1155,7 +1269,9 @@ def import_collected_resources(
                 destinations[digest] = str(mapped.path.relative_to(Path(target_dir).resolve()))
                 mapping_replacements[digest] = mapped.digest
         # Forward document references and mapping paths resolve only after all IDs exist.
-        for identity in identities.values():
+        for source_id, identity in identities.items():
+            if source_id in dependencies:
+                continue
             row = conn.execute(
                 "SELECT manifest FROM documents WHERE id=?", (identity["document_id"],)
             ).fetchone()

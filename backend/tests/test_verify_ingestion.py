@@ -104,3 +104,36 @@ def test_verifier_rejects_paths_in_display_filenames(tmp_path):
     result = invoke(tmp_path, {"samples": [{"id": "bad", "path": str(original), "filename": "../law.pdf"}]})
     assert result.returncode != 0
     assert not (tmp_path / "result/tea.sqlite3").exists()
+
+
+def test_disabled_models_cannot_be_restored_by_later_dotenv_imports(tmp_path):
+    configuration = tmp_path / "providers.env"
+    values = {
+        f"{prefix}_{field}": "explicit-test-value"
+        for prefix in ("LLM", "EMBEDDING", "RERANK", "VISION_OCR")
+        for field in ("BASE_URL", "API_KEY", "MODEL")
+    }
+    values["VISION_OCR_ENABLED"] = "true"
+    configuration.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    code = """
+import os, sys
+from dotenv import load_dotenv
+sys.path.insert(0, sys.argv[1])
+from verify_ingestion import configure_models
+configure_models(None)
+load_dotenv(sys.argv[2])
+for prefix in ('LLM', 'EMBEDDING', 'RERANK', 'VISION_OCR'):
+    for field in ('BASE_URL', 'API_KEY', 'MODEL'):
+        assert os.environ[prefix + '_' + field] == ''
+assert os.environ['VISION_OCR_ENABLED'] == 'false'
+configure_models(sys.argv[2])
+assert os.environ['EMBEDDING_API_KEY'] == 'explicit-test-value'
+assert os.environ['VISION_OCR_ENABLED'] == 'true'
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(SCRIPT.parent), str(configuration)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

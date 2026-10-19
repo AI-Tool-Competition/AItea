@@ -311,6 +311,14 @@ def transcribe_page(rendered: dict) -> dict:
             payload_kind="assistant_message",
             finish_reason=finish,
         ) from exc
+    # Some providers echo response_format.type into the transcription object.
+    # Strip only that exact metadata value from an otherwise exact page schema.
+    if (
+        isinstance(value, dict)
+        and value.get("type") == "json_object"
+        and set(value) == {"type", "complete", "printed_page", "text", "uncertain_spans", "is_blank"}
+    ):
+        value = {key: item for key, item in value.items() if key != "type"}
     if (
         not isinstance(value, dict)
         or set(value) != {"complete", "printed_page", "text", "uncertain_spans", "is_blank"}

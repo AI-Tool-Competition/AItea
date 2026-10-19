@@ -247,7 +247,9 @@ def test_aerisun_deepseek_requests_usage_and_keeps_case_context_in_cache_prefix(
     assert all(body["stream_options"] == {"include_usage": True} for body in sent)
     assert all("prompt_cache_key" not in body for body in sent)
     assert sent[0]["messages"][:2] == sent[1]["messages"][:2]
-    assert sent[0]["messages"][1]["content"] == '{"case_context":{"business_name":"六堡茶出口"}}'
+    assert json.loads(sent[0]["messages"][1]["content"]) == {
+        "case_context": {"business_name": "六堡茶出口"}
+    }
     assert sent[0]["messages"][-1] != sent[1]["messages"][-1]
     usage_records = [record for record in caplog.records if record.getMessage() == "provider_prompt_usage"]
     assert len(usage_records) == 2

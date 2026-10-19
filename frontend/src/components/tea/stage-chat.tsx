@@ -32,7 +32,6 @@ import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
 
 import { AnalysisProcess } from "./analysis-process";
 import { ChatSkills } from "./chat-skills";
-import { GuideHistory } from "./guide-history";
 import { LegalResultView } from "./legal-result";
 import { CitationCard } from "./library";
 import { Busy, dateLabel, ErrorNotice } from "./shared";
@@ -251,13 +250,6 @@ export function StageChat({
       onTouchMoveCapture={releaseEntryPosition}
       onKeyDownCapture={releaseEntryPosition}
     >
-      {guide && (
-        <GuideHistory
-          caseId={record.id}
-          stageId={stage.id}
-          revision={record.revision}
-        />
-      )}
       <Conversation
         contextRef={conversation}
         initial={false}

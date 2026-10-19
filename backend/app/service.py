@@ -59,12 +59,12 @@ def check(id, label, status, reason, refs=None):
 
 
 class Service:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, *, require_existing=False):
         from .studio import AdminStudio
         from .archive import LegalArchive
         from .collection import CollectionService
 
-        self.db = Database(Path(data_dir))
+        self.db = Database(Path(data_dir), require_existing=require_existing)
         self.catalog = LegalCatalog(self.db)
         self.studio = AdminStudio(self)
         self._chat_lock = threading.Lock()

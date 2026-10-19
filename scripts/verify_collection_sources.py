@@ -200,6 +200,10 @@ class SourceVerifier:
                 result["request_body"] = request["json_body"]
         except DownloadError as exc:
             result.update(status="failed", error=str(exc), retryable=exc.retryable)
+            if exc.retry_after is not None:
+                result["retry_after_seconds"] = exc.retry_after
+            if exc.response_host:
+                result["response_host"] = exc.response_host
         except Exception as exc:  # noqa: BLE001 -- sanitize every external probe failure at the report boundary
             # Source bodies and provider credentials must not reach report logs.
             result.update(status="failed", error_type=type(exc).__name__, retryable=False)

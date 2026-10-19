@@ -121,6 +121,85 @@ def test_only_static_official_https_identity_is_admitted(url, country):
     assert official_source_allowed(url, country)
 
 
+_OECD_ORIGINAL_PREFIX = "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/"
+_UNTS_ORIGINAL = "https://treaties.un.org/doc/Publication/UNTS/Volume%20563/volume-563-I-8206-English.pdf"
+
+
+@pytest.mark.parametrize("jurisdiction", ["china", "singapore", "unts"])
+def test_reviewed_exact_original_is_admitted_only_as_draft_with_original_identity(service, jurisdiction):
+    url = (
+        _UNTS_ORIGINAL
+        if jurisdiction == "unts"
+        else _OECD_ORIGINAL_PREFIX + f"beps-mli-position-{jurisdiction}-instrument-deposit.pdf"
+    )
+    assert official_source_allowed(url, "SG")
+    doc = original(service, "mli-" + jurisdiction, country="SG", source_url=url)
+    assert doc["source_url"] == url
+    assert (
+        doc["content_hash"]
+        == hashlib.sha256(f"tea lawful import clause mli-{jurisdiction}".encode()).hexdigest()
+    )
+    assert service.catalog.enrich_document(doc)["metadata"]["review_status"] == "draft"
+
+
+@pytest.mark.parametrize("jurisdiction", ["china", "singapore"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "neighbor",
+        "query",
+        "empty_query",
+        "fragment",
+        "encoded_filename",
+        "encoded_directory",
+        "dot_segment",
+        "wrong_host",
+        "subdomain",
+        "port",
+        "country",
+    ],
+)
+def test_oecd_original_admission_does_not_expand_to_neighbor_urls_or_countries(jurisdiction, change):
+    filename = f"beps-mli-position-{jurisdiction}-instrument-deposit.pdf"
+    url = _OECD_ORIGINAL_PREFIX + filename
+    changed = {
+        "neighbor": url.replace("-deposit.pdf", "-deposit-amended.pdf"),
+        "query": url + "?download=1",
+        "empty_query": url + "?",
+        "fragment": url + "#page=1",
+        "encoded_filename": _OECD_ORIGINAL_PREFIX + filename.replace("beps", "%62eps"),
+        "encoded_directory": url.replace("/beps-mli/", "/%62eps-mli/"),
+        "dot_segment": _OECD_ORIGINAL_PREFIX + "../beps-mli/" + filename,
+        "wrong_host": url.replace("www.oecd.org", "www.oecd.org.evil.example"),
+        "subdomain": url.replace("www.oecd.org", "downloads.oecd.org"),
+        "port": url.replace("www.oecd.org", "www.oecd.org:443"),
+        "country": url,
+    }[change]
+    assert not official_source_allowed(changed, "ID" if change == "country" else "SG")
+
+
+@pytest.mark.parametrize(
+    "url,country",
+    [
+        (_UNTS_ORIGINAL, "ID"),
+        (_UNTS_ORIGINAL.replace("8206", "8207"), "SG"),
+        (_UNTS_ORIGINAL.replace("English", "French"), "SG"),
+        (_UNTS_ORIGINAL.replace("%20", "%2520"), "SG"),
+        (_UNTS_ORIGINAL.replace("Volume", "%56olume"), "SG"),
+        (_UNTS_ORIGINAL.replace("%20", "+"), "SG"),
+        (_UNTS_ORIGINAL.replace("%20", " "), "SG"),
+        (_UNTS_ORIGINAL + "?", "SG"),
+        (_UNTS_ORIGINAL + "?download=1", "SG"),
+        (_UNTS_ORIGINAL + "#page=1", "SG"),
+        (_UNTS_ORIGINAL.replace("treaties.un.org", "treaties.un.org.evil.example"), "SG"),
+        (_UNTS_ORIGINAL.replace("treaties.un.org", "www.un.org"), "SG"),
+        (_UNTS_ORIGINAL.replace("treaties.un.org", "treaties.un.org:443"), "SG"),
+    ],
+)
+def test_unts_admission_requires_the_exact_reviewed_encoding_and_sg_country(url, country):
+    assert not official_source_allowed(url, country)
+
+
 @pytest.mark.parametrize(
     "url,country",
     [

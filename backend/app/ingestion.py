@@ -35,6 +35,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 from .html_parsing import HTMLDocument as _HTMLDocument
 from .pdf_table_detection import VERSION as _TABLE_LAYOUT_VERSION
+from .public_search import EGazetteSearchRequest
 from .vendor.geo_parser.document_ingestion import (
     DoclingDocumentParser,
     ParsedDocument,
@@ -1130,6 +1131,7 @@ def _download(
     accept_compressed_html: bool = False,
     accept_compressed_json: bool = False,
     json_body: dict | None = None,
+    public_search: EGazetteSearchRequest | None = None,
     max_bytes: int | None = None,
     byte_range: tuple[int, int] | None = None,
     range_validator: str | None = None,
@@ -1142,9 +1144,19 @@ def _download(
     A 304 does not invoke it: callers must validate their cached original and URL.
     Conditional headers belong exclusively to the initial requested resource.
     A connection slot accounts for the actual host at every redirect hop.
+    Public search credentials are bound to one verified read-only endpoint;
+    they never enter a redirect or an arbitrary caller-provided header mapping.
     """
     current = url
     validators = validators or {}
+    search_headers = {}
+    if public_search is not None:
+        if type(public_search) is not EGazetteSearchRequest or json_body is None or validators or byte_range:
+            raise DownloadError("公开检索只允许显式受限的只读 JSON 请求。")
+        try:
+            search_headers = public_search.headers_for(url, method="POST")
+        except ValueError as exc:
+            raise DownloadError(str(exc)) from exc
     max_bytes = MAX_BYTES if max_bytes is None else max_bytes
     if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ORIGINAL_BYTES:
         raise DownloadError("原件传输额度无效，最多 128 MB。")
@@ -1254,6 +1266,7 @@ def _download(
 
                     headers.update(request_headers_for(host))
                 headers.update({key: value for key, value in conditionals.items() if value is not None})
+                headers.update(search_headers)
                 if byte_range is not None:
                     headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
                     if range_validator is not None:

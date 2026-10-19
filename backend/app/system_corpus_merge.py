@@ -782,7 +782,28 @@ def migrate_alias_plan(snapshot_dir, target_dir, receipt, plan, *, apply, source
         migration._progress(backup_dir / "migration-progress.json", progress)
         from .service import Service
 
-        service = Service(target_dir)
+        try:
+            # A formal restore uses DELETE journal mode. Release our own read
+            # snapshot before Service enables WAL, then validate every target
+            # boundary again against the fresh snapshot. Dry-run stays read-only.
+            target.rollback()
+            service = Service(target_dir)
+            target.execute("BEGIN")
+            target_guard(target)
+            baseline_guard(target)
+            relations_guard(target)
+            for ids in batches:
+                part = migration._scope(source, ids)
+                migration._check_target(
+                    target, part, migration._normalized(part, target_dir), migration._scope(target, ids)
+                )
+            source_guard()
+        except BaseException as exc:
+            migration._progress(
+                backup_dir / "migration-progress.json",
+                progress | {"mode": "interrupted", "error_type": type(exc).__name__},
+            )
+            raise
         blobs = BlobStore(target_dir / "files", max_bytes=MAX_CHECKPOINT_BYTES)
         for digest, path in paths.items():
             with path.open("rb") as stream:

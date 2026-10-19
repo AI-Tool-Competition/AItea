@@ -3,6 +3,7 @@
 import hashlib
 import json
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
@@ -378,3 +379,66 @@ def test_interrupted_committed_batch_resumes_without_replacing_success(fixture, 
     monkeypatch.setattr(migration, "_copy_batch", original)
     apply(f, p, backup_dir=tmp_path / "resume-backup")
     assert scope(f["target"], list(committed))["rows"] == before
+
+
+def test_formal_delete_journal_restore_has_readonly_preflight_and_idempotent_apply(fixture, tmp_path):
+    f = dict(fixture)
+    backup, restored = tmp_path / "formal-backup", tmp_path / "formal-restored"
+    create_backup(f["target"].db.data_dir, backup)
+    restore_backup(backup, restored)
+    database = restored / "tea.sqlite3"
+    # Do not instantiate Service before exercising the real restored target:
+    # that would conceal the DELETE-to-WAL initialization boundary under test.
+    f["target"] = SimpleNamespace(
+        db=SimpleNamespace(data_dir=restored, connect=lambda: migration._readonly(database))
+    )
+    before = tables(f["target"])
+    before_sha = migration._file_sha(database)
+    with closing(migration._readonly(database)) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    p = json.loads(json.dumps(plan(f)))
+    dry = migration.migrate_system_corpus(f["snapshot"], restored, alias_plan=p, source_stopped=True)
+    assert dry["target_writes"] == 0 and dry["blockers"] == []
+    assert tables(f["target"]) == before
+    assert migration._file_sha(database) == before_sha
+    with closing(migration._readonly(database)) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    result = apply(f, p)
+    assert result["new_documents"] == result["alias_receipts_created"] == 2
+    with closing(migration._readonly(database)) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    after = tables(f["target"])
+    assert apply(f, p, backup_dir=tmp_path / "replay-restored")["target_writes"] == 0
+    assert tables(f["target"]) == after
+
+
+def test_target_change_during_service_initialization_is_not_hidden_by_old_read_snapshot(
+    fixture, monkeypatch, tmp_path
+):
+    from app import service as service_module
+
+    f = fixture
+    p = plan(f)
+    ident = f["target_aliases"][0]
+    original_service = service_module.Service
+
+    def changed_target(directory):
+        service = original_service(directory)
+        with service.db.transaction() as conn:
+            conn.execute("UPDATE documents SET title='Concurrent change' WHERE id=?", (ident,))
+        return service
+
+    monkeypatch.setattr(service_module, "Service", changed_target)
+    backup = tmp_path / "initialization-refused"
+    with pytest.raises(migration.SystemCorpusMigrationError, match="alias_target_changed_since_plan"):
+        apply(f, p, backup_dir=backup)
+    with closing(f["target"].db.connect()) as conn:
+        assert conn.execute("SELECT title FROM documents WHERE id=?", (ident,)).fetchone()[0] == (
+            "Concurrent change"
+        )
+        assert not conn.execute("SELECT 1 FROM documents WHERE id IN (?,?)", f["incoming"]).fetchone()
+        assert not conn.execute(
+            "SELECT 1 FROM documents WHERE json_type(manifest,'$.corpus_import_aliases') IS NOT NULL"
+        ).fetchone()
+    progress = json.loads((backup / "migration-progress.json").read_bytes())
+    assert progress["mode"] == "interrupted" and progress["completed_document_batches"] == 0

@@ -156,8 +156,16 @@ class GazetteCollector:
                     self.active[host] -= 1
             gate.release()
 
-    def page(self, target, filters, page):
-        body = search_body(page=page, page_size=self.page_size, filters=filters)
+    def page(self, target, filters, page, *, page_size=None, confirm_count=False):
+        body = search_body(
+            page=page, page_size=self.page_size if page_size is None else page_size, filters=filters
+        )
+        if confirm_count:
+            if page != 0 or page_size != 1:
+                raise ValueError("count confirmation requires exactly one result from page zero")
+            # This public search profile yields exact nbHits on the observed
+            # source. Facet counts can still be approximate and are never used.
+            body.update(facets=["publishYear"], maxValuesPerFacet=100)
         receipt = target / f"page-{page:05d}.json"
         raw_path = target / f"page-{page:05d}.raw.json"
         if receipt.exists():
@@ -307,6 +315,121 @@ class GazetteCollector:
         with ThreadPoolExecutor(max_workers=4) as pool:
             states = list(pool.map(lambda task: self.partition(*task), tasks))
         return states
+
+    def confirm_partition_count(self, state):
+        """Confirm an enumerated partition with a fresh, cheap exact-count query.
+
+        Approximate parent counts are retained. Completion additionally requires
+        every saved leaf page, unique index identities, and an exhaustive count
+        from the same official category/year/interval filter. No rows are inferred
+        from counts and this never establishes current legal force.
+        """
+        if state["status"] not in {"catalogue_count_unconfirmed", "incomplete_split"}:
+            return state
+        records = {}
+
+        def bind_rows(rows):
+            for row in rows:
+                record = {key: value for key, value in row.items() if key != "source_locator"}
+                if records.setdefault(row["objectID"], record) != record:
+                    raise ValueError("count confirmation found changing source identity metadata")
+
+        def replay(part):
+            category, year = part["category"], part["year"]
+            if (
+                category not in LEGISLATIVE_CATEGORIES
+                or type(year) is not int
+                or not 1998 <= year <= datetime.now(UTC).year
+            ):
+                raise ValueError("count confirmation has invalid source scope")
+            filters = f'category:"Legislative Supplements" AND subCategory:{json.dumps(category)} AND publishYear:{year}'
+            key = f"{year}-{category.lower().replace(' ', '-')}"
+            interval = part.get("publication_interval")
+            if interval is not None:
+                if (
+                    not isinstance(interval, list)
+                    or len(interval) != 2
+                    or any(type(value) is not int for value in interval)
+                    or interval[0] > interval[1]
+                ):
+                    raise ValueError("count confirmation interval is invalid")
+                lower, upper = interval
+                filters += f" AND publishTimestamp >= {lower} AND publishTimestamp <= {upper}"
+                key += f"-{lower}-{upper}"
+            if part["filters"] != filters or part["partition"] != key:
+                raise ValueError("count confirmation scope differs from its frozen partition")
+            target = self.output / "catalog" / key
+            if target.is_symlink() or not target.resolve().is_relative_to(self.output.resolve()):
+                raise ValueError("count confirmation source escaped its data root")
+            pages = part.get("validated_pages", list(range(part["pages"])))
+            if not pages or pages != list(range(len(pages))):
+                raise ValueError("count confirmation requires consecutive accepted pages")
+            ids, last = set(), None
+            for number in pages:
+                # This is strictly replay: confirmation cannot fill a missing page.
+                if not (target / f"page-{number:05d}.json").is_file():
+                    raise ValueError("count confirmation page evidence is missing")
+                parsed = self.page(target, filters, number)
+                self.check_partition_rows(parsed["rows"], part)
+                self.check_partition_rows(parsed["rows"], state)
+                bind_rows(parsed["rows"])
+                current = {row["objectID"] for row in parsed["rows"]}
+                if ids & current or parsed["source_index_records"] != part["source_records"]:
+                    raise ValueError("count confirmation found duplicate identities or count drift")
+                ids.update(current)
+                last = parsed
+            children = part.get("children")
+            if children:
+                combined = set()
+                for child in children:
+                    if child["category"] != category or child["year"] != year:
+                        raise ValueError("count confirmation child escaped parent source scope")
+                    child_ids = replay(child)
+                    if combined & child_ids:
+                        raise ValueError("count confirmation child identities overlap")
+                    combined.update(child_ids)
+                if not ids <= combined:
+                    raise ValueError("count confirmation child evidence omits parent identities")
+                ids = combined
+            elif (
+                part["status"] not in {"catalogue_complete", "catalogue_count_unconfirmed"}
+                or last["next_page"] is not None
+                or not last["pagination_window_complete"]
+            ):
+                raise ValueError("count confirmation requires an enumerated terminal leaf")
+            if len(ids) != part["captured_records"]:
+                raise ValueError("count confirmation captured identities disagree with state")
+            return ids
+
+        identities = replay(state)
+        target = self.output / "count-confirmations" / "year-facet-v1" / state["partition"]
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parsed = self.page(target, state["filters"], 0, page_size=1, confirm_count=True)
+        self.check_partition_rows(parsed["rows"], state)
+        if any(row["objectID"] not in identities for row in parsed["rows"]):
+            raise ValueError("count confirmation returned a previously unseen source identity")
+        bind_rows(parsed["rows"])
+        if parsed["source_index_records"] != len(identities):
+            raise ValueError("count confirmation differs from enumerated source identities")
+        proof = {
+            "protocol": "egazette-exhaustive-count-confirmation-v1",
+            "request_profile": "one-hit-year-facet-v1",
+            "facet_counts_used": False,
+            "receipt": str((target / "page-00000.json").relative_to(self.output)),
+            "response_sha256": parsed["response_sha256"],
+            "enumerated_index_records": len(identities),
+            "enumerated_identity_sha256": sha256(
+                json.dumps(sorted(identities), ensure_ascii=False).encode()
+            ).hexdigest(),
+            "confirmed_exhaustive_source_count": parsed["exhaustive_source_count"],
+            "previous_status": state["status"],
+            "current_effect_verified": False,
+        }
+        confirmed = dict(state, count_confirmation=proof)
+        if parsed["exhaustive_source_count"]:
+            confirmed["status"] = "catalogue_complete"
+        write_json(target / "confirmation.json", confirmed)
+        return confirmed
 
     @staticmethod
     def check_partition_rows(rows, state):
@@ -778,6 +901,11 @@ def main():
     parser.add_argument("--time-budget", type=float, default=1800)
     parser.add_argument("--originals", type=int, default=0)
     parser.add_argument(
+        "--confirm-counts",
+        action="store_true",
+        help="Confirm fully enumerated approximate counts with a bounded independent one-hit query",
+    )
+    parser.add_argument(
         "--stage-originals",
         action="store_true",
         help="queue acquired originals for later parsing; never start workers",
@@ -852,6 +980,8 @@ def main():
             page_size=args.page_size,
         )
         states = collector.catalog(args.categories, list(range(args.year_from, args.year_through + 1)))
+        if args.confirm_counts:
+            states = [collector.confirm_partition_count(state) for state in states]
         rows = collector.rows()
         write_json(
             args.output / "document-directory.json",

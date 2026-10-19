@@ -66,6 +66,67 @@ afterEach(() => {
 });
 
 describe("collection source operations", () => {
+  it.each(["collection", "discovery"] as const)(
+    "resumes cancelled %s work even when no download failed",
+    async (kind) => {
+      let current: CollectionRun = {
+        ...run,
+        kind,
+        status: "cancelled",
+        revision: 3,
+        stored: kind === "collection" ? 1 : 0,
+        pages: kind === "discovery" ? 1 : 0,
+        failed: 0,
+        pending: 0,
+        processing: 0,
+      };
+      const fetcher = rs
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (_url, options) => {
+          if (options?.method === "POST") {
+            current = { ...current, status: "queued", revision: 4, pending: 2 };
+            return response(current);
+          }
+          return response({ run: current, items: [], total: 3 });
+        });
+      render(<CollectionProgress initial={current} />);
+      fireEvent.click(screen.getByRole("button", { name: "继续未完成项" }));
+      await screen.findByRole("button", { name: "取消任务" });
+      const writes = fetcher.mock.calls.filter(
+        ([, options]) => options?.method === "POST",
+      );
+      expect(writes).toHaveLength(1);
+      expect(pathOf(writes[0]![0])).toBe(
+        "/api/tea/collection-runs/run-1/retry",
+      );
+      expect(JSON.parse(writes[0]![1]!.body as string)).toEqual({
+        expected_revision: 3,
+      });
+      expect(screen.queryByRole("button", { name: "继续未完成项" })).toBeNull();
+    },
+  );
+
+  it.each(["collection", "discovery"] as const)(
+    "does not offer to resume cancelled %s work when every item was saved",
+    (kind) => {
+      const current: CollectionRun = {
+        ...run,
+        kind,
+        status: "cancelled",
+        stored: kind === "collection" ? run.total : 0,
+        pages: kind === "discovery" ? run.total : 0,
+        pending: 0,
+        processing: 0,
+      };
+      rs.spyOn(globalThis, "fetch").mockResolvedValue(
+        response({ run: current, items: [], total: run.total }),
+      );
+      render(<CollectionProgress initial={current} />);
+      expect(screen.queryByRole("button", { name: "继续未完成项" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "重试失败项" })).toBeNull();
+    },
+  );
+
   it("shows saved download progress before the original is available", async () => {
     const item = {
       id: "download-1",

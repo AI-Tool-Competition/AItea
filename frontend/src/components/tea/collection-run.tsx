@@ -87,6 +87,8 @@ export function CollectionProgress({
   change.current = onChange;
   const latestRun = useRef(initial);
   const mutation = useRef<AbortController | null>(null);
+  const hasUnfinishedCancelledItems =
+    run.status === "cancelled" && run.total > run.stored + (run.pages ?? 0);
   useEffect(() => () => mutation.current?.abort(), []);
   useEffect(() => {
     if (currentProgress(initial, latestRun.current)) {
@@ -222,7 +224,9 @@ export function CollectionProgress({
           </ActionButton>
         )}
         {!collectionActive(run) &&
-          (run.failed > 0 || run.processing_failed > 0) && (
+          (hasUnfinishedCancelledItems ||
+            run.failed > 0 ||
+            run.processing_failed > 0) && (
             <ActionButton
               size="sm"
               variant="outline"
@@ -230,7 +234,7 @@ export function CollectionProgress({
               busy={busy === "retry"}
               onClick={() => void act("retry")}
             >
-              重试失败项
+              {hasUnfinishedCancelledItems ? "继续未完成项" : "重试失败项"}
             </ActionButton>
           )}
       </div>

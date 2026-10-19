@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.checklists import load_blueprint_version, load_blueprints
+from app.checklists import load_blueprint_version
 from app.discovery import _CUSTOMS_TEXT_PATHS, discover_page, recipe_for
 
 
@@ -84,7 +84,7 @@ def test_actual_public_next_records_discover_all_selected_pdfs_with_locator(labe
 
 def test_frozen_v3_scope_and_source_requirements_are_not_expanded():
     old = load_blueprint_version(PLAN, 3)
-    new = load_blueprints()[PLAN]
+    new = load_blueprint_version(PLAN, 4)
     assert old["version"] == 3 and new["version"] == 4
     assert len(old["items"]) == len(new["items"]) == 16
     assert old["source_document"] == new["source_document"]

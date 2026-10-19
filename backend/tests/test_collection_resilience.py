@@ -164,6 +164,39 @@ def test_owner_queue_backpressure_rejects_atomically(client):
     assert begin(client, source["id"], key="batch-0", entries=entries)["total"] == 200
 
 
+def test_embedding_capacity_keeps_excess_jobs_queued_without_blocking_parsing(client, tmp_path, monkeypatch):
+    collection = client.app.state.service.collection
+    source = make_source(client)
+    begin(client, source["id"], entries=[f"https://one.example/law-{n}.txt" for n in range(12)])
+    fake_download(monkeypatch)
+    fetch_all(collection)
+    with collection.db.transaction() as conn:
+        identifiers = [
+            r[0] for r in conn.execute("SELECT document_id FROM processing_jobs ORDER BY document_id")
+        ]
+        conn.executemany(
+            "UPDATE processing_jobs SET phase='embed' WHERE document_id=?", [(i,) for i in identifiers[:8]]
+        )
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", "8")
+    services = [Service(tmp_path).collection for _ in range(3)]
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        claims = list(pool.map(lambda n: services[n % 3].claim_processing(), range(12)))
+    active = [claim for claim in claims if claim]
+    assert Counter(claim["phase"] for claim in active) == {"parse": 4, "embed": 2}
+    queued = rows(collection, "SELECT attempts FROM processing_jobs WHERE status='queued'")
+    assert len(queued) == 6 and all(row["attempts"] == 0 for row in queued)
+    completed = next(claim for claim in active if claim["phase"] == "embed")
+    with collection.db.transaction() as conn:
+        conn.execute(
+            "UPDATE processing_jobs SET status='completed',lease_token=NULL,lease_until=NULL WHERE document_id=?",
+            (completed["document_id"],),
+        )
+    restarted = Service(tmp_path).collection
+    replacement = restarted.claim_processing()
+    assert replacement and replacement["phase"] == "embed" and replacement["attempts"] == 1
+    assert restarted.claim_processing() is None
+
+
 def test_global_queue_backpressure_is_shared_between_owners(client):
     entries = [f"https://one.example/law-{index}.txt" for index in range(200)]
     for owner_index in range(2):

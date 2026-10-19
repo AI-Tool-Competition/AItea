@@ -435,6 +435,15 @@ class LegalPreviewInput(TemplateInput):
     facts: list[dict[str, JsonValue]] = Field(default_factory=list, max_length=100)
 
 
+class LibraryCountry(StrictModel):
+    country: str = Field(pattern=r"^[A-Z]{2}$")
+
+
+class LibraryCountryList(StrictModel):
+    items: list[LibraryCountry] = Field(max_length=676)
+    total: int = Field(ge=0, le=676)
+
+
 class Search(StrictModel):
     query: str = Field(min_length=1, max_length=2000)
     case_id: str | None = None

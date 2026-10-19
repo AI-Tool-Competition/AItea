@@ -1,6 +1,6 @@
 {
   "id": "singapore-demo-20261009",
-  "version": 4,
+  "version": 5,
   "country": "SG",
   "title": "六堡茶新加坡出海法律资料采集清单（比赛Demo版）",
   "source_document": {
@@ -184,7 +184,8 @@
       "execution": "discovery",
       "adapter": "sso",
       "limits": {
-        "max_original_bytes": 134217728
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
       }
     },
     {
@@ -248,7 +249,8 @@
       "execution": "discovery",
       "adapter": "sso",
       "limits": {
-        "max_original_bytes": 134217728
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
       }
     },
     {
@@ -312,7 +314,8 @@
       "execution": "discovery",
       "adapter": "sso",
       "limits": {
-        "max_original_bytes": 134217728
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
       }
     },
     {

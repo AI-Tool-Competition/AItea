@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 
+from .pdf_limits import ARCHIVE_MAX_PAGES
+
 OCR_VALIDATION_VERSION = "legal-numbers-v3"
 PDF_VISIBILITY_PIPELINES = {"pdf-pages-v5", "archive-pdf-pages-v3"}
 _MONTH = "januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember"
@@ -191,6 +193,9 @@ def validate_ocr_page(page: dict) -> None:
     if "\ufffd" in transcribed:
         warnings.append("ocr_decode_replacement")
     anchors = [number_anchors(text) for text in (native, transcribed)]
+    from .native_anchor_evidence import filter_offpage_amount_anchors
+
+    anchors[0], _ = filter_offpage_amount_anchors(page, anchors[0])
     for anchor in anchors[0]:
         if not anchor_present(anchor, anchors[1]):
             if not _number_verified(page, anchor, anchors[1]):
@@ -224,7 +229,7 @@ def pdf_source_bindings_valid(manifest: dict) -> bool:
         isinstance(source, str)
         and re.fullmatch(r"[a-f0-9]{64}", source) is not None
         and isinstance(pages, list)
-        and 0 < len(pages) <= 5000
+        and 0 < len(pages) <= ARCHIVE_MAX_PAGES
         and all(
             isinstance(page, dict)
             and type(page.get("page")) is int
@@ -240,6 +245,8 @@ def text_complete(manifest: dict) -> bool:
 
     try:
         image_assets = assets(manifest)
+        if not (manifest.get("elements") or manifest.get("chunks") or manifest.get("pages") or image_assets):
+            return False  # A saved original awaiting parsing is not a text checkpoint.
         if any(asset["asset_status"] != "ocr_complete" for asset in image_assets):
             return False
         if manifest.get("parser") == "html-basic":

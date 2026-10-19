@@ -813,8 +813,9 @@ class Service:
             fail(413, "file_too_large", "文件不能超过 20 MB")
         if not content:
             fail(422, "empty_file", "上传文件不能为空")
-        filename = Path(filename.replace("\\", "/")).name
-        filename = re.sub(r"[\x00-\x1f\x7f]", "", filename)[:180] or "document.bin"
+        from .archive import family_key, sanitize_filename
+
+        filename, identity_filename = sanitize_filename(filename, fallback="document.bin")
         if role not in ("primary", "secondary"):
             fail(422, "invalid_role", "文件角色无效")
         if (
@@ -837,10 +838,8 @@ class Service:
         mime_type = (mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream").split(";")[
             0
         ]
-        from .archive import family_key
-
         content_hash = hashlib.sha256(content).hexdigest()
-        family = family_key(owner, filename, source_url, case_id, role, parent_id)
+        family = family_key(owner, identity_filename, source_url, case_id, role, parent_id)
         with closing(self.db.connect()) as conn:
             previous = conn.execute(
                 "SELECT * FROM documents WHERE owner_id=? AND family_id=? ORDER BY version DESC LIMIT 1",
@@ -900,6 +899,8 @@ class Service:
                     error = quality_warning(manifest)
                     if ocr_work_pending(manifest) and vision_ocr_configured():
                         status = "processing"
+                    else:
+                        status = "failed"
             except Exception as exc:
                 logger.info("document_parse_failed", extra={"parser_error": type(exc).__name__})
                 status, error = "failed", str(exc)[:500]

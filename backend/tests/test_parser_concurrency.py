@@ -420,12 +420,27 @@ def test_job_leases_remain_shared_and_phase_fair(concurrent_job_service, first_p
     assert collections[0].claim_processing()["phase"] == second_phase
     with ThreadPoolExecutor(max_workers=capacity + 4) as pool:
         picked = list(pool.map(lambda index: collections[index % 3].claim_processing(), range(capacity + 4)))
-    assert sum(claim is not None for claim in picked) == capacity - 2
+    # Embedding has two provider slots. Waiting embed jobs keep their retry
+    # budgets, while parse work may use the remaining processing capacity.
+    expected_active = capacity if first_phase == "parse" else 3
+    assert sum(claim is not None for claim in picked) == expected_active - 2
     assert all(collection.claim_processing() is None for collection in collections)
     with closing(service.db.connect()) as conn:
         assert (
             conn.execute("SELECT count(*) FROM processing_jobs WHERE status='processing'").fetchone()[0]
-            == capacity
+            == expected_active
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM processing_jobs WHERE status='queued' AND attempts!=0"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM processing_jobs WHERE status='processing' AND phase='embed'"
+            ).fetchone()[0]
+            <= 2
         )
 
 

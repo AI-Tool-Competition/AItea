@@ -13,6 +13,8 @@ import math
 import re
 import unicodedata
 
+from .pdf_limits import ARCHIVE_MAX_PAGES
+
 VERSION = "pdf-native-visibility-v1"
 _HASH = re.compile(r"[a-f0-9]{64}")
 _MAX_OBJECTS = 4096
@@ -21,6 +23,7 @@ _MAX_EVIDENCE = 1024
 _MAX_PAINT_COMPARISONS = 1_000_000
 _MAX_CLIPS = 8
 _MAX_SEGMENTS = 64
+_MAX_DECORATIVE_FORM_CHILDREN = 8
 _MAX_PIXELS = 6_000_000
 _MAX_COMPARISON_CHARS = 20_000
 
@@ -103,6 +106,114 @@ def _clip_evidence(raw, obj):
         )
         result.append({"segments": segments, "rectangle": _rectangle(segments)})
     return result
+
+
+def _decorative_form(raw, page, obj, *, order, page_bounds, geometry, matrix, budget):
+    """Prove only flat, opaque, untransformed Forms of simple stroked lines.
+
+    Bounds are PDF page coordinates only because the Form matrix is identity
+    and each direct child's matrix is translation-only. Unsupported children
+    fail closed without descending. Accepted strokes still participate in the
+    existing later-paint overlap check; this is not a blanket Form exemption.
+    """
+    if obj.level or matrix != (1, 0, 0, 1, 0, 0) or not _contains(page_bounds, geometry):
+        return None
+    active = ctypes.c_int()
+    if (
+        not raw.FPDFPageObj_GetIsActive(obj.raw, active)
+        or active.value != 1
+        or raw.FPDFPageObj_HasTransparency(obj.raw)
+        or _clip_evidence(raw, obj.raw)
+    ):
+        return None
+    count = raw.FPDFFormObj_CountObjects(obj.raw)
+    if not 1 <= count <= min(_MAX_DECORATIVE_FORM_CHILDREN, budget):
+        return None
+    children = []
+    for index, child in enumerate(page.get_objects(form=obj, level=1, max_depth=1)):
+        if index >= count or child.type != raw.FPDF_PAGEOBJ_PATH:
+            return None
+        child_matrix = tuple(float(value) for value in child.get_matrix().get())
+        child_bounds = _box(child.get_bounds())
+        if (
+            len(child_matrix) != 6
+            or not _finite(child_matrix)
+            or child_matrix[:4] != (1, 0, 0, 1)
+            or not _contains(geometry, child_bounds)
+            or not raw.FPDFPageObj_GetIsActive(child.raw, active)
+            or active.value != 1
+            or raw.FPDFPageObj_HasTransparency(child.raw)
+            or _clip_evidence(raw, child.raw)
+        ):
+            return None
+        fill, stroke, width = ctypes.c_int(), ctypes.c_int(), ctypes.c_float()
+        if (
+            not raw.FPDFPath_GetDrawMode(child.raw, fill, stroke)
+            or (fill.value, stroke.value) != (0, 1)
+            or not raw.FPDFPageObj_GetStrokeWidth(child.raw, width)
+            or not 0 < width.value <= 16
+            or raw.FPDFPath_CountSegments(child.raw) != 2
+        ):
+            return None
+        segments = _segments(raw, 2, lambda at, child=child: raw.FPDFPath_GetPathSegment(child.raw, at))
+        if [segment["type"] for segment in segments] != [2, 0]:
+            return None
+        start, end = [segment["xy"] for segment in segments]
+        if start == end or (start[0] != end[0] and start[1] != end[1]):
+            return None
+        color = _rgba(raw, raw.FPDFPageObj_GetStrokeColor, child.raw)
+        if color[3] != 255:
+            return None
+        # Include half the width on every side, also covering round/square
+        # end caps. Dashing can remove paint, but cannot extend this envelope.
+        tx, ty = child_matrix[4:]
+        radius = width.value / 2
+        envelope = _box(
+            (
+                min(start[0], end[0]) + tx - radius,
+                min(start[1], end[1]) + ty - radius,
+                max(start[0], end[0]) + tx + radius,
+                max(start[1], end[1]) + ty + radius,
+            )
+        )
+        if not _contains(geometry, envelope):
+            return None
+        paint_bounds = [
+            min(child_bounds[0], envelope[0]),
+            min(child_bounds[1], envelope[1]),
+            max(child_bounds[2], envelope[2]),
+            max(child_bounds[3], envelope[3]),
+        ]
+        children.append(
+            {
+                "object_order": order,
+                "child_order": index,
+                "kind": "decorative_form_stroke",
+                "bounds_pdf_bottom_left": paint_bounds,
+                "object_bounds_pdf_bottom_left": list(child_bounds),
+                "matrix": list(child_matrix),
+                "stroke_rgba": color,
+                "stroke_width": width.value,
+                "draw_mode": {"fill": fill.value, "stroke": stroke.value},
+                "segments": segments,
+                "active": True,
+                "clips": [],
+                "transparency": False,
+            }
+        )
+    if len(children) != count:
+        return None
+    return {
+        "version": "pdf-decorative-form-lines-v1",
+        "object_order": order,
+        "bounds_pdf_bottom_left": list(geometry),
+        "matrix": list(matrix),
+        "active": True,
+        "clips": [],
+        "transparency": False,
+        "child_count": count,
+        "children": children,
+    }
 
 
 def _hyphen_reader_comparison(raw, textpage, native_text, object_text, text_objects):
@@ -220,7 +331,7 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
         not isinstance(source_hash, str)
         or not _HASH.fullmatch(source_hash)
         or type(page_number) is not int
-        or not 1 <= page_number <= 5000
+        or not 1 <= page_number <= ARCHIVE_MAX_PAGES
         or not isinstance(native_text, str)
         or len(native_text) > 4_000_000
         or type(optional_content) is not bool
@@ -262,6 +373,7 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
             raise ValueError("PDF 可见性对象超过限制。")
         result["object_count"] = count
         texts, paints, text_objects = [], [], {}
+        inspected_children = 0
         textpage = page.get_textpage()
         try:
             for index, obj in enumerate(page.get_objects(max_depth=1, textpage=textpage)):
@@ -272,7 +384,25 @@ def audit_page_visibility(page, native_text, *, source_hash, page_number, option
                 if len(matrix) != 6 or not _finite(matrix):
                     raise ValueError("PDF 可见性变换矩阵无效。")
                 if obj.level or obj.type == raw.FPDF_PAGEOBJ_FORM:
-                    result["unknown_reasons"].append("form_visibility_geometry_unverified")
+                    proof = _decorative_form(
+                        raw,
+                        page,
+                        obj,
+                        order=index,
+                        page_bounds=bounds,
+                        geometry=geometry,
+                        matrix=matrix,
+                        budget=_MAX_OBJECTS - count - inspected_children,
+                    )
+                    if proof is None:
+                        result["unknown_reasons"].append("form_visibility_geometry_unverified")
+                    else:
+                        forms = result.setdefault("decorative_forms", [])
+                        if len(forms) >= _MAX_EVIDENCE:
+                            raise ValueError("PDF 装饰线条证据超过限制。")
+                        forms.append(proof)
+                        inspected_children += proof["child_count"]
+                        paints.extend(proof["children"])
                     continue
                 if obj.type == raw.FPDF_PAGEOBJ_TEXT:
                     text = obj.extract()
@@ -424,7 +554,7 @@ def prove_blank_page(rendered, audit, *, native_text):
         or not isinstance(audit.get("source_hash"), str)
         or not _HASH.fullmatch(audit["source_hash"])
         or type(audit.get("page")) is not int
-        or not 1 <= audit["page"] <= 5000
+        or not 1 <= audit["page"] <= ARCHIVE_MAX_PAGES
         or type(audit.get("annotation_count")) is not int
         or type(audit.get("text_object_count")) is not int
         or audit.get("annotation_count") != 0

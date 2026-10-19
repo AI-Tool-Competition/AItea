@@ -340,6 +340,9 @@ export interface CollectionPlan {
   max_original_bytes?: number;
   download_timeout_seconds?: number;
 }
+export interface LibraryCountry {
+  country: string;
+}
 export interface CollectionBlueprintSummary {
   id: string;
   version: number;

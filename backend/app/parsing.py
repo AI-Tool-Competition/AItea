@@ -11,12 +11,14 @@ import multiprocessing
 import os
 import re
 import time
+from uuid import uuid4
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from threading import BoundedSemaphore, Condition, Lock
 
 from .vision import vision_ocr_adaptive_enabled, vision_ocr_worker_limit
+from .pdf_limits import ARCHIVE_MAX_PAGES
 
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
@@ -78,22 +80,28 @@ class _ParserSlots:
 class _VisionSlots:
     """One immutable maximum; adaptive targets drain existing permits naturally."""
 
-    def __init__(self, *, clock: Callable[[], float] | None = None):
+    def __init__(self, *, clock: Callable[[], float] | None = None, initial_target: int | None = None):
+        if initial_target is not None and (type(initial_target) is not int or initial_target < 1):
+            raise ValueError("Initial OCR concurrency must be a positive integer.")
+        self._initial_target = initial_target
         self._clock = clock or time.monotonic
         self._condition = Condition(Lock())
         self._maximum = self._adaptive = self._target = self._floor = None
         self._active = self._peak = self._healthy = self._successes = self._failures = 0
         self._increases = self._decreases = 0
         self._changed_at = self._cooldown_until = 0.0
+        self._blocked_until = 0.0
         self._last_failure = None
 
     def acquire(self, *, timeout):
         maximum, adaptive = vision_ocr_worker_limit(), vision_ocr_adaptive_enabled()
         with self._condition:
             if self._maximum is None:
+                if self._initial_target is not None and self._initial_target > maximum:
+                    raise ValueError("Initial OCR concurrency cannot exceed the configured maximum.")
                 self._maximum, self._adaptive = maximum, adaptive
-                self._target = min(maximum, 16) if adaptive else maximum
-                self._floor = min(maximum, 8)
+                self._target = min(maximum, self._initial_target or 16) if adaptive else maximum
+                self._floor = 1
                 self._changed_at = self._clock()
             elif maximum != self._maximum:
                 raise ValueError("VISION_OCR_WORKERS changed; restart this worker before processing.")
@@ -101,11 +109,12 @@ class _VisionSlots:
                 raise ValueError("VISION_OCR_ADAPTIVE changed; restart this worker before processing.")
             # Keep timed waits bounded even with a test-controlled adaptation clock.
             deadline = time.monotonic() + timeout
-            while self._active >= self._target:
+            while self._active >= self._target or self._clock() < self._blocked_until:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
-                self._condition.wait(remaining)
+                blocked = max(0, self._blocked_until - self._clock())
+                self._condition.wait(min(remaining, blocked) if blocked else remaining)
             self._active += 1
             self._peak = max(self._peak, self._active)
             return True
@@ -117,7 +126,7 @@ class _VisionSlots:
             self._active -= 1
             self._condition.notify_all()
 
-    def report_provider_result(self, *, status_code=None, timeout=None):
+    def report_provider_result(self, *, status_code=None, timeout=None, retry_after=None):
         with self._condition:
             if self._maximum is None:
                 return  # Direct transcription calls do not initialize a worker pool.
@@ -132,6 +141,9 @@ class _VisionSlots:
             if failure:
                 self._failures += 1
                 self._last_failure = failure
+                if type(retry_after) in {int, float} and math.isfinite(retry_after) and retry_after >= 0:
+                    self._blocked_until = max(self._blocked_until, self._clock() + retry_after)
+                    self._condition.notify_all()
             elif success:
                 self._successes += 1
             else:
@@ -146,7 +158,7 @@ class _VisionSlots:
                 self._target = target
                 self._healthy = 0
                 self._changed_at = now
-                self._cooldown_until = now + 30
+                self._cooldown_until = max(now + 30, self._blocked_until)
                 self._condition.notify_all()
             else:
                 self._healthy = min(64, self._healthy + 1)
@@ -177,6 +189,7 @@ class _VisionSlots:
                 "increases": self._increases,
                 "decreases": self._decreases,
                 "cooldown_remaining_seconds": max(0, self._cooldown_until - self._clock()),
+                "provider_wait_remaining_seconds": max(0, self._blocked_until - self._clock()),
                 "last_failure": self._last_failure,
             }
 
@@ -459,23 +472,44 @@ def _ocr_one_page(
     archive_path=None,
     archive_size: int | None = None,
     on_reuse: Callable[[dict, dict], dict | None] | None = None,
+    on_response_error: Callable[[dict], dict] | None = None,
 ) -> dict:
-    from .ingestion_quality import validate_ocr_page
+    from .ocr_error_evidence import preserve_previous_page_attempt, request_outcome_unknown
     from .vision import OCRResponseError, PROMPT_VERSION, transcribe_page
 
     updated = deepcopy(page)
     previous_metadata = page.get("ocr") if page.get("ocr") is not None else {}
     if not isinstance(previous_metadata, dict):
         raise ValueError("页面识别检查点格式无效。")
+    if page.get("status") == "ocr_failed" and request_outcome_unknown(previous_metadata):
+        return updated
 
     def defer(reason: str) -> dict:
         updated.update(status="pending_ocr", deferred_reason=reason)
-        updated.pop("error", None)
         return updated
 
+    if page.get("status") == "pending_ocr" and (
+        request_outcome_unknown(previous_metadata)
+        or previous_metadata.get("attempts", 0)
+        and previous_metadata.get("request_id")
+        and not previous_metadata.get("finish_reason")
+        and "text" not in previous_metadata
+        and "complete" not in previous_metadata
+        and not previous_metadata.get("error_response")
+        and not page.get("error")
+    ):
+        preserve_previous_page_attempt(updated)
+        updated["ocr"]["request_outcome"] = "unknown_after_interruption"
+        updated.update(
+            status="ocr_failed", error="上次识别请求已登记但结果未保存，需核验后显式恢复，避免重复收费。"
+        )
+        return updated
+
+    retry_at = previous_metadata.get("retry_not_before", 0)
+    if type(retry_at) in {int, float} and math.isfinite(retry_at) and retry_at > time.time():
+        return defer("provider_retry")
     if not _OCR_SLOTS.acquire(timeout=5):
         return defer("ocr_capacity")
-    updated.pop("deferred_reason", None)
     if on_region is not None and (
         page.get("status") == "ocr_uncertain" or previous_metadata.get("phase") == "recovery"
     ):
@@ -487,6 +521,7 @@ def _ocr_one_page(
                 updated,
                 on_region=on_region,
                 on_page=on_page,
+                on_response_error=on_response_error,
                 archive_path=archive_path,
                 archive_size=archive_size,
             )
@@ -506,6 +541,34 @@ def _ocr_one_page(
     def failure(exc: ValueError | OSError) -> dict:
         if isinstance(exc, OCRResponseError):
             metadata["finish_reason"] = exc.finish_reason
+            if exc.request_outcome_unknown:
+                metadata["request_outcome"] = "unknown_transport_result"
+            if exc.http_status is not None:
+                metadata["http_status"] = exc.http_status
+            if exc.retry_after is not None:
+                metadata["retry_after_seconds"] = exc.retry_after
+                metadata["retry_not_before"] = time.time() + exc.retry_after
+            if exc.response_evidence is not None and on_response_error is not None:
+                evidence = {
+                    **deepcopy(exc.response_evidence),
+                    "source_hash": metadata["source_hash"],
+                    "page": metadata["page"],
+                    "request_id": metadata["request_id"],
+                    "attempt": metadata["attempts"],
+                    "image_sha256": metadata["image_sha256"],
+                    "prompt_version": metadata["prompt_version"],
+                    "requested_model": metadata["requested_model"],
+                    "finish_reason": exc.finish_reason,
+                }
+                if exc.request_outcome_unknown:
+                    evidence["request_outcome"] = "unknown_transport_result"
+                reference = on_response_error(deepcopy(evidence))
+                if not isinstance(reference, dict):
+                    raise ValueError("识别错误响应存储回调必须返回持久引用。")
+                metadata["error_response"] = {
+                    **{key: value for key, value in evidence.items() if key != "response_base64"},
+                    "blob": reference,
+                }
         retryable = isinstance(exc, OCRResponseError) and exc.retryable and metadata["attempts"] < 3
         updated.update(
             status="pending_ocr" if retryable else "ocr_failed",
@@ -514,6 +577,8 @@ def _ocr_one_page(
         )
         if retryable:
             updated["deferred_reason"] = "provider_retry"
+        else:
+            updated.pop("deferred_reason", None)
         return updated
 
     try:
@@ -534,12 +599,14 @@ def _ocr_one_page(
         except ProcessingDeferred:
             return defer("render_capacity")
         except (ValueError, OSError) as exc:
+            preserve_previous_page_attempt(updated)
             return failure(exc)
         metadata.update({key: value for key, value in rendered.items() if key != "image_base64"})
         if on_reuse is not None:
             reused = on_reuse(deepcopy(page), deepcopy(rendered))
             if reused is not None:
                 return reused
+        preserve_previous_page_attempt(updated)
         # Persist exactly the sent pixels before the external request. A storage
         # callback failure must stop the job, not be reclassified as model error.
         if on_image is not None:
@@ -559,7 +626,9 @@ def _ocr_one_page(
         if profile is not None:
             metadata["provider_profile"] = profile
         metadata["attempts"] += 1
+        metadata["request_id"] = uuid4().hex
         updated.update(status="pending_ocr", ocr=metadata)
+        updated.pop("deferred_reason", None)
         # The entire request intent (not just PNG) survives process interruption.
         # Callback failure propagates before any provider request or model-error handler.
         if on_page is not None:
@@ -570,22 +639,7 @@ def _ocr_one_page(
             transcript = transcribe_page({**rendered, "native_text": hint})
         except (ValueError, OSError) as exc:
             return failure(exc)
-        if transcript["is_blank"] and page["native_text"].strip():
-            transcript["uncertain_spans"].append("blank_response_conflicts_with_native_text")
-        elif len(hint) > 200 and len(transcript["text"]) < len(hint) * 0.5:
-            transcript["uncertain_spans"].append("transcription_much_shorter_than_native_text")
-        if "table_layout" in page.get("reasons", []) and not re.search(
-            r"(?m)^\s*\|(?:[ \t]*:?-{2,}:?[ \t]*\|)+[ \t]*$", transcript["text"]
-        ):
-            transcript["uncertain_spans"].append("table_layout_not_preserved")
-        metadata.update(transcript)
-        updated.update(
-            text=transcript["text"],
-            printed_page=transcript["printed_page"],
-            ocr=metadata,
-            status="ocr_uncertain" if transcript["uncertain_spans"] else "ocr_complete",
-        )
-        validate_ocr_page(updated)
+        apply_page_transcription(updated, metadata, transcript, native_hint=hint)
         if on_region is not None and updated["status"] == "ocr_uncertain":
             # Checkpoint the original full transcription first. The following
             # queue step initializes a separately audited recovery operation.
@@ -595,6 +649,28 @@ def _ocr_one_page(
     finally:
         _OCR_SLOTS.release()
     return updated
+
+
+def apply_page_transcription(page, metadata, transcript, *, native_hint):
+    """Apply the same physical-page quality gates to live and saved responses."""
+    from .ingestion_quality import validate_ocr_page
+
+    if transcript["is_blank"] and page["native_text"].strip():
+        transcript["uncertain_spans"].append("blank_response_conflicts_with_native_text")
+    elif len(native_hint) > 200 and len(transcript["text"]) < len(native_hint) * 0.5:
+        transcript["uncertain_spans"].append("transcription_much_shorter_than_native_text")
+    if "table_layout" in page.get("reasons", []) and not re.search(
+        r"(?m)^\s*\|(?:[ \t]*:?-{2,}:?[ \t]*\|)+[ \t]*$", transcript["text"]
+    ):
+        transcript["uncertain_spans"].append("table_layout_not_preserved")
+    metadata.update(transcript)
+    page.update(
+        text=transcript["text"],
+        printed_page=transcript["printed_page"],
+        ocr=metadata,
+        status="ocr_uncertain" if transcript["uncertain_spans"] else "ocr_complete",
+    )
+    validate_ocr_page(page)
 
 
 def rebuild_pdf_bounded(manifest: dict) -> dict:
@@ -616,6 +692,7 @@ def ocr_bounded(
     on_image: Callable[[dict], dict] | None = None,
     on_region: Callable[[dict], dict] | None = None,
     on_reuse: Callable[[dict, dict], dict | None] | None = None,
+    on_response_error: Callable[[dict], dict] | None = None,
     max_pages: int = 4,
     archive_path=None,
     archive_size: int | None = None,
@@ -624,6 +701,8 @@ def ocr_bounded(
 
     Callbacks are persistence boundaries: exceptions propagate, never turn into
     model failures. The queue owns repeated batches, explicit retry and access.
+    ``on_response_error`` stores bounded diagnostic bytes, never page text. Its
+    reference joins the existing physical-page and request-intent checkpoint.
     """
     from .vision import vision_ocr_configured
 
@@ -645,7 +724,7 @@ def ocr_bounded(
 
     if (
         not pages
-        or len(pages) > (5000 if content is None else 300)
+        or len(pages) > (ARCHIVE_MAX_PAGES if content is None else 300)
         or [page.get("page") for page in pages] != list(range(1, len(pages) + 1))
         or any(page.get("source_hash") != result["source_hash"] for page in pages)
     ):
@@ -676,6 +755,7 @@ def ocr_bounded(
                 archive_path,
                 archive_size,
                 on_reuse,
+                on_response_error,
             )
             # A sibling may interrupt the batch while this page is in flight.
             # Persist its result before returning the future, including during
@@ -696,4 +776,24 @@ def ocr_bounded(
             executor.shutdown(wait=True, cancel_futures=True)
     # Also rebuild when resuming after the very last page checkpoint, or when
     # no pages are pending. Cached chunks may precede the checkpointed text.
-    return rebuild_pdf_bounded(result)
+    rebuilt = rebuild_pdf_bounded(result)
+    retry_at = [
+        page.get("ocr", {}).get("retry_not_before", 0)
+        for page in rebuilt.get("pages", [])
+        if page.get("status") == "pending_ocr"
+    ]
+    remaining = max(
+        [
+            0,
+            *(
+                value - time.time()
+                for value in retry_at
+                if type(value) in {int, float} and math.isfinite(value)
+            ),
+        ]
+    )
+    if remaining:
+        rebuilt["quality"]["retry_after_seconds"] = max(
+            rebuilt["quality"].get("retry_after_seconds", 0), remaining
+        )
+    return rebuilt

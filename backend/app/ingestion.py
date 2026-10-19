@@ -22,10 +22,12 @@ import socket
 import ssl
 import threading
 import time
+import uuid
 import zlib
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -35,6 +37,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 from .html_parsing import HTMLDocument as _HTMLDocument
 from .pdf_table_detection import VERSION as _TABLE_LAYOUT_VERSION
+from .public_search import EGazetteSearchRequest
 from .vendor.geo_parser.document_ingestion import (
     DoclingDocumentParser,
     ParsedDocument,
@@ -546,23 +549,264 @@ def lexical_search(query: str, chunks: list[dict], limit: int = 5) -> list[dict]
 _EMBEDDING_PROFILES: dict[str, dict] = {}
 _EMBEDDING_PROFILE_LOCK = threading.Lock()
 _EMBEDDING_PROFILE_LIMIT = 32
-_EMBEDDING_HTTP_SLOTS = threading.BoundedSemaphore(2)
+_EMBEDDING_PRIORITY = ContextVar("embedding_priority", default="bulk")
+_EMBEDDING_WAIT = ContextVar("embedding_wait", default=None)
+
+
+@contextmanager
+def embedding_priority(priority):
+    """Only an explicit interactive query gets priority over document indexing."""
+    if priority not in {"query", "bulk"}:
+        raise ValueError("Invalid embedding request priority")
+    token = _EMBEDDING_PRIORITY.set(priority)
+    try:
+        yield
+    finally:
+        _EMBEDDING_PRIORITY.reset(token)
+
+
+@contextmanager
+def _embedding_wait(priority, *, defer=None):
+    # One ticket survives the 250 ms cancellation/cooldown polls. Reticketing
+    # every poll would let newer arrivals repeatedly overtake a long document.
+    request = {"priority": priority, "token": object(), "cleanup": None, "defer": defer}
+    token = _EMBEDDING_WAIT.set(request)
+    try:
+        yield
+    finally:
+        if request["cleanup"]:
+            request["cleanup"]()
+        _EMBEDDING_WAIT.reset(token)
+
+
+def embedding_http_worker_limit() -> int:
+    value = os.getenv("EMBEDDING_HTTP_WORKERS", "2").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 64:
+        raise ValueError("EMBEDDING_HTTP_WORKERS 必须为 1 至 64 的整数。")
+    return int(value)
+
+
+def embedding_http_timeout() -> int:
+    value = os.getenv("EMBEDDING_HTTP_TIMEOUT_SECONDS", "30").strip()
+    if not value.isdigit() or not 1 <= int(value) <= 60:
+        raise ValueError("EMBEDDING_HTTP_TIMEOUT_SECONDS 必须为 1 至 60 的整数。")
+    return int(value)
+
+
+def embedding_retry_ambiguous_timeouts() -> bool:
+    value = os.getenv("EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS", "true").strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError("EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS 必须为 true 或 false。")
+    return value == "true"
+
+
+class _EmbeddingSlots:
+    """Shared query priority with reserved query slots and a sustained bulk floor."""
+
+    def __init__(self):
+        self.condition = threading.Condition()
+        self.limit = None
+        self.active = {"query": 0, "bulk": 0}
+        self.queues = {"query": deque(), "bulk": deque()}
+        self.waiters = {}
+        self.held = threading.local()
+        self.peak = self.query_streak = 0
+        self.grants = {"query": 0, "bulk": 0}
+        self.max_wait = {"query": 0.0, "bulk": 0.0}
+        self.shared = self.shared_configuration = None
+        self.shared_held = threading.local()
+
+    def _shared(self):
+        path = os.getenv("EMBEDDING_ADMISSION_PATH", "").strip()
+        if not path:
+            if self.shared_configuration:
+                raise ValueError("Shared embedding admission path changed; restart this client")
+            return None
+        from .embedding_admission import SharedEmbeddingBudget, model_scope
+
+        base, _, model = model_service_config("EMBEDDING")
+        config = (
+            os.getpid(),
+            str(Path(path).absolute()),
+            model_scope(base, model),
+            embedding_http_worker_limit(),
+        )
+        with self.condition:
+            if self.shared_configuration != config:
+                if self.shared_configuration and self.shared_configuration[0] == config[0]:
+                    raise ValueError("Shared embedding admission configuration changed; restart this client")
+                self.shared_held = threading.local()
+                self.shared = SharedEmbeddingBudget(config[1], config[2], config[3])
+                self.shared_configuration = config
+            return self.shared
+
+    def _shared_acquire(self, budget, blocking, timeout):
+        from .embedding_admission import SharedEmbeddingCooldown
+
+        request = _EMBEDDING_WAIT.get()
+        lane = request["priority"] if request else _EMBEDDING_PRIORITY.get()
+        token = request.setdefault("shared_token", uuid.uuid4().hex) if request else uuid.uuid4().hex
+        if request:
+            request["cleanup"] = lambda: budget.release(token, waiting_only=True)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    acquired = budget.try_acquire(token, lane)
+                except SharedEmbeddingCooldown as error:
+                    if request and request["defer"]:
+                        request["defer"](error.retry_after)
+                    raise EmbeddingProviderDeferred(retry_after=error.retry_after) from None
+                if acquired:
+                    if not hasattr(self.shared_held, "leases"):
+                        self.shared_held.leases = []
+                    self.shared_held.leases.append((budget, token))
+                    return True
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if not blocking or remaining is not None and remaining <= 0:
+                    return False
+                time.sleep(0.025 if remaining is None else min(0.025, remaining))
+        finally:
+            if request is None:
+                budget.release(token, waiting_only=True)
+
+    def _remove(self, token):
+        waiter = self.waiters.pop(token, None)
+        if waiter:
+            self.queues[waiter[0]].remove(token)
+            self.condition.notify_all()
+
+    def _cancel(self, token):
+        with self.condition:
+            self._remove(token)
+
+    def _next(self):
+        if sum(self.active.values()) >= self.limit:
+            return None
+        query, bulk = bool(self.queues["query"]), bool(self.queues["bulk"])
+        if query and bulk and self.limit == 1:
+            return "query" if self.query_streak < 3 else "bulk"
+        if bulk and self.active["bulk"] < max(1, self.limit // 4):
+            return "bulk"
+        if query:
+            return "query"
+        if bulk and self.active["bulk"] < self.limit - min(4, self.limit // 16):
+            return "bulk"
+        return None
+
+    def acquire(self, blocking=True, timeout=None):
+        if not blocking and timeout is not None:
+            raise ValueError("Timeout cannot be used with nonblocking admission")
+        shared = self._shared()
+        if shared:
+            return self._shared_acquire(shared, blocking, timeout)
+        limit = embedding_http_worker_limit()
+        request = _EMBEDDING_WAIT.get()
+        lane = request["priority"] if request else _EMBEDDING_PRIORITY.get()
+        token = request["token"] if request else object()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self.condition:
+            if self.limit is None:
+                self.limit = limit
+            elif limit != self.limit:
+                raise ValueError("EMBEDDING_HTTP_WORKERS 已变更，请重启处理进程。")
+            if token not in self.waiters:
+                self.waiters[token] = lane, time.monotonic()
+                self.queues[lane].append(token)
+                if request:
+                    request["cleanup"] = lambda: self._cancel(token)
+            try:
+                while True:
+                    if self._next() == lane and self.queues[lane][0] is token:
+                        started = self.waiters[token][1]
+                        self._remove(token)
+                        self.active[lane] += 1
+                        self.peak = max(self.peak, sum(self.active.values()))
+                        self.grants[lane] += 1
+                        self.max_wait[lane] = max(self.max_wait[lane], time.monotonic() - started)
+                        self.query_streak = self.query_streak + 1 if lane == "query" else 0
+                        if not hasattr(self.held, "lanes"):
+                            self.held.lanes = []
+                        self.held.lanes.append(lane)
+                        return True
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if not blocking or remaining is not None and remaining <= 0:
+                        return False
+                    self.condition.wait(remaining)
+            finally:
+                if request is None:
+                    self._remove(token)
+
+    def release(self):
+        shared = getattr(self.shared_held, "leases", [])
+        if shared:
+            budget, token = shared.pop()
+            budget.release(token)
+            return
+        with self.condition:
+            lanes = getattr(self.held, "lanes", [])
+            if not lanes:
+                raise ValueError("尚未取得向量请求并发名额。")
+            self.active[lanes.pop()] -= 1
+            self.condition.notify_all()
+
+    def snapshot(self):
+        shared = self._shared()
+        if shared:
+            return shared.snapshot()
+        with self.condition:
+            limit = self.limit or embedding_http_worker_limit()
+            return {
+                "scope": "process",
+                "limit": limit,
+                "query_reserved": min(4, limit // 16),
+                "bulk_floor_when_waiting": max(1, limit // 4),
+                "bulk_ceiling": limit - min(4, limit // 16),
+                "active": dict(self.active),
+                "waiting": {key: len(queue) for key, queue in self.queues.items()},
+                "peak": self.peak,
+                "grants": dict(self.grants),
+                "maximum_wait_seconds": dict(self.max_wait),
+            }
+
+    def cooldown(self, delay):
+        shared = self._shared()
+        if shared:
+            shared.cooldown(delay)
+
+
+_EMBEDDING_HTTP_SLOTS = _EmbeddingSlots()
 
 
 class EmbeddingServiceError(ValueError):
-    """Safe provider failure; the durable queue owns long waits and outer retries."""
+    """Provider failure; the durable queue owns long waits and outer retries.
 
-    def __init__(self, *, retryable: bool, retry_after: float | None = None):
+    Evidence fields describe the last failed HTTP request. They do not prove
+    that earlier batches in this complete call issued no billable requests.
+    """
+
+    def __init__(
+        self,
+        *,
+        retryable: bool,
+        retry_after: float | None = None,
+        http_status: int | None = None,
+        request_outcome_unknown: bool = False,
+        request_sent: bool | None = None,
+    ):
         super().__init__("Embedding 服务请求失败，请检查服务配置或稍后重试。")
         self.retryable = retryable
         self.retry_after = retry_after if retryable else None
+        self.http_status = http_status
+        self.request_outcome_unknown = request_outcome_unknown
+        self.request_sent = request_sent
 
 
 class EmbeddingProviderDeferred(EmbeddingServiceError):
     """Provider cooldown deferred a call that issued no HTTP."""
 
     def __init__(self, retry_after: float):
-        super().__init__(retryable=True, retry_after=retry_after)
+        super().__init__(retryable=True, retry_after=retry_after, request_sent=False)
 
 
 def _embedding_profile_key() -> str | None:
@@ -602,7 +846,7 @@ def embedding_batch_size() -> int:
 
 
 def embedding_request_concurrency() -> int:
-    """Operator opt-in; all callers still share two process-wide HTTP slots."""
+    """Operator opt-in; all callers share the configured process-wide HTTP slots."""
     value = os.getenv("EMBEDDING_REQUEST_CONCURRENCY", "1").strip()
     if value not in {"1", "2"}:
         raise ValueError("EMBEDDING_REQUEST_CONCURRENCY 必须为 1 或 2。")
@@ -621,8 +865,10 @@ class _EmbeddingCallCancelled(Exception):
 class _EmbeddingCall(AbstractContextManager):
     def __init__(self, profile_key: str | None):
         self.profile_key = profile_key
+        self.priority = _EMBEDDING_PRIORITY.get()
         self.deadline = time.monotonic() + 300
         self.stop = threading.Event()
+        self.preserve_inflight = False
         self.lock = threading.Lock()
         self.failures = self.active = self.requests = 0
 
@@ -668,17 +914,19 @@ def _embedding_response(client, batch: list[str], base: str, key: str, model: st
 
     # Normal contention is not a provider failure. Wait within this call's
     # existing budget and poll cancellation/cooldown, without issuing retries.
-    while True:
-        call.check()
-        if _EMBEDDING_HTTP_SLOTS.acquire(timeout=max(0, min(0.25, call.deadline - time.monotonic()))):
-            break
+    with _embedding_wait(call.priority, defer=call.defer):
+        while True:
+            call.check()
+            if _EMBEDDING_HTTP_SLOTS.acquire(timeout=max(0, min(0.25, call.deadline - time.monotonic()))):
+                break
     begun, failed = False, False
     try:
         call.begin_request()
         begun = True
         # Slot waiting consumes the same complete-call budget as HTTP/retries.
-        response_deadline = min(call.deadline, time.monotonic() + 35)
-        request_timeout = max(0.001, min(30.0, call.deadline - time.monotonic()))
+        timeout = embedding_http_timeout()
+        response_deadline = min(call.deadline, time.monotonic() + timeout + 5)
+        request_timeout = max(0.001, min(timeout, call.deadline - time.monotonic()))
         with client.stream(
             "POST",
             base.rstrip("/") + "/embeddings",
@@ -689,7 +937,7 @@ def _embedding_response(client, batch: list[str], base: str, key: str, model: st
             response.raise_for_status()
             payload = bytearray()
             for block in response.iter_bytes():
-                if call.stop.is_set():
+                if call.stop.is_set() and not call.preserve_inflight:
                     raise _EmbeddingCallCancelled()
                 payload.extend(block)
                 if len(payload) > 16 * 1024 * 1024:
@@ -706,7 +954,9 @@ def _embedding_response(client, batch: list[str], base: str, key: str, model: st
         _EMBEDDING_HTTP_SLOTS.release()
 
 
-def _embedding_batches(client, texts: list[str], base: str, key: str, model: str, call: _EmbeddingCall):
+def _embedding_batches(
+    client, texts: list[str], base: str, key: str, model: str, call: _EmbeddingCall, on_batch=None
+):
     import httpx
 
     vectors: list[list[float]] = []
@@ -722,6 +972,26 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                 body = _embedding_response(client, batch, base, key, model, call)
             except httpx.HTTPError as exc:
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                unknown = isinstance(
+                    exc,
+                    (
+                        httpx.ReadTimeout,
+                        httpx.WriteTimeout,
+                        httpx.ReadError,
+                        httpx.WriteError,
+                        httpx.RemoteProtocolError,
+                    ),
+                ) or (status == 408 or status is not None and 500 <= status <= 599)
+                sent = (
+                    True
+                    if status is not None or unknown
+                    else (
+                        False
+                        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+                        else None
+                    )
+                )
+                evidence = {"http_status": status, "request_outcome_unknown": unknown, "request_sent": sent}
                 retryable = isinstance(
                     exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
                 ) or (status in {408, 429} or status is not None and 500 <= status <= 599)
@@ -733,7 +1003,13 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                 if status == 429 or retry_after:
                     delay = retry_after if retry_after is not None else 2.0
                     _embedding_profile(call.profile_key, cooldown=delay)
-                    raise EmbeddingServiceError(retryable=True, retry_after=delay) from None
+                    if hasattr(_EMBEDDING_HTTP_SLOTS, "cooldown"):
+                        _EMBEDDING_HTTP_SLOTS.cooldown(delay)
+                    raise EmbeddingServiceError(retryable=True, retry_after=delay, **evidence) from None
+                if unknown and not embedding_retry_ambiguous_timeouts():
+                    # A transport/gateway failure may have happened after the
+                    # provider accepted and billed the input. Preserve uncertainty.
+                    raise EmbeddingServiceError(retryable=True, retry_after=60, **evidence) from None
                 shrink = isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)) or status in {408, 413, 504}
                 with call.lock:
                     can_retry = call.failures < 8
@@ -750,7 +1026,7 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                         )
                     )
                     continue
-                raise EmbeddingServiceError(retryable=retryable) from None
+                raise EmbeddingServiceError(retryable=retryable, **evidence) from None
             except EmbeddingServiceError:
                 raise
             except (ValueError, UnicodeDecodeError):
@@ -762,6 +1038,7 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                 entry["index"] for entry in data
             } != set(range(len(batch))):
                 raise ValueError("Embedding 服务返回索引无效。")
+            completed = []
             for entry in sorted(data, key=lambda item: item["index"]):
                 vector = entry.get("embedding")
                 if (
@@ -779,7 +1056,13 @@ def _embedding_batches(client, texts: list[str], base: str, key: str, model: str
                 dimension = dimension or len(vector)
                 if len(vector) != dimension:
                     raise ValueError("Embedding 向量维度不一致。")
-                vectors.append([float(value) for value in vector])
+                completed.append([float(value) for value in vector])
+            # A durable operator callback can retain this successful response
+            # even if a later batch or parallel sibling fails. No partial or
+            # unvalidated provider payload crosses this checkpoint boundary.
+            if on_batch is not None:
+                on_batch(list(batch), completed)
+            vectors.extend(completed)
             start += len(batch)
             singleton_failures = 0
         return vectors
@@ -811,7 +1094,7 @@ def model_service_config(prefix: str) -> tuple[str, str, str] | None:
     return base.rstrip("/"), key, model
 
 
-def embed_texts(texts: list[str]) -> list[list[float]] | None:
+def embed_texts(texts: list[str], *, on_batch=None) -> list[list[float]] | None:
     configuration = model_service_config("EMBEDDING")
     if configuration is None:
         return None
@@ -823,16 +1106,22 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
     import httpx
     from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
+    embedding_http_worker_limit()
+    embedding_http_timeout()
+    embedding_retry_ambiguous_timeouts()
     concurrency = embedding_request_concurrency()
     batch_size = embedding_batch_size()
     call = _EmbeddingCall(_embedding_profile_key())
+    # Already issued siblings may still return billable, valid vectors after a
+    # peer fails. A durable callback can retain those within existing deadlines.
+    call.preserve_inflight = on_batch is not None
     # HTTPX read timeouts bound inactivity, not a complete trickling response.
     # The existing response/call deadlines remain shared across both lanes.
     with httpx.Client(
-        timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=False
+        timeout=httpx.Timeout(embedding_http_timeout(), connect=10.0), follow_redirects=False, trust_env=False
     ) as client:
         if concurrency == 1 or len(texts) <= batch_size:
-            return _embedding_batches(client, texts, base, key, model, call)
+            return _embedding_batches(client, texts, base, key, model, call, on_batch)
         vectors, start, dimension = [], 0, None
         # Only one wave of at most two futures exists. HTTPX clients are thread
         # safe; drain workers before closing the shared client on every exit.
@@ -845,7 +1134,7 @@ def embed_texts(texts: list[str]) -> list[list[float]] | None:
                     for offset in range(start, min(len(texts), start + 2 * size), size)
                 ]
                 futures = {
-                    pool.submit(_embedding_batches, client, batch, base, key, model, call): index
+                    pool.submit(_embedding_batches, client, batch, base, key, model, call, on_batch): index
                     for index, batch in enumerate(batches)
                 }
                 results, errors = {}, []
@@ -1130,6 +1419,7 @@ def _download(
     accept_compressed_html: bool = False,
     accept_compressed_json: bool = False,
     json_body: dict | None = None,
+    public_search: EGazetteSearchRequest | None = None,
     max_bytes: int | None = None,
     byte_range: tuple[int, int] | None = None,
     range_validator: str | None = None,
@@ -1142,9 +1432,19 @@ def _download(
     A 304 does not invoke it: callers must validate their cached original and URL.
     Conditional headers belong exclusively to the initial requested resource.
     A connection slot accounts for the actual host at every redirect hop.
+    Public search credentials are bound to one verified read-only endpoint;
+    they never enter a redirect or an arbitrary caller-provided header mapping.
     """
     current = url
     validators = validators or {}
+    search_headers = {}
+    if public_search is not None:
+        if type(public_search) is not EGazetteSearchRequest or json_body is None or validators or byte_range:
+            raise DownloadError("公开检索只允许显式受限的只读 JSON 请求。")
+        try:
+            search_headers = public_search.headers_for(url, method="POST")
+        except ValueError as exc:
+            raise DownloadError(str(exc)) from exc
     max_bytes = MAX_BYTES if max_bytes is None else max_bytes
     if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ORIGINAL_BYTES:
         raise DownloadError("原件传输额度无效，最多 128 MB。")
@@ -1254,6 +1554,7 @@ def _download(
 
                     headers.update(request_headers_for(host))
                 headers.update({key: value for key, value in conditionals.items() if value is not None})
+                headers.update(search_headers)
                 if byte_range is not None:
                     headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
                     if range_validator is not None:

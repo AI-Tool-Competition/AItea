@@ -3,6 +3,7 @@
 import json
 import hashlib
 import io
+import base64
 from contextlib import closing
 from pathlib import Path
 
@@ -83,6 +84,301 @@ def facts(service):
             "jobs": [dict(x) for x in conn.execute("SELECT * FROM processing_jobs ORDER BY document_id")],
             "users": conn.execute("SELECT count(*) FROM users").fetchone()[0],
         }
+
+
+def html_image_document(src, monkeypatch):
+    from PIL import Image
+    from app import native_asset_ocr as native, vision
+    from app.html_linked_asset_ocr import bind_linked_image_bounded
+
+    body = b'<main><p>Official import requirements.</p><img src="/images/chart.jpg"></main>'
+    doc = original(src, "html-image", content=body)
+    manifest = parse_bounded("law.html", body, "text/html")
+    output = io.BytesIO()
+    Image.new("RGB", (24, 16), "blue").save(output, format="JPEG")
+    image = output.getvalue()
+    blob = src.archive.blobs.put_bytes("source", image)
+    reference = {
+        "storage_path": str(blob.path.relative_to(src.db.data_dir)),
+        "content_hash": blob.digest,
+        "size": blob.size,
+    }
+    manifest = bind_linked_image_bounded(
+        body,
+        manifest,
+        object_key=manifest["html_source"]["objects"][0]["object_key"],
+        source_url="https://www.customs.gov.sg/import-law",
+        image=image,
+        image_blob=reference,
+    )
+    key = native.assets(manifest)[0]["asset_key"]
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(
+        vision,
+        "transcribe_image",
+        lambda _: {
+            "text": "Imported goods require the complete declaration.",
+            "complete": True,
+            "is_blank": False,
+            "uncertain_spans": [],
+            "model": "unit-image-model",
+            "requested_model": "unit-image-model",
+            "prompt_version": vision.IMAGE_PROMPT_VERSION,
+            "review_status": "unreviewed",
+            "physical_pages_known": False,
+            "finish_reason": "stop",
+        },
+    )
+
+    def save_image(rendered):
+        png = src.archive.blobs.put_bytes("source", base64.b64decode(rendered["image_base64"]))
+        return {
+            "storage_path": str(png.path.relative_to(src.db.data_dir)),
+            "content_hash": png.digest,
+            "size": png.size,
+        }
+
+    manifest = native.ocr_native_assets_bounded(
+        body, manifest, image_contents={key: image}, on_image=save_image
+    )
+    manifest["embedding_fingerprint"] = src.embedding_fingerprint()
+    with src.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,filename='law.html',mime_type='text/html',status='ready' WHERE id=?",
+            (dump(manifest), doc["id"]),
+        )
+        src.index.sync_document(conn, doc["id"], manifest)
+        batch = src.index.pending(conn, doc["id"], src.embedding_fingerprint(), limit=128)
+        src.index.store_vectors(
+            conn, doc["id"], src.embedding_fingerprint(), batch, [[0.6, 0.8] for _ in batch]
+        )
+    return doc, body, manifest, image
+
+
+def test_html_image_import_rebinds_original_png_checkpoint_and_vectors_without_model_calls(pair, monkeypatch):
+    from app import native_asset_ocr as native, vision
+    from app.html_linked_asset_ocr import read_linked_images
+    from app.ingestion_quality import text_complete
+
+    src, dst = pair
+    doc, body, before, image = html_image_document(src, monkeypatch)
+    old = native.assets(before)[0]
+    monkeypatch.setattr(vision, "transcribe_image", lambda *_: pytest.fail("complete OCR must be reused"))
+    preview = transfer(src, dst)
+    assert preview["reusable_vectors"] == len(before["chunks"])
+    assert preview["target_writes"] == 0
+    result = transfer(src, dst, apply=True)
+    ident = result["document_versions"][doc["id"]]["document_id"]
+    with closing(dst.db.connect()) as conn:
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (ident,)).fetchone()[0])
+        rows = list(
+            conn.execute(
+                "SELECT c.chunk_id,c.input_hash,v.input_hash FROM retrieval_chunks c JOIN retrieval_vectors v ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
+                (ident,),
+            )
+        )
+    rebound = native.assets(saved)[0]
+    assert rebound["asset_key"] != old["asset_key"] and rebound["input_identity"] != old["input_identity"]
+    assert rebound["collection_asset_import"]["source_input_identity"] == old["input_identity"]
+    assert rebound["collection_asset_import"]["source_asset_key"] == old["asset_key"]
+    assert rebound["ocr"]["input_identity"] == rebound["input_identity"]
+    assert (
+        rebound["ocr"]["text"] == old["ocr"]["text"] and rebound["ocr"]["attempts"] == old["ocr"]["attempts"]
+    )
+    assert read_linked_images(dst.db.data_dir, "target", saved) == {rebound["asset_key"]: image}
+    png = dst.db.data_dir / rebound["ocr"]["image_blob"]["storage_path"]
+    assert (
+        png.read_bytes().startswith(b"\x89PNG")
+        and hashlib.sha256(png.read_bytes()).hexdigest() == rebound["ocr"]["image_sha256"]
+    )
+    assert text_complete(saved) and len(rows) == len(before["chunks"])
+    assert all(row[1] == row[2] for row in rows)
+    assert rebound["asset_key"] in {row[0] for row in rows} and old["asset_key"] not in {
+        row[0] for row in rows
+    }
+    assert native.ocr_native_assets_bounded(body, saved) == saved
+    assert transfer(src, dst, apply=True)["unchanged_documents"] == 1
+    transfer(src, dst, apply=True, refresh=True)
+    with closing(dst.db.connect()) as conn:
+        refreshed = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (ident,)).fetchone()[0]
+        )
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] == len(rows)
+    assert native.assets(refreshed)[0] == rebound
+
+
+def test_import_preserves_failed_response_evidence_without_indexing_its_body(pair):
+    src, dst = pair
+    doc = original(src, complete=False)
+    raw = dump({"format": "ocr-error-response-v1", "response_base64": "aW52YWxpZCBKU09O"}).encode()
+    blob = src.archive.blobs.put_bytes("source", raw)
+    with src.db.transaction() as conn:
+        manifest = json.loads(src.own_document(conn, "source", doc["id"])["manifest"])
+        manifest["pages"] = [
+            {
+                "page": 1,
+                "source_hash": doc["content_hash"],
+                "status": "ocr_failed",
+                "ocr": {
+                    "error_response": {
+                        "format": "ocr-error-response-v1",
+                        "request_id": "fixed-request",
+                        "blob": {
+                            "storage_path": str(blob.path.relative_to(src.db.data_dir)),
+                            "content_hash": blob.digest,
+                            "size": blob.size,
+                        },
+                    }
+                },
+            }
+        ]
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+    result = transfer(src, dst, apply=True)
+    ident = result["document_versions"][doc["id"]]["document_id"]
+    with closing(dst.db.connect()) as conn:
+        saved = json.loads(dst.own_document(conn, "target", ident)["manifest"])
+        assert not conn.execute("SELECT 1 FROM retrieval_vectors").fetchone()
+    proof = saved["pages"][0]["ocr"]["error_response"]
+    target_path = dst.db.data_dir / proof["blob"]["storage_path"]
+    assert proof["request_id"] == "fixed-request" and target_path.read_bytes() == raw
+    assert target_path.parent.parent.parent.name == hashlib.sha256(b"target").hexdigest()
+    assert "response_base64" not in json.dumps(saved)
+
+
+@pytest.mark.parametrize(
+    "key,path",
+    [
+        ("mapping_path", "/etc/passwd"),
+        ("mapping_path", "/html_source/linked_images/../../etc/passwd"),
+        ("mapping_path", "/html_source/linked_images/2000"),
+        ("asset_mapping_path", "/html_source/linked_images/0/extra"),
+        ("image_path", "/html_source/linked_images/0"),
+    ],
+)
+def test_manifest_private_paths_are_rejected_in_preflight_before_any_target_write(pair, key, path):
+    src, dst = pair
+    doc = original(src)
+    with src.db.transaction() as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
+        manifest["untrusted_proof"] = {key: path}
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+    before, files = facts(dst), set(dst.db.files_dir.rglob("*"))
+    for apply in (False, True):
+        with pytest.raises(CollectionImportError, match="unmapped_private_path"):
+            transfer(src, dst, apply=apply)
+        assert facts(dst) == before and set(dst.db.files_dir.rglob("*")) == files
+
+
+def test_inconsistent_source_html_ocr_identity_is_rejected_before_transfer(pair, monkeypatch):
+    src, dst = pair
+    doc, _, manifest, _ = html_image_document(src, monkeypatch)
+    manifest["html_source"]["linked_images"][0]["ocr"]["input_identity"] = "0" * 64
+    with src.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+    with pytest.raises(CollectionImportError, match="invalid_source_native_asset_checkpoint"):
+        transfer(src, dst)
+
+
+def test_campaign_catalogue_and_detail_evidence_remain_reachable_after_import(pair):
+    src, dst = pair
+    doc = original(src)
+    catalogue = src.archive.blobs.put_bytes("source", b"Official catalogue listing this law")
+    detail = src.archive.blobs.put_bytes("source", b"Official detail page linking its original")
+    receipt = src.archive.blobs.put_bytes("source", b"Receipt bound to the catalogue and original")
+    record = {
+        "document_id": doc["id"],
+        "source_hash": doc["content_hash"],
+        "receipt_sha256": receipt.digest,
+        "receipt_path": "receipts/original.json",
+        "receipt_cas_path": str(receipt.path.relative_to(src.db.data_dir)),
+        "assets": [
+            {"kind": "catalogue", "sha256": catalogue.digest, "cas_path": str(catalogue.path)},
+            {"kind": "detail", "sha256": detail.digest, "cas_path": str(detail.path)},
+        ],
+    }
+    state = {"owner_id": "source", "documents": {"law": record}}
+    (src.db.data_dir / "campaign.json").write_text(dump(state))
+    preview = transfer(src, dst)
+    assert preview["source_evidence_documents"] == 1
+    result = transfer(src, dst, apply=True)
+    ident = result["document_versions"][doc["id"]]["document_id"]
+    with closing(dst.db.connect()) as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (ident,)).fetchone()[0]
+        )
+    evidence = manifest["collection_evidence"]
+    assert evidence["source_original_sha256"] == doc["content_hash"]
+    assert evidence["source_record_sha256"] == hashlib.sha256(dump(record).encode()).hexdigest()
+    assert evidence["record"]["document_id"] == ident
+    receipt_path = evidence["record"]["receipt_path"]
+    assert receipt_path == evidence["record"]["receipt_cas_path"]
+    assert (dst.db.data_dir / receipt_path).read_bytes() == b"Receipt bound to the catalogue and original"
+    for asset in evidence["record"]["assets"]:
+        assert not Path(asset["cas_path"]).is_absolute()
+        assert (
+            hashlib.sha256((dst.db.data_dir / asset["cas_path"]).read_bytes()).hexdigest() == asset["sha256"]
+        )
+    assert str(src.db.data_dir) not in dump(evidence)
+    assert transfer(src, dst, apply=True)["unchanged_documents"] == 1
+    record["catalogue_page"] = 2
+    (src.db.data_dir / "campaign.json").write_text(dump(state))
+    with pytest.raises(CollectionImportError, match="source_checkpoint_changed_requires_refresh"):
+        transfer(src, dst, apply=True)
+    transfer(src, dst, apply=True, refresh=True)
+    with closing(dst.db.connect()) as conn:
+        updated = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (ident,)).fetchone()[0]
+        )
+    assert updated["collection_evidence"]["record"]["catalogue_page"] == 2
+
+
+@pytest.mark.parametrize("tampered", [False, True])
+def test_ocr_retry_history_hash_is_verified_then_rebound_to_target_paths(pair, tampered):
+    from app.ocr_page_retry import _encoded
+
+    src, dst = pair
+    doc = original(src)
+    image = src.archive.blobs.put_bytes("source", b"Original physical page image")
+    previous = {
+        "page": 1,
+        "source_hash": doc["content_hash"],
+        "status": "ocr_uncertain",
+        "ocr": {"image_blob": {"storage_path": str(image.path), "content_hash": image.digest}},
+        "text": "An incomplete previous reading",
+    }
+    digest = hashlib.sha256(_encoded(previous)).hexdigest()
+    history = {
+        "protocol": "physical-page-completeness-retry-v1",
+        "page": 1,
+        "source_hash": doc["content_hash"],
+        "previous_page_sha256": "0" * 64 if tampered else digest,
+        "previous_page": previous,
+    }
+    with src.db.transaction() as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
+        manifest["ocr_recovery_audit"] = history
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+        src.index.sync_document(conn, doc["id"], manifest)
+    if tampered:
+        before = facts(dst)
+        with pytest.raises(CollectionImportError, match="invalid_previous_OCR_checkpoint"):
+            transfer(src, dst)
+        assert facts(dst) == before
+        return
+    result = transfer(src, dst, apply=True)
+    ident = result["document_versions"][doc["id"]]["document_id"]
+    with closing(dst.db.connect()) as conn:
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (ident,)).fetchone()[0])
+    moved = saved["ocr_recovery_audit"]
+    assert moved["source_previous_page_sha256"] == digest
+    assert moved["previous_page_sha256"] == hashlib.sha256(_encoded(moved["previous_page"])).hexdigest()
+    assert moved["previous_page_sha256"] != digest
+    path = moved["previous_page"]["ocr"]["image_blob"]["storage_path"]
+    assert (dst.db.data_dir / path).read_bytes() == b"Original physical page image"
 
 
 @pytest.mark.parametrize("attachment", [False, True])
@@ -278,6 +574,328 @@ def test_multiversion_family_refused_before_apply(pair):
     assert facts(dst) == before
 
 
+def test_selected_import_ignores_unselected_missing_blobs_and_preserves_vectors(pair):
+    src, dst = pair
+    selected = original(src, "selected")
+    omitted = original(src, "omitted")
+    Path(omitted["storage_path"]).unlink()
+    before = facts(dst)
+    dry = transfer(src, dst, document_ids=[selected["id"]])
+    assert dry["documents"] == 1 and dry["reusable_vectors"] == 1
+    assert dry["selected_document_ids"] == [selected["id"]]
+    assert facts(dst) == before
+    result = transfer(src, dst, document_ids=[selected["id"]], apply=True)
+    assert set(result["document_versions"]) == {selected["id"]}
+    assert len(facts(dst)["documents"]) == 1 and len(facts(dst)["vectors"]) == 1
+    assert not dst.archive.blobs.blobs_dir.joinpath(
+        hashlib.sha256(b"target").hexdigest(),
+        omitted["content_hash"][:2],
+        omitted["content_hash"][2:4],
+        omitted["content_hash"],
+    ).exists()
+
+
+@pytest.mark.parametrize("selection", [[], ["missing"], ["missing", "missing"], [None], ["x"] * 201])
+def test_selected_import_rejects_invalid_or_missing_ids_without_target_writes(pair, selection):
+    src, dst = pair
+    original(src)
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="document_selection|selected_documents_not_owned"):
+        transfer(src, dst, document_ids=selection, apply=True)
+    assert facts(dst) == before
+
+
+def test_selected_import_checks_owner_before_blob_access(pair):
+    src, dst = pair
+    foreign = original(src, "private")
+    with src.db.transaction() as conn:
+        conn.execute("INSERT INTO users VALUES(?,?,?,?,?,?)", ("foreign", "foreign", None, None, 1, now()))
+        conn.execute("UPDATE documents SET owner_id='foreign' WHERE id=?", (foreign["id"],))
+    Path(foreign["storage_path"]).unlink()
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="selected_documents_not_owned_or_missing"):
+        transfer(src, dst, document_ids=[foreign["id"]], apply=True)
+    assert facts(dst) == before
+
+
+def test_selected_import_cannot_hide_other_versions_of_the_same_family(pair):
+    src, dst = pair
+    old = original(src)
+    original(src, content=b"Amended source original")
+    dry = transfer(src, dst, document_ids=[old["id"]])
+    assert "unsupported_multiversion_family:" + old["id"] in dry["blockers"]
+    with pytest.raises(CollectionImportError, match="unsupported_multiversion"):
+        transfer(src, dst, document_ids=[old["id"]], apply=True)
+    assert facts(dst)["documents"] == []
+
+
+def test_selected_import_requires_explicit_relation_endpoints(pair):
+    src, dst = pair
+    base = original(src)
+    supplement = original(src, "supplement", level="secondary")
+    unrelated = original(src, "unrelated")
+    src.archive.add_relation(
+        "source",
+        supplement["id"],
+        {
+            "target_document_id": base["id"],
+            "collection": "country:ID",
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="selected_relation_dependencies_required:" + base["id"]):
+        transfer(src, dst, document_ids=[supplement["id"]], apply=True)
+    assert facts(dst) == before
+    result = transfer(src, dst, document_ids=[supplement["id"], base["id"]], apply=True)
+    assert set(result["document_versions"]) == {supplement["id"], base["id"]}
+    assert unrelated["id"] not in result["document_versions"]
+    with closing(dst.db.connect()) as conn:
+        relation = conn.execute("SELECT * FROM legal_relations").fetchone()
+        assert relation["source_document_id"] == result["document_versions"][supplement["id"]]["document_id"]
+        assert relation["target_document_id"] == result["document_versions"][base["id"]]["document_id"]
+        assert json.loads(relation["locator"]) == {
+            "source_locator": "p. 1",
+            "source_version": 1,
+            "target_version": 1,
+        }
+
+
+def test_selected_attachment_requires_parent_and_retains_mapping(pair):
+    src, dst = pair
+    parent = original(src)
+    attachment = original(src, "attachment", level="attachment", parent=parent["id"])
+    dry = transfer(src, dst, document_ids=[attachment["id"]])
+    assert "owned_parent_required:" + attachment["id"] in dry["blockers"]
+    with pytest.raises(CollectionImportError, match="owned_parent_required"):
+        transfer(src, dst, document_ids=[attachment["id"]], apply=True)
+    result = transfer(src, dst, document_ids=[attachment["id"], parent["id"]], apply=True)
+    with closing(dst.db.connect()) as conn:
+        mapped = dst.own_document(
+            conn, "target", result["document_versions"][attachment["id"]]["document_id"]
+        )
+        assert mapped["parent_id"] == result["document_versions"][parent["id"]]["document_id"]
+
+
+def dependency_facts(service, ident):
+    with closing(service.db.connect()) as conn:
+        result = {"document": dict(conn.execute("SELECT * FROM documents WHERE id=?", (ident,)).fetchone())}
+        for table in (
+            "document_metadata",
+            "document_metadata_history",
+            "document_countries",
+            "legal_classifications",
+            "processing_jobs",
+            "retrieval_documents",
+            "retrieval_dirty",
+            "retrieval_chunks",
+        ):
+            result[table] = [
+                dict(r)
+                for r in conn.execute(f"SELECT * FROM {table} WHERE document_id=? ORDER BY rowid", (ident,))
+            ]
+        result["vectors"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT v.* FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=? ORDER BY v.chunk_rowid",
+                (ident,),
+            )
+        ]
+        return result
+
+
+def test_existing_dependency_preserves_paid_checkpoints_active_lease_and_relations(pair):
+    src, dst = pair
+    base = original(src)
+    initial = transfer(src, dst, document_ids=[base["id"]], apply=True)
+    target_id = initial["document_versions"][base["id"]]["document_id"]
+    with dst.db.transaction() as conn:
+        manifest = json.loads(dst.own_document(conn, "target", target_id)["manifest"])
+        manifest["paid_ocr_checkpoint"] = {"request_id": "already-paid", "text": "Recovered text"}
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='processing' WHERE id=?", (dump(manifest), target_id)
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET status='processing',lease_token='live',lease_until=9999999999 WHERE document_id=?",
+            (target_id,),
+        )
+    supplement = original(src, "supplement")
+    attachment = original(src, "attachment", level="attachment", parent=base["id"])
+    src.archive.add_relation(
+        "source",
+        base["id"],
+        {
+            "target_document_id": supplement["id"],
+            "collection": "country:ID",
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    selection = [base["id"], supplement["id"], attachment["id"]]
+    before = dependency_facts(dst, target_id)
+    with pytest.raises(CollectionImportError, match="target_has_active_processing_lease"):
+        transfer(src, dst, document_ids=selection, apply=True)
+    assert dependency_facts(dst, target_id) == before
+    options = {"document_ids": selection, "existing_dependency_ids": [base["id"]]}
+    dry = transfer(src, dst, **options)
+    assert dry["existing_dependency_documents"] == 1 and dry["import_documents"] == 2
+    assert dry["target_writes"] == 0
+    result = transfer(src, dst, **options, apply=True)
+    assert result["target_writes"] == 2 and result["unchanged_documents"] == 0
+    assert result["document_versions"][base["id"]]["document_id"] == target_id
+    assert dependency_facts(dst, target_id) == before
+    with closing(dst.db.connect()) as conn:
+        relation = dict(conn.execute("SELECT * FROM legal_relations").fetchone())
+        assert relation["source_document_id"] == target_id
+        assert relation["target_document_id"] == result["document_versions"][supplement["id"]]["document_id"]
+        assert (
+            dst.own_document(conn, "target", result["document_versions"][attachment["id"]]["document_id"])[
+                "parent_id"
+            ]
+            == target_id
+        )
+    again = transfer(src, dst, **options, apply=True)
+    assert again["target_writes"] == 0 and again["unchanged_documents"] == 2
+    assert dependency_facts(dst, target_id) == before
+    with closing(dst.db.connect()) as conn:
+        assert [dict(r) for r in conn.execute("SELECT * FROM legal_relations")] == [relation]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "foreign_owner",
+        "protocol",
+        "source_family",
+        "source_version",
+        "hash",
+        "source_url",
+        "country",
+        "classification",
+        "duplicate",
+        "original_bytes",
+    ],
+)
+def test_existing_dependency_refuses_unverified_identity_before_copy(pair, change):
+    src, dst = pair
+    base = original(src)
+    if change != "missing":
+        initial = transfer(src, dst, document_ids=[base["id"]], apply=True)
+        target_id = initial["document_versions"][base["id"]]["document_id"]
+        with dst.db.transaction() as conn:
+            row = dict(dst.own_document(conn, "target", target_id))
+            manifest = json.loads(row["manifest"])
+            if change in {"protocol", "source_family", "source_version"}:
+                key = {
+                    "protocol": "protocol",
+                    "source_family": "source_family_id",
+                    "source_version": "source_version",
+                }[change]
+                manifest["collection_import"][key] = "wrong"
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), target_id))
+            elif change == "foreign_owner":
+                conn.execute("UPDATE documents SET owner_id='unrelated' WHERE id=?", (target_id,))
+            elif change == "hash":
+                conn.execute("UPDATE documents SET content_hash=? WHERE id=?", ("f" * 64, target_id))
+            elif change == "source_url":
+                conn.execute(
+                    "UPDATE documents SET source_url='https://official.example/wrong' WHERE id=?",
+                    (target_id,),
+                )
+            elif change == "country":
+                # Simulate a damaged backup; ordinary writes cannot change country.
+                conn.execute("DROP TRIGGER country_immutable_update")
+                conn.execute("UPDATE document_countries SET country='SG' WHERE document_id=?", (target_id,))
+            elif change == "classification":
+                conn.execute("DELETE FROM legal_classifications WHERE document_id=?", (target_id,))
+            elif change == "duplicate":
+                row.update(id="duplicate", family_id="duplicate")
+                conn.execute(
+                    "INSERT INTO documents ("
+                    + ",".join(row)
+                    + ") VALUES("
+                    + ",".join("?" for _ in row)
+                    + ")",
+                    list(row.values()),
+                )
+            elif change == "original_bytes":
+                Path(row["storage_path"]).chmod(0o600)
+                Path(row["storage_path"]).write_bytes(b"corrupt")
+    supplement = original(src, "supplement")
+    src.archive.add_relation(
+        "source",
+        supplement["id"],
+        {
+            "target_document_id": base["id"],
+            "collection": "country:ID",
+            "relation": "cites",
+            "locator": "p. 1",
+        },
+    )
+    before = facts(dst)
+    files = {str(p): p.read_bytes() for p in dst.archive.blobs.blobs_dir.rglob("*") if p.is_file()}
+    with pytest.raises(CollectionImportError):
+        transfer(
+            src,
+            dst,
+            document_ids=[base["id"], supplement["id"]],
+            existing_dependency_ids=[base["id"]],
+            apply=True,
+        )
+    assert facts(dst) == before
+    assert {str(p): p.read_bytes() for p in dst.archive.blobs.blobs_dir.rglob("*") if p.is_file()} == files
+
+
+@pytest.mark.parametrize(
+    "selection,dependencies,refresh",
+    [
+        (None, ["base"], False),
+        (["base"], ["base"], False),
+        (["base", "new"], ["other"], False),
+        (["base", "new"], ["base"], True),
+    ],
+)
+def test_existing_dependency_requires_explicit_scope_and_cannot_refresh(
+    pair, selection, dependencies, refresh
+):
+    src, dst = pair
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="existing_dependencies_"):
+        transfer(
+            src,
+            dst,
+            document_ids=selection,
+            existing_dependency_ids=dependencies,
+            refresh=refresh,
+            apply=True,
+        )
+    assert facts(dst) == before
+
+
+def test_selected_import_limits_manifest_bytes_to_selected_documents(pair, monkeypatch):
+    from app import collection_import
+
+    src, dst = pair
+    selected = original(src, "selected")
+    omitted = original(src, "large")
+    with src.db.transaction() as conn:
+        selected_size = conn.execute(
+            "SELECT length(CAST(manifest AS BLOB)) FROM documents WHERE id=?", (selected["id"],)
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id=?",
+            (dump({"unused": "x" * (selected_size * 2)}), omitted["id"]),
+        )
+    monkeypatch.setattr(collection_import, "MAX_MANIFEST_BYTES", selected_size)
+    monkeypatch.setattr(collection_import, "MAX_TOTAL_MANIFEST_BYTES", selected_size + 100)
+    with pytest.raises(CollectionImportError, match="total_manifest_scope_exceeded"):
+        transfer(src, dst)
+    dry = transfer(src, dst, document_ids=[selected["id"]])
+    assert dry["documents"] == 1 and dry["reusable_vectors"] == 1
+
+
 def test_source_active_lease_allowed_but_target_active_lease_refused(pair):
     src, dst = pair
     doc = original(src)
@@ -312,11 +930,19 @@ def test_user_metadata_edit_refuses_refresh(pair):
     "registry_key,path_key",
     [("registry_sha256", "registry_path"), ("source_registry_sha256", "source_registry_path")],
 )
-def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, registry_key, path_key):
+@pytest.mark.parametrize("selected", [False, True, "existing"])
+def test_typed_relation_transfers_owned_registry_and_both_page_mappings(
+    pair, registry_key, path_key, selected
+):
     from PIL import Image
 
     src, dst = pair
     a, b = original(src, "amendment"), original(src, "base")
+    dependency_before = None
+    if selected == "existing":
+        previous = transfer(src, dst, document_ids=[b["id"]], apply=True)
+        existing_id = previous["document_versions"][b["id"]]["document_id"]
+        dependency_before = dependency_facts(dst, existing_id)
     buf = io.BytesIO()
     Image.new("RGB", (2, 3), "white").save(buf, format="PNG")
     png = src.archive.blobs.put_bytes("source", buf.getvalue())
@@ -368,6 +994,23 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, re
         ],
         "legal_effect_reviewed": False,
     }
+    options = {}
+    if selected:
+        c, d = original(src, "unrelated amendment"), original(src, "unrelated base")
+        registry["relations"].append(
+            {
+                "source_document_id": c["id"],
+                "source_version": 1,
+                "source_hash": c["content_hash"],
+                "target_document_id": d["id"],
+                "target_version": 1,
+                "target_hash": d["content_hash"],
+                "source_fact": {"mapping_path": "/unrelated/proof.json", "mapping_sha256": "a" * 64},
+            }
+        )
+        options["document_ids"] = [a["id"], b["id"]]
+        if selected == "existing":
+            options["existing_dependency_ids"] = [b["id"]]
     blob = src.archive.blobs.put_bytes("source", dump(registry).encode())
     src.archive.add_relation(
         "source",
@@ -386,9 +1029,13 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, re
             ),
         },
     )
-    dry = transfer(src, dst)
+    dry = transfer(src, dst, **options)
     assert dry["relations"] == 1
-    result = transfer(src, dst, apply=True)
+    result = transfer(src, dst, apply=True, **options)
+    assert result["documents"] == 2
+    if selected == "existing":
+        assert result["target_writes"] == 1
+        assert dependency_facts(dst, existing_id) == dependency_before
     with closing(dst.db.connect()) as conn:
         relation = dict(conn.execute("SELECT * FROM legal_relations").fetchone())
         assert relation["source_document_id"] == result["document_versions"][a["id"]]["document_id"]
@@ -399,6 +1046,11 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, re
         assert b"/old/private" not in raw and b"old-registry" not in raw
         moved = json.loads(raw)
         assert moved["owner_id"] == "target" and moved["legal_effect_reviewed"] is False
+        assert len(moved["relations"]) == 1
+        if selected:
+            assert moved["selection_provenance"]["source_registry_sha256"] == blob.digest
+            assert moved["selection_provenance"]["source_relations"] == 2
+            assert c["id"].encode() not in raw and d["id"].encode() not in raw
         for ref in moved["relations"][0]["source_fact"].values():
             image = (dst.db.path.parent / ref["full_page_PNG"]).read_bytes()
             assert hashlib.sha256(image).hexdigest() == ref["PNG_sha256"]
@@ -409,7 +1061,216 @@ def test_typed_relation_transfers_owned_registry_and_both_page_mappings(pair, re
             assert mapped["PNG_CAS_path"] == ref["full_page_PNG"]
             assert b"verification-owner" not in mapping
     before = facts(dst)
-    assert transfer(src, dst, apply=True)["unchanged_documents"] == 2
+    assert transfer(src, dst, apply=True, **options)["unchanged_documents"] == (
+        1 if selected == "existing" else 2
+    )
+    assert facts(dst) == before
+
+
+def test_multiple_registries_remain_independent_and_bind_their_own_relation(pair):
+    src, dst = pair
+    origins = []
+    for number, key in enumerate(("registry_sha256", "source_registry_sha256")):
+        a, b = original(src, f"amendment-{number}"), original(src, f"base-{number}")
+        registry = {
+            "owner_id": "source",
+            "independent_evidence": number,
+            "relations": [
+                {
+                    "source_document_id": a["id"],
+                    "source_version": 1,
+                    "source_hash": a["content_hash"],
+                    "target_document_id": b["id"],
+                    "target_version": 1,
+                    "target_hash": b["content_hash"],
+                }
+            ],
+        }
+        blob = src.archive.blobs.put_bytes("source", dump(registry).encode())
+        src.archive.add_relation(
+            "source",
+            a["id"],
+            {
+                "target_document_id": b["id"],
+                "collection": "country:ID",
+                "relation": "related",
+                "locator": dump({key: blob.digest}),
+            },
+        )
+        origins.append((a, b, key, blob.digest))
+    selected = [doc["id"] for a, b, _, _ in origins for doc in (a, b)]
+    assert transfer(src, dst, document_ids=selected)["relation_registries"] == 2
+    result = transfer(src, dst, apply=True, document_ids=selected)
+    assert result["registry_sha256"] is None
+    assert len(set(result["registry_sha256_by_source"].values())) == 2
+    with closing(dst.db.connect()) as conn:
+        for number, (a, b, key, digest) in enumerate(origins):
+            sid = result["document_versions"][a["id"]]["document_id"]
+            tid = result["document_versions"][b["id"]]["document_id"]
+            row = conn.execute("SELECT * FROM legal_relations WHERE source_document_id=?", (sid,)).fetchone()
+            locator = json.loads(row["locator"])
+            path_key = "registry_path" if key == "registry_sha256" else "source_registry_path"
+            raw = (dst.db.data_dir / locator[path_key]).read_bytes()
+            assert (
+                hashlib.sha256(raw).hexdigest() == result["registry_sha256_by_source"][digest] == locator[key]
+            )
+            moved = json.loads(raw)
+            assert moved["independent_evidence"] == number
+            assert moved["source_import"]["source_registry_sha256"] == digest
+            assert [(r["source_document_id"], r["target_document_id"]) for r in moved["relations"]] == [
+                (sid, tid)
+            ]
+    before = facts(dst)
+    assert transfer(src, dst, apply=True, document_ids=selected)["unchanged_documents"] == 4
+    assert facts(dst) == before
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_independent_registries_with_conflicting_mapping_alias_are_refused_before_writes(pair, apply):
+    src, dst = pair
+    scopes = []
+    png = src.archive.blobs.put_bytes("source", b"Verified page pixels")
+    for number in range(2):
+        a, b = original(src, f"mapping-amendment-{number}"), original(src, f"mapping-base-{number}")
+        native = f"Actual source paragraph {number}"
+        with src.db.transaction() as conn:
+            manifest = json.loads(src.own_document(conn, "source", a["id"])["manifest"])
+            manifest["pages"] = [
+                {
+                    "page": 1,
+                    "source_hash": a["content_hash"],
+                    "status": "native",
+                    "native_text": native,
+                    "text": native,
+                }
+            ]
+            conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), a["id"]))
+        mapping = src.archive.blobs.put_bytes(
+            "source",
+            dump(
+                {
+                    "source_hash": a["content_hash"],
+                    "physical_page": 1,
+                    "image_sha256": png.digest,
+                    "native_text_sha256": hashlib.sha256(native.encode()).hexdigest(),
+                    "no_crop": True,
+                }
+            ).encode(),
+        )
+        registry = {
+            "owner_id": "source",
+            "relations": [
+                {
+                    "source_document_id": a["id"],
+                    "source_version": 1,
+                    "source_hash": a["content_hash"],
+                    "target_document_id": b["id"],
+                    "target_version": 1,
+                    "target_hash": b["content_hash"],
+                    "source_fact": {
+                        "source_locator": {
+                            "physical_page": 1,
+                            "mapping_path": "mapping.json",
+                            "mapping_sha256": mapping.digest,
+                            "full_page_PNG": "page.png",
+                            "PNG_sha256": png.digest,
+                        }
+                    },
+                }
+            ],
+        }
+        blob = src.archive.blobs.put_bytes("source", dump(registry).encode())
+        src.archive.add_relation(
+            "source",
+            a["id"],
+            {
+                "target_document_id": b["id"],
+                "collection": "country:ID",
+                "relation": "related",
+                "locator": dump({"registry_sha256": blob.digest}),
+            },
+        )
+        scopes.append([a["id"], b["id"]])
+    # Both packages have valid owned bytes and physical-page mappings alone.
+    for selected in scopes:
+        assert transfer(src, dst, document_ids=selected)["relation_registries"] == 1
+    before, source_before = facts(dst), facts(src)
+    before_files = set(dst.archive.blobs.blobs_dir.rglob("*"))
+    with pytest.raises(CollectionImportError, match="^ambiguous_blob_alias$"):
+        transfer(src, dst, apply=apply)
+    assert facts(dst) == before and facts(src) == source_before
+    assert set(dst.archive.blobs.blobs_dir.rglob("*")) == before_files
+
+
+@pytest.mark.parametrize("collision", ["relative_absolute", "target_cas"])
+def test_campaign_alias_collision_with_expanded_or_destination_path_is_preflight_only(pair, collision):
+    src, dst = pair
+    doc = original(src)
+    catalogue = src.archive.blobs.put_bytes("source", b"Catalogue evidence")
+    detail = src.archive.blobs.put_bytes("source", b"Different detail evidence")
+    if collision == "relative_absolute":
+        first_alias = "evidence.json"
+        second_alias = str(src.db.data_dir.parents[2] / first_alias)
+    else:
+        first_alias = "catalogue.json"
+        owner_digest = hashlib.sha256(b"target").hexdigest()
+        second_alias = str(
+            Path("files/blobs")
+            / owner_digest
+            / catalogue.digest[:2]
+            / catalogue.digest[2:4]
+            / catalogue.digest
+        )
+    (src.db.data_dir / "campaign.json").write_text(
+        dump(
+            {
+                "owner_id": "source",
+                "documents": {
+                    "law": {
+                        "document_id": doc["id"],
+                        "assets": [
+                            {"sha256": blob.digest, "cas_path": str(blob.path), "source_path": alias}
+                            for blob, alias in ((catalogue, first_alias), (detail, second_alias))
+                        ],
+                    }
+                },
+            }
+        )
+    )
+    before = facts(dst)
+    before_files = set(dst.archive.blobs.blobs_dir.rglob("*"))
+    with pytest.raises(CollectionImportError, match="^ambiguous_blob_alias$"):
+        transfer(src, dst, apply=True)
+    assert facts(dst) == before
+    assert set(dst.archive.blobs.blobs_dir.rglob("*")) == before_files
+
+
+def test_selected_registry_requires_dependency_even_without_database_edge(pair):
+    src, dst = pair
+    a, b, c = (original(src, name) for name in ("amendment", "base", "dependency"))
+    registry = {
+        "owner_id": "source",
+        "relations": [
+            {
+                "source_document_id": a["id"],
+                "target_document_id": c["id"],
+            }
+        ],
+    }
+    blob = src.archive.blobs.put_bytes("source", dump(registry).encode())
+    src.archive.add_relation(
+        "source",
+        a["id"],
+        {
+            "target_document_id": b["id"],
+            "collection": "country:ID",
+            "relation": "related",
+            "locator": dump({"source_registry_sha256": blob.digest}),
+        },
+    )
+    before = facts(dst)
+    with pytest.raises(CollectionImportError, match="selected_registry_dependencies_required:" + c["id"]):
+        transfer(src, dst, apply=True, document_ids=[a["id"], b["id"]])
     assert facts(dst) == before
 
 
@@ -501,6 +1362,62 @@ def test_dirty_source_index_does_not_transfer_cached_vectors(pair):
     assert transfer(src, dst)["reusable_vectors"] == 0
     assert transfer(src, dst, apply=True)["reusable_vectors"] == 0
     assert not facts(dst)["vectors"]
+
+
+@pytest.mark.parametrize("mode", ["complete_vectors", "secondary", "no_embedding_configuration"])
+def test_finished_text_import_is_not_claimed_or_reparsed(pair, monkeypatch, mode):
+    src, dst = pair
+    doc = original(src, level="secondary" if mode == "secondary" else "primary")
+    if mode == "no_embedding_configuration":
+        monkeypatch.delenv("EMBEDDING_API_KEY")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("A finished imported checkpoint must not call parsing or models")
+
+    monkeypatch.setattr("app.parsing.parse_bounded", forbidden)
+    monkeypatch.setattr("app.ingestion.embed_texts", forbidden)
+    result = transfer(src, dst, apply=True)
+    ident = result["document_versions"][doc["id"]]["document_id"]
+    assert dst.collection.claim_processing(owner_id="target", document_ids=[ident]) is None
+    with closing(dst.db.connect()) as conn:
+        row = dst.own_document(conn, "target", ident)
+        assert row["status"] == "ready"
+        manifest = json.loads(row["manifest"])
+        job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (ident,)).fetchone()
+        assert job["status"] == "completed" and job["attempts"] == 0
+        if mode == "complete_vectors":
+            assert manifest["embedding_fingerprint"] == dst.embedding_fingerprint()
+            assert not dst.index.pending(conn, ident, dst.embedding_fingerprint())
+        else:
+            assert "embedding_fingerprint" not in manifest
+            assert not conn.execute("SELECT 1 FROM retrieval_vectors").fetchone()
+
+
+def test_complete_import_with_no_cached_vectors_queues_only_embedding(pair, monkeypatch):
+    src, dst = pair
+    doc = original(src)
+    with src.db.transaction() as conn:
+        conn.execute("DELETE FROM retrieval_vectors")
+    result = transfer(src, dst, apply=True)
+    ident = result["document_versions"][doc["id"]]["document_id"]
+    requests = []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Missing vectors do not invalidate complete source text")
+
+    def embed(texts):
+        requests.append(texts)
+        return [[0.6, 0.8] for _ in texts]
+
+    monkeypatch.setattr("app.parsing.parse_bounded", forbidden)
+    monkeypatch.setattr("app.ingestion.embed_texts", embed)
+    claim = dst.collection.claim_processing(owner_id="target", document_ids=[ident])
+    assert claim["phase"] == "embed"
+    dst.collection.process_item(claim)
+    assert len(requests) == 1 and requests[0]
+    with closing(dst.db.connect()) as conn:
+        assert dst.own_document(conn, "target", ident)["status"] == "ready"
+        assert not dst.index.pending(conn, ident, dst.embedding_fingerprint())
 
 
 def partial_original(src, *, remove_vector=True):

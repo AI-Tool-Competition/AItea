@@ -20,9 +20,10 @@ from copy import deepcopy
 from pathlib import Path
 
 from .parsing import ProcessingDeferred, _MAX_RESULT_BYTES, _run_bounded
+from .pdf_limits import ARCHIVE_MAX_PAGES
 
 _MAX_BYTES = 128 * 1024 * 1024
-_MAX_PAGES = 5_000
+_MAX_PAGES = ARCHIVE_MAX_PAGES
 _MAX_WINDOW_PAGES = 64
 _MAX_PAGE_STREAM_BYTES = 16 * 1024 * 1024
 _MAX_TEXT = 4_000_000
@@ -81,6 +82,41 @@ def parse_archive_pdf_bounded(
     )
 
 
+def parse_archive_pdf_pages_bounded(
+    path: str | os.PathLike[str],
+    *,
+    source_hash: str,
+    size: int,
+    total_pages: int,
+    first_page: int,
+    max_pages: int = _MAX_WINDOW_PAGES,
+) -> dict:
+    """Extract only an absolute physical-page window, without derived chunks.
+
+    The returned pages are evidence for a separate, resumable page archive.
+    They are deliberately not a complete document manifest or an index input.
+    Existing aggregate text/transport and per-process limits still apply to
+    this operation; no previous window is sent to or rebuilt by the child.
+    """
+    file_path = _validate_original_request(path, source_hash, size)
+    if type(total_pages) is not int or not 0 < total_pages <= _MAX_PAGES:
+        raise ValueError(f"采集 PDF 页数必须为 1 至 {_MAX_PAGES} 页。")
+    if type(first_page) is not int or not 1 <= first_page <= total_pages:
+        raise ValueError("PDF 窗口起始物理页超出原件范围。")
+    if type(max_pages) is not int or not 1 <= max_pages <= _MAX_WINDOW_PAGES:
+        raise ValueError("PDF 解析窗口必须为 1 至 64 页。")
+    return _run_archive_bounded(
+        _archive_auxiliary_worker,
+        ("pages", (file_path, source_hash, size, total_pages, first_page, max_pages, _MAX_PAGES)),
+    )
+
+
+def inspect_archive_pdf_bounded(path: str | os.PathLike[str], *, source_hash: str, size: int) -> dict:
+    """Verify actual page count without extracting or replacing saved text."""
+    file_path = _validate_original_request(path, source_hash, size)
+    return _run_archive_bounded(_archive_auxiliary_worker, ("inspect", (file_path, source_hash, size)))
+
+
 def render_archive_page_bounded(
     path: str | os.PathLike[str],
     *,
@@ -98,7 +134,7 @@ def render_archive_page_bounded(
     """
     file_path = _validate_original_request(path, source_hash, size)
     if type(page_number) is not int or not 1 <= page_number <= _MAX_PAGES:
-        raise ValueError("采集 PDF 物理页码必须为 1 至 5000 页。")
+        raise ValueError(f"采集 PDF 物理页码必须为 1 至 {_MAX_PAGES} 页。")
     if type(dpi) is not int or dpi not in {200, 400}:
         raise ValueError("PDF 渲染 DPI 必须为 200 或 400。")
     if region_bbox is not None:
@@ -135,7 +171,7 @@ def archive_rebuild_bounded(manifest: dict) -> dict:
     size, count = metadata.get("source_size"), metadata.get("total_pages")
     _validate_original_request("archive-checkpoint.pdf", source_hash, size)
     if type(count) is not int or not 0 < count <= _MAX_PAGES:
-        raise ValueError("采集 PDF 页数必须为 1 至 5000 页。")
+        raise ValueError(f"采集 PDF 页数必须为 1 至 {_MAX_PAGES} 页。")
     pages = manifest.get("pages")
     if not isinstance(pages, list) or len(pages) != count:
         raise ValueError("PDF 重组装检查点必须覆盖完整原件物理页。")
@@ -225,6 +261,10 @@ def _archive_auxiliary_worker(connection, operation, payload):
             pass
         if operation == "render":
             result = _render_archive_page(*payload)
+        elif operation == "pages":
+            result = _parse_archive_page_window(*payload)
+        elif operation == "inspect":
+            result = _inspect_archive_pdf(*payload)
         elif operation == "rebuild":
             from .ingestion_quality import OCR_VALIDATION_VERSION, PDF_VISIBILITY_PIPELINES
 
@@ -374,8 +414,6 @@ def _verify_identity(path, info, size) -> None:
 def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pages, page_limit):
     from pypdf import PdfReader
 
-    from .ingestion import _audit_native_pdf_page, _pdf_large_raster, _pdf_table_layout
-
     stream, info = _open_original(path, size)
     with stream:
         _verify_hash(stream, source_hash, size)
@@ -388,50 +426,10 @@ def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pag
         pages = _restore_pages(checkpoint, source_hash, size, count)
         pending = [page for page in pages if needs_native(page)][:max_pages]
         characters = sum(max(len(page["native_text"]), len(page["text"])) for page in pages)
-        for previous in pending:
-            number = previous["page"]
-            page = reader.pages[number - 1]
-            content = page.get_contents()
-            if content is not None and len(content.get_data()) > _MAX_PAGE_STREAM_BYTES:
-                raise ValueError(f"PDF 第 {number} 页内容流超过 16 MB 处理限制。")
-            text = (page.extract_text() or "").strip()
-            characters += len(text) - max(len(previous["native_text"]), len(previous["text"]))
-            if characters > _MAX_TEXT:
-                raise ValueError("PDF 聚合正文超过 4,000,000 字符处理限制。")
-            reasons = [] if text else ["empty_text"]
-            if _pdf_large_raster(page):
-                reasons.append("large_raster")
-            if _pdf_table_layout(content, page.get("/Resources")):
-                reasons.append("table_layout")
-            pages[number - 1] = {
-                "page": number,
-                "printed_page": None,
-                "native_text": text,
-                "text": text,
-                "status": "pending_ocr" if reasons else "native",
-                "ocr_required": bool(reasons),
-                "reasons": reasons,
-                "source_hash": source_hash,
-            }
-        if pending:
-            import pypdfium2 as pdfium
-
-            stream.seek(0)
-            with pdfium.PdfDocument(stream) as document:
-                for previous in pending:
-                    page = pages[previous["page"] - 1]
-                    pdfpage = document[page["page"] - 1]
-                    try:
-                        _audit_native_pdf_page(
-                            page,
-                            pdfpage,
-                            optional_content="/OCProperties" in reader.trailer["/Root"],
-                            render_blank=lambda number: _render_archive_page(
-                                path, source_hash, size, number, None, 200, page_limit
-                            ),
-                        )
-                    finally:
-                        pdfpage.close()
+        for page in _extract_native_pages(
+            reader, stream, path, source_hash, size, pending, page_limit, characters=characters
+        ):
+            pages[page["page"] - 1] = page
         # CAS files are immutable by design. Recheck bytes as well as identity
         # to reject in-place mutations or path replacement during extraction.
         _verify_hash(stream, source_hash, size)
@@ -446,6 +444,117 @@ def _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pag
         checkpoint.get("title", "") if checkpoint else Path(filename or path).stem,
         "archive-pdf-pages-v3",
     )
+
+
+def _inspect_archive_pdf(path, source_hash, size):
+    from pypdf import PdfReader
+
+    stream, info = _open_original(path, size)
+    with stream:
+        _verify_hash(stream, source_hash, size)
+        reader = PdfReader(stream, strict=False)
+        if reader.is_encrypted:
+            raise ValueError("不支持加密 PDF，请先提供解密后的文档。")
+        count = len(reader.pages)
+        if not 0 < count <= _MAX_PAGES:
+            raise ValueError(f"采集 PDF 页数必须为 1 至 {_MAX_PAGES} 页。")
+        _verify_hash(stream, source_hash, size)
+        _verify_identity(path, info, size)
+    return {"source_hash": source_hash, "source_size": size, "total_pages": count}
+
+
+def _parse_archive_page_window(path, source_hash, size, total_pages, first_page, max_pages, page_limit):
+    import time
+
+    from pypdf import PdfReader
+
+    started = time.monotonic_ns()
+    stream, info = _open_original(path, size)
+    with stream:
+        _verify_hash(stream, source_hash, size)
+        reader = PdfReader(stream, strict=False)
+        if reader.is_encrypted:
+            raise ValueError("不支持加密 PDF，请先提供解密后的文档。")
+        count = len(reader.pages)
+        if count != total_pages or not 0 < count <= page_limit:
+            raise ValueError("PDF 原件物理页数与窗口绑定不匹配。")
+        pending = [
+            {"page": number, "native_text": "", "text": ""}
+            for number in range(first_page, min(count + 1, first_page + max_pages))
+        ]
+        pages = _extract_native_pages(reader, stream, path, source_hash, size, pending, page_limit)
+        _verify_hash(stream, source_hash, size)
+        _verify_identity(path, info, size)
+    return {
+        "protocol": "archive-pdf-native-window-v1",
+        "source_hash": source_hash,
+        "source_size": size,
+        "total_pages": count,
+        "first_page": pages[0]["page"],
+        "last_page": pages[-1]["page"],
+        "pages": pages,
+        "quality": {"complete": False, "status": "native_evidence_only"},
+        "derived_status": "not_generated",
+        "index_status": "not_generated",
+        "worker_stats": {
+            "pid": os.getpid(),
+            "started_monotonic_ns": started,
+            "finished_monotonic_ns": time.monotonic_ns(),
+        },
+    }
+
+
+def _extract_native_pages(reader, stream, path, source_hash, size, pending, page_limit, *, characters=0):
+    """Shared extraction/audit, independent of whole-document assembly."""
+    from .ingestion import _audit_native_pdf_page, _pdf_large_raster, _pdf_table_layout
+
+    pages = []
+    for previous in pending:
+        number = previous["page"]
+        page = reader.pages[number - 1]
+        content = page.get_contents()
+        if content is not None and len(content.get_data()) > _MAX_PAGE_STREAM_BYTES:
+            raise ValueError(f"PDF 第 {number} 页内容流超过 16 MB 处理限制。")
+        text = (page.extract_text() or "").strip()
+        characters += len(text) - max(len(previous["native_text"]), len(previous["text"]))
+        if characters > _MAX_TEXT:
+            raise ValueError("PDF 聚合正文超过 4,000,000 字符处理限制。")
+        reasons = [] if text else ["empty_text"]
+        if _pdf_large_raster(page):
+            reasons.append("large_raster")
+        if _pdf_table_layout(content, page.get("/Resources")):
+            reasons.append("table_layout")
+        pages.append(
+            {
+                "page": number,
+                "printed_page": None,
+                "native_text": text,
+                "text": text,
+                "status": "pending_ocr" if reasons else "native",
+                "ocr_required": bool(reasons),
+                "reasons": reasons,
+                "source_hash": source_hash,
+            }
+        )
+    if pages:
+        import pypdfium2 as pdfium
+
+        stream.seek(0)
+        with pdfium.PdfDocument(stream) as document:
+            for page in pages:
+                pdfpage = document[page["page"] - 1]
+                try:
+                    _audit_native_pdf_page(
+                        page,
+                        pdfpage,
+                        optional_content="/OCProperties" in reader.trailer["/Root"],
+                        render_blank=lambda number: _render_archive_page(
+                            path, source_hash, size, number, None, 200, page_limit
+                        ),
+                    )
+                finally:
+                    pdfpage.close()
+    return pages
 
 
 def _assemble_archive_manifest(pages, source_hash, size, count, max_pages, checkpoint, title, pipeline):

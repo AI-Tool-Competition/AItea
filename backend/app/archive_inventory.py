@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–18 without opening originals.
+"""Export a private, read-only inventory of schema 7–19 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -27,7 +27,7 @@ from .ingestion_quality import text_complete
 from .native_mapping_inventory import MAX_MANIFEST_BYTES, MAX_RECORD_BYTES, mappings, validate_mapping
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
@@ -102,7 +102,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–18; use the matching application version"
+                "archive inventory requires schema 7–19; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -132,9 +132,14 @@ def _validate_schema(conn):
             )
         if version >= 16:
             conn.execute("SELECT user_id,can_login,is_admin,revision FROM user_access LIMIT 0")
+        if version >= 19:
+            conn.execute(
+                "SELECT id,owner_id,item_id,phase,status,reason,available_at,binding_sha256,retry_plan FROM collection_recovery_jobs LIMIT 0"
+            )
+            conn.execute("SELECT id,recovery_id,event,detail FROM collection_recovery_events LIMIT 0")
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–18 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–19 database") from exc
 
 
 class _Originals:
@@ -1910,7 +1915,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–18)"
+        description="Export a read-only catalog of stored originals (schema 7–19)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")

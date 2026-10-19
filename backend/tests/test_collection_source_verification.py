@@ -96,6 +96,39 @@ def test_full_original_bytes_have_immutable_hash_and_do_not_claim_parser_validat
     assert not (tmp_path / "tea.sqlite3").exists()
 
 
+@pytest.mark.parametrize("closed", [True, False])
+def test_bkpm_representation_retains_http_entity_and_exact_pdf_mapping(tmp_path, monkeypatch, closed):
+    boundary = b"----WebKitFormBoundaryabcd1234"
+    pdf = b"%PDF-1.7\nimmutable file\n%%EOF\n"
+    body = (
+        b"--" + boundary + b'\r\nContent-Disposition: form-data; name="file"; filename="law.pdf"'
+        b"\r\nContent-Type: application/pdf\r\n\r\n"
+        + pdf
+        + b"\r\n--"
+        + boundary
+        + (b"--\r\n" if closed else b"\r\n")
+    )
+    transport(monkeypatch, lambda url: (body, "application/pdf"))
+    definition = selected("4.1")["indonesia-20261003"]["items"][0]
+    row = {"country": "ID", "item_id": "4.1", "recipe": verification.recipe_for(definition)}
+    url = "https://jdih-storage.bkpm.go.id/jdih/jdih/2026-law.pdf"
+    probe = verification.SourceVerifier(tmp_path).probe(row, {"url": url, "purpose": "document"}, definition)
+    assert probe["status"] == "downloaded"
+    assert probe["original_acquired"] is closed
+    assert probe["parser_verification"] == "not_executed_by_source_access_probe"
+    if closed:
+        assert (tmp_path / probe["evidence_path"]).read_bytes() == pdf
+        original_response = probe["source_response"]
+        assert Path(original_response["cas_path"]).read_bytes() == body
+        assert original_response["sha256"] == hashlib.sha256(body).hexdigest()
+        part = original_response["extraction"]["parts"][0]
+        assert body[part["byte_offset"] : part["byte_offset"] + part["size"]] == pdf
+    else:
+        assert (tmp_path / probe["evidence_path"]).read_bytes() == body
+        assert "source_response" not in probe
+        assert probe["envelope_error"]
+
+
 def test_followed_original_keeps_exact_archived_source_proof(tmp_path, monkeypatch):
     html = b'<html><title>Constitution</title><a href="https://s.mkri.id/public/content/infoumum/regulation/pdf/UUD%20NRI%2045%20.pdf">UUD 1945</a></html>'
     pdf = b"%PDF-1.7\nimmutable original\n%%EOF"

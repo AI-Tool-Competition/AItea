@@ -244,6 +244,10 @@ class ChecklistService:
             "total": len(self.plans),
         }
 
+    def library_countries(self):
+        countries = sorted({plan["country"] for plan in self.plans.values()})
+        return {"items": [{"country": country} for country in countries], "total": len(countries)}
+
     def binding(self, conn, owner, plan, item):
         return conn.execute(
             "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=? AND item_id=?",
@@ -466,7 +470,9 @@ class ChecklistService:
                 fail(409, "request_conflict", "同一请求标识不能用于不同采集内容")
             return self.service.collection.run_dict(conn, row)
 
-    def start(self, owner, plan_id, item_id, payload, *, kind, defer_relations=False, version=None):
+    def start(
+        self, owner, plan_id, item_id, payload, *, kind, defer_relations=False, version=None, scheduled=False
+    ):
         from .service import fail
 
         plan, item = self.definition(plan_id, item_id, version=version)
@@ -482,6 +488,8 @@ class ChecklistService:
             if previous:
                 return previous
             binding, _ = self._configure_item(conn, owner, plan, item)
+            if scheduled and not self.service.collection.source_due(conn, owner, binding["source_id"]):
+                return None
             if conn.execute(
                 """SELECT 1 FROM collection_runs r WHERE r.source_id=? AND r.status IN ('queued','running')
                 AND (?=0 OR EXISTS(SELECT 1 FROM collection_items i WHERE i.run_id=r.id AND i.status IN ('queued','fetching')))""",

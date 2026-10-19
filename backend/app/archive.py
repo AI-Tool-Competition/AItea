@@ -13,6 +13,16 @@ from .db import dump, now, uid
 from .system_library import SYSTEM_OWNER_ID, public_document_sql, register_source_guard, require_admission
 
 
+def sanitize_filename(filename, *, fallback):
+    """Return a bounded display name and the legacy name used for family identity."""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", Path(filename.replace("\\", "/")).name)
+    legacy = cleaned[:180] or fallback
+    suffix = Path(cleaned).suffix
+    if len(cleaned) > 180 and 0 < len(suffix) < 180:
+        return cleaned[: 180 - len(suffix)] + suffix, legacy
+    return legacy, legacy
+
+
 def family_key(
     owner,
     filename,
@@ -433,9 +443,7 @@ class LegalArchive:
 
         country = country_from_collection(collection)
         require_admission(owner, source_url, country)
-        filename = (
-            re.sub(r"[\x00-\x1f\x7f]", "", Path(filename.replace("\\", "/")).name)[:180] or "source.bin"
-        )
+        filename, identity_filename = sanitize_filename(filename, fallback="source.bin")
         role = "secondary" if level == "attachment" else "primary"
         if parent_id:
             parent = self.service.own_document(conn, owner, parent_id)
@@ -443,7 +451,7 @@ class LegalArchive:
                 fail(422, "country_mismatch", "附件与主文件必须属于同一国家范围")
         family = family_key(
             owner,
-            filename,
+            identity_filename,
             source_url,
             role=role,
             parent_id=parent_id,

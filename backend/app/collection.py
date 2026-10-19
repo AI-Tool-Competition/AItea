@@ -65,6 +65,7 @@ class CollectionService:
         self.download_workers = _setting("TEA_COLLECT_WORKERS", 8, 16)
         self.host_workers = min(_setting("TEA_COLLECT_PER_HOST", 2, 4), self.download_workers)
         self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 32)
+        self.embedding_workers = min(_setting("TEA_EMBED_WORKERS", 2, 32), self.processing_workers)
         parse_worker_limit()  # Reject invalid parser capacity before claiming work.
         self.worker_health = {"status": "stopped", "last_error_at": None}
         self._migrate()
@@ -78,6 +79,9 @@ class CollectionService:
         from .transfers import CollectionTransfers
 
         self.transfers = CollectionTransfers(self)
+        from .collection_recovery import CollectionRecovery
+
+        self.recovery = CollectionRecovery(self)
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -146,6 +150,68 @@ class CollectionService:
             if (country and not row) or (row and row[0] != "primary"):
                 fail(422, "invalid_primary", "所选法规在当前采集组中不是一级资料")
 
+    @staticmethod
+    def source_due(conn, owner, source_id):
+        return (
+            conn.execute(
+                """SELECT 1 FROM sources s WHERE s.id=? AND s.owner_id=? AND s.enabled=1
+            AND (s.last_attempt_at IS NULL OR julianday(s.last_attempt_at)+s.interval_hours/24.0<=julianday('now'))
+            AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))""",
+                (source_id, owner),
+            ).fetchone()
+            is not None
+        )
+
+    def enqueue_scheduled(self, owner, source_id):
+        """Managed catalogs keep their published discovery/selection boundary."""
+        from .service import AppError, fail
+
+        with closing(self.db.connect()) as conn:
+            source = conn.execute(
+                "SELECT * FROM sources WHERE id=? AND owner_id=?", (source_id, owner)
+            ).fetchone()
+            if source is None:
+                fail(404, "not_found", "未找到采集来源")
+            if not self.source_due(conn, owner, source_id):
+                return None
+            binding = conn.execute(
+                "SELECT * FROM checklist_bindings WHERE source_id=? AND owner_id=?", (source_id, owner)
+            ).fetchone()
+        if not source["checklist"]:
+            return self.enqueue(owner, source_id, {"client_request_id": "schedule-" + uid()}, scheduled=True)
+        if binding is None:
+            fail(409, "checklist_binding_missing", "清单来源缺少版本绑定，请核验配置")
+        try:
+            return self.service.checklists.start(
+                owner,
+                binding["plan_id"],
+                binding["item_id"],
+                {"client_request_id": "schedule-" + uid(), "confirm_condition": False},
+                kind="discovery",
+                version=binding["version"],
+                scheduled=True,
+            )
+        except AppError as error:
+            if error.code not in {
+                "condition_required",
+                "specialized_review_required",
+                "adapter_required",
+                "no_candidates",
+                "definition_changed",
+                "unknown_plan",
+                "not_found",
+            }:
+                raise
+            # A bounded scheduled attempt does not grant condition approval or
+            # replace immutable plan definitions. Keep the actionable reason.
+            with self.db.transaction() as conn:
+                if self.source_due(conn, owner, source_id):
+                    conn.execute(
+                        "UPDATE sources SET last_attempt_at=?,status='failed',last_error=?,updated_at=? WHERE id=? AND owner_id=?",
+                        (now(), error.message[:450], now(), source_id, owner),
+                    )
+            return None
+
     def enqueue(
         self, owner, source_id, payload, *, scheduled=False, conn=None, trusted_plan=None, request_hash=None
     ):
@@ -173,15 +239,7 @@ class CollectionService:
             fail(404, "not_found", "未找到采集来源")
         if source["checklist"] and trusted_plan is None:
             fail(409, "checklist_source", "请从采集清单发现候选并选择正文，目录不能直接入库")
-        if (
-            scheduled
-            and not conn.execute(
-                """SELECT 1 FROM sources s WHERE s.id=? AND s.enabled=1
-            AND (s.last_attempt_at IS NULL OR julianday(s.last_attempt_at)+s.interval_hours/24.0<=julianday('now'))
-            AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))""",
-                (source_id,),
-            ).fetchone()
-        ):
+        if scheduled and not self.source_due(conn, owner, source_id):
             return None  # Re-check due state atomically; another scheduler/manual request may have won.
         previous = conn.execute(
             "SELECT * FROM collection_runs WHERE owner_id=? AND client_request_id=?",
@@ -465,9 +523,28 @@ class CollectionService:
             return self.run_dict(conn, self.own_run(conn, owner, run_id))
 
     def queue_processing(self, conn, document_id, owner, *, retry_ocr=False):
+        if conn.execute(
+            """SELECT 1 FROM processing_jobs p JOIN collection_recovery_jobs r
+            ON r.item_id=p.document_id AND r.owner_id=p.owner_id AND r.queue_kind='processing'
+            AND r.phase=p.phase WHERE p.document_id=? AND p.owner_id=? AND p.status='failed'
+            AND p.phase='embed' AND r.status='blocked' AND r.reason='paid_result_unknown'""",
+            (document_id, owner),
+        ).fetchone():
+            from .service import fail
+
+            fail(
+                409,
+                "embedding_outcome_review_required",
+                "向量请求结果尚未确认，请先核验已保存回执并指定补齐范围",
+            )
         if retry_ocr:
             from .ingestion import pdf_quality
             from .native_asset_ocr import apply_asset_checkpoint, assets
+            from .ocr_error_evidence import (
+                preserve_previous_asset_attempt,
+                preserve_previous_page_attempt,
+                request_outcome_unknown,
+            )
 
             row = conn.execute(
                 "SELECT d.manifest FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND p.status='failed'",
@@ -476,15 +553,19 @@ class CollectionService:
             manifest = json.loads(row["manifest"]) if row else {}
             pages = manifest.get("pages", [])
             changed = False
-            if any(page.get("status") == "ocr_failed" for page in pages):
-                for page in pages:
-                    if page.get("status") == "ocr_failed":
-                        page["status"] = "pending_ocr"
-                        page.setdefault("ocr", {})["attempts"] = 0
+            for page in pages:
+                if page.get("status") == "ocr_failed" and not request_outcome_unknown(page.get("ocr", {})):
+                    preserve_previous_page_attempt(page)
+                    page["status"] = "pending_ocr"
+                    page.setdefault("ocr", {})["attempts"] = 0
+                    changed = True
+            if changed:
                 manifest["quality"] = pdf_quality(pages)
-                changed = True
             for asset in assets(manifest):
-                if asset["asset_status"] == "ocr_failed":
+                if asset["asset_status"] == "ocr_failed" and not request_outcome_unknown(
+                    asset.get("ocr", {})
+                ):
+                    preserve_previous_asset_attempt(asset)
                     asset["asset_status"] = "pending_vision"
                     asset.setdefault("ocr", {})["attempts"] = 0
                     asset.pop("error", None)
@@ -646,10 +727,21 @@ class CollectionService:
                 elif active_phases == {"embed"}:
                     preferred = "parse"
             order = "CASE WHEN phase=? THEN 0 ELSE 1 END," if preferred else ""
+            # Keep embed admission durable and bounded independently of parser
+            # capacity. Explicit transport tuning must also opt into more live
+            # document leases; the default remains two.
+            embedding_available = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?",
+                    (timestamp,),
+                ).fetchone()[0]
+                < self.embedding_workers
+            )
             row = conn.execute(
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope
                 + policy
+                + " AND (phase!='embed' OR ?)"
                 + """ AND EXISTS(SELECT 1 FROM documents owned_source
                     WHERE owned_source.id=processing_jobs.document_id
                         AND owned_source.owner_id=processing_jobs.owner_id AND owned_source.role='primary')"""
@@ -671,7 +763,7 @@ class CollectionService:
                 + " ORDER BY "
                 + order
                 + "updated_at,document_id LIMIT 1",
-                (timestamp, *arguments, timestamp, *((preferred,) if preferred else ())),
+                (timestamp, *arguments, embedding_available, timestamp, *((preferred,) if preferred else ())),
             ).fetchone()
             if not row:
                 return None
@@ -769,6 +861,21 @@ class CollectionService:
                 ),
             )
             if exhausted:
+                from .collection_recovery import Decision
+
+                decision = (
+                    self.recovery.processing_decision(conn, dict(row), interrupted=True)
+                    if table == "processing_jobs"
+                    else Decision("worker_interrupted", True)
+                )
+                self.recovery.record_failure(
+                    conn,
+                    dict(row),
+                    processing=table == "processing_jobs",
+                    decision=decision,
+                    exhausted=True,
+                    error_type="expired_lease",
+                )
                 if table == "collection_items":
                     self.service.checklists.release_candidate(conn, dict(row))
                     self._refresh(conn, row["run_id"])
@@ -958,6 +1065,7 @@ class CollectionService:
                 with self.db.transaction() as conn:
                     if self._valid_claim(conn, claim):
                         self.service.checklists.save_page(conn, claim, fetched, plan, checklist_result)
+                        self.recovery.completed(conn, claim, processing=False)
                 return
             if (
                 plan["discover_attachments"]
@@ -1032,6 +1140,7 @@ class CollectionService:
                         conn, claim["run_id"], claim["owner_id"], url, "attachment", parent=doc["id"]
                     )
                 self._refresh(conn, claim["run_id"])
+                self.recovery.completed(conn, claim, processing=False)
         except Exception as error:
             self._failure(claim, error, processing=False)
 
@@ -1172,6 +1281,40 @@ class CollectionService:
             # request attempt through on_page before any HTTP call.
             return reference
 
+        def store_response_error(evidence):
+            from .ocr_error_evidence import persist_response_evidence, validate_response_binding
+
+            def current_request(conn):
+                current_document(conn)
+                saved = json.loads(
+                    conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+                )
+                page = next((p for p in saved["pages"] if p["page"] == evidence.get("page")), None)
+                validate_response_binding(evidence, doc["content_hash"], page)
+                return page
+
+            with closing(self.db.connect()) as conn:
+                request_page = current_request(conn)
+            reference = persist_response_evidence(
+                self.service.archive.blobs,
+                doc["owner_id"],
+                evidence,
+                source_hash=doc["content_hash"],
+                request_page=request_page,
+            )
+
+            def update(conn):
+                page = next(p for p in manifest["pages"] if p["page"] == evidence["page"])
+                request = validate_response_binding(evidence, doc["content_hash"], page)
+                request["error_response"] = {
+                    **{key: value for key, value in evidence.items() if key != "response_base64"},
+                    "blob": reference,
+                }
+                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+
+            self._write_ocr_checkpoint(checkpoint_lock, current_request, update)
+            return reference
+
         def checkpoint(page):
             # Each completed physical page is durable before another batch.
             # The lease check prevents a stale worker from replacing new work.
@@ -1213,6 +1356,7 @@ class CollectionService:
             on_image=store_image,
             on_region=store_region,
             on_reuse=reuse,
+            on_response_error=store_response_error,
             archive_path=doc["storage_path"] if archive_mode else None,
             archive_size=doc["size"] if archive_mode else None,
         )
@@ -1241,18 +1385,24 @@ class CollectionService:
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
-            import_present = "collection_import" in manifest
-            import_origin = deepcopy(manifest.get("collection_import"))
+            provenance_keys = (
+                "collection_import",
+                "collection_evidence",
+                "gazette_publication",
+                "native_page_recovery",
+            )
+            stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
 
             def preserve_import_origin(result):
-                # Parsers rebuild derived content. Keep the stored import identity,
-                # including its original guard, without granting it legal authority.
-                # Recomputing that guard would allow an older source snapshot to
-                # replace paid OCR or vectors already committed in this database.
-                if import_present:
-                    result["collection_import"] = deepcopy(import_origin)
-                else:
-                    result.pop("collection_import", None)
+                # Keep stored source evidence and already mapped CAS paths when
+                # parsers rebuild derived text. Do not accept parser-created
+                # provenance or recompute an import guard: neither grants an
+                # older snapshot permission to replace paid OCR or vectors.
+                for key in provenance_keys:
+                    if key in stored_provenance:
+                        result[key] = deepcopy(stored_provenance[key])
+                    else:
+                        result.pop(key, None)
                 return result
 
             fingerprint = self.service.embedding_fingerprint()
@@ -1457,7 +1607,11 @@ class CollectionService:
                 incomplete = not text_complete(manifest) and not next_phase
                 conn.execute(
                     "UPDATE documents SET status=?,error=? WHERE id=?",
-                    ("processing" if needs_parse or needs_ocr else "ready", warning, doc["id"]),
+                    (
+                        "processing" if needs_parse or needs_ocr else ("failed" if incomplete else "ready"),
+                        warning,
+                        doc["id"],
+                    ),
                 )
                 if not needs_index and current_fingerprint and indexable and text_complete(manifest):
                     conn.execute(
@@ -1484,6 +1638,17 @@ class CollectionService:
                     ),
                 )
                 self._refresh_document(conn, doc["id"])
+                if incomplete:
+                    self.recovery.record_failure(
+                        conn,
+                        claim,
+                        processing=True,
+                        decision=self.recovery.processing_decision(conn, claim),
+                        exhausted=True,
+                        error_type="incomplete_checkpoint",
+                    )
+                elif next_phase != claim["phase"]:
+                    self.recovery.completed(conn, claim, processing=True)
         except Exception as error:
             self._failure(claim, error, processing=True)
 
@@ -1534,6 +1699,20 @@ class CollectionService:
                 if processing:
                     self._release_disallowed_policy_claim(conn, claim)
                 return
+            from .collection_recovery import Decision
+
+            decision = (
+                Decision("deferred", True)
+                if deferred
+                else self.recovery.processing_decision(conn, claim, error=error, retryable=retryable)
+                if processing
+                else Decision("transient_fetch", True)
+                if retryable
+                else Decision("permanent_fetch")
+            )
+            if not deferred and getattr(error, "request_outcome_unknown", False):
+                exhausted = True
+                decision = Decision("paid_result_unknown")
             conn.execute(
                 f"UPDATE {table} SET status=?,available_at=?,error=?,lease_token=NULL,lease_until=NULL WHERE {key}=?",
                 (
@@ -1564,6 +1743,16 @@ class CollectionService:
                         (getattr(error, "response_host", None) or claim["host"], time.time() + delay),
                     )
                 self._refresh(conn, claim["run_id"])
+            if not deferred:
+                self.recovery.record_failure(
+                    conn,
+                    claim,
+                    processing=processing,
+                    decision=decision,
+                    exhausted=exhausted,
+                    ready_at=time.time() + delay,
+                    error_type=type(error).__name__,
+                )
         logger.info(
             "collection_item_deferred" if deferred else "collection_item_failed",
             extra={"queue": table, "item_id": claim[key], "error_type": type(error).__name__},

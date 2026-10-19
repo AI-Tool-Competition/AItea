@@ -76,7 +76,7 @@ def test_transient_provider_failures_retry_three_times_without_looping(enabled, 
 
     def unavailable(request):
         calls.append(True)
-        raise httpx.ReadTimeout("test transport failure", request=request)
+        raise httpx.ConnectTimeout("connection not established", request=request)
 
     monkeypatch.setattr(
         vision.httpx, "Client", lambda **kw: original(transport=httpx.MockTransport(unavailable), **kw)

@@ -511,7 +511,10 @@ class RetrievalIndex:
                     ).fetchone():
                         warnings.append("部分正文尚未完成当前模型的向量索引，这些片段仅参与关键词检索。")
                     try:
-                        vector = embed_texts([query])
+                        from .ingestion import embedding_priority
+
+                        with embedding_priority("query"):
+                            vector = embed_texts([query])
                         if vector is None or len(vector) != 1:
                             raise ValueError("查询向量不可用")
                         semantic = self._dense(conn, fingerprint, vector[0])

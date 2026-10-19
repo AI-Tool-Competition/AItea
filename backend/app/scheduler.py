@@ -6,8 +6,6 @@ import logging
 from threading import Event, Lock, Thread
 from typing import Protocol
 
-from .db import uid
-
 logger = logging.getLogger(__name__)
 
 
@@ -27,12 +25,21 @@ class ScheduledCollector:
         self._stop = Event()
         self._cycle_lock = Lock()
         self._thread: Thread | None = None
+        self.last_recovery: dict[str, int] = {}
 
     def run_once(self) -> dict[str, int]:
         result = {"succeeded": 0, "failed": 0}
         if self._stop.is_set() or not self._cycle_lock.acquire(blocking=False):
             return result
         try:
+            collection = getattr(self.service, "collection", None)
+            recovery = getattr(collection, "recovery", None)
+            if recovery is not None:
+                try:
+                    self.last_recovery = recovery.run_due(limit=min(self.batch_size, 32))
+                except Exception:
+                    result["failed"] += 1
+                    logger.exception("Could not resume due collection failures")
             try:
                 sources = self.service.due_sources()[: self.batch_size]
             except Exception:
@@ -42,14 +49,8 @@ class ScheduledCollector:
                 if self._stop.is_set():
                     break
                 try:
-                    collection = getattr(self.service, "collection", None)
                     if collection is not None:
-                        collection.enqueue(
-                            source["owner_id"],
-                            source["id"],
-                            {"client_request_id": "schedule-" + uid()},
-                            scheduled=True,
-                        )
+                        collection.enqueue_scheduled(source["owner_id"], source["id"])
                     else:
                         self.service.fetch_source(source["owner_id"], source["id"])
                 except Exception:

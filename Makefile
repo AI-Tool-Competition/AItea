@@ -6,6 +6,7 @@ WEB_PORT ?=
 NAME ?=
 PARENT ?= .worktrees
 BASE ?=
+PYTEST_BASETEMP ?= .dev/pytest
 
 # Keep every checkout's Python environment and package caches local.
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/backend/.venv
@@ -92,7 +93,7 @@ collect-resources:
 	uv run --project backend --locked python scripts/collect_resources.py
 
 backend-check:
-	uv run --project backend --locked pytest backend/tests --basetemp=.dev/pytest
+	uv run --project backend --locked pytest backend/tests --basetemp="$(PYTEST_BASETEMP)"
 	uv run --project backend --locked ruff check --config backend/pyproject.toml backend/app backend/tests scripts
 
 frontend-check:

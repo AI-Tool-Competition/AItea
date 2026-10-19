@@ -75,14 +75,12 @@ type Props = {
   record?: CaseDetail;
   recordLoading: boolean;
   stageId: string;
-  libraryCaseId?: string;
   conversations?: NodeConversation[];
   conversationId?: string;
   conversationBusy?: boolean;
   onNavigate: (view: TeaView) => void;
   onCase: (id: string) => void;
   onStage: (id: string) => void;
-  onLibrary?: (id: string) => void;
   onCreate: () => void;
   onConversation?: (stage: string, id: string) => void;
   onCreateConversation?: (stage: string) => void;
@@ -460,6 +458,18 @@ export function TeaNavigation({
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={view === "library"}
+              aria-current={view === "library" ? "page" : undefined}
+              tooltip="资料库"
+              aria-label="资料库"
+              onClick={() => navigate(() => onNavigate("library"))}
+            >
+              <BookOpen />
+              <span>资料库</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               isActive={view === "account"}

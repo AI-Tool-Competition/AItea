@@ -35,6 +35,11 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     @asynccontextmanager
     async def lifespan(app):
+        if not is_test:
+            os.environ.setdefault(
+                "EMBEDDING_ADMISSION_PATH",
+                str(Path(__file__).resolve().parents[2] / ".dev" / "embedding-admission.sqlite3"),
+            )
         from .collection import CollectionWorkers
         from .scheduler import start_scheduler, stop_scheduler
 
@@ -760,6 +765,10 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         current=Depends(admin_user),
     ):
         return service.collection.runs(current["id"], id, limit, offset)
+
+    @app.get("/api/tea/library/countries", response_model=models.LibraryCountryList)
+    def library_countries(current=Depends(user)):
+        return service.checklists.library_countries()
 
     @app.get("/api/tea/collection-plans")
     def collection_plans(current=Depends(admin_user)):

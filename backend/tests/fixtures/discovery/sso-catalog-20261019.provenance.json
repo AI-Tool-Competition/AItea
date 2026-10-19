@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "sso-sl-current-20261019.html",
+    "fixture_sha256": "9e2ba67c696cc6ca9aca0ef0c5c75958a7e2df20577726f8732a50f4a4f4305f",
+    "source_url": "https://sso.agc.gov.sg/Browse/SL/Current",
+    "source_sha256": "0d82aa3e0bf3adb5f5b69ec6391ea40f995ab12de8343af90d5e7140179d1c40",
+    "fetched_at": "2026-10-19T09:49:21.565827+00:00",
+    "fixture_transform": "Exact page-count, top pager and browse-list HTML fragments; navigation/header/footer removed. No row or link bytes edited."
+  },
+  {
+    "fixture": "sso-constitutional-20261019.html",
+    "fixture_sha256": "7b63d2fd523fe8e7d351dac8e0ff7a9b72367a166293d8282eb4a7b4bdd81f0d",
+    "source_url": "https://sso.agc.gov.sg/Browse/act/Current/All?PageSize=20&SortBy=Title&SortOrder=ASC&SubType=Constitutional",
+    "source_sha256": "19f781ca14623536096c94a91b67fb9397db5f1a55bd18589cd4230f02e443bb",
+    "fetched_at": "2026-10-19T09:49:21.022634+00:00",
+    "fixture_transform": "Exact page-count, top pager and browse-list HTML fragments; navigation/header/footer removed. No row or link bytes edited."
+  }
+]

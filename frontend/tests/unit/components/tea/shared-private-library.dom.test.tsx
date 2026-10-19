@@ -61,7 +61,7 @@ function urlOf(input: RequestInfo | URL) {
 }
 function defaultRead(input: RequestInfo | URL) {
   const url = urlOf(input);
-  if (url.pathname.endsWith("/collection-plans"))
+  if (url.pathname.endsWith("/library/countries"))
     return response({
       items: [{ country: "ID" }, { country: "SG" }],
       total: 2,

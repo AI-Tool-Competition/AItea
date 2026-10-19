@@ -615,8 +615,13 @@ class _Page(HTMLParser):
         values = dict(attrs)
         if tag in _HIDDEN_TAGS:
             self.hidden.append(tag)
-        if tag == "script" and "/cdn-cgi/challenge-platform/" in (values.get("src") or ""):
-            self.challenge = True
+        if tag == "script":
+            source = values.get("src") or ""
+            source_host = urlsplit(source).hostname or ""
+            if "/cdn-cgi/challenge-platform/" in source or (
+                source_host.endswith(".token.awswaf.com") and urlsplit(source).path.endswith("/challenge.js")
+            ):
+                self.challenge = True
         if self.hidden:
             return
         if (values.get("id") or "").casefold() in {
@@ -750,6 +755,9 @@ class _Recipe:
         self.sg_official_2026 = recipe.get("sg_official_2026", False)
         if not isinstance(self.sg_official_2026, bool):
             raise ValueError("新加坡官方新站配置无效。")
+        self.sso_catalog_2026 = recipe.get("sso_catalog_2026", False)
+        if not isinstance(self.sso_catalog_2026, bool):
+            raise ValueError("SSO 目录配置无效。")
         self.max_links = recipe.get("max_links", 200)
         if (
             isinstance(self.max_links, bool)
@@ -1130,6 +1138,10 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         )
     if not visible:
         return _result(reason="页面没有可见内容，可能需要脚本或人工复核。")
+    if rules.sso_catalog_2026 and rules.adapter == "sso" and purpose == "catalog":
+        from .sso_discovery import inspect_catalog
+
+        return inspect_catalog(current, content, rules)
     scope = None
     if rules.sg_official_2026 and urlsplit(current).hostname == _PDPC_HOST:
         try:
@@ -1432,6 +1444,8 @@ def recipe_for(item: dict) -> dict:
             result["document_patterns_by_host"] = {_COURT_HOST: files[item["id"]]}
         return result
     if adapter == "sso":
+        if item.get("limits", {}).get("sso_catalog_2026") is True:
+            result["sso_catalog_2026"] = True
         category = "SL" if any("/browse/sl/" in x["url"].casefold() for x in seeds) else "Act"
         result.update(
             catalog_patterns=[

@@ -33,6 +33,7 @@ from app.discovery import (
     request_parameters,
 )
 from app.ingestion import DownloadError, _download
+from app.source_envelopes import extract_bkpm_multipart_pdf
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -182,6 +183,29 @@ class SourceVerifier:
                 else:
                     content = b""
             discovery = discover_page(fetched["url"], content, fetched["mime_type"], row["recipe"])
+            if original and not discovery.get("matched"):
+                # A few BKPM files are complete multipart/form-data entities
+                # mislabeled application/pdf. Preserve the raw response and
+                # recover only a fully delimited PDF from this exact adapter.
+                allowed = discover_page(fetched["url"], b"%PDF-", "application/pdf", row["recipe"])
+                if allowed.get("matched") and allowed.get("purpose") == "document":
+                    try:
+                        recovered = extract_bkpm_multipart_pdf(fetched["url"], content)
+                    except ValueError as exc:
+                        result["envelope_error"] = str(exc)
+                        recovered = None
+                    if recovered:
+                        pdf, extraction = recovered
+                        result["source_response"] = {
+                            "cas_path": str(blob.path),
+                            "sha256": blob.digest,
+                            "size": blob.size,
+                            "mime_type": fetched["mime_type"],
+                            "extraction": extraction,
+                        }
+                        blob = self.blobs.put(owner, [pdf])
+                        fetched["mime_type"] = "application/pdf"
+                        discovery = discover_page(fetched["url"], pdf[:8], "application/pdf", row["recipe"])
             result.update(
                 status="downloaded",
                 final_url=fetched["url"],
@@ -200,6 +224,10 @@ class SourceVerifier:
                 result["request_body"] = request["json_body"]
         except DownloadError as exc:
             result.update(status="failed", error=str(exc), retryable=exc.retryable)
+            if exc.retry_after is not None:
+                result["retry_after_seconds"] = exc.retry_after
+            if exc.response_host:
+                result["response_host"] = exc.response_host
         except Exception as exc:  # noqa: BLE001 -- sanitize every external probe failure at the report boundary
             # Source bodies and provider credentials must not reach report logs.
             result.update(status="failed", error_type=type(exc).__name__, retryable=False)
@@ -250,7 +278,16 @@ def update_coverage(row: dict) -> None:
     row["originals"] = [
         {
             key: probe[key]
-            for key in ("requested_url", "final_url", "content_hash", "size", "mime_type", "evidence_path")
+            for key in (
+                "requested_url",
+                "final_url",
+                "content_hash",
+                "size",
+                "mime_type",
+                "evidence_path",
+                "source_response",
+            )
+            if key in probe
         }
         for probe in originals
     ]

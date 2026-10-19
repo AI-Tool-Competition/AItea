@@ -117,6 +117,40 @@ def test_final_reassembly_keeps_pasal_and_penjelasan_across_windows(tmp_path):
     )
 
 
+def test_archive_above_5000_pages_keeps_bounded_windows_and_absolute_pixel_mapping(tmp_path, monkeypatch):
+    from app import archive_parsing, parsing, vision
+    from app.ingestion_quality import pdf_source_bindings_valid, text_complete
+
+    path, digest, size = pdf_file(tmp_path, [f"Physical page {number}." for number in range(1, 5002)])
+    result = parse(path, digest, size, max_pages=1)
+    assert len(result["pages"]) == 5001
+    assert result["archive_pdf"]["parsed_pages"] == [1]
+    assert result["quality"]["pending_parse_pages"] == list(range(2, 5002))
+    assert pdf_source_bindings_valid(result) and not text_complete(result)
+    rendered = archive_parsing.render_archive_page_bounded(
+        path,
+        source_hash=digest,
+        size=size,
+        page_number=5001,
+    )
+    assert rendered["page"] == 5001 and rendered["source_hash"] == digest
+    assert rendered["width"] * rendered["height"] <= 6_000_000
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: False)
+    rebuilt = parsing.ocr_bounded(
+        path.name,
+        None,
+        "application/pdf",
+        result,
+        archive_path=path,
+        archive_size=size,
+    )
+    assert len(rebuilt["pages"]) == 5001 and not text_complete(rebuilt)
+    assert rebuilt["pages"][0] == result["pages"][0]
+    resumed = parse(path, digest, size, manifest=rebuilt, max_pages=1)
+    assert resumed["archive_pdf"]["parsed_pages"] == [1, 2]
+    assert resumed["pages"][0] == result["pages"][0]
+
+
 def test_actual_blank_page_keeps_white_pixel_evidence_after_native_windows_finish(tmp_path):
     path, digest, size = pdf_file(tmp_path, ["Native body.", ""])
     result = parse(path, digest, size)

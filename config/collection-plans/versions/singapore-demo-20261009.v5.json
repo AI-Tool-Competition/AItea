@@ -1,0 +1,1311 @@
+{
+  "id": "singapore-demo-20261009",
+  "version": 5,
+  "country": "SG",
+  "title": "六堡茶新加坡出海法律资料采集清单（比赛Demo版）",
+  "source_document": {
+    "filename": "六堡茶新加坡出海法律采集清单_比赛Demo版_20261009.docx",
+    "date": "2026-10-09",
+    "sha256": "cd3f72ba56c05b62c55a8dfe558a53fe84978613843d9712380cc5d01b5feb47"
+  },
+  "description": "纯中国六堡茶干茶，经当地进口商进口，覆盖六类经营渠道。全量正式法规范围与实际已核正文分别验收。",
+  "principles": [
+    "六堡茶新加坡出海法律资料采集清单",
+    "比赛 Demo 版",
+    "本版服务于六至七天内完成的比赛演示。法域为新加坡，业务起点为中国生产的纯六堡茶干茶，经当地进口商进口后开展批发、零售及线上销售。六类销售渠道均纳入问题设计；即饮茶、添加药材或其他配料的产品、保本回购及多国转口业务须另行核实条件。",
+    "法律法规保留原采集范围。判例、监管材料及争议解决资料按六堡茶经营问题筛选，每项只列一个采集入口，截图全部删除，改为可执行步骤。正文、附件及具体条款的网址在采集时保存，入口不代表其下所有栏目均须采集。",
+    "本版是比赛团队的采集与验收方案。正式法规全量范围与比赛上线时已核验的数据分别记录；六七天的交付目标以六渠道问题的依据完整、可回查为准，不能将仅有目录的法规标成已取得全文。日期基准为2026年10月9日。",
+    "六类销售渠道的法律问题",
+    "比赛采集范围",
+    "保留并集中实施。三份宪制性文件、现行Acts和附属立法继续按全量范围采集。比赛前先完成全目录及与六渠道相关法规的正文核验，其余全文进度如实列示。Customs、IRAS、ACRA、CCS按具体经营问题收缩；EnterpriseSG仅用于贸易协定任务。",
+    "补入比赛方案。建议增加SFA食品准入与标签资料、PDPC个人信息及营销解释、IPOS商标及地理标志资料。食品营养及健康声称沿SFA官方转介核对HPB资料。三个新增任务弥补食品销售、客户数据和品牌授权的缺口，属于本版建议范围。",
+    "比赛暂缓。MAS金融监管、SGX交易所规则、EMA能源监管及EnterpriseSG商品交易和一般标准库暂缓。纯茶实物销售不默认需要这些专项资料；出现集资、保本回购、证券化或其他受监管安排时，标记超出演示范围并启动专项审查。",
+    "限定补充资料。法院程序和SIAC只保留演示问题确实调用的段落及必要版本。条约仅保留中国与新加坡交易可能适用的FTA和DTA；WTO改用印尼清单的法律文本、货物承诺、服务承诺三组采集方法。",
+    "统一边界。中国国内许可、地理标志授权和平台国内规则仅作为供货资料线索，不能直接作新加坡法律依据。平台招商、费率、经营报告、联系人、完整企业名录、日常新闻及全部监管个案均不采集。平台合同与店铺准入在真实经营时逐店核实。",
+    "正式法规的业务采集顺序",
+    "食品与进口：Sale of Food Act、Food Regulations、Food Safety and Security Act及其已生效条款和过渡安排，Customs Act、Regulation of Imports and Exports Act及GST法规。",
+    "交易与消费者：Sale of Goods Act、Misrepresentation Act、Unfair Contract Terms Act、Consumer Protection Fair Trading Act、Electronic Transactions Act及适用竞争规则。",
+    "主体数据与品牌：Companies Act及业务登记法规、Personal Data Protection Act及适用营销法规、Trade Marks Act、Geographical Indications Act及必要版权法规。",
+    "线下经营与救济：按实际事实核Employment Act、食品场所及租赁规则、Small Claims Tribunals Act、Rules of Court、International Arbitration Act和Sale of Goods United Nations Convention Act等。以上只安排采集顺序，具体名称、现行状态、授权规则与版本均以SSO为准。",
+    "本版共16项任务：正式法规3项、判例1项、监管补充7项、条件性争议解决2项、国际条约3项。新增来源为比赛方案建议；本轮只修订清单及核验样本，未执行批量下载或入库。",
+    "一级／二级资料用途与主法／附属立法法阶分离；目录、截图、模型命题不作为有效法律正文；现行状态须审核。"
+  ],
+  "chapters": [
+    {
+      "id": "1",
+      "title": "第1章 法律法规",
+      "notes": [
+        "保留正式法规原范围，执行时先取得目录，再完成业务相关正文及授权附属立法。以下业务主题只用于安排顺序和检索，不删除其他现行法规。"
+      ]
+    },
+    {
+      "id": "2",
+      "title": "第2章 判例法律命题",
+      "notes": [
+        "SG-LegalCite继续作为唯一数据集来源，限定引用判决年份2016至2025年。比赛答案仅调用人工核验通过的法律命题；不建立完整判决库。"
+      ]
+    },
+    {
+      "id": "3",
+      "title": "第3章 监管部门补充资料",
+      "notes": [
+        "七项任务均围绕具体经营义务、重要官方解释及能说明适用标准的决定。比赛材料建议控制在30至45份，上限45份，以覆盖演示问题为准；同一指南覆盖多个主题只存一份，不为数量补入无关文件。SSO法规只建立关联，操作截图和申请步骤说明排除。"
+      ]
+    },
+    {
+      "id": "4",
+      "title": "第4章 争议解决补充资料",
+      "notes": [
+        "两项均为条件任务。先完成法规、食品、税务、销售及数据合规；演示涉及诉讼或仲裁时再补相应程序资料，保留明确适用条件。"
+      ]
+    },
+    {
+      "id": "5",
+      "title": "第5章 国际条约",
+      "notes": [
+        "条约按交易国家、方向、事项及生效期间筛选。条约原件、国内实施法规和机构解释分别标明；优惠税率、原产地及运输证明须来自同一适用协定。"
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "线上零售电商",
+      "questions": "订单订立、茶叶质量、误导描述、退换货与退款、英文标签",
+      "sources": "SSO；SFA及HPB；CCS；判例"
+    },
+    {
+      "name": "内容直播及社交电商",
+      "questions": "产地年份与功效声称、达人推广、虚假折扣、电子交易",
+      "sources": "SSO；SFA及HPB；CCS；IPOS；判例"
+    },
+    {
+      "name": "私域社群及会员订购",
+      "questions": "客户资料与跨境传输、营销同意、退订、会员预付款与实物代存",
+      "sources": "SSO；PDPC；CCS；判例"
+    },
+    {
+      "name": "线下门店及体验终端",
+      "questions": "预包装零售与现场冲泡的区别、食品许可、租赁、雇佣与消费者责任",
+      "sources": "SSO；SFA；ACRA；CCS；判例"
+    },
+    {
+      "name": "批发经销及贴牌礼赠",
+      "questions": "货款、样品与质量、独家经销、品牌授权、仓储毁损、商务礼赠",
+      "sources": "SSO；ACRA；CCS；IPOS；判例"
+    },
+    {
+      "name": "出口及跨境电商",
+      "questions": "进口主体、逐票许可、归类、进口GST、原产地、当地履约与争议解决",
+      "sources": "SSO；Customs；SFA；IRAS；条约；程序资料"
+    }
+  ],
+  "limits": {
+    "item_count": 16,
+    "exhaustive_legislation_scope": true,
+    "regulatory_documents_target": [
+      30,
+      45
+    ],
+    "regulatory_documents_limit": 45,
+    "case_candidates_limit": 150,
+    "case_verified_target": [
+      20,
+      30
+    ],
+    "case_verified_limit": 50,
+    "conditional_items": [
+      "4.1",
+      "4.2"
+    ],
+    "deferred_sources": [
+      "MAS",
+      "SGX",
+      "EMA",
+      "EnterpriseSG商品交易和一般标准库"
+    ]
+  },
+  "items": [
+    {
+      "id": "1.1",
+      "chapter_id": "1",
+      "title": "Constitutional Instruments 三份宪制性文件",
+      "kind": "law",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://sso.agc.gov.sg/Browse/act/Current/All?PageSize=20&SortBy=Title&SortOrder=ASC&SubType=Constitutional",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-1.1",
+        "kind:law"
+      ],
+      "scope_include": [
+        "Constitutional Instruments 三份宪制性文件",
+        "范围：三份全部保留。宪法最高效力与两份独立建国基础文件分别记录，不能因同处目录认定三者效力相同。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 从Constitutional Instruments目录取得Constitution of the Republic of Singapore、Independence of Singapore Agreement 1965及Republic of Singapore Independence Act 1965，逐件核对文件名称。",
+        "2. 保存三份全文、附表、修订说明及可取得的历史版本，记录当前版本日期、实际生效日期和原文地址。",
+        "3. 按条文编号定位，与Acts任务中的重复文件合并，保留各自法律性质。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：三份全部保留。宪法最高效力与两份独立建国基础文件分别记录，不能因同处目录认定三者效力相同。",
+        "验收：三份均有正文及版本记录。一般进出口或税额问题优先查具体法规；发生政府权限、基本权利或规范冲突时再调用宪制依据。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：三份均有正文及版本记录。一般进出口或税额问题优先查具体法规；发生政府权限、基本权利或规范冲突时再调用宪制依据。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Constitutional Instruments 三份宪制性文件\n网页链接：https://sso.agc.gov.sg/Browse/act/Current/All?PageSize=20&SortBy=Title&SortOrder=ASC&SubType=Constitutional\n采集步骤：1. 从Constitutional Instruments目录取得Constitution of the Republic of Singapore、Independence of Singapore Agreement 1965及Republic of Singapore Independence Act 1965，逐件核对文件名称。\n2. 保存三份全文、附表、修订说明及可取得的历史版本，记录当前版本日期、实际生效日期和原文地址。\n3. 按条文编号定位，与Acts任务中的重复文件合并，保留各自法律性质。\n抓取注意事项：范围：三份全部保留。宪法最高效力与两份独立建国基础文件分别记录，不能因同处目录认定三者效力相同。\n验收：三份均有正文及版本记录。一般进出口或税额问题优先查具体法规；发生政府权限、基本权利或规范冲突时再调用宪制依据。",
+      "execution": "discovery",
+      "adapter": "sso",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
+      }
+    },
+    {
+      "id": "1.2",
+      "chapter_id": "1",
+      "title": "Acts Primary Legislation 现行主法及必要版本",
+      "kind": "law",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://sso.agc.gov.sg/Browse/Act/Current",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-1.2",
+        "kind:law"
+      ],
+      "scope_include": [
+        "Acts Primary Legislation 现行主法及必要版本",
+        "范围：现行Acts全量保留，包括仍有效的历史Ordinances及被保留适用的UK enactments。未生效法全量登记并隔离；废止或Spent先存元数据和关系，业务历史问题需要时补全文。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 遍历Current目录及分页，保存全量现行清单；从同站Browse发现Uncommenced和Repealed/Spent，分别登记状态。宪制文件与1.1去重。",
+        "2. 取得现行正文及附表。先完成食品、海关与GST、公司、买卖与消费者、电商、数据、商标、竞争、租赁与雇佣、仲裁及涉外适用等业务法规，其他现行主法仍保留在全量任务中。",
+        "3. 通过Timeline、Acts Supplement和Revised Editions关联公布本、修正法、重编本及必要历史版本，逐条核对生效与过渡安排。",
+        "4. 按Act及section定位，保存标题、编号、状态、版本日期、正文地址和已取得全文状态；将未取得正文的条目列为待补。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：现行Acts全量保留，包括仍有效的历史Ordinances及被保留适用的UK enactments。未生效法全量登记并隔离；废止或Spent先存元数据和关系，业务历史问题需要时补全文。",
+        "准确性：不能用制定年份判断失效，不能以Current目录推定全部条文已生效。Food Safety and Security Act等分期实施法律须按条文查当前生效及旧法保留安排。",
+        "验收：全目录数量按采集当日对账；比赛会调用的每部主法须有适用正文。全量下载尚未完成时显示实际覆盖，目录记录不算全文。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：全目录数量按采集当日对账；比赛会调用的每部主法须有适用正文。全量下载尚未完成时显示实际覆盖，目录记录不算全文。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Acts Primary Legislation 现行主法及必要版本\n网页链接：https://sso.agc.gov.sg/Browse/Act/Current\n采集步骤：1. 遍历Current目录及分页，保存全量现行清单；从同站Browse发现Uncommenced和Repealed/Spent，分别登记状态。宪制文件与1.1去重。\n2. 取得现行正文及附表。先完成食品、海关与GST、公司、买卖与消费者、电商、数据、商标、竞争、租赁与雇佣、仲裁及涉外适用等业务法规，其他现行主法仍保留在全量任务中。\n3. 通过Timeline、Acts Supplement和Revised Editions关联公布本、修正法、重编本及必要历史版本，逐条核对生效与过渡安排。\n4. 按Act及section定位，保存标题、编号、状态、版本日期、正文地址和已取得全文状态；将未取得正文的条目列为待补。\n抓取注意事项：范围：现行Acts全量保留，包括仍有效的历史Ordinances及被保留适用的UK enactments。未生效法全量登记并隔离；废止或Spent先存元数据和关系，业务历史问题需要时补全文。\n准确性：不能用制定年份判断失效，不能以Current目录推定全部条文已生效。Food Safety and Security Act等分期实施法律须按条文查当前生效及旧法保留安排。\n验收：全目录数量按采集当日对账；比赛会调用的每部主法须有适用正文。全量下载尚未完成时显示实际覆盖，目录记录不算全文。",
+      "execution": "discovery",
+      "adapter": "sso",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
+      }
+    },
+    {
+      "id": "1.3",
+      "chapter_id": "1",
+      "title": "Subsidiary Legislation 现行附属立法及授权关系",
+      "kind": "law",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://sso.agc.gov.sg/Browse/SL/Current",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-1.3",
+        "kind:law"
+      ],
+      "scope_include": [
+        "Subsidiary Legislation 现行附属立法及授权关系",
+        "范围：现行附属立法全量保留；尚未生效全文隔离当前检索，撤销或Spent先存元数据和关系。Regulations、Rules、Orders及Notifications等按实际内容分类，名称不构成统一效力排序。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 遍历Current目录，保存全量清单；通过Browse发现Uncommenced、Revoked/Spent、SL Supplement及Revised Editions，分类登记。",
+        "2. 取得现行正文、附表及授权依据。优先完成上述业务主法所附的食品、进口、税务、消费者、数据及公司规则，保持与母法和具体授权条款的对应。",
+        "3. 将修订、废止和生效通知分别关联其目标文件及条款；保存原始公布、现行整合和必要历史版本。",
+        "4. 核对正文编号、制定机关、生效日期、状态及实际原文地址，未生效修订和个别对象豁免分别标识。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：现行附属立法全量保留；尚未生效全文隔离当前检索，撤销或Spent先存元数据和关系。Regulations、Rules、Orders及Notifications等按实际内容分类，名称不构成统一效力排序。",
+        "准确性：母法废止后核对延续及过渡条款，不能自动将其下全部文件标为失效。食品标签须使用适用于2026年的文本；生效通知服务于版本判断。",
+        "验收：每个演示义务能定位到Act与相应附属立法；法规正文只存一份，监管官网的同件不重复入库。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：每个演示义务能定位到Act与相应附属立法；法规正文只存一份，监管官网的同件不重复入库。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Subsidiary Legislation 现行附属立法及授权关系\n网页链接：https://sso.agc.gov.sg/Browse/SL/Current\n采集步骤：1. 遍历Current目录，保存全量清单；通过Browse发现Uncommenced、Revoked/Spent、SL Supplement及Revised Editions，分类登记。\n2. 取得现行正文、附表及授权依据。优先完成上述业务主法所附的食品、进口、税务、消费者、数据及公司规则，保持与母法和具体授权条款的对应。\n3. 将修订、废止和生效通知分别关联其目标文件及条款；保存原始公布、现行整合和必要历史版本。\n4. 核对正文编号、制定机关、生效日期、状态及实际原文地址，未生效修订和个别对象豁免分别标识。\n抓取注意事项：范围：现行附属立法全量保留；尚未生效全文隔离当前检索，撤销或Spent先存元数据和关系。Regulations、Rules、Orders及Notifications等按实际内容分类，名称不构成统一效力排序。\n准确性：母法废止后核对延续及过渡条款，不能自动将其下全部文件标为失效。食品标签须使用适用于2026年的文本；生效通知服务于版本判断。\n验收：每个演示义务能定位到Act与相应附属立法；法规正文只存一份，监管官网的同件不重复入库。",
+      "execution": "discovery",
+      "adapter": "sso",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
+      }
+    },
+    {
+      "id": "2.1",
+      "chapter_id": "2",
+      "title": "SG-LegalCite 六堡茶经营相关法律命题及引证关系",
+      "kind": "dataset",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://huggingface.co/datasets/ShannonLeeYuehErn/SG-LegalCite",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-2.1",
+        "kind:dataset"
+      ],
+      "scope_include": [
+        "SG-LegalCite 六堡茶经营相关法律命题及引证关系"
+      ],
+      "scope_exclude": [
+        "保存与验收：保留命题、事实、引称、原文链接及段落定位。Paragraph及Cited Case长引文不进入商业向量库，候选池JSON和完整判决索引排除；许可、署名及第三方原文权限分别核对。"
+      ],
+      "steps": [
+        "1. 从Files and versions取得COMBINED_ALL_CASES_FINAL_V2.csv，记录版本、大小、校验值和许可。按真实表头核编码、列数及各年份数量，以CSV引号规则解析；首段样本不能证明2016至2025年整体质量。",
+        "2. 按Year筛选2016至2025年，并与Judgment_Reference、Judgment_URL及Fact_Query等实际存在字段核对。文件表头与数据卡不一致时建立字段对应，不补造法院层级或先例权重。",
+        "3. 第一轮筛选主题：买卖与质量、合同履行及货款、代理经销与品牌授权、误导陈述及消费者、商标与假冒、客户数据与营销、仓储物流责任、租赁雇佣及商事救济。金融监管、上市、刑事量刑及家事专门命题排除；其他行业案件中的通用买卖或合同法理仍可进入人工候选。",
+        "4. 第二轮核法律命题及交易事实，保留能说明茶交易问题的规则。组合检索sale of goods、distribution、misrepresentation、trade mark等词；茶叶词仅作补充。",
+        "5. 人工候选队列控制在150条内，按演示问题优先回查具体裁判段落，核对命题、引用对象、必要裁判理由及后续处理。Cited Case混有长段引文或无法识别引称时先隔离，未核实记录只作候选。",
+        "6. 按命题及出处去重。目标20至30条已核命题，上限50条；无可靠命题的主题回到法条并说明缺口，不为凑数收无关记录。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "字段提醒：本轮首段样本为13列。Full_Reference和URL须映射实际文件的Judgment_Reference和Judgment_URL；样本没有被引法院及先例权重列。Current Court Level表示引用判决法院。",
+        "时间与效力：筛选的是引用判决年份。更早被引先例保留名称、引称及关系，不扩采早期全文；2026年判例不在本数据集中。模型命题及被引用均不能直接证明规则有拘束力。",
+        "保存与验收：保留命题、事实、引称、原文链接及段落定位。Paragraph及Cited Case长引文不进入商业向量库，候选池JSON和完整判决索引排除；许可、署名及第三方原文权限分别核对。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "保存与验收：保留命题、事实、引称、原文链接及段落定位。Paragraph及Cited Case长引文不进入商业向量库，候选池JSON和完整判决索引排除；许可、署名及第三方原文权限分别核对。"
+      ],
+      "verbatim_requirements": "抓取内容标题：SG-LegalCite 六堡茶经营相关法律命题及引证关系\n网页链接：https://huggingface.co/datasets/ShannonLeeYuehErn/SG-LegalCite\n采集步骤：1. 从Files and versions取得COMBINED_ALL_CASES_FINAL_V2.csv，记录版本、大小、校验值和许可。按真实表头核编码、列数及各年份数量，以CSV引号规则解析；首段样本不能证明2016至2025年整体质量。\n2. 按Year筛选2016至2025年，并与Judgment_Reference、Judgment_URL及Fact_Query等实际存在字段核对。文件表头与数据卡不一致时建立字段对应，不补造法院层级或先例权重。\n3. 第一轮筛选主题：买卖与质量、合同履行及货款、代理经销与品牌授权、误导陈述及消费者、商标与假冒、客户数据与营销、仓储物流责任、租赁雇佣及商事救济。金融监管、上市、刑事量刑及家事专门命题排除；其他行业案件中的通用买卖或合同法理仍可进入人工候选。\n4. 第二轮核法律命题及交易事实，保留能说明茶交易问题的规则。组合检索sale of goods、distribution、misrepresentation、trade mark等词；茶叶词仅作补充。\n5. 人工候选队列控制在150条内，按演示问题优先回查具体裁判段落，核对命题、引用对象、必要裁判理由及后续处理。Cited Case混有长段引文或无法识别引称时先隔离，未核实记录只作候选。\n6. 按命题及出处去重。目标20至30条已核命题，上限50条；无可靠命题的主题回到法条并说明缺口，不为凑数收无关记录。\n抓取注意事项：字段提醒：本轮首段样本为13列。Full_Reference和URL须映射实际文件的Judgment_Reference和Judgment_URL；样本没有被引法院及先例权重列。Current Court Level表示引用判决法院。\n时间与效力：筛选的是引用判决年份。更早被引先例保留名称、引称及关系，不扩采早期全文；2026年判例不在本数据集中。模型命题及被引用均不能直接证明规则有拘束力。\n保存与验收：保留命题、事实、引称、原文链接及段落定位。Paragraph及Cited Case长引文不进入商业向量库，候选池JSON和完整判决索引排除；许可、署名及第三方原文权限分别核对。",
+      "execution": "dataset_review",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "year_min": 2016,
+        "year_max": 2025,
+        "candidate_limit": 150,
+        "verified_target": [
+          20,
+          30
+        ],
+        "verified_limit": 50,
+        "commercial_long_quotes": false
+      }
+    },
+    {
+      "id": "3.1",
+      "chapter_id": "3",
+      "title": "Singapore Customs 茶叶进口归类及海关义务",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://www.customs.gov.sg/doing-business/compliance/legal-framework-and-compliance-overview/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-operations-overview/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/types-of-import-permits/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/controlled-and-prohibited-goods-for-imports/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/retaining-your-trade-documents/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/valuation-duties-and-fees/goods-and-services-tax-gst/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/valuation-duties-and-fees/establishing-customs-value/establishing-customs-value-and-methods/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        },
+        {
+          "url": "https://www.customs.gov.sg/doing-business/business-resources/hs-classification-of-goods/application-for-customs-ruling-on-classification-of-goods/",
+          "purpose": "document",
+          "note": "2026-10-13 当前官方 HTML 正文实取；仅限进口义务、许可、估价、税费、留档及归类必要解释，图片仍需识别。"
+        }
+      ],
+      "trusted_hosts": [
+        "isomer-user-content.by.gov.sg"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.1",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "Singapore Customs 茶叶进口归类及海关义务",
+        "范围：普通干茶贸易及电商进口。消费税仓、石油、酒烟、战略物资及完整商品数据库排除；货物被重新配方或装成即饮产品时重新判断归类。"
+      ],
+      "scope_exclude": [
+        "范围：普通干茶贸易及电商进口。消费税仓、石油、酒烟、战略物资及完整商品数据库排除；货物被重新配方或装成即饮产品时重新判断归类。"
+      ],
+      "steps": [
+        "1. 从法律框架入口进入Importing Goods及相关正式指引，定位商业进口主体、Customs Account、申报代理与TradeNet许可的法律条件。",
+        "2. 核查纯六堡茶干茶的当地完整HS归类、关税及进口GST适用条件，区分商业进口、样品和个人自用；记录判断所需的配料、加工和包装信息。",
+        "3. 仅保留影响申报、估价、原产地证明、转运、留档、违法责任及必要减免的法律解释。依法申请许可的义务与如何点击系统分开。",
+        "4. 与SFA食品进口要求、IRAS税务口径及选定FTA关联，同一正式法规正文返回SSO。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：普通干茶贸易及电商进口。消费税仓、石油、酒烟、战略物资及完整商品数据库排除；货物被重新配方或装成即饮产品时重新判断归类。",
+        "验收：能够说明进口责任主体、许可、归类待核信息和税费依据。不得直接复制中国HS尾码，也不得将私人网购规则作为商业进口的统一豁免。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：能够说明进口责任主体、许可、归类待核信息和税费依据。不得直接复制中国HS尾码，也不得将私人网购规则作为商业进口的统一豁免。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Singapore Customs 茶叶进口归类及海关义务\n网页链接：https://www.customs.gov.sg/doing-business/compliance/legal-framework-and-compliance-overview/\n采集步骤：1. 从法律框架入口进入Importing Goods及相关正式指引，定位商业进口主体、Customs Account、申报代理与TradeNet许可的法律条件。\n2. 核查纯六堡茶干茶的当地完整HS归类、关税及进口GST适用条件，区分商业进口、样品和个人自用；记录判断所需的配料、加工和包装信息。\n3. 仅保留影响申报、估价、原产地证明、转运、留档、违法责任及必要减免的法律解释。依法申请许可的义务与如何点击系统分开。\n4. 与SFA食品进口要求、IRAS税务口径及选定FTA关联，同一正式法规正文返回SSO。\n抓取注意事项：范围：普通干茶贸易及电商进口。消费税仓、石油、酒烟、战略物资及完整商品数据库排除；货物被重新配方或装成即饮产品时重新判断归类。\n验收：能够说明进口责任主体、许可、归类待核信息和税费依据。不得直接复制中国HS尾码，也不得将私人网购规则作为商业进口的统一豁免。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45,
+        "sg_official_2026": true
+      }
+    },
+    {
+      "id": "3.2",
+      "chapter_id": "3",
+      "title": "SFA 食品进口标签及官方转介的食品声称资料",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://www.sfa.gov.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [
+        "www.hpb.gov.sg"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.2",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "SFA 食品进口标签及官方转介的食品声称资料",
+        "新增建议：本项弥补食品业务缺口。SFA法规正文与SSO去重；HPB只取得茶类营养及健康声称所需正式资料，标明实际发布机关。官方指南用于解释要求，不能统一标成具有法律拘束力的法规。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 从Food Import and Export及商业食品进口栏目查加工食品进口注册、逐批许可、检查和召回要求，判断普通纯干茶的监管类别与进口责任。",
+        "2. 从Labelling Requirements for Food取得现行标签法律解释及必要附件，核对英文名称、适用配料信息、净含量、当地责任主体、原产地说明、生产批次识别号或标记，并按适用类别核对日期标记要求。",
+        "3. 查2026年1月30日生效的标签修订；该日及以后提供销售的预包装食品须符合新要求，不能默认旧库存豁免。分别判断纯干茶、加料茶和即饮茶；营养标签及营养或健康声称按SFA官方转介核对HPB资料。",
+        "4. 查电商售食及零售许可解释，分别判断仅售合规来源的预包装茶、现场冲泡销售、分装及展会售卖。保留食品安全、农残、抽检、停售与召回中适用于产品的规则。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "新增建议：本项弥补食品业务缺口。SFA法规正文与SSO去重；HPB只取得茶类营养及健康声称所需正式资料，标明实际发布机关。官方指南用于解释要求，不能统一标成具有法律拘束力的法规。",
+        "验收：形成纯干茶进口条件和英文标签核对表，并能解释预包装零售与现场冲泡的许可区别。报告或检测证明仅在具体规则要求时列为必要材料，不能将某一检测套餐视为所有茶叶通用条件。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：形成纯干茶进口条件和英文标签核对表，并能解释预包装零售与现场冲泡的许可区别。报告或检测证明仅在具体规则要求时列为必要材料，不能将某一检测套餐视为所有茶叶通用条件。"
+      ],
+      "verbatim_requirements": "抓取内容标题：SFA 食品进口标签及官方转介的食品声称资料\n网页链接：https://www.sfa.gov.sg/\n采集步骤：1. 从Food Import and Export及商业食品进口栏目查加工食品进口注册、逐批许可、检查和召回要求，判断普通纯干茶的监管类别与进口责任。\n2. 从Labelling Requirements for Food取得现行标签法律解释及必要附件，核对英文名称、适用配料信息、净含量、当地责任主体、原产地说明、生产批次识别号或标记，并按适用类别核对日期标记要求。\n3. 查2026年1月30日生效的标签修订；该日及以后提供销售的预包装食品须符合新要求，不能默认旧库存豁免。分别判断纯干茶、加料茶和即饮茶；营养标签及营养或健康声称按SFA官方转介核对HPB资料。\n4. 查电商售食及零售许可解释，分别判断仅售合规来源的预包装茶、现场冲泡销售、分装及展会售卖。保留食品安全、农残、抽检、停售与召回中适用于产品的规则。\n抓取注意事项：新增建议：本项弥补食品业务缺口。SFA法规正文与SSO去重；HPB只取得茶类营养及健康声称所需正式资料，标明实际发布机关。官方指南用于解释要求，不能统一标成具有法律拘束力的法规。\n验收：形成纯干茶进口条件和英文标签核对表，并能解释预包装零售与现场冲泡的许可区别。报告或检测证明仅在具体规则要求时列为必要材料，不能将某一检测套餐视为所有茶叶通用条件。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45
+      }
+    },
+    {
+      "id": "3.3",
+      "chapter_id": "3",
+      "title": "IRAS 茶叶销售进口GST及跨境税务解释",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://www.iras.gov.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.3",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "IRAS 茶叶销售进口GST及跨境税务解释",
+        "范围：GST及业务确实触发的企业税务。个人税、房产税、全部税种FAQ和裁定库排除；不得只凭中国卖家身份直接认定境外供应商注册或预提税义务。"
+      ],
+      "scope_exclude": [
+        "范围：GST及业务确实触发的企业税务。个人税、房产税、全部税种FAQ和裁定库排除；不得只凭中国卖家身份直接认定境外供应商注册或预提税义务。"
+      ],
+      "steps": [
+        "1. 从GST栏目查进口、当地销售、GST注册、进项税抵扣及出口零税率的正式解释，分别识别进口商、当地卖方及平台的交易角色。",
+        "2. 核对跨境低价值货物及海外供应商注册规则的适用条件。将中国直邮、本地进口后零售、海外仓及平台代收等事实分别记录。",
+        "3. 按所选本地或外国经营主体的应税收入判断公司所得税；发生跨境服务费或许可费等问题时，再补预提税及中新DTA解释，关联5.3原件。",
+        "4. 取得有关e-Tax Guides及重要修订，记录适用条件、生效期间、法条和原件；税率与阈值按演示日期核对。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：GST及业务确实触发的企业税务。个人税、房产税、全部税种FAQ和裁定库排除；不得只凭中国卖家身份直接认定境外供应商注册或预提税义务。",
+        "验收：同一订单能区分进口GST、当地销售GST、零税率及抵扣条件。常见免关税判断不能推出进口或销售免GST。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：同一订单能区分进口GST、当地销售GST、零税率及抵扣条件。常见免关税判断不能推出进口或销售免GST。"
+      ],
+      "verbatim_requirements": "抓取内容标题：IRAS 茶叶销售进口GST及跨境税务解释\n网页链接：https://www.iras.gov.sg/\n采集步骤：1. 从GST栏目查进口、当地销售、GST注册、进项税抵扣及出口零税率的正式解释，分别识别进口商、当地卖方及平台的交易角色。\n2. 核对跨境低价值货物及海外供应商注册规则的适用条件。将中国直邮、本地进口后零售、海外仓及平台代收等事实分别记录。\n3. 按所选本地或外国经营主体的应税收入判断公司所得税；发生跨境服务费或许可费等问题时，再补预提税及中新DTA解释，关联5.3原件。\n4. 取得有关e-Tax Guides及重要修订，记录适用条件、生效期间、法条和原件；税率与阈值按演示日期核对。\n抓取注意事项：范围：GST及业务确实触发的企业税务。个人税、房产税、全部税种FAQ和裁定库排除；不得只凭中国卖家身份直接认定境外供应商注册或预提税义务。\n验收：同一订单能区分进口GST、当地销售GST、零税率及抵扣条件。常见免关税判断不能推出进口或销售免GST。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45
+      }
+    },
+    {
+      "id": "3.4",
+      "chapter_id": "3",
+      "title": "ACRA 进口经销及零售主体的企业法律解释",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.acra.gov.sg/regulations/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [
+        "isomer-user-content.by.gov.sg",
+        "file.go.gov.sg"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.4",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "ACRA 进口经销及零售主体的企业法律解释",
+        "范围：基本经营主体和必要公司治理。IPO、审计行业监管、会计准则全库、完整公司名录、付费企业档案及Bizfile操作步骤排除。"
+      ],
+      "scope_exclude": [
+        "范围：基本经营主体和必要公司治理。IPO、审计行业监管、会计准则全库、完整公司名录、付费企业档案及Bizfile操作步骤排除。"
+      ],
+      "steps": [
+        "1. 在Practice Directions、Registrar’s Interpretations及Guidance中定位外国企业设点、当地公司、分支机构、业务登记和持续申报义务。",
+        "2. 筛选与真实经营结构有关的本地董事、公司秘书、登记资料、控制人和必要申报解释，区分自设公司与委托已有进口商的情况。",
+        "3. 保存会改变主体资格、签约权限或持续经营义务的正式文件及版本，与SSO公司及登记法规关联。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：基本经营主体和必要公司治理。IPO、审计行业监管、会计准则全库、完整公司名录、付费企业档案及Bizfile操作步骤排除。",
+        "验收：能说明已有进口商合作与自行设点各自需要判断的主体条件；不能将ACRA登记等同于食品进口或现场制售获准。Registrar’s Interpretations的法律效果须单独标明。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：能说明已有进口商合作与自行设点各自需要判断的主体条件；不能将ACRA登记等同于食品进口或现场制售获准。Registrar’s Interpretations的法律效果须单独标明。"
+      ],
+      "verbatim_requirements": "抓取内容标题：ACRA 进口经销及零售主体的企业法律解释\n网页链接：https://www.acra.gov.sg/regulations/\n采集步骤：1. 在Practice Directions、Registrar’s Interpretations及Guidance中定位外国企业设点、当地公司、分支机构、业务登记和持续申报义务。\n2. 筛选与真实经营结构有关的本地董事、公司秘书、登记资料、控制人和必要申报解释，区分自设公司与委托已有进口商的情况。\n3. 保存会改变主体资格、签约权限或持续经营义务的正式文件及版本，与SSO公司及登记法规关联。\n抓取注意事项：范围：基本经营主体和必要公司治理。IPO、审计行业监管、会计准则全库、完整公司名录、付费企业档案及Bizfile操作步骤排除。\n验收：能说明已有进口商合作与自行设点各自需要判断的主体条件；不能将ACRA登记等同于食品进口或现场制售获准。Registrar’s Interpretations的法律效果须单独标明。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45
+      }
+    },
+    {
+      "id": "3.5",
+      "chapter_id": "3",
+      "title": "CCS 销售宣传公平交易及经销竞争规则解释",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.ccs.gov.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [
+        "isomer-user-content.by.gov.sg",
+        "file.go.gov.sg"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.5",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "CCS 销售宣传公平交易及经销竞争规则解释",
+        "范围：消费者交易及业务触发的竞争问题。合并审查、行业市场研究、全部处罚与产品安全名录排除，普通干茶不得误列为受控电器。"
+      ],
+      "scope_exclude": [
+        "范围：消费者交易及业务触发的竞争问题。合并审查、行业市场研究、全部处罚与产品安全名录排除，普通干茶不得误列为受控电器。"
+      ],
+      "steps": [
+        "1. 从Consumer Protection进入公平交易、价格透明及误导宣传的正式指南，定位商品描述、折扣比较、退款和消费者救济的适用标准。",
+        "2. 从Competition资料筛选经销、独家安排、转售价格与限制竞争的正式解释，核对适用排除及限制，不直接套用其他国家的经销规则。",
+        "3. 只选能说明法律构成或适用标准的正式决定；优先零售、电商、宣传和经销场景，保存决定理由及适用对象，排除调查消息。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：消费者交易及业务触发的竞争问题。合并审查、行业市场研究、全部处罚与产品安全名录排除，普通干茶不得误列为受控电器。",
+        "验收：可以解释产地年份或疗效描述、虚假折扣和退换货争议中的具体法律依据。中国七天无理由、广告绝对词和分佣层数不能作为新加坡统一标准。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：可以解释产地年份或疗效描述、虚假折扣和退换货争议中的具体法律依据。中国七天无理由、广告绝对词和分佣层数不能作为新加坡统一标准。"
+      ],
+      "verbatim_requirements": "抓取内容标题：CCS 销售宣传公平交易及经销竞争规则解释\n网页链接：https://www.ccs.gov.sg/\n采集步骤：1. 从Consumer Protection进入公平交易、价格透明及误导宣传的正式指南，定位商品描述、折扣比较、退款和消费者救济的适用标准。\n2. 从Competition资料筛选经销、独家安排、转售价格与限制竞争的正式解释，核对适用排除及限制，不直接套用其他国家的经销规则。\n3. 只选能说明法律构成或适用标准的正式决定；优先零售、电商、宣传和经销场景，保存决定理由及适用对象，排除调查消息。\n抓取注意事项：范围：消费者交易及业务触发的竞争问题。合并审查、行业市场研究、全部处罚与产品安全名录排除，普通干茶不得误列为受控电器。\n验收：可以解释产地年份或疗效描述、虚假折扣和退换货争议中的具体法律依据。中国七天无理由、广告绝对词和分佣层数不能作为新加坡统一标准。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45
+      }
+    },
+    {
+      "id": "3.6",
+      "chapter_id": "3",
+      "title": "PDPC 会员社群营销及个人信息处理规则解释",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.pdpc.gov.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-personal-data-protection-act-for-selected-topics",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-requiring-consent-for-marketing-purposes",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        },
+        {
+          "url": "https://www.pdpc.gov.sg/organisations/resources/guidance-by-topic/guide-to-managing-data-intermediaries",
+          "purpose": "detail",
+          "note": "2026-10-13 官方当前栏目实取；公开 Next 字面内容定位正式 PDF，保留原目录 SHA 与记录位置。"
+        }
+      ],
+      "trusted_hosts": [
+        "apps.pdpc.gov.sg"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.6",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "PDPC 会员社群营销及个人信息处理规则解释",
+        "新增建议：覆盖私域及客户数据。完整泄露案件库、金融或医疗行业专项、安全技术白皮书和咨询稿排除。电子邮件、短信及不同消息工具分别判断，不能将DNC解释成禁止全部社群营销。"
+      ],
+      "scope_exclude": [
+        "新增建议：覆盖私域及客户数据。完整泄露案件库、金融或医疗行业专项、安全技术白皮书和咨询稿排除。电子邮件、短信及不同消息工具分别判断，不能将DNC解释成禁止全部社群营销。"
+      ],
+      "steps": [
+        "1. 从Advisory Guidelines进入PDPA主要概念及相关营销解释，筛选客户资料的收集使用、同意与例外、告知、保护、保存和撤回安排。",
+        "2. 针对会员名单、达人合作、物流外包和中国团队访问数据，核对组织责任、跨境传输和委托处理条件；按实际沟通渠道判断Do Not Call适用。",
+        "3. 只保存能解释零售、电商或营销适用标准的正式指南及少量相关决定，关联PDPA、DNC和其他适用成文法，明确指南与决定的性质。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "新增建议：覆盖私域及客户数据。完整泄露案件库、金融或医疗行业专项、安全技术白皮书和咨询稿排除。电子邮件、短信及不同消息工具分别判断，不能将DNC解释成禁止全部社群营销。",
+        "验收：至少核清会员登记、营销、退订及跨境访问四类事实所需条件，输出具体依据及缺失事实；仅有收集同意不能自动证明所有后续用途合法。官网若触发验证，人工从正式栏目定向保存，未取得正文的文件列待补。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：至少核清会员登记、营销、退订及跨境访问四类事实所需条件，输出具体依据及缺失事实；仅有收集同意不能自动证明所有后续用途合法。官网若触发验证，人工从正式栏目定向保存，未取得正文的文件列待补。"
+      ],
+      "verbatim_requirements": "抓取内容标题：PDPC 会员社群营销及个人信息处理规则解释\n网页链接：https://www.pdpc.gov.sg/\n采集步骤：1. 从Advisory Guidelines进入PDPA主要概念及相关营销解释，筛选客户资料的收集使用、同意与例外、告知、保护、保存和撤回安排。\n2. 针对会员名单、达人合作、物流外包和中国团队访问数据，核对组织责任、跨境传输和委托处理条件；按实际沟通渠道判断Do Not Call适用。\n3. 只保存能解释零售、电商或营销适用标准的正式指南及少量相关决定，关联PDPA、DNC和其他适用成文法，明确指南与决定的性质。\n抓取注意事项：新增建议：覆盖私域及客户数据。完整泄露案件库、金融或医疗行业专项、安全技术白皮书和咨询稿排除。电子邮件、短信及不同消息工具分别判断，不能将DNC解释成禁止全部社群营销。\n验收：至少核清会员登记、营销、退订及跨境访问四类事实所需条件，输出具体依据及缺失事实；仅有收集同意不能自动证明所有后续用途合法。官网若触发验证，人工从正式栏目定向保存，未取得正文的文件列待补。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45,
+        "sg_official_2026": true
+      }
+    },
+    {
+      "id": "3.7",
+      "chapter_id": "3",
+      "title": "IPOS 茶叶商标产地标识及品牌授权解释",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.ipos.gov.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [
+        "isomer-user-content.by.gov.sg",
+        "file.go.gov.sg"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-3.7",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "IPOS 茶叶商标产地标识及品牌授权解释",
+        "新增建议：只覆盖商标、地理标志、假冒及必要授权。专利、集成电路、全部版权材料和产业资讯排除；图片或视频版权纠纷先用SSO相应法规及已核判例。"
+      ],
+      "scope_exclude": [
+        "新增建议：只覆盖商标、地理标志、假冒及必要授权。专利、集成电路、全部版权材料和产业资讯排除；图片或视频版权纠纷先用SSO相应法规及已核判例。",
+        "验收：能够区分中国用标资格、新加坡商标或GI保护、真实产地说明及合同授权。当前IPOS列明的GI可登记类别未含茶，六堡茶GI注册流程暂缓；这不排除未注册GI可能适用的保护，不得宣称当地已有六堡茶GI登记。"
+      ],
+      "steps": [
+        "1. 从Trade Marks和Geographical Indications取得有关注册保护、权利范围、近似标识、授权使用及救济的正式解释。",
+        "2. 针对自有品牌、OEM贴牌、经销授权及“梧州六堡茶”产地表达，分别查新加坡商标、假冒及未注册GI可能适用的保护依据，不预设中国权利已在当地获保护。",
+        "3. 仅在存在同类法律问题时选取相关IPOS正式裁决；商标注册检索与具体授权合同作为个案核验，不下载整个注册库。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "新增建议：只覆盖商标、地理标志、假冒及必要授权。专利、集成电路、全部版权材料和产业资讯排除；图片或视频版权纠纷先用SSO相应法规及已核判例。",
+        "验收：能够区分中国用标资格、新加坡商标或GI保护、真实产地说明及合同授权。当前IPOS列明的GI可登记类别未含茶，六堡茶GI注册流程暂缓；这不排除未注册GI可能适用的保护，不得宣称当地已有六堡茶GI登记。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：能够区分中国用标资格、新加坡商标或GI保护、真实产地说明及合同授权。当前IPOS列明的GI可登记类别未含茶，六堡茶GI注册流程暂缓；这不排除未注册GI可能适用的保护，不得宣称当地已有六堡茶GI登记。"
+      ],
+      "verbatim_requirements": "抓取内容标题：IPOS 茶叶商标产地标识及品牌授权解释\n网页链接：https://www.ipos.gov.sg/\n采集步骤：1. 从Trade Marks和Geographical Indications取得有关注册保护、权利范围、近似标识、授权使用及救济的正式解释。\n2. 针对自有品牌、OEM贴牌、经销授权及“梧州六堡茶”产地表达，分别查新加坡商标、假冒及未注册GI可能适用的保护依据，不预设中国权利已在当地获保护。\n3. 仅在存在同类法律问题时选取相关IPOS正式裁决；商标注册检索与具体授权合同作为个案核验，不下载整个注册库。\n抓取注意事项：新增建议：只覆盖商标、地理标志、假冒及必要授权。专利、集成电路、全部版权材料和产业资讯排除；图片或视频版权纠纷先用SSO相应法规及已核判例。\n验收：能够区分中国用标资格、新加坡商标或GI保护、真实产地说明及合同授权。当前IPOS列明的GI可登记类别未含茶，六堡茶GI注册流程暂缓；这不排除未注册GI可能适用的保护，不得宣称当地已有六堡茶GI登记。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "regulatory_group_limit": 45
+      }
+    },
+    {
+      "id": "4.1",
+      "chapter_id": "4",
+      "title": "Singapore Courts 商事诉讼及适用小额索赔程序",
+      "kind": "guidance",
+      "conditional": true,
+      "trigger": "演示涉及诉讼、索赔或合同争议",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.judiciary.gov.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-4.1",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "Singapore Courts 商事诉讼及适用小额索赔程序"
+      ],
+      "scope_exclude": [
+        "条件任务：当前索赔或合同争议演示触发后执行。Family Justice Courts、全部诉讼指引、完整程序历史和SICC专项资料暂缓。"
+      ],
+      "steps": [
+        "1. 仅在演示涉及货款、质量、退款、租赁或商标争议时，从Civil cases及Small Claims Tribunals栏目定位受理范围、申请时限、送达和救济条件。",
+        "2. 对普通民事诉讼查适用Rules of Court、Supreme Court或State Courts Practice Directions及重要Registrar’s Circulars，只取得问题调用的部分及其上下文。",
+        "3. 核对法院、程序类别、行为时间及版本；只有历史案件适用旧程序时取得必要旧版。正式程序法规仍由SSO保存。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "条件任务：当前索赔或合同争议演示触发后执行。Family Justice Courts、全部诉讼指引、完整程序历史和SICC专项资料暂缓。",
+        "验收：不能将一般State Courts Practice Directions直接用于Tribunals；小额索赔另核法定事项、金额、时间及送达限制，跨境当事人不当然可用。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：不能将一般State Courts Practice Directions直接用于Tribunals；小额索赔另核法定事项、金额、时间及送达限制，跨境当事人不当然可用。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Singapore Courts 商事诉讼及适用小额索赔程序\n网页链接：https://www.judiciary.gov.sg/\n采集步骤：1. 仅在演示涉及货款、质量、退款、租赁或商标争议时，从Civil cases及Small Claims Tribunals栏目定位受理范围、申请时限、送达和救济条件。\n2. 对普通民事诉讼查适用Rules of Court、Supreme Court或State Courts Practice Directions及重要Registrar’s Circulars，只取得问题调用的部分及其上下文。\n3. 核对法院、程序类别、行为时间及版本；只有历史案件适用旧程序时取得必要旧版。正式程序法规仍由SSO保存。\n抓取注意事项：条件任务：当前索赔或合同争议演示触发后执行。Family Justice Courts、全部诉讼指引、完整程序历史和SICC专项资料暂缓。\n验收：不能将一般State Courts Practice Directions直接用于Tribunals；小额索赔另核法定事项、金额、时间及送达限制，跨境当事人不当然可用。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728
+      }
+    },
+    {
+      "id": "4.2",
+      "chapter_id": "4",
+      "title": "SIAC 茶叶跨境供货合同适用的仲裁规则",
+      "kind": "guidance",
+      "conditional": true,
+      "trigger": "合同约定SIAC或比较争议条款",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://siac.org.sg/",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-4.2",
+        "kind:guidance"
+      ],
+      "scope_include": [
+        "SIAC 茶叶跨境供货合同适用的仲裁规则"
+      ],
+      "scope_exclude": [
+        "条件任务：不采全部仲裁规则历史、投资仲裁规则或裁决库。官方正文未取得时只能列为待补，不能用宣传摘要生成具体期限、费用或规则编号。"
+      ],
+      "steps": [
+        "1. 仅在合同约定SIAC或演示比较争议条款时进入SIAC Rules，取得适用规则版本、官方示范条款和必要费用依据。",
+        "2. 比赛优先核SIAC Rules 2025中开始仲裁、机构及仲裁地、适用规则、紧急或简易程序和必要费用条件；实际协议指向旧版时再补相关旧版。",
+        "3. 将仲裁协议、实体准据法、仲裁地法和机构规则分别判断，与SSO国际仲裁及执行法规关联；保存官方原件及具体规则定位。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "条件任务：不采全部仲裁规则历史、投资仲裁规则或裁决库。官方正文未取得时只能列为待补，不能用宣传摘要生成具体期限、费用或规则编号。",
+        "验收：不得因选SIAC就直接认定实体法或仲裁地必为新加坡；条款和官方原文核实后才作为比赛答案依据。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：不得因选SIAC就直接认定实体法或仲裁地必为新加坡；条款和官方原文核实后才作为比赛答案依据。"
+      ],
+      "verbatim_requirements": "抓取内容标题：SIAC 茶叶跨境供货合同适用的仲裁规则\n网页链接：https://siac.org.sg/\n采集步骤：1. 仅在合同约定SIAC或演示比较争议条款时进入SIAC Rules，取得适用规则版本、官方示范条款和必要费用依据。\n2. 比赛优先核SIAC Rules 2025中开始仲裁、机构及仲裁地、适用规则、紧急或简易程序和必要费用条件；实际协议指向旧版时再补相关旧版。\n3. 将仲裁协议、实体准据法、仲裁地法和机构规则分别判断，与SSO国际仲裁及执行法规关联；保存官方原件及具体规则定位。\n抓取注意事项：条件任务：不采全部仲裁规则历史、投资仲裁规则或裁决库。官方正文未取得时只能列为待补，不能用宣传摘要生成具体期限、费用或规则编号。\n验收：不得因选SIAC就直接认定实体法或仲裁地必为新加坡；条款和官方原文核实后才作为比赛答案依据。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728
+      }
+    },
+    {
+      "id": "5.1",
+      "chapter_id": "5",
+      "title": "EnterpriseSG 中新贸易适用FTA及原产地规则",
+      "kind": "treaty",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.enterprisesg.gov.sg/grow-your-business/go-global/international-agreements",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [
+        "www.mti.gov.sg",
+        "fta.mofcom.gov.cn",
+        "www.dfat.gov.au",
+        "rcepsec.org",
+        "asean.org"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-5.1",
+        "kind:treaty"
+      ],
+      "scope_include": [
+        "EnterpriseSG 中新贸易适用FTA及原产地规则",
+        "范围：中国与新加坡实际交易，不采新加坡全部FTA、全部投资协定或数字伙伴关系材料。转口至其他国家须重新确认进口国及协定条件。"
+      ],
+      "scope_exclude": [
+        "范围：中国与新加坡实际交易，不采新加坡全部FTA、全部投资协定或数字伙伴关系材料。转口至其他国家须重新确认进口国及协定条件。"
+      ],
+      "steps": [
+        "1. 从协定目录识别中国与新加坡共同适用的China–Singapore FTA、ASEAN–China FTA和RCEP，核对现行正文、修改议定书及相关生效安排。",
+        "2. 保存完整正文及相关附件，优先标引货物贸易、相应方向税表、原产地、产品特定规则、证明和运输条款。CSFTA法律文本链接先打开文件目录，须继续逐件取得正文；ACFTA 3.0当前待批准，不能直接按现行升级待遇使用。",
+        "3. 根据已确认的当地完整HS编码比较实际待遇。若新加坡普通进口税率已无优惠差额，说明证明文件是否仍有用途，不承诺使用FTA必然节税。",
+        "4. 中国企业确实在新加坡设点经营时再补与分销、服务或投资准入有关的适用条款，关联国内实施法规。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：中国与新加坡实际交易，不采新加坡全部FTA、全部投资协定或数字伙伴关系材料。转口至其他国家须重新确认进口国及协定条件。",
+        "验收：同一待遇使用同一协定的税表、原产地及运输证明规则。只换仓或贴标不能据此改变原产地，不能套用中国与印尼交易条件。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：同一待遇使用同一协定的税表、原产地及运输证明规则。只换仓或贴标不能据此改变原产地，不能套用中国与印尼交易条件。"
+      ],
+      "verbatim_requirements": "抓取内容标题：EnterpriseSG 中新贸易适用FTA及原产地规则\n网页链接：https://www.enterprisesg.gov.sg/grow-your-business/go-global/international-agreements\n采集步骤：1. 从协定目录识别中国与新加坡共同适用的China–Singapore FTA、ASEAN–China FTA和RCEP，核对现行正文、修改议定书及相关生效安排。\n2. 保存完整正文及相关附件，优先标引货物贸易、相应方向税表、原产地、产品特定规则、证明和运输条款。CSFTA法律文本链接先打开文件目录，须继续逐件取得正文；ACFTA 3.0当前待批准，不能直接按现行升级待遇使用。\n3. 根据已确认的当地完整HS编码比较实际待遇。若新加坡普通进口税率已无优惠差额，说明证明文件是否仍有用途，不承诺使用FTA必然节税。\n4. 中国企业确实在新加坡设点经营时再补与分销、服务或投资准入有关的适用条款，关联国内实施法规。\n抓取注意事项：范围：中国与新加坡实际交易，不采新加坡全部FTA、全部投资协定或数字伙伴关系材料。转口至其他国家须重新确认进口国及协定条件。\n验收：同一待遇使用同一协定的税表、原产地及运输证明规则。只换仓或贴标不能据此改变原产地，不能套用中国与印尼交易条件。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728
+      }
+    },
+    {
+      "id": "5.2",
+      "chapter_id": "5",
+      "title": "WTO 通用法律文本及新加坡货物服务承诺",
+      "kind": "treaty",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.wto.org/english/thewto_e/countries_e/singapore_e.htm",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DGATS%2FSC%2F76%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "官网 country_docs_e.js 发布的只读英文 XML 目录；仅该成员 SC/EL 符号族，须核 HasAccess、国别及完整计数，目录不作为法规正文。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DGATS%2FEL%2F76%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "官网 country_docs_e.js 发布的只读英文 XML 目录；仅该成员 SC/EL 符号族，须核 HasAccess、国别及完整计数，目录不作为法规正文。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F641%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/tratop_e/trips_e/wtl641_e.htm 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F940%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/res_e/publications_e/ai17_e/wto_agree_art10_oth.pdf 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Query=%40Symbol%3DWT%2FL%2F1144%2A&XMLMaxHitsPerPage=100&Language=English",
+          "purpose": "catalog",
+          "note": "2026-10-13 从官方修改依据 https://www.wto.org/english/tratop_e/rulesneg_e/fish_e/agreement_fisheries_subsidies_e.htm 定位的精确公开符号目录；仅保存真实 filename 原件，成员接受与生效另核。"
+        },
+        {
+          "url": "https://www.wto.org/english/docs_e/legal_e/legal_e.htm",
+          "purpose": "catalog",
+          "note": "WTO 总入口的规定分支；商品目录只保留 Singapore、Schedule LXXIII (73)、memberID36723、Any 状态和 pre-WTO，真实原件及 ZIP 审计分开。"
+        },
+        {
+          "url": "https://goods-schedules.wto.org/member/singapore",
+          "purpose": "catalog",
+          "note": "WTO 总入口的规定分支；商品目录只保留 Singapore、Schedule LXXIII (73)、memberID36723、Any 状态和 pre-WTO，真实原件及 ZIP 审计分开。"
+        }
+      ],
+      "trusted_hosts": [
+        "docs.wto.org",
+        "goods-schedules.wto.org",
+        "itip-services-worldbank.wto.org"
+      ],
+      "tags": [
+        "country:SG",
+        "checklist:SG-5.2",
+        "kind:treaty"
+      ],
+      "scope_include": [
+        "WTO 通用法律文本及新加坡货物服务承诺",
+        "采集形式：沿用印尼的“通用法律文件族＋成员货物承诺＋成员服务承诺及MFN豁免”，将成员换成新加坡。只保留一个总入口，三个站内分支发现的文件保存实际地址。"
+      ],
+      "scope_exclude": [
+        "范围与效力：保留该三组范围，比赛检索突出茶叶及分销服务。WTO义务、约束税率与国内进口规则分别判断；GATS承诺不能直接充当食品进口许可。排除全部争端案例、一般新闻和全球贸易统计。"
+      ],
+      "steps": [
+        "1. 沿成员页导航到Legal texts，按印尼清单方法保存马拉喀什协定及Annex 1A、1B、1C、2、3、4的法律文本文件族，保留正文、附件、修改及状态。诸边协定另核新加坡接受和生效。演示先标引茶叶贸易相关条款，其余法律文本保留。",
+        "2. 进入Goods Schedules e-Library并选择Singapore，核对Schedule LXXIII即第73号承诺表。Status保持Any并保留pre-WTO文件，使用Download all public documents，再逐条展开加号，核全部类型、状态、分页及附件。标引茶叶HS0902的约束税率及相关承诺；实际进口税额另查新加坡税则和税务规则。",
+        "3. 进入I-TIP Services，Economies只选Singapore，Sectors选All Sectors，Group by Member；在GATS Commitments及MFN Exemptions分别View all items，导出完整PDF表单并保存筛选条件和日期。",
+        "4. 核查分销、批发零售及可能适用的服务供应模式，保留水平限制和行业限制的共同条件。目录或工作整合表与原始承诺冲突时回查正式文书。",
+        "5. 沿Link to WTO official documents或成员页all commitments and exemptions，取得GATS/SC/76及全部相关补充、修订、勘误和实际豁免原件，检查包括Suppl.4在内的后续文件。若I-TIP导出受限，先取得正式文书并登记工作表缺口；三组资料作为一个任务去重。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "采集形式：沿用印尼的“通用法律文件族＋成员货物承诺＋成员服务承诺及MFN豁免”，将成员换成新加坡。只保留一个总入口，三个站内分支发现的文件保存实际地址。",
+        "范围与效力：保留该三组范围，比赛检索突出茶叶及分销服务。WTO义务、约束税率与国内进口规则分别判断；GATS承诺不能直接充当食品进口许可。排除全部争端案例、一般新闻和全球贸易统计。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [],
+      "verbatim_requirements": "抓取内容标题：WTO 通用法律文本及新加坡货物服务承诺\n网页链接：https://www.wto.org/english/thewto_e/countries_e/singapore_e.htm\n采集步骤：1. 沿成员页导航到Legal texts，按印尼清单方法保存马拉喀什协定及Annex 1A、1B、1C、2、3、4的法律文本文件族，保留正文、附件、修改及状态。诸边协定另核新加坡接受和生效。演示先标引茶叶贸易相关条款，其余法律文本保留。\n2. 进入Goods Schedules e-Library并选择Singapore，核对Schedule LXXIII即第73号承诺表。Status保持Any并保留pre-WTO文件，使用Download all public documents，再逐条展开加号，核全部类型、状态、分页及附件。标引茶叶HS0902的约束税率及相关承诺；实际进口税额另查新加坡税则和税务规则。\n3. 进入I-TIP Services，Economies只选Singapore，Sectors选All Sectors，Group by Member；在GATS Commitments及MFN Exemptions分别View all items，导出完整PDF表单并保存筛选条件和日期。\n4. 核查分销、批发零售及可能适用的服务供应模式，保留水平限制和行业限制的共同条件。目录或工作整合表与原始承诺冲突时回查正式文书。\n5. 沿Link to WTO official documents或成员页all commitments and exemptions，取得GATS/SC/76及全部相关补充、修订、勘误和实际豁免原件，检查包括Suppl.4在内的后续文件。若I-TIP导出受限，先取得正式文书并登记工作表缺口；三组资料作为一个任务去重。\n抓取注意事项：采集形式：沿用印尼的“通用法律文件族＋成员货物承诺＋成员服务承诺及MFN豁免”，将成员换成新加坡。只保留一个总入口，三个站内分支发现的文件保存实际地址。\n范围与效力：保留该三组范围，比赛检索突出茶叶及分销服务。WTO义务、约束税率与国内进口规则分别判断；GATS承诺不能直接充当食品进口许可。排除全部争端案例、一般新闻和全球贸易统计。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "goods_member": "Singapore",
+        "goods_schedule": "LXXIII",
+        "services_member": "Singapore",
+        "include_pre_wto": true,
+        "goods_status": "Any",
+        "service_exports": [
+          "GATS Commitments",
+          "MFN Exemptions"
+        ],
+        "wto_public_catalog": true
+      }
+    },
+    {
+      "id": "5.3",
+      "chapter_id": "5",
+      "title": "IRAS 中国与新加坡DTA及必要修改",
+      "kind": "treaty",
+      "conditional": false,
+      "trigger": "",
+      "priority": 2,
+      "entries": [
+        {
+          "url": "https://www.iras.gov.sg/taxes/international-tax/international-tax-agreements-concluded-by-singapore/list-of-dtas-limited-dtas-and-eoi-arrangements",
+          "purpose": "catalog",
+          "note": "原清单唯一采集入口；分支需按本项范围发现，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-5.3",
+        "kind:treaty"
+      ],
+      "scope_include": [
+        "IRAS 中国与新加坡DTA及必要修改",
+        "范围：仅中新DTA及必要修改；其他国家DTA、EOI、CRS及FATCA库排除。居民身份、受益所有人及常设机构等按具体条款与事实判断。"
+      ],
+      "scope_exclude": [
+        "范围：仅中新DTA及必要修改；其他国家DTA、EOI、CRS及FATCA库排除。居民身份、受益所有人及常设机构等按具体条款与事实判断。"
+      ],
+      "steps": [
+        "1. 在国家目录选择China，取得中新避免双重征税协定正文、现行议定书及适用修改；核对签署、生效及不同税种的适用日期。",
+        "2. 根据中国企业的真实经营形式筛常设机构、营业利润、关联交易及实际发生的许可费或服务收入等条款，区分普通货款与其他所得。",
+        "3. 将协定与新加坡国内实施命令及IRAS有关解释关联；涉及MLI时逐项核对双方覆盖、保留、通知和适用期间，不凭条约名称自动合并。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：仅中新DTA及必要修改；其他国家DTA、EOI、CRS及FATCA库排除。居民身份、受益所有人及常设机构等按具体条款与事实判断。",
+        "验收：说明何时需要DTA以及适用条件。DTA不能自动免除进口GST或当地销售GST；单纯购销货款也不能直接按许可费推定预提税。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：说明何时需要DTA以及适用条件。DTA不能自动免除进口GST或当地销售GST；单纯购销货款也不能直接按许可费推定预提税。"
+      ],
+      "verbatim_requirements": "抓取内容标题：IRAS 中国与新加坡DTA及必要修改\n网页链接：https://www.iras.gov.sg/taxes/international-tax/international-tax-agreements-concluded-by-singapore/list-of-dtas-limited-dtas-and-eoi-arrangements\n采集步骤：1. 在国家目录选择China，取得中新避免双重征税协定正文、现行议定书及适用修改；核对签署、生效及不同税种的适用日期。\n2. 根据中国企业的真实经营形式筛常设机构、营业利润、关联交易及实际发生的许可费或服务收入等条款，区分普通货款与其他所得。\n3. 将协定与新加坡国内实施命令及IRAS有关解释关联；涉及MLI时逐项核对双方覆盖、保留、通知和适用期间，不凭条约名称自动合并。\n抓取注意事项：范围：仅中新DTA及必要修改；其他国家DTA、EOI、CRS及FATCA库排除。居民身份、受益所有人及常设机构等按具体条款与事实判断。\n验收：说明何时需要DTA以及适用条件。DTA不能自动免除进口GST或当地销售GST；单纯购销货款也不能直接按许可费推定预提税。",
+      "execution": "discovery",
+      "adapter": "html_links",
+      "limits": {
+        "max_original_bytes": 134217728
+      }
+    }
+  ]
+}

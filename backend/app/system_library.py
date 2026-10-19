@@ -29,6 +29,20 @@ _PLAN_HOSTS = {
     "ID": frozenset({"s.mkri.id", "www.mkri.id", "jdih.mkri.id"}) | _INTERNATIONAL_HOSTS,
     "SG": _INTERNATIONAL_HOSTS,
 }
+# Operator-reviewed original files cited by the SG treaty collection. Keep the
+# complete URL exact: this grants neither an OECD host nor a directory. Evidence
+# and the acquired SHA-256 values are recorded in docs/SINGAPORE_COLLECTION.md.
+_PLAN_ORIGINAL_URLS = {
+    "SG": frozenset(
+        {
+            "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/"
+            "beps-mli-position-china-instrument-deposit.pdf",
+            "https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/"
+            "beps-mli-position-singapore-instrument-deposit.pdf",
+            "https://treaties.un.org/doc/Publication/UNTS/Volume%20563/volume-563-I-8206-English.pdf",
+        }
+    ),
+}
 
 
 def official_source_allowed(source_url, country):
@@ -59,7 +73,11 @@ def official_source_allowed(source_url, country):
             return False
     except (ValueError, UnicodeError):
         return False
-    return host.endswith(_GOVERNMENT_SUFFIXES[country]) or host in _PLAN_HOSTS[country]
+    return (
+        host.endswith(_GOVERNMENT_SUFFIXES[country])
+        or host in _PLAN_HOSTS[country]
+        or source_url in _PLAN_ORIGINAL_URLS.get(country, ())
+    )
 
 
 def ensure_principal(conn):

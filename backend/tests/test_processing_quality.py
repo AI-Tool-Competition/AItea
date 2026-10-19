@@ -26,6 +26,16 @@ def scanned():
     }
 
 
+@pytest.mark.parametrize(
+    "manifest",
+    [{}, {"elements": [], "chunks": []}, {"elements": [], "chunks": [], "quality": {"complete": True}}],
+)
+def test_unparsed_original_cannot_count_as_complete_text(manifest):
+    from app.ingestion_quality import text_complete
+
+    assert not text_complete(manifest)
+
+
 def store(service):
     with service.db.transaction() as conn:
         blob = service.archive.blobs.put_bytes("owner", b"scanned original")
@@ -54,7 +64,7 @@ def test_scanned_original_with_no_ocr_is_preserved_and_not_embedded(service, mon
     detail = service.document_detail("owner", doc["id"])
     assert detail["quality"]["complete"] is False
     assert "暂不进入检索" in detail["document"]["error"]
-    assert detail["document"]["status"] == "ready"
+    assert detail["document"]["status"] == "failed"
     assert service.collection.claim_processing() is None
     with closing(service.db.connect()) as conn:
         job = conn.execute(
@@ -87,6 +97,7 @@ def test_missing_source_image_cannot_be_repaired_by_ocr(service, monkeypatch):
     assert not detail["quality"]["complete"]
     assert detail["quality"]["source_incomplete_pages"] == [1]
     assert "原件缺少图片" in detail["document"]["error"]
+    assert detail["document"]["status"] == "failed"
     assert service.collection.claim_processing() is None
 
 
@@ -104,6 +115,23 @@ def test_upload_queues_ocr_after_original_is_saved(service, monkeypatch):
             ).fetchone()[0]
             == 1
         )
+
+
+def test_incomplete_upload_without_ocr_is_not_advertised_as_ready(service, monkeypatch):
+    from pathlib import Path
+    from app import ingestion, parsing, vision
+
+    monkeypatch.setattr(parsing, "parse_bounded", lambda *a, **kw: scanned())
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: False)
+    monkeypatch.setattr(ingestion, "embed_texts", lambda *_: pytest.fail("incomplete text embedded"))
+    doc = service.store_document("owner", "law.pdf", b"scanned original", "application/pdf")
+    detail = service.document_detail("owner", doc["id"])
+    assert doc["status"] == "failed"
+    assert detail["quality"]["complete"] is False
+    with closing(service.db.connect()) as conn:
+        stored = conn.execute("SELECT storage_path FROM documents WHERE id=?", (doc["id"],)).fetchone()
+        assert Path(stored[0]).read_bytes() == b"scanned original"
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] == 0
 
 
 def test_page_checkpoint_survives_failure_and_resume_does_not_reparse(service, monkeypatch):
@@ -148,6 +176,7 @@ def test_page_checkpoint_survives_failure_and_resume_does_not_reparse(service, m
     service.collection.process_item(service.collection.claim_processing())
     assert service.collection.claim_processing() is None
     assert service.document_detail("owner", doc["id"])["quality"]["review_pages"] == [2]
+    assert service.document_detail("owner", doc["id"])["document"]["status"] == "failed"
 
 
 def test_rendered_image_is_saved_before_model_call_in_account_blob_store(service, monkeypatch):
@@ -191,6 +220,111 @@ def test_rendered_image_is_saved_before_model_call_in_account_blob_store(service
     detail = service.document_detail("owner", doc["id"])
     assert detail["quality"]["failed_pages"] == [1, 2]
     assert Path(doc["storage_path"]).read_bytes() == b"scanned original"
+
+
+@pytest.mark.parametrize("damage", [None, "source", "page", "request", "hash", "oversize", "lease"])
+@pytest.mark.parametrize("request_kind", ["page", "region"])
+def test_failed_ocr_response_is_private_durable_evidence_bound_to_request(
+    service, monkeypatch, damage, request_kind
+):
+    import base64
+    import hashlib
+    from app import parsing, vision
+
+    monkeypatch.setattr(parsing, "parse_bounded", lambda *a, **kw: scanned())
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    doc = store(service)
+    raw = b'{"text":"invalid paid response, not legal text'
+    if damage == "oversize":
+        raw = b"x" * (vision.MAX_ERROR_RESPONSE_BYTES + 1)
+    evidence = {
+        "format": "ocr-error-response-v1",
+        "source_hash": doc["content_hash"],
+        "page": 1,
+        "request_id": "one-paid-request",
+        "request_sha256": "a" * 64,
+        "attempt": 1,
+        "image_sha256": "b" * 64,
+        "prompt_version": vision.PROMPT_VERSION,
+        "requested_model": "test-vision",
+        "finish_reason": "stop",
+        "response_base64": base64.b64encode(raw).decode(),
+        "content_hash": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+        "observed_bytes": len(raw),
+        "capture_truncated": False,
+        "response_complete": True,
+        "payload_kind": "assistant_message",
+        "error_code": "invalid_transcription_json",
+    }
+    before_files = set(service.archive.blobs.blobs_dir.rglob("*"))
+    saved_reference = []
+
+    def recognize(filename, content, mime, manifest, *, on_page, on_response_error, **kwargs):
+        page = copy.deepcopy(manifest["pages"][0])
+        page["source_hash"] = doc["content_hash"]
+        page["ocr"] = {
+            "source_hash": doc["content_hash"],
+            "request_id": evidence["request_id"],
+            "attempts": 1,
+            "image_sha256": evidence["image_sha256"],
+            "prompt_version": evidence["prompt_version"],
+            "requested_model": evidence["requested_model"],
+        }
+        if request_kind == "region":
+            evidence.update(
+                request_kind="region", region_id="d" * 64, region_bbox=[1, 2, 3, 4], pass_number=0
+            )
+            record = {
+                **page["ocr"],
+                "page": 1,
+                **{key: evidence[key] for key in ("region_id", "region_bbox", "pass_number")},
+            }
+            page["ocr"] = {"recovery": {"regions": [record]}}
+        on_page(page)
+        if damage == "source":
+            evidence["source_hash"] = "c" * 64
+        elif damage == "page":
+            evidence["page"] = 99
+        elif damage == "request":
+            evidence["request_id"] = "another-request"
+        elif damage == "hash":
+            evidence["content_hash"] = "c" * 64
+        elif damage == "lease":
+            with service.db.transaction() as conn:
+                conn.execute(
+                    "UPDATE processing_jobs SET lease_token='another-worker' WHERE document_id=?",
+                    (doc["id"],),
+                )
+        if damage:
+            with pytest.raises(ValueError):
+                on_response_error(evidence)
+        else:
+            saved_reference.append(on_response_error(evidence))
+        raise ValueError("Worker interrupted after diagnostic checkpoint")
+
+    monkeypatch.setattr(parsing, "ocr_bounded", recognize)
+    service.collection.process_item(service.collection.claim_processing())
+    with closing(service.db.connect()) as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
+        assert not conn.execute("SELECT 1 FROM retrieval_vectors").fetchone()
+    assert "response_base64" not in json.dumps(manifest)
+    if damage:
+        assert not saved_reference
+        assert set(service.archive.blobs.blobs_dir.rglob("*")) == before_files
+    else:
+        reference = saved_reference[0]
+        path = service.db.data_dir / reference["storage_path"]
+        assert path.parent.parent.parent.name == hashlib.sha256(b"owner").hexdigest()
+        assert json.loads(path.read_bytes()) == evidence
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == reference["content_hash"]
+        request = manifest["pages"][0]["ocr"]
+        if request_kind == "region":
+            request = request["recovery"]["regions"][0]
+        assert request["error_response"]["blob"] == reference
+        assert all("invalid paid response" not in str(chunk) for chunk in manifest.get("chunks", []))
 
 
 def test_resume_after_last_page_checkpoint_reassembles_without_ocr_or_reparse(service, monkeypatch):

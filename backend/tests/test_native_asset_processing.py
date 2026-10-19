@@ -165,13 +165,36 @@ def test_explicit_retry_resets_failed_asset_without_new_legal_version(service, m
 
     monkeypatch.setattr(vision, "transcribe_image", failed)
     service.collection.process_item(service.collection.claim_processing())
-    assert native_asset_ocr.assets(saved(service, doc["id"]))[0]["asset_status"] == "ocr_failed"
+    before = native_asset_ocr.assets(saved(service, doc["id"]))[0]
+    assert before["asset_status"] == "ocr_failed"
     with service.db.transaction() as conn:
         service.collection.queue_processing(conn, doc["id"], "owner", retry_ocr=True)
     monkeypatch.setattr(vision, "transcribe_image", lambda _: transcript())
     service.collection.process_item(service.collection.claim_processing())
     asset = native_asset_ocr.assets(saved(service, doc["id"]))[0]
     assert asset["asset_status"] == "ocr_complete" and asset["ocr"]["attempts"] == 1
+    assert asset["ocr_attempt_history"][-1]["previous_asset"] == before
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
     assert hashlib.sha256(Path(doc["storage_path"]).read_bytes()).hexdigest() == doc["content_hash"]
+
+
+def test_explicit_retry_preserves_unknown_native_asset_without_reissuing(service, monkeypatch):
+    from app import native_asset_ocr, vision
+    from app.db import dump
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    doc = store(service)
+    monkeypatch.setattr(vision, "transcribe_image", lambda _: (_ for _ in ()).throw(ValueError("failed")))
+    service.collection.process_item(service.collection.claim_processing())
+    manifest = saved(service, doc["id"])
+    asset = native_asset_ocr.assets(manifest)[0]
+    asset["ocr"]["request_outcome"] = "unknown_transport_result"
+    native_asset_ocr.apply_asset_checkpoint(manifest, asset)
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+        service.collection.queue_processing(conn, doc["id"], "owner", retry_ocr=True)
+    assert saved(service, doc["id"]) == manifest
+    monkeypatch.setattr(vision, "transcribe_image", lambda _: pytest.fail("unknown asset reissued"))
+    service.collection.process_item(service.collection.claim_processing())
+    assert native_asset_ocr.assets(saved(service, doc["id"]))[0] == asset

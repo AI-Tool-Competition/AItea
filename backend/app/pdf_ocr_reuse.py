@@ -16,6 +16,7 @@ from contextlib import closing
 from copy import deepcopy
 
 from .ingestion_quality import pdf_page_status, validate_ocr_page
+from .pdf_limits import ARCHIVE_MAX_PAGES
 
 PROTOCOL = "same-owner-pdf-page-reuse-v1"
 MAX_DONORS = 8
@@ -57,7 +58,7 @@ def current_profile() -> dict | None:
         "requested_model": os.environ["LLM_MODEL"].strip(),
         "prompt_version": vision.PROMPT_VERSION,
         "prompt_sha256": _hash(vision._PROMPT.encode()),
-        "request_recipe": "page-png-high-masked-unverified-native-hint-v1-or-native-hint-20000-json-temperature0-max16384-v1",
+        "request_recipe": vision.PAGE_REQUEST_RECIPE,
     }
     return value | {"fingerprint": _json_hash(value)}
 
@@ -167,7 +168,7 @@ def find_verified_reuse(service, target: dict, page: dict, rendered: dict) -> di
         or target.get("role") != "primary"
         or not pristine_pending(page)
         or type(number) is not int
-        or not 1 <= number <= 5000
+        or not 1 <= number <= ARCHIVE_MAX_PAGES
         or page.get("source_hash") != target.get("content_hash")
         or rendered.get("source_hash") != target.get("content_hash")
         or rendered.get("page") != number

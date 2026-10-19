@@ -1,4 +1,55 @@
-# 新加坡 PDPC 与 Customs 定向采集
+# 新加坡官方资料采集
+
+## 全量范围与当日目录
+
+2026-10-19 的方案版本 5 保留原 DOCX 的 16 项要求，只为 1.1、1.2、1.3 启用 SSO 专用目录解析；版本 1–4 的冻结快照保持原字节。监管操作资料 3.1–3.7 的目标为合计 30–45 份、总上限 45 份，不能按每组 45 份计算。所有资料均须保留原件、不可变版本和来源定位；目录完成、文本完整、向量完整、法务审核分别核验。
+
+SSO 当日目录实际返回宪制文件 3/3、Current Acts 300/526、Current Subsidiary Legislation 300/5,872 条，603 条目录行对应 601 个不同原件身份。后续分页和三个宪制 PDF 入口遇到 AWS WAF 或 CloudFront 拦截，正常浏览器验证同样受阻，保留待件而不反复重试。目录记录的“Current”是来源栏目状态，不是应用中的法律审核结论。未生效、废止、失效法规登记、修订历史和附属法规的授权关系仍有独立缺口。
+
+`scripts/collect_sso_catalog.py` 固定方案快照、原始页面压缩字节及 SHA-256，逐页核对总数、身份重复和明确下一页；导航链接不会占用原件候选额度。恢复运行仅继续缺页，不替换旧证据。目录候选已进入独立采集队列，尚未取得的原件不冒充可检索资料。
+
+## eGazette 公开目录与历史原件
+
+[eGazette 官方公开前端](https://www.egazette.gov.sg/egazette-browse/)提供 Legislative Supplements 的只读检索配置。适配器只读取已核查页面中的字面数据，限定应用、索引、主机及 `/1/indexes/prod_ogp_egazettes_index/query` 端点；请求方式遵循 [Algolia 官方单索引检索协议](https://www.algolia.com/doc/rest-api/search/search-single-index)。公开前端检索凭据仅用于该只读端点，禁止重定向传递或附加到下载域；原件仍经过 HTTPS、公网地址、TLS、体积、时间和每域最多 2 个连接的安全链。
+
+来源返回 `Retry-After` 时，主机冷却时间保存在 `network-state.json`；冷却期间和恢复运行后均不向该域发新请求。未给等待时间的 HTTP 429 至少冷却 60 秒，尚未发送的原件标为 `cooldown_pending`，不把它们记为已经尝试下载的永久失败。
+
+连续三次暂时连接失败也会使该域冷却，等待从 60 秒指数增加、最长 1 小时；计数保存于 `network-failure-streak.json`，重启不会清除，成功响应才复位。原件恢复须显式传入 `--retry-incomplete`；默认最多两次总尝试，可用 `--max-original-attempts 8` 提高到八次。每件的 `retry_not_before` 与整站冷却共同约束下一次请求，报告给出 `retry_next_at` 和次数耗尽数量，不能另开同站进程绕开等待。
+
+每次补试前把旧收据原字节写入 CAS，校验前缀尝试链、官方 URL、标题和目录定位，再持久预留新的尝试号。重启中断只允许经过退避后创建后续尝试，不重复使用或清零原尝试号。所有历史收据继续由 `campaign.json.download_attempts` 显式映射，正式导入逐一保留其哈希和原字节。已成功原件只校验后复用，403/404、错误内容与超限文件不自动重试；达到明确次数上限仍保持缺口。
+
+`scripts/collect_egazette.py` 按四种法律出版类别与年份分页，查询窗口不完整时按出版时间有界分区；`exhaustiveNbHits=false` 明确保留为计数未确认。1998–2026 的实际目录发现 27,124 个不同官方 PDF URL，116 个年份／类别分区中 110 个计数确认、6 个仍受来源计数或窗口限制，不能据此宣称完整收齐。原始响应、请求参数、JSON pointer、原件 URL、内容哈希及下载收据分别保留，可续跑并复用已验证旧原件；失败收据不盲目重试。运行阶段的实际下载数量以该运行目录 `originals/` 收据及最终 `report.json` 为准。
+
+原件单次文件上限 32 MiB，总下载预算上限 10 GiB，并在发起请求前按在途预留量保留至少 40 GiB 磁盘空闲。低于余量时记为 `storage_pending`，释放空间后可以续跑。`--stage-originals` 只把已验证 PDF、目录响应和下载收据写入独立源库的 CAS 与持久化解析队列，不启动网络或模型 worker；`campaign.json` 保留可随总库迁移的证据关系。重复入队复用同 URL、原件哈希和版本；恢复旧原件时必须显式提供其来源根目录。后续处理仍须遵守已保存的正文和向量复用规则。
+
+eGazette 文件是特定日期公布或修订的版本，统一标记 `gazette_published_or_revised_version_not_current_consolidated`。其正文不能替代独立的 SSO 现行合并文本、修订链或生效核验。目录和下载不调用模型，后续解析与真实向量化通过持久化任务进行，草稿不得自动进入正式业务法规 RAG。
+
+```bash
+uv run --project backend --locked python scripts/collect_egazette.py \
+  --output data/campaigns/sg-egazette-1998-2026 \
+  --year-from 1998 --year-through 2026 --originals 1000 --stage-originals \
+  --original-byte-budget 1073741824 --time-budget 1800
+# 同一输出目录续跑须显式增加 --resume；不能改变冻结的年份、类别或分页大小。
+```
+
+## 中新税收协定的两份 OECD 原件身份
+
+总库 SG 准入只增加下列两个完整 URL，不开放整个 OECD 域或目录；查询串、片段、路径编码、邻近文件、其他主机及 ID 国家范围均不适用。原 URL、原件哈希和草稿审核状态不改写：
+
+| 官方原件 | SHA-256 | 已保存字节 |
+| --- | --- | ---: |
+| [中国 MLI 交存立场](https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/beps-mli-position-china-instrument-deposit.pdf) | `b2d79dd37746899f7f18d5496617f55f57f63e38fadab3efdd7abab934c1def8` | 2,111,395 |
+| [新加坡 MLI 交存立场](https://www.oecd.org/content/dam/oecd/en/topics/policy-sub-issues/beps-mli/beps-mli-position-singapore-instrument-deposit.pdf) | `0a7b10250c3940935f8a421a239a66f917a5d2f7a2fb014c367a69daa76b6e2b` | 1,392,061 |
+
+[IRAS 官方 MLI 说明页](https://www.iras.gov.sg/taxes/international-tax/international-tax-agreements-concluded-by-singapore/multilateral-convention-to-implement-tax-treaty-related-measures-to-prevent-base-erosion-and-profit-shifting)保存的 HTML SHA-256 为 `f417e46a3fc8dde944411a8c99aee0f1fb5fc589a3a05f97bde5cefb2ef2bfa0`。其中 UTF-8 字节 254682–254878 的链接指向 OECD 旧版新加坡交存立场 URL，片段 SHA 为 `7f26c17642ee951a254f251c7169b5d6ab072e010a9437b85bbd2b05a8697421`；字节 239630–239873 指向 OECD MLI 总入口，片段 SHA 为 `48414f9ae05b5dc352fa9aec343b453d76b0864aa3e3628884e26d7d8a36e7c3`。IRAS 保存页没有直链上述中国 PDF，不捏造这一关联；中国 PDF 来源证据为 OECD 自身发布的原件，其中列有中新协定及相关议定书。
+
+历史证据位于归档 `source-data/verification/sg-iras-ipos-official-gap-recovery-20261014/`，包含 IRAS 原始 HTML、响应收据和两份 OECD 原件；恢复时重新核对哈希。当前 OECD 总入口的受限下载返回 403，保留失败证据；该失败不改变已取得原件的来源身份，也不证明其法律效力。两份立场文件与 DTA、议定书及适用 MLI 的实质关系仍须审核。
+
+## 联合国登记的独立协定原件
+
+[联合国条约集第 8206 号登记页](https://treaties.un.org/pages/showDetails.aspx?objid=080000028012b8be)直接链接 [Volume 563 的英文原件](https://treaties.un.org/doc/Publication/UNTS/Volume%20563/volume-563-I-8206-English.pdf)。2026-10-19 经安全下载链取得的登记页为 23,064 字节，SHA-256 为 `765931abce6c62093669393e78b44094af453b1e11d8e152eb16ee220a2571ae`；PDF 链接起始标签位于 UTF-8 字节 16803–16901，片段 SHA 为 `2eed6f7bac8583291fb9a6cc95296421137b3bbcf12af1a3f8fc47408aa0a51b`。已有 PDF 原件为 135,037 字节，SHA 为 `ce4c66535ce615dd15d3bec48d790687a9bd7648c3c3080c74935316ae78e28f`，已从来源账号 CAS 重新校验。
+
+SG 总库仅准入上述含 `Volume%20563` 的完整原件 URL。相邻登记号、法文版本、双重编码、查询串、其他主机和 ID 国家范围仍拒绝，不授予整个联合国域或目录。登记页标明 1965 年签署及 1966 年登记，作为历史正式出版证据保存；原件、8 页来源映射和已有向量可复用，不能代替 SSO 当前版本或法务审核，导入仍为草稿。
 
 ## 来源与版本
 
@@ -24,7 +75,7 @@ PDPC 当前文件的原生封面显示 Key Concepts 修订为 29 April 2026、Se
 
 独立 CLI 发现证明位于 `data/campaigns/sg-pdpc-official-v4-20261013/`：七页实际来源发现九个候选，零失败和零未处理入口。另一独立选取运行 `data/campaigns/sg-pdpc-official-v4-selected-20261013/` 取得九件原件、一级五件、二级四件及四条已保存版本关联；其模型关闭的初始快照中仅 primer 一件通过文本完整性，向量为零；后续真实模型处理另写 `model-windows/`，不改该快照或冻结的方案选项。两个账号及数据根分别盘点，不累加为法规覆盖数量；“发现范围完成”不代表 SG 3.6 已满足所有验收要求。
 
-PDPA、Customs Act、GST 法规及 RIEA 的正式正文、适用修改和法律审核仍待补；会员登记、营销、退订、跨境访问的实际处理事实仍须核实。茶的配料、加工、包装与当地完整 HS 归类尚未确认，不照抄中国 HS 尾码，也不把个人包裹规则当作商业进口豁免。上述有界选取不能代替两项全部必要内容或整份 45 项清单的验收。
+PDPA、Customs Act、GST 法规及 RIEA 的正式正文、适用修改和法律审核仍待补；会员登记、营销、退订、跨境访问的实际处理事实仍须核实。茶的配料、加工、包装与当地完整 HS 归类尚未确认，不照抄中国 HS 尾码，也不把个人包裹规则当作商业进口豁免。上述有界选取不能代替两项全部必要内容或新加坡 16 项清单的验收。
 
 ## 操作与复核
 

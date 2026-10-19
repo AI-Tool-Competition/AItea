@@ -79,6 +79,56 @@ def unresolved_issued_inputs(output, saved):
     return attempted - saved
 
 
+def read_unresolved_selection(path, plan, fixed_input_hashes):
+    """Bind an explicit retry decision to exact inputs in this owner/model plan."""
+    with path.open("rb") as stream:
+        raw = stream.read(4 * 1024 * 1024 + 1)
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError("Unresolved recovery selection exceeds 4 MiB")
+    value = json.loads(raw)
+    expected = {
+        "protocol": "fixed-embedding-unresolved-recovery-v1",
+        "owner": plan["owner"],
+        "fingerprint": plan["fingerprint"],
+        "source_plan_sha256": digest(plan),
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != {*expected, "input_hashes"}
+        or any(value[key] != item for key, item in expected.items())
+    ):
+        raise ValueError("Unresolved recovery selection does not match the frozen plan")
+    hashes = value["input_hashes"]
+    if (
+        not isinstance(hashes, list)
+        or not hashes
+        or any(
+            not isinstance(item, str)
+            or len(item) != 64
+            or any(character not in "0123456789abcdef" for character in item)
+            for item in hashes
+        )
+        or len(hashes) != len(set(hashes))
+        or not set(hashes).issubset(fixed_input_hashes)
+    ):
+        raise ValueError(
+            "Unresolved recovery selection contains invalid or out-of-plan inputs"
+        )
+    return {
+        "path": str(path.resolve()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "input_hashes": hashes,
+    }
+
+
+def deferred_input_documents(document_inputs, quarantined_inputs):
+    return {
+        ident
+        for ident, hashes in document_inputs.items()
+        if quarantined_inputs.intersection(hashes)
+    }
+
+
 class Observations:
     def __init__(self, output):
         self.output = output
@@ -359,10 +409,16 @@ def main():
     parser.add_argument("--request-concurrency", type=int, choices=(1, 2), default=1)
     parser.add_argument("--stop-after-claims", type=int, default=0)
     parser.add_argument("--http-timeout", type=int, choices=range(1, 61), default=30)
-    parser.add_argument(
+    retry = parser.add_mutually_exclusive_group()
+    retry.add_argument(
         "--retry-unresolved",
         action="store_true",
         help="Explicitly allow inputs from earlier issued requests with no saved result; billing may recur",
+    )
+    retry.add_argument(
+        "--retry-unresolved-selection",
+        type=Path,
+        help="Allow only exact input hashes in an owner/model/frozen-plan recovery file; billing may recur",
     )
     args = parser.parse_args()
     document_workers = (
@@ -405,6 +461,7 @@ def main():
     service = Service(data)
     owner, fingerprint = plan["owner"], service.embedding_fingerprint()
     assert fingerprint and fingerprint == plan["fingerprint"]
+    document_inputs = {}
     for item in plan["documents"]:
         with closing(service.db.connect()) as conn:
             doc = service.own_document(conn, owner, item["id"])
@@ -440,6 +497,7 @@ def main():
                     chunk["text"] == expected_chunk["text"]
                     and json.loads(chunk["locator"]) == expected_chunk["locator"]
                 )
+            document_inputs[doc["id"]] = {chunk["input_hash"] for chunk in chunks}
         with Path(item["storage_path"]).open("rb") as stream:
             assert (
                 hashlib.file_digest(stream, "sha256").hexdigest()
@@ -483,18 +541,24 @@ def main():
     with closing(sqlite3.connect(cache.path)) as conn:
         saved = {row[0] for row in conn.execute("SELECT input_hash FROM inputs")}
     unresolved = unresolved_issued_inputs(output, saved)
-    deferred_documents = set()
-    if unresolved and not args.retry_unresolved:
-        with closing(service.db.connect()) as conn:
-            for ident in ids:
-                if any(
-                    row[0] in unresolved
-                    for row in conn.execute(
-                        "SELECT input_hash FROM retrieval_chunks WHERE document_id=?",
-                        (ident,),
-                    )
-                ):
-                    deferred_documents.add(ident)
+    recovery_selection = (
+        read_unresolved_selection(
+            args.retry_unresolved_selection,
+            plan,
+            set().union(*document_inputs.values()),
+        )
+        if args.retry_unresolved_selection
+        else None
+    )
+    allowed_unresolved = (
+        unresolved
+        if args.retry_unresolved
+        else unresolved.intersection(
+            recovery_selection["input_hashes"] if recovery_selection else ()
+        )
+    )
+    quarantined_inputs = unresolved - allowed_unresolved
+    deferred_documents = deferred_input_documents(document_inputs, quarantined_inputs)
     observations = Observations(output)
     observations.install()
     original_embed = ingestion.embed_texts
@@ -521,6 +585,9 @@ def main():
         output,
         {
             "input_hashes": sorted(unresolved),
+            "allowed_input_hashes": sorted(allowed_unresolved),
+            "quarantined_input_hashes": sorted(quarantined_inputs),
+            "recovery_selection": recovery_selection,
             "deferred_document_ids": sorted(deferred_documents),
         },
         "unresolved-" + run_id + ".json",
@@ -552,6 +619,9 @@ def main():
                 "request_concurrency": args.request_concurrency,
                 "http_timeout": args.http_timeout,
                 "retry_unresolved": args.retry_unresolved,
+                "retry_unresolved_selection_sha256": (
+                    recovery_selection["sha256"] if recovery_selection else None
+                ),
             },
             "status": "running" if active else "idle",
             "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -559,6 +629,8 @@ def main():
             "completed_documents": sum(j["status"] == "completed" for j in jobs),
             "failed_documents": sum(j["status"] == "failed" for j in jobs),
             "unresolved_issued_inputs_at_start": len(unresolved),
+            "explicitly_allowed_unresolved_inputs": len(allowed_unresolved),
+            "quarantined_inputs": len(quarantined_inputs),
             "deferred_documents": len(deferred_documents),
             "active_claims": len(active),
             "finished_claims_this_process": finished,

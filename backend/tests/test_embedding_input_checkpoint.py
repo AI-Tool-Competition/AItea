@@ -380,6 +380,180 @@ def test_unresolved_intents_reconcile_each_attempt_and_preserve_legacy(tmp_path)
         runner["unresolved_issued_inputs"](tmp_path, set())
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"owner": "other"},
+        {"fingerprint": "other"},
+        {"source_plan_sha256": "0" * 64},
+        {"protocol": "unknown"},
+        {"unexpected": True},
+        {"input_hashes": []},
+        {"input_hashes": "a" * 64},
+        {"input_hashes": ["A" * 64]},
+        {"input_hashes": ["a" * 63]},
+        {"input_hashes": [None]},
+        {"input_hashes": ["a" * 64, "a" * 64]},
+        {"input_hashes": ["b" * 64]},
+    ],
+)
+def test_unresolved_selection_rejects_scope_drift_and_invalid_inputs(tmp_path, change):
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    plan = {"owner": "owner", "fingerprint": FP, "documents": [{"id": "fixed"}]}
+    selection = {
+        "protocol": "fixed-embedding-unresolved-recovery-v1",
+        "owner": "owner",
+        "fingerprint": FP,
+        "source_plan_sha256": runner["digest"](plan),
+        "input_hashes": ["a" * 64],
+        **change,
+    }
+    path = tmp_path / "selection.json"
+    path.write_text(json.dumps(selection))
+    with pytest.raises(ValueError, match="Unresolved recovery selection"):
+        runner["read_unresolved_selection"](path, plan, {"a" * 64})
+
+
+def test_unresolved_selection_rejects_oversized_file_and_conflicting_cli_flags(tmp_path, monkeypatch):
+    import sys
+
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    path = tmp_path / "oversized.json"
+    path.write_bytes(b" " * (4 * 1024 * 1024 + 1))
+    with pytest.raises(ValueError, match="4 MiB"):
+        runner["read_unresolved_selection"](path, {}, set())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "complete_embeddings",
+            "--plan",
+            "plan",
+            "--output",
+            "out",
+            "--models-env",
+            "env",
+            "--retry-unresolved",
+            "--retry-unresolved-selection",
+            str(path),
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        runner["main"]()
+    assert error.value.code == 2
+
+
+def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(service, tmp_path, monkeypatch):
+    from contextlib import closing
+    import os
+    import signal
+    import sys
+
+    from app import service as service_module
+    from app.retrieval import input_hash
+
+    runner = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "complete_embeddings.py"))
+    import verify_ingestion
+
+    docs = [register(service, name, context=name, count=1) for name in ("allowed", "saved", "new-unknown")]
+    texts = {doc["id"]: json.loads(doc["manifest"])["chunks"][0]["retrieval_text"] for doc in docs}
+    hashes = {ident: input_hash(text) for ident, text in texts.items()}
+    plan = {
+        "protocol": "test-fixed-plan",
+        "owner": "owner",
+        "fingerprint": FP,
+        "data_dir": str(service.db.data_dir),
+        "documents": [
+            {key: doc[key] for key in ("id", "version", "content_hash", "source_url", "storage_path", "size")}
+            for doc in docs
+        ],
+    }
+    plan_path, selection_path = tmp_path / "plan.json", tmp_path / "recover.json"
+    plan_path.write_text(json.dumps(plan))
+    selection_path.write_text(
+        json.dumps(
+            {
+                "protocol": "fixed-embedding-unresolved-recovery-v1",
+                "owner": "owner",
+                "fingerprint": FP,
+                "source_plan_sha256": runner["digest"](plan),
+                "input_hashes": [hashes[doc["id"]] for doc in docs[:2]],
+            }
+        )
+    )
+    output = tmp_path / "run"
+    output.mkdir()
+    journal = "".join(
+        json.dumps({"http_started": True, "http_status": 504, "input_hashes": [value]}) + "\n"
+        for value in hashes.values()
+    )
+    (output / "requests.jsonl").write_text(journal)
+    cache = embedding_reuse.InputCheckpointCache(
+        output / "successful-inputs.sqlite3",
+        {"owner": "owner", "fingerprint": FP, "source_plan": runner["digest"](plan)},
+    )
+    cache.save([texts[docs[1]["id"]]], [[0.0, 1.0]])
+    called = []
+
+    def embed(values, *, on_batch):
+        called.extend(values)
+        result = [[1.0, 0.0] for _ in values]
+        on_batch(values, result)
+        return result
+
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    monkeypatch.setattr(service_module, "Service", lambda _: service)
+    monkeypatch.setattr(verify_ingestion, "configure_models", lambda _: None)
+    monkeypatch.setattr(runner["Observations"], "install", lambda _: None)
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "complete_embeddings",
+            "--plan",
+            str(plan_path),
+            "--output",
+            str(output),
+            "--models-env",
+            "unused",
+            "--retry-unresolved-selection",
+            str(selection_path),
+            "--apply",
+        ],
+    )
+    monkeypatch.setattr(ingestion, "embed_texts", embed)
+    assert runner["main"]() == 0
+    assert called == [texts[docs[0]["id"]]]
+    report = json.loads((output / "report.json").read_text())
+    assert report["completed_documents"] == 2 and report["missing_rows"] == 1
+    assert report["explicitly_allowed_unresolved_inputs"] == 1 and report["quarantined_inputs"] == 1
+    assert report["deferred_documents"] == 1 and all(report["integrity"].values())
+    snapshot = json.loads((output / ("unresolved-" + report["run_id"] + ".json")).read_text())
+    assert snapshot["allowed_input_hashes"] == [hashes[docs[0]["id"]]]
+    assert snapshot["quarantined_input_hashes"] == [hashes[docs[2]["id"]]]
+    assert (
+        snapshot["recovery_selection"]["sha256"]
+        == report["configuration"]["retry_unresolved_selection_sha256"]
+    )
+    before = {doc["id"]: vectors(service, doc) for doc in docs}
+    monkeypatch.setattr(
+        ingestion, "embed_texts", lambda *_: pytest.fail("restarted selection repaid a successful input")
+    )
+    assert runner["main"]() == 0
+    assert before == {doc["id"]: vectors(service, doc) for doc in docs}
+    assert (output / "requests.jsonl").read_text() == journal
+    with closing(service.db.connect()) as conn:
+        assert (
+            conn.execute(
+                "SELECT status FROM processing_jobs WHERE document_id=?", (docs[2]["id"],)
+            ).fetchone()[0]
+            == "queued"
+        )
+    report = json.loads((output / "report.json").read_text())
+    assert report["explicitly_allowed_unresolved_inputs"] == 0 and report["quarantined_inputs"] == 1
+
+
 def test_runner_drains_paid_peer_after_local_future_failure(tmp_path):
     from concurrent.futures import Future
     import sqlite3

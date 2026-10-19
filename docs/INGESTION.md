@@ -4,6 +4,8 @@
 
 `backend/app/ingestion.py` 是无数据库、无用户状态的同步库。应用服务必须先检查账户和业务归属，再将耗时工作交给受限工作线程或进程。外部上传应通过 `app.parsing.parse_bounded` 进行资源隔离，不应在 API 事件循环或主服务进程内直接调用 `parse_file`。原始文件保存、不可变版本、内容 hash 去重、来源更新时间和引用访问控制由业务服务负责。
 
+历史下载复用及 BKPM 表单封装原件的保留与映射规则见 [来源响应凭证](SOURCE_RECEIPTS.md)。
+
 - `parse_file(filename, content, mime_type='', role='primary', parser='basic')` 返回结构元素、章节切片、原文 locator、解析版本、SHA-256 和警告；PDF 另有逐页处理状态与完整性。明确拒绝文件角色 `secondary`（普通附件）；二级法规仍使用可解析的文件角色，是否检索由法规分级决定。
 - `lexical_search(query, chunks, limit=5)` 使用 BM25 风格词项评分；中文按连续双字匹配，保留传入 chunk 的文档、版本、locator 等元数据。没有重合词项就返回空结果。它不是语义向量检索，也不替代法律适用性判断。
 - `embed_texts(texts)` 调用实际配置的 OpenAI 兼容 embedding 服务。没有配置时返回 `None`；部分配置、服务错误、空向量、非有限数值、重复索引或维度不一致会明确失败。不会生成假向量。服务层负责持久化模型、维度、向量与配置指纹，查询时按同一配置向量化，配置变化需要重建索引。

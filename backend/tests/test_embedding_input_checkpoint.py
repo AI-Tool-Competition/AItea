@@ -192,17 +192,22 @@ def test_real_parallel_callers_share_configured_slots(monkeypatch, http_workers)
         return response(json.loads(request.content)["input"])
 
     provider(monkeypatch, handler)
+
+    def execute(n):
+        lane = "query" if n <= min(4, http_workers // 16) else "bulk"
+        with ingestion.embedding_priority(lane):
+            return ingestion.embed_texts([str(n), str(n + 1)])
+
     with ThreadPoolExecutor(max_workers=http_workers // 2) as pool:
-        futures = [
-            pool.submit(ingestion.embed_texts, [str(n), str(n + 1)]) for n in range(1, http_workers + 1, 2)
-        ]
+        futures = [pool.submit(execute, n) for n in range(1, http_workers + 1, 2)]
         results = [value for future in futures for value in future.result()]
     assert results == [[float(n), 1.0] for n in range(1, http_workers + 1)]
     assert peak == http_workers and active == 0
     slots = ingestion._EMBEDDING_HTTP_SLOTS
-    for _ in range(http_workers):
-        assert slots.acquire(blocking=False)
-    assert not slots.acquire(blocking=False)
+    with ingestion.embedding_priority("query"):
+        for _ in range(http_workers):
+            assert slots.acquire(blocking=False)
+        assert not slots.acquire(blocking=False)
     monkeypatch.setenv("EMBEDDING_HTTP_WORKERS", "2")
     for _ in range(http_workers):
         slots.release()
@@ -502,6 +507,9 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
         return result
 
     monkeypatch.setattr(os, "environ", dict(os.environ))
+    for key, value in {"BASE_URL": "https://embed.example/v1", "MODEL": "embed", "API_KEY": "test"}.items():
+        monkeypatch.setenv("EMBEDDING_" + key, value)
+    monkeypatch.setattr(ingestion, "_EMBEDDING_HTTP_SLOTS", ingestion._EmbeddingSlots())
     monkeypatch.setattr(service_module, "Service", lambda _: service)
     monkeypatch.setattr(verify_ingestion, "configure_models", lambda _: None)
     monkeypatch.setattr(runner["Observations"], "install", lambda _: None)
@@ -517,6 +525,8 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(se
             str(output),
             "--models-env",
             "unused",
+            "--admission-path",
+            str(tmp_path / "runtime" / "admission.sqlite3"),
             "--retry-unresolved-selection",
             str(selection_path),
             "--apply",

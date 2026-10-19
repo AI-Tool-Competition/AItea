@@ -403,6 +403,11 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models-env", type=Path, required=True)
+    parser.add_argument(
+        "--admission-path",
+        type=Path,
+        help="Runtime SQLite budget shared with the API process",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--http-workers", type=int, choices=range(1, 65), default=2)
     parser.add_argument("--batch-size", type=int, choices=range(1, 65), default=6)
@@ -451,6 +456,11 @@ def main():
     from app.service import Service
 
     plan = json.loads(args.plan.read_text())
+    os.environ["EMBEDDING_ADMISSION_PATH"] = str(
+        args.admission_path
+        or os.getenv("EMBEDDING_ADMISSION_PATH")
+        or ROOT / ".dev" / "embedding-admission.sqlite3"
+    )
     ids = [d["id"] for d in plan["documents"]]
     assert ids and len(ids) == len(set(ids))
     data = Path(plan["data_dir"]).resolve()
@@ -593,7 +603,10 @@ def main():
         "unresolved-" + run_id + ".json",
     )
 
+    last_checkpoint = 0
+
     def progress():
+        nonlocal last_checkpoint
         with closing(service.db.connect()) as conn:
             jobs = [
                 dict(r)
@@ -638,11 +651,20 @@ def main():
             "unique_missing_inputs": pending[1],
             "total_vectors": count,
             "provider": observations.summary(),
+            "shared_admission": ingestion._EMBEDDING_HTTP_SLOTS.snapshot(),
             "checkpoint_cache": cache.snapshot(),
             "database_waits": len(observations.database_waits),
             "runtime_errors": list(observations.runtime_errors),
         }
         write_report(output, report, "progress.json")
+        milestone = report["checkpoint_cache"]["new_saved_this_process"] // 200
+        if milestone > last_checkpoint:
+            # The receipt database commits every successful HTTP batch. These
+            # immutable milestones add a compact audit snapshot every 200 inputs.
+            write_report(
+                output, report, f"checkpoint-{run_id}-{milestone * 200:08}.json"
+            )
+            last_checkpoint = milestone
         return report, jobs
 
     report, jobs = progress()

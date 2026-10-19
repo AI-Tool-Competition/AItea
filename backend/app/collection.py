@@ -1284,18 +1284,19 @@ class CollectionService:
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
-            import_present = "collection_import" in manifest
-            import_origin = deepcopy(manifest.get("collection_import"))
+            provenance_keys = ("collection_import", "collection_evidence", "gazette_publication")
+            stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
 
             def preserve_import_origin(result):
-                # Parsers rebuild derived content. Keep the stored import identity,
-                # including its original guard, without granting it legal authority.
-                # Recomputing that guard would allow an older source snapshot to
-                # replace paid OCR or vectors already committed in this database.
-                if import_present:
-                    result["collection_import"] = deepcopy(import_origin)
-                else:
-                    result.pop("collection_import", None)
+                # Keep stored source evidence and already mapped CAS paths when
+                # parsers rebuild derived text. Do not accept parser-created
+                # provenance or recompute an import guard: neither grants an
+                # older snapshot permission to replace paid OCR or vectors.
+                for key in provenance_keys:
+                    if key in stored_provenance:
+                        result[key] = deepcopy(stored_provenance[key])
+                    else:
+                        result.pop(key, None)
                 return result
 
             fingerprint = self.service.embedding_fingerprint()

@@ -3,19 +3,26 @@
 import {
   Check,
   ChevronDown,
+  ChevronRight,
+  Ellipsis,
   FolderClosed,
   FolderOpen,
   LockKeyhole,
+  LoaderCircle,
   MessageSquare,
   Plus,
   Settings2,
   UserRound,
   BookOpen,
   Globe2,
-  FileText,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +51,8 @@ import type {
 } from "@/core/tea/types";
 
 import { Brand } from "./shared";
+
+const RECENT_CHAT_COUNT = 4;
 
 export type TeaView =
   | "workspace"
@@ -98,14 +107,18 @@ export function TeaNavigation({
 }: Props) {
   const { open, isMobile, setOpenMobile } = useSidebar();
   const [more, setMore] = useState(false);
-  const [businessExpanded, setBusinessExpanded] = useState(true);
-  const [expanded, setExpanded] = useState<Set<string>>(
-    () => new Set([stageId]),
-  );
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [projectExpanded, setProjectExpanded] = useState(true);
+  const [allChats, setAllChats] = useState<Set<string>>(() => new Set());
+  const currentFolder = useRef<HTMLElement>(null);
+  const [expanded, setExpanded] = useState(stageId);
   useEffect(() => {
-    setExpanded((previous) => new Set([...previous, stageId]));
+    setExpanded(stageId);
+    setProjectExpanded(true);
   }, [stageId]);
-  const business = cases.find((item) => item.id === caseId);
+  useEffect(() => {
+    currentFolder.current?.scrollIntoView?.({ block: "nearest" });
+  }, [stageId, record?.id, open, isMobile]);
   const stages =
     record?.stages.filter((stage) => more || stage.id === stageId) ?? [];
   function navigate(action: () => void) {
@@ -125,207 +138,309 @@ export function TeaNavigation({
           </button>
           <SidebarTrigger aria-label="切换侧栏" />
         </div>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <div className="tea-business-switch-row">
-              <button
-                className="tea-business-folder-toggle"
-                aria-label={`${businessExpanded ? "收起" : "展开"}业务节点`}
-                aria-expanded={businessExpanded}
-                aria-controls="tea-business-nodes"
-                onClick={() => setBusinessExpanded((value) => !value)}
-              >
-                <ChevronDown
-                  size={14}
-                  className={businessExpanded ? "" : "-rotate-90"}
-                />
-              </button>
-              <DropdownMenu modal={!isMobile}>
-                <DropdownMenuTrigger asChild>
-                  <SidebarMenuButton
-                    className="tea-business-switch"
-                    tooltip={business?.title ?? "选择出口业务"}
-                    aria-label="切换业务"
-                  >
-                    <FolderOpen />
-                    <span className="tea-business-switch-name">
-                      {business?.title ?? "选择出口业务"}
-                    </span>
-                    <ChevronDown className="ml-auto shrink-0" />
-                  </SidebarMenuButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="start"
-                  sideOffset={5}
-                  className="tea-business-switch-menu"
-                >
-                  {cases.map((item) => (
-                    <DropdownMenuItem
-                      key={item.id}
-                      onSelect={() => navigate(() => onCase(item.id))}
-                    >
-                      <span className="tea-business-option">{item.title}</span>
-                      {item.id === caseId && <Check size={14} />}
-                    </DropdownMenuItem>
-                  ))}
-                  {cases.length > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuItem onSelect={() => navigate(onCreate)}>
-                    <Plus size={15} />
-                    新建业务
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </SidebarMenuItem>
-        </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
         {open || isMobile ? (
-          <SidebarGroup
-            id="tea-business-nodes"
-            className="tea-node-folders"
-            aria-label="当前业务节点"
-            hidden={!businessExpanded}
+          <Collapsible
+            open={projectsOpen}
+            onOpenChange={setProjectsOpen}
+            className="tea-business-context"
           >
-            {recordLoading && (
-              <p role="status" className="tea-business-loading">
-                正在读取节点…
-              </p>
-            )}
-            {stages.map((stage) => {
-              const current = stage.id === stageId && view === "workspace";
-              const opened = expanded.has(stage.id);
-              return (
-                <section
-                  key={stage.id}
-                  className="tea-node-folder"
-                  data-current={current}
-                >
-                  <div className="tea-node-folder-heading">
-                    <button
-                      className="tea-node-folder-toggle"
-                      aria-label={`${opened ? "收起" : "展开"}节点：${stage.name}`}
-                      aria-expanded={opened}
-                      aria-controls={`node-${stage.id}`}
-                      onClick={() =>
-                        setExpanded((previous) => {
-                          const next = new Set(previous);
-                          if (next.has(stage.id)) next.delete(stage.id);
-                          else next.add(stage.id);
-                          return next;
-                        })
-                      }
-                    >
-                      <ChevronDown
-                        size={13}
-                        className={opened ? "" : "-rotate-90"}
-                      />
-                    </button>
-                    <button
-                      className="tea-node-folder-name"
-                      title={stage.name}
-                      onClick={() => {
-                        setExpanded(
-                          (previous) => new Set([...previous, stage.id]),
-                        );
-                        navigate(() => onStage(stage.id));
-                      }}
-                    >
-                      {opened ? (
-                        <FolderOpen size={15} />
-                      ) : (
-                        <FolderClosed size={15} />
-                      )}
-                      <span>{stage.name}</span>
-                      {stage.status === "locked" ? (
-                        <LockKeyhole size={12} />
-                      ) : stage.status === "completed" ? (
-                        <Check size={12} />
-                      ) : (
-                        <i className="tea-node-active-dot" />
-                      )}
-                    </button>
-                  </div>
-                  {opened && (
-                    <div
-                      id={`node-${stage.id}`}
-                      className="tea-node-entries"
-                      role="group"
-                      aria-label={`${stage.name}的会话`}
-                    >
-                      <button
-                        className={
-                          current && conversationId === "guide" ? "active" : ""
-                        }
-                        aria-current={
-                          current && conversationId === "guide"
-                            ? "page"
-                            : undefined
-                        }
-                        onClick={() => navigate(() => onStage(stage.id))}
-                      >
-                        <FileText size={14} />
-                        <span>引导会话</span>
-                      </button>
-                      {conversations
-                        .filter(
-                          (item) =>
-                            item.stage_id === stage.id && item.kind !== "guide",
-                        )
-                        .map((item) => (
-                          <button
-                            key={item.id}
-                            title={item.title}
-                            className={
-                              current && conversationId === item.id
-                                ? "active"
-                                : ""
-                            }
-                            aria-current={
-                              current && conversationId === item.id
-                                ? "page"
-                                : undefined
-                            }
-                            onClick={() =>
-                              navigate(() =>
-                                onConversation?.(stage.id, item.id),
-                              )
-                            }
-                          >
-                            <MessageSquare size={13} />
-                            <span>{item.title}</span>
-                          </button>
-                        ))}
-                      <button
-                        className="tea-new-conversation"
-                        disabled={stage.status === "locked" || conversationBusy}
-                        onClick={() =>
-                          navigate(() => onCreateConversation?.(stage.id))
-                        }
-                      >
-                        <Plus size={14} />
-                        <span>
-                          {conversationBusy && current
-                            ? "正在新建…"
-                            : "新建会话"}
-                        </span>
-                      </button>
-                    </div>
-                  )}
-                </section>
-              );
-            })}
-            {(record?.stages.length ?? 0) > 1 && (
+            <div className="tea-business-switch-row">
+              <CollapsibleTrigger className="tea-projects-title">
+                <span>项目管理</span>
+                <ChevronDown size={14} />
+              </CollapsibleTrigger>
               <button
-                className="tea-more-nodes"
-                aria-expanded={more}
-                onClick={() => setMore((value) => !value)}
+                className="tea-business-create"
+                aria-label="新建项目"
+                title="新建项目"
+                onClick={() => navigate(onCreate)}
               >
-                <ChevronDown size={14} className={more ? "rotate-180" : ""} />
-                {more ? "收起" : "展开显示"}
+                <Plus size={17} />
               </button>
-            )}
-          </SidebarGroup>
+            </div>
+            <CollapsibleContent>
+              {cases.map((business) => {
+                const selected = business.id === caseId;
+                return (
+                  <Collapsible
+                    key={business.id}
+                    open={selected && projectExpanded}
+                    onOpenChange={(value) => {
+                      if (selected) setProjectExpanded(value);
+                      else if (value) navigate(() => onCase(business.id));
+                    }}
+                    className="tea-project-folder"
+                  >
+                    <div className="tea-project-folder-heading">
+                      <CollapsibleTrigger
+                        className="tea-project-folder-name"
+                        aria-label={`项目：${business.title}`}
+                        title={business.title}
+                      >
+                        <span
+                          className="tea-project-folder-icon"
+                          aria-hidden="true"
+                        >
+                          <FolderClosed size={16} />
+                          <ChevronRight size={15} />
+                        </span>
+                        <span className="tea-project-folder-title">
+                          {business.title}
+                        </span>
+                      </CollapsibleTrigger>
+                      {selected && (
+                        <DropdownMenu modal={!isMobile}>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              className="tea-project-switch"
+                              title="项目菜单"
+                              aria-label="切换业务"
+                            >
+                              <Ellipsis size={16} />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="start"
+                            sideOffset={5}
+                            className="tea-business-switch-menu"
+                          >
+                            {cases.map((item) => (
+                              <DropdownMenuItem
+                                key={item.id}
+                                onSelect={() => navigate(() => onCase(item.id))}
+                              >
+                                <span className="tea-business-option">
+                                  {item.title}
+                                </span>
+                                {item.id === caseId && <Check size={14} />}
+                              </DropdownMenuItem>
+                            ))}
+                            {cases.length > 0 && <DropdownMenuSeparator />}
+                            <DropdownMenuItem
+                              onSelect={() => navigate(onCreate)}
+                            >
+                              <Plus size={15} />
+                              新建项目
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </div>
+                    {selected && (
+                      <CollapsibleContent>
+                        <SidebarGroup
+                          className="tea-node-folders"
+                          aria-label="当前业务节点"
+                        >
+                          {recordLoading && (
+                            <p role="status" className="tea-business-loading">
+                              正在读取节点…
+                            </p>
+                          )}
+                          {stages.map((stage) => {
+                            const current =
+                              stage.id === stageId && view === "workspace";
+                            const opened = expanded === stage.id;
+                            const chats = conversations
+                              .filter(
+                                (item) =>
+                                  item.stage_id === stage.id &&
+                                  item.kind !== "guide",
+                              )
+                              .sort((a, b) =>
+                                (b.updated_at ?? "").localeCompare(
+                                  a.updated_at ?? "",
+                                ),
+                              );
+                            const showingAll = allChats.has(stage.id);
+                            const recent = chats.slice(0, RECENT_CHAT_COUNT);
+                            const active = current
+                              ? chats.find((item) => item.id === conversationId)
+                              : undefined;
+                            const visibleChats = showingAll
+                              ? chats
+                              : active && !recent.includes(active)
+                                ? [
+                                    ...recent.slice(0, RECENT_CHAT_COUNT - 1),
+                                    active,
+                                  ]
+                                : recent;
+                            return (
+                              <Collapsible
+                                key={stage.id}
+                                open={opened}
+                                onOpenChange={(value) =>
+                                  setExpanded(value ? stage.id : "")
+                                }
+                                asChild
+                              >
+                                <section
+                                  ref={current ? currentFolder : undefined}
+                                  className="tea-node-folder"
+                                  data-current={current}
+                                >
+                                  <div className="tea-node-folder-heading">
+                                    <CollapsibleTrigger asChild>
+                                      <button
+                                        className="tea-node-folder-name"
+                                        aria-label={stage.name}
+                                        title={stage.name}
+                                      >
+                                        <ChevronRight
+                                          className="tea-node-disclosure"
+                                          size={14}
+                                          aria-hidden="true"
+                                        />
+                                        <span className="tea-node-folder-title">
+                                          {stage.name}
+                                        </span>
+                                        <span
+                                          className="tea-node-folder-status"
+                                          title={
+                                            stage.status === "locked"
+                                              ? "待解锁"
+                                              : stage.status === "completed"
+                                                ? "已完成"
+                                                : "进行中"
+                                          }
+                                        >
+                                          {stage.status === "locked" ? (
+                                            <LockKeyhole size={12} />
+                                          ) : stage.status === "completed" ? (
+                                            <Check size={12} />
+                                          ) : (
+                                            <i className="tea-node-active-dot" />
+                                          )}
+                                        </span>
+                                      </button>
+                                    </CollapsibleTrigger>
+                                    <button
+                                      className="tea-node-new-conversation"
+                                      aria-label={`在${stage.name}新建会话`}
+                                      aria-busy={conversationBusy && current}
+                                      title={
+                                        stage.status === "locked"
+                                          ? "节点解锁后可新建会话"
+                                          : conversationBusy && current
+                                            ? "正在新建…"
+                                            : "新建会话"
+                                      }
+                                      disabled={
+                                        stage.status === "locked" ||
+                                        conversationBusy
+                                      }
+                                      onClick={() => {
+                                        setExpanded(stage.id);
+                                        navigate(() =>
+                                          onCreateConversation?.(stage.id),
+                                        );
+                                      }}
+                                    >
+                                      {conversationBusy && current ? (
+                                        <LoaderCircle
+                                          size={16}
+                                          className="animate-spin motion-reduce:animate-none"
+                                        />
+                                      ) : (
+                                        <Plus size={16} />
+                                      )}
+                                    </button>
+                                  </div>
+                                  <CollapsibleContent
+                                    className="tea-node-entries"
+                                    role="group"
+                                    aria-label={`${stage.name}的会话`}
+                                  >
+                                    <button
+                                      className={
+                                        current && conversationId === "guide"
+                                          ? "active"
+                                          : ""
+                                      }
+                                      aria-current={
+                                        current && conversationId === "guide"
+                                          ? "page"
+                                          : undefined
+                                      }
+                                      onClick={() =>
+                                        navigate(() => onStage(stage.id))
+                                      }
+                                    >
+                                      <span>引导会话</span>
+                                    </button>
+                                    {visibleChats.map((item) => (
+                                      <button
+                                        key={item.id}
+                                        title={item.title}
+                                        className={
+                                          current && conversationId === item.id
+                                            ? "active"
+                                            : ""
+                                        }
+                                        aria-current={
+                                          current && conversationId === item.id
+                                            ? "page"
+                                            : undefined
+                                        }
+                                        onClick={() =>
+                                          navigate(() =>
+                                            onConversation?.(stage.id, item.id),
+                                          )
+                                        }
+                                      >
+                                        <span>{item.title}</span>
+                                      </button>
+                                    ))}
+                                    {chats.length > RECENT_CHAT_COUNT && (
+                                      <button
+                                        className="tea-node-more-conversations"
+                                        aria-label={`${showingAll ? "收起" : "展开"}${stage.name}的会话`}
+                                        aria-expanded={showingAll}
+                                        onClick={() =>
+                                          setAllChats((previous) => {
+                                            const next = new Set(previous);
+                                            if (next.has(stage.id))
+                                              next.delete(stage.id);
+                                            else next.add(stage.id);
+                                            return next;
+                                          })
+                                        }
+                                      >
+                                        <span>
+                                          {showingAll ? "收起" : "展开显示"}
+                                        </span>
+                                      </button>
+                                    )}
+                                  </CollapsibleContent>
+                                </section>
+                              </Collapsible>
+                            );
+                          })}
+                          {(record?.stages.length ?? 0) > 1 && (
+                            <button
+                              className="tea-more-nodes"
+                              aria-label={
+                                more ? "收起其他节点" : "展开其他节点"
+                              }
+                              aria-expanded={more}
+                              onClick={() => {
+                                setMore((value) => !value);
+                                if (more) setExpanded(stageId);
+                              }}
+                            >
+                              {more ? "收起其他节点" : "查看更多节点"}
+                            </button>
+                          )}
+                        </SidebarGroup>
+                      </CollapsibleContent>
+                    )}
+                  </Collapsible>
+                );
+              })}
+            </CollapsibleContent>
+          </Collapsible>
         ) : (
           <SidebarGroup>
             <SidebarMenu>

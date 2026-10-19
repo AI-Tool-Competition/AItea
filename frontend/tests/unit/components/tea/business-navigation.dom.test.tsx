@@ -141,6 +141,11 @@ describe("business node navigation", () => {
     );
     render(<TeaApp />);
     await screen.findByRole("button", { name: "业务资料" });
+    expect(screen.getByRole("button", { name: "项目管理" })).toBeTruthy();
+    const project = screen.getByRole("button", {
+      name: `项目：${first.title}`,
+    });
+    expect(project.getAttribute("aria-expanded")).toBe("true");
     expect(
       screen
         .getByRole("button", { name: "引导会话" })
@@ -148,14 +153,41 @@ describe("business node navigation", () => {
     ).toBe("page");
     expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
     expect(screen.queryByRole("button", { name: "资料库" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "展开显示" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开其他节点" }));
     expect(screen.getByRole("button", { name: "对接准备" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "收起节点：业务资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "对接准备" }));
+    expect(
+      screen
+        .getByRole("button", { name: "业务资料" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(
+      screen
+        .getByRole("button", { name: "对接准备" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "业务资料" }));
+    expect(
+      screen
+        .getByRole("button", { name: "对接准备" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "业务资料" }));
     expect(screen.queryByRole("button", { name: "引导会话" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "展开节点：业务资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "业务资料" }));
     expect(screen.getByRole("button", { name: "引导会话" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "收起" }));
+    fireEvent.click(screen.getByRole("button", { name: "对接准备" }));
+    fireEvent.click(screen.getByRole("button", { name: "收起其他节点" }));
     expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "业务资料" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    fireEvent.click(project);
+    expect(screen.queryByRole("button", { name: "业务资料" })).toBeNull();
+    fireEvent.click(project);
+    expect(screen.getByRole("button", { name: "业务资料" })).toBeTruthy();
   });
 
   it("switches business from the dropdown and leaves new business last", async () => {
@@ -164,17 +196,23 @@ describe("business node navigation", () => {
     );
     render(<TeaApp />);
     const selector = await screen.findByRole("button", { name: "切换业务" });
-    expect(selector.textContent).toContain(first.title);
+    expect(
+      screen
+        .getByRole("button", { name: `项目：${first.title}` })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
     fireEvent.keyDown(selector, { key: "ArrowDown" });
     await screen.findByRole("menuitem", { name: second.title });
     expect(screen.getAllByRole("menuitem").at(-1)?.textContent).toContain(
-      "新建业务",
+      "新建项目",
     );
     fireEvent.click(screen.getByRole("menuitem", { name: second.title }));
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "切换业务" }).textContent,
-      ).toContain(second.title),
+        screen
+          .getByRole("button", { name: `项目：${second.title}` })
+          .getAttribute("aria-expanded"),
+      ).toBe("true"),
     );
     expect(screen.getByTestId("selected-conversation").textContent).toBe(
       "guide",
@@ -192,10 +230,57 @@ describe("business node navigation", () => {
     expect(screen.getByTestId("selected-conversation").textContent).toBe(
       "chat-one",
     );
+    const folder = screen.getByRole("button", { name: "业务资料" });
+    fireEvent.click(folder);
+    expect(folder.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "产品包装讨论" })).toBeNull();
+    expect(screen.getByTestId("selected-conversation").textContent).toBe(
+      "chat-one",
+    );
+    fireEvent.click(folder);
+    expect(folder.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "引导会话" }));
     expect(screen.getByTestId("selected-conversation").textContent).toBe(
       "guide",
     );
+  });
+
+  it("expands long chat lists and keeps the selected older chat visible after collapsing", async () => {
+    const chats = Array.from({ length: 8 }, (_, index) => ({
+      id: `chat-${index + 1}`,
+      stage_id: "prepare",
+      title: `业务讨论 ${index + 1}`,
+      kind: "chat",
+      updated_at: `2026-10-${String(index + 1).padStart(2, "0")}T00:00:00Z`,
+    }));
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      urlOf(input).pathname.endsWith("/conversations")
+        ? response({ items: chats, total: chats.length })
+        : read(input),
+    );
+    render(<TeaApp />);
+    await screen.findByRole("button", { name: "业务讨论 8" });
+    expect(screen.getByRole("button", { name: "业务讨论 5" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "业务讨论 4" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "展开业务资料的会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "业务讨论 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "收起业务资料的会话" }));
+    expect(
+      screen
+        .getByRole("button", { name: "业务讨论 1" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(screen.getByTestId("selected-conversation").textContent).toBe(
+      "chat-1",
+    );
+    expect(screen.queryByRole("button", { name: "业务讨论 4" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "业务讨论 5" })).toBeNull();
+    expect(screen.getByRole("button", { name: "引导会话" })).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "展开其他节点" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
   });
 
   it("keeps the workspace usable when the chat list fails and supports retry", async () => {

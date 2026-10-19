@@ -48,6 +48,17 @@ def _storage_busy(error):
     )
 
 
+class _HostCooldownDeferred(ValueError):
+    """An already cooled redirect target issued no new network request."""
+
+    retryable = True
+
+    def __init__(self, host, retry_after):
+        super().__init__("来源站点正在冷却，任务稍后继续采集")
+        self.response_host = host
+        self.retry_after = retry_after
+
+
 class CollectionService:
     def __init__(self, service):
         self.service, self.db = service, service.db
@@ -852,11 +863,11 @@ class CollectionService:
                     cooldown = conn.execute(
                         "SELECT available_at FROM collection_host_cooldowns WHERE host=?", (host,)
                     ).fetchone()
-                    if (
-                        total < self.download_workers
-                        and count < self.host_workers
-                        and (not cooldown or cooldown[0] <= timestamp)
-                    ):
+                    if cooldown and cooldown[0] > timestamp:
+                        # Redirect targets are unknown when the original URL is
+                        # claimed. Yield this worker to other hosts immediately.
+                        raise _HostCooldownDeferred(host, cooldown[0] - timestamp)
+                    if total < self.download_workers and count < self.host_workers:
                         # Socket watchdog closes at the absolute download deadline, before this lease expires.
                         conn.execute(
                             "INSERT INTO collection_network_leases VALUES(?,?,?)",
@@ -1498,10 +1509,12 @@ class CollectionService:
             safe = "本地资料存储繁忙，任务稍后继续处理"
         transfer_progress = not processing and isinstance(error, TransferPending)
         provider_wait = processing and isinstance(error, EmbeddingProviderDeferred)
+        host_wait = not processing and isinstance(error, _HostCooldownDeferred)
         deferred = (
             (processing and isinstance(error, ProcessingDeferred))
             or transfer_progress
             or provider_wait
+            or host_wait
             or storage_wait
         )
         exhausted = not deferred and (claim["attempts"] >= MAX_ATTEMPTS or not retryable)
@@ -1512,7 +1525,9 @@ class CollectionService:
             getattr(error, "retry_after", None) or 0,
         )
         if deferred:
-            delay = max(1, error.retry_after) if provider_wait else (0 if transfer_progress else 5)
+            delay = (
+                max(1, error.retry_after) if provider_wait or host_wait else (0 if transfer_progress else 5)
+            )
         table, key = ("processing_jobs", "document_id") if processing else ("collection_items", "id")
         with self.db.transaction() as conn:
             if not self._valid_claim(conn, claim, processing):
@@ -1528,7 +1543,11 @@ class CollectionService:
                     claim[key],
                 ),
             )
-            if deferred:
+            if host_wait:
+                # Undo only this claim's increment; earlier network failures
+                # still count toward the finite retry budget.
+                conn.execute(f"UPDATE {table} SET attempts=MAX(attempts-1,0) WHERE {key}=?", (claim[key],))
+            elif deferred:
                 conn.execute(f"UPDATE {table} SET attempts=0 WHERE {key}=?", (claim[key],))
             if processing:
                 conn.execute(

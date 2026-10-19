@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import login_admin
 from app.auth import Auth, COOKIE
 from app.catalog import MetadataPatch
 from app.db import dump, now
@@ -154,7 +155,7 @@ def test_principal_is_idempotent_without_credentials_and_cannot_login(service):
         assert ensure_principal(conn) == SYSTEM_OWNER_ID
         row = conn.execute("SELECT * FROM users WHERE id=?", (SYSTEM_OWNER_ID,)).fetchone()
         assert row["email"] is row["password_hash"] is None and row["is_demo"] == 0
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 15
+        assert conn.execute("SELECT 1 FROM schema_migrations WHERE version=15").fetchone()
     with pytest.raises(AppError) as error:
         auth.session(SYSTEM_OWNER_ID)
     assert error.value.code == "system_principal"
@@ -576,7 +577,29 @@ def test_search_scope_filters_backfill_lexical_dense_and_rerank_before_candidate
 
 
 def test_http_regular_users_share_system_reads_but_never_each_others_uploads(tmp_path):
-    with TestClient(create_app(data_dir=tmp_path)) as client:
+    app = create_app(data_dir=tmp_path)
+    with TestClient(app) as client, TestClient(app) as admin:
+        login_admin(admin)
+
+        def register_user(name):
+            credentials = {"email": f"{name.lower()}@example.test", "password": "test-password-123"}
+            registered = client.post("/api/tea/auth/register", json={"name": name, **credentials})
+            assert registered.status_code == 201, registered.text
+            account = registered.json()
+            assert account["can_login"] is False and account["is_admin"] is False
+            assert client.post("/api/tea/auth/login", json=credentials).status_code == 403
+            access = admin.get("/api/tea/admin/users", params={"q": credentials["email"]}).json()["items"][0]
+            approved = admin.patch(
+                f"/api/tea/admin/users/{account['id']}",
+                json={"expected_revision": access["revision"], "can_login": True},
+            )
+            assert approved.status_code == 200, approved.text
+            assert approved.json()["is_admin"] is False
+            logged_in = client.post("/api/tea/auth/login", json=credentials)
+            assert logged_in.status_code == 200, logged_in.text
+            assert logged_in.json()["is_admin"] is False
+            return account["id"]
+
         service = client.app.state.service
         with service.db.transaction() as conn:
             ensure_principal(conn)
@@ -588,12 +611,7 @@ def test_http_regular_users_share_system_reads_but_never_each_others_uploads(tmp
         annex = original(service, "source-annex", level="attachment", parent=shared["id"])
         approve(service, shared)
         approve(service, secondary)
-        registered = client.post(
-            "/api/tea/auth/register",
-            json={"name": "Alice", "email": "alice@example.test", "password": "test-password-123"},
-        )
-        assert registered.status_code == 201, registered.text
-        alice = registered.json()["id"]
+        alice = register_user("Alice")
         alice_cookies = dict(client.cookies)
         uploaded = client.post(
             "/api/tea/documents",
@@ -603,12 +621,7 @@ def test_http_regular_users_share_system_reads_but_never_each_others_uploads(tmp
         assert uploaded.status_code == 201, uploaded.text
         private = uploaded.json()
         client.cookies.clear()
-        registered = client.post(
-            "/api/tea/auth/register",
-            json={"name": "Bob", "email": "bob@example.test", "password": "test-password-123"},
-        )
-        assert registered.status_code == 201, registered.text
-        bob = registered.json()["id"]
+        bob = register_user("Bob")
         assert bob != alice
         bob_cookies = dict(client.cookies)
         bob_doc = client.post(

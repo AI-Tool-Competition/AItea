@@ -5,6 +5,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import grant_admin
+
 pytestmark = pytest.mark.usefixtures("sample_workflow")
 
 
@@ -171,6 +173,8 @@ def test_legal_review_and_effective_dates_gate_retrieval(client):
 
 def test_unreviewed_fetched_material_is_excluded_by_default(client, monkeypatch):
     from app import ingestion
+
+    grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
 
     def download(url, *, consume, **kwargs):
         return {

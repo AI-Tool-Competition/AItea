@@ -10,6 +10,8 @@ from threading import Event
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import grant_admin, login_admin
+
 from app import ingestion, parsing
 from app.collection import MAX_ATTEMPTS
 from app.main import create_app
@@ -22,7 +24,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TEA_COLLECT_PER_HOST", "2")
     monkeypatch.setenv("TEA_PROCESS_WORKERS", "1")
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        assert client.post("/api/tea/auth/demo", json={}).status_code == 200
+        login_admin(client)
         yield client
 
 
@@ -167,12 +169,12 @@ def test_global_queue_backpressure_is_shared_between_owners(client):
     for owner_index in range(2):
         if owner_index:
             client.post("/api/tea/auth/logout")
-            client.post("/api/tea/auth/demo", json={})
+            login_admin(client)
         source = make_source(client)
         for index in range(5):
             begin(client, source["id"], key=f"batch-{index}", entries=entries)
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    login_admin(client)
     source = make_source(client)
     response = client.post(
         f"/api/tea/sources/{source['id']}/runs", json={"client_request_id": "global-overflow"}
@@ -347,16 +349,21 @@ def test_other_owner_cannot_inspect_cancel_retry_or_reuse_run(client):
     source = make_source(client)
     job = begin(client, source["id"])
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
-    for url in (f"/api/tea/collection-runs/{job['id']}", f"/api/tea/sources/{source['id']}/runs"):
-        assert client.get(url).status_code == 404
-    for action in ("retry", "cancel"):
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    for expected in (403, 404):
+        if expected == 404:
+            grant_admin(client, other["id"])
+        for url in (f"/api/tea/collection-runs/{job['id']}", f"/api/tea/sources/{source['id']}/runs"):
+            assert client.get(url).status_code == expected
+        for action in ("retry", "cancel"):
+            response = client.post(
+                f"/api/tea/collection-runs/{job['id']}/{action}", json={"expected_revision": job["revision"]}
+            )
+            assert response.status_code == expected
         response = client.post(
-            f"/api/tea/collection-runs/{job['id']}/{action}", json={"expected_revision": job["revision"]}
+            f"/api/tea/sources/{source['id']}/runs", json={"client_request_id": "request-1"}
         )
-        assert response.status_code == 404
-    response = client.post(f"/api/tea/sources/{source['id']}/runs", json={"client_request_id": "request-1"})
-    assert response.status_code == 404
+        assert response.status_code == expected
 
 
 def test_retry_after_pauses_same_host_durably_but_other_hosts_progress(client, tmp_path, monkeypatch):

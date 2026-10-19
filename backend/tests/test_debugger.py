@@ -12,11 +12,13 @@ from app.models import TemplateDebugInput
 from app.service import Service
 from app.streaming import StreamCancelled
 
+from admin_helpers import grant_admin, login_admin
+
 
 @pytest.fixture
 def client(tmp_path):
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        client.post("/api/tea/auth/demo", json={})
+        login_admin(client)
         yield client
 
 
@@ -68,7 +70,11 @@ def test_sample_persists_revision_snapshot_and_owner_isolation(client, tmp_path)
     assert listing["total"] == 1 and "template" not in listing["items"][0]
     assert client.delete(url + "?expected_revision=2").status_code == 409
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get(url).status_code == 403
+    assert client.get(url.rsplit("/", 1)[0]).status_code == 403
+    assert client.delete(url + "?expected_revision=1").status_code == 403
+    grant_admin(client, other["id"])
     assert client.get(url).status_code == 404
     assert client.get(url.rsplit("/", 1)[0]).json()["total"] == 0
     assert client.delete(url + "?expected_revision=1").status_code == 404
@@ -166,7 +172,10 @@ def test_selected_documents_control_actual_retrieval_and_are_owner_scoped(client
     assert {item["document_id"] for item in result.json()["citations"]} == {doc["id"]}
     run_id = result.json()["id"]
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.post("/api/tea/templates/debug", json=payload).status_code == 403
+    assert client.get("/api/tea/templates/debug/runs/" + run_id).status_code == 403
+    grant_admin(client, other["id"])
     assert client.post("/api/tea/templates/debug", json=payload).status_code == 404
     assert client.get("/api/tea/templates/debug/runs/" + run_id).status_code == 404
 

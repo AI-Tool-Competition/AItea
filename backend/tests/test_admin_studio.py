@@ -6,6 +6,8 @@ from contextlib import closing
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import grant_admin, login_admin
+
 from app.main import create_app
 from app.service import Service
 
@@ -17,7 +19,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        assert client.post("/api/tea/auth/demo", json={}).status_code == 200
+        login_admin(client)
         yield client
 
 
@@ -74,7 +76,9 @@ def test_template_draft_is_revisioned_and_survives_restart(client, tmp_path):
     assert client.put(url, json={"template": value, "expected_revision": 0}).status_code == 409
     assert client.put(url, json={"template": {"id": "another"}, "expected_revision": 1}).status_code == 422
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get(url).status_code == 403
+    grant_admin(client, other["id"])
     assert client.get(url).json()["revision"] == 0
 
 
@@ -107,7 +111,9 @@ def test_new_draft_and_template_are_owner_scoped(client):
     assert published.status_code == 200, published.text
     assert published.json()["version"] == 1
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get(url).status_code == 403
+    grant_admin(client, other["id"])
     assert client.get(url).status_code == 404
     assert client.get("/api/tea/templates/imported-workflow").status_code == 404
 
@@ -640,7 +646,9 @@ def test_draft_summaries_are_bounded_paginated_and_account_scoped(client):
     assert client.get(url, params={"offset": -1}).status_code == 422
     client.post("/api/tea/auth/logout")
     assert client.get(url).status_code == 401
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get(url).status_code == 403
+    grant_admin(client, other["id"])
     assert client.get(url).json() == {"items": [], "total": 0}
 
 

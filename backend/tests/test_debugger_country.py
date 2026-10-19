@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.service import Service
 
+from admin_helpers import grant_admin, login_admin
+
 
 def test_empty_database_has_distinct_country_and_debugger_migrations(tmp_path):
     service = Service(tmp_path)
@@ -22,8 +24,7 @@ def test_empty_database_has_distinct_country_and_debugger_migrations(tmp_path):
 @pytest.fixture
 def client(tmp_path):
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        response = client.post("/api/tea/auth/demo", json={})
-        assert response.status_code == 200, response.text
+        login_admin(client)
         yield client
 
 
@@ -106,7 +107,9 @@ def test_debug_candidates_and_execution_use_template_country_and_isolate_scope(c
     assert output["country"] is None
     assert {citation["document_id"] for citation in output["citations"]} == {unassigned["id"]}
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get("/api/tea/templates/debug/documents?destination=ID").status_code == 403
+    grant_admin(client, other["id"])
     assert client.get("/api/tea/templates/debug/documents?destination=ID").json()["total"] == 0
 
 

@@ -9,6 +9,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import grant_admin, login_admin
+
 from app.main import create_app
 from app.service import Service
 
@@ -16,7 +18,7 @@ from app.service import Service
 @pytest.fixture
 def client(tmp_path):
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        client.post("/api/tea/auth/demo", json={})
+        login_admin(client)
         yield client
 
 
@@ -75,6 +77,8 @@ def test_submit_is_durable_idempotent_and_owner_scoped(client, tmp_path):
     assert restarted.collection.run_detail(owner, first["id"])["run"]["total"] == 1
     client.post("/api/tea/auth/logout")
     client.post("/api/tea/auth/demo", json={})
+    assert client.get(f"/api/tea/collection-runs/{first['id']}").status_code == 403
+    grant_admin(client, client.get("/api/tea/bootstrap").json()["user"]["id"])
     assert client.get(f"/api/tea/collection-runs/{first['id']}").status_code == 404
     assert (
         client.post(f"/api/tea/sources/{src['id']}/runs", json={"client_request_id": "x"}).status_code == 404

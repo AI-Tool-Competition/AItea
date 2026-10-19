@@ -9,6 +9,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi.testclient import TestClient
 
+from admin_helpers import grant_admin, login_admin
+
 from app.main import create_app
 from app.service import Service
 
@@ -19,7 +21,7 @@ BASE = f"/api/tea/collection-plans/{PLAN}"
 @pytest.fixture
 def client(tmp_path):
     with TestClient(create_app(data_dir=tmp_path)) as client:
-        client.post("/api/tea/auth/demo", json={})
+        login_admin(client)
         yield client
 
 
@@ -90,7 +92,9 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
         == 409
     )
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get(BASE).status_code == 403
+    grant_admin(client, other["id"])
     assert all(i["source_id"] is None for i in client.get(BASE).json()["items"])
     assert client.get(f"/api/tea/sources/{source_id}/runs").status_code == 404
     assert configure(client)["created"] == 29
@@ -208,7 +212,9 @@ def test_candidates_are_private_and_require_revision_and_country_anchors(client,
         == 422
     )
     client.post("/api/tea/auth/logout")
-    client.post("/api/tea/auth/demo", json={})
+    other = client.post("/api/tea/auth/demo", json={}).json()
+    assert client.get(BASE).status_code == 403
+    grant_admin(client, other["id"])
     assert client.patch(path, json=patch).status_code == 404
     assert client.get(BASE + "/items/1.3/candidates").json()["total"] == 0
 

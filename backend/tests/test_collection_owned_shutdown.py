@@ -2,6 +2,7 @@
 
 import json
 import time
+from concurrent.futures import Future
 from contextlib import closing
 
 import pytest
@@ -173,11 +174,11 @@ def test_scoped_workers_retain_latest_owned_claim_and_defer_after_future_drain(p
     )
 
     def stopped(claim):
+        worker.stop_event.set()
         with service.db.transaction() as conn:
             conn.execute(
                 "UPDATE processing_jobs SET lease_until=0 WHERE document_id=?", (claim["document_id"],)
             )
-        worker.stop_event.set()
 
     monkeypatch.setattr(service.collection, "process_item", stopped)
     worker.start()
@@ -189,3 +190,50 @@ def test_scoped_workers_retain_latest_owned_claim_and_defer_after_future_drain(p
     assert jobs(service)[doc["id"]]["status"] == "queued"
     assert jobs(service)[other["document_id"]]["lease_token"] == other["lease_token"]
     assert payload(service) == before
+
+
+def test_stop_during_submission_does_not_reclaim_the_same_expired_document(prepared, monkeypatch):
+    from app import collection
+
+    service, doc, _, other = prepared
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE processing_jobs SET status='queued',lease_token=NULL,lease_until=NULL,attempts=0,available_at=0 WHERE document_id=?",
+            (doc["id"],),
+        )
+
+    # Immediate completion is a valid executor schedule. It deterministically
+    # exercises shutdown before the coordinator's next claim in this batch.
+    class ImmediateExecutor:
+        def __init__(self, **_options):
+            pass
+
+        def submit(self, function, claim):
+            future = Future()
+            future.set_result(function(claim))
+            return future
+
+        def shutdown(self, **_options):
+            pass
+
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", "4")
+    monkeypatch.setattr(collection, "ThreadPoolExecutor", ImmediateExecutor)
+    worker = CollectionWorkers(
+        service.collection, processing_scope=("owner", [doc["id"]]), fetch_enabled=False
+    )
+    started = []
+
+    def interrupted(claim):
+        started.append(claim["document_id"])
+        worker.stop_event.set()
+        with service.db.transaction() as conn:
+            conn.execute("UPDATE processing_jobs SET lease_until=0 WHERE document_id=?", (doc["id"],))
+
+    monkeypatch.setattr(service.collection, "process_item", interrupted)
+    worker.start()
+    worker.thread.join(timeout=10)
+    assert not worker.thread.is_alive()
+    assert started == [doc["id"]]
+    assert jobs(service)[doc["id"]]["status"] == "queued"
+    assert jobs(service)[doc["id"]]["attempts"] == 0
+    assert jobs(service)[other["document_id"]]["lease_token"] == other["lease_token"]

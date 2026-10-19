@@ -1671,6 +1671,8 @@ class CollectionWorkers:
                         ):
                             free = maximum - sum(kind == is_processing for kind, _ in active.values())
                             for _ in range(free):
+                                if self.stop_event.is_set():
+                                    break
                                 claim = (
                                     self.collection.claim_processing(
                                         **(

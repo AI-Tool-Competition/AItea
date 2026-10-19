@@ -78,6 +78,7 @@ class Observations:
                     recorder.peak = max(recorder.peak, recorder.active)
                 try:
                     with self.client.stream(method, url, **kwargs) as response:
+                        record["headers_seconds"] = round(time.monotonic() - started, 6)
                         record["http_status"] = response.status_code
                         if response.status_code == 429:
                             record["rate_limited"] = True

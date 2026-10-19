@@ -23,7 +23,7 @@ from threading import Event, Lock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
-from processing_runtime import retry_local_database
+from processing_runtime import retry_local_database  # noqa: E402
 
 SCOPE = ContextVar("frozen_parse_request_scope", default=None)
 

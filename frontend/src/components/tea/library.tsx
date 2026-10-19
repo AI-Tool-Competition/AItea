@@ -1,11 +1,19 @@
 "use client";
 import {
   ArrowDownToLine,
+  ArrowRight,
+  AlertCircle,
   BookOpen,
+  Check,
+  ChevronRight,
   FileText,
   Link2,
+  Loader2,
+  Paperclip,
+  RefreshCw,
   Search,
   Upload,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -28,12 +36,18 @@ import {
 } from "@/core/tea/api";
 import { countryLabel, useCollectionCountries } from "@/core/tea/countries";
 import {
+  documentSize,
+  documentState,
+  mergeProcessingDocument,
+} from "@/core/tea/document-state";
+import {
   type CaseSummary,
   type Citation,
   type Document,
   type DocumentDetail,
   type ListResult,
 } from "@/core/tea/types";
+import { useDocumentProcessing } from "@/core/tea/use-document-processing";
 
 import { DocumentAttachments } from "./admin-library";
 import { DocumentHistory } from "./document-history";
@@ -143,6 +157,7 @@ export function UploadDialog({
   const parentCountry = attachmentCountry || countries.defaultCountry;
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   const submitting = useRef(false);
   const uploadRequest = useRef<AbortController | undefined>(undefined);
@@ -157,6 +172,7 @@ export function UploadDialog({
     setParent("");
     setDocs([]);
     setError("");
+    setDragging(false);
   }, [open, caseId, initialParentId, initialCountry]);
   useEffect(() => {
     if (
@@ -231,6 +247,28 @@ export function UploadDialog({
     parentCountry,
     countries.ready,
   ]);
+  function chooseFile(next: File | null) {
+    if (busy) return;
+    setError("");
+    setFile(null);
+    if (next && !next.size) {
+      setError("文件为空，请重新选择。");
+      return;
+    }
+    if (next && next.size > 20 * 1024 * 1024) {
+      setError("文件不能超过 20 MB。");
+      return;
+    }
+    if (
+      next &&
+      role === "primary" &&
+      !/\.(pdf|docx|html?|txt|md)$/i.test(next.name)
+    ) {
+      setError("请选择 PDF、Word、HTML 或文本文件。");
+      return;
+    }
+    setFile(next);
+  }
   async function upload() {
     if (!file || submitting.current) return;
     if (file.size > 20 * 1024 * 1024) {
@@ -278,7 +316,7 @@ export function UploadDialog({
         <DialogHeader>
           <DialogTitle>上传资料</DialogTitle>
           <DialogDescription>
-            资料仅当前账号可见。主文件解析正文；关联附件保存原件。
+            主文件解析正文；关联附件仅保存原件。
           </DialogDescription>
         </DialogHeader>
         <label className="tea-field">
@@ -288,7 +326,7 @@ export function UploadDialog({
             onChange={(e) => setScope(e.target.value)}
             disabled={busy}
           >
-            <option value="">我的资料 · 仅当前账号</option>
+            <option value="">我的资料</option>
             {cases.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title}
@@ -301,7 +339,11 @@ export function UploadDialog({
             <span>文件用途</span>
             <select
               value={role}
-              onChange={(e) => setRole(e.target.value)}
+              onChange={(e) => {
+                setRole(e.target.value);
+                setFile(null);
+                setError("");
+              }}
               disabled={busy}
             >
               <option value="primary">主文件 · 解析与检索</option>
@@ -342,7 +384,11 @@ export function UploadDialog({
         {role === "secondary" && (
           <label className="tea-field">
             <span>关联到主文件</span>
-            <select value={parent} onChange={(e) => setParent(e.target.value)}>
+            <select
+              value={parent}
+              onChange={(e) => setParent(e.target.value)}
+              disabled={busy}
+            >
               <option value="">选择主文件</option>
               {docs.map((d) => (
                 <option key={d.id} value={d.id}>
@@ -352,15 +398,47 @@ export function UploadDialog({
             </select>
           </label>
         )}
-        <label className="tea-file-drop">
-          <Upload size={26} />
-          <strong>{file ? file.name : "选择一份资料"}</strong>
-          <span>PDF、Word、HTML、TXT / Markdown · 最大 20 MB</span>
+        <label
+          className={`tea-file-drop tea-upload-drop ${dragging ? "is-dragging" : ""}`}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (!busy) setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            if (busy) return;
+            if (event.dataTransfer.files.length > 1) {
+              setFile(null);
+              setError("请一次上传一份资料。");
+              return;
+            }
+            chooseFile(event.dataTransfer.files[0] ?? null);
+          }}
+        >
+          {file ? <FileText size={26} /> : <Upload size={26} />}
+          <strong>{file ? file.name : "点击选择或拖入文件"}</strong>
+          <span>
+            {file
+              ? `${documentSize(file.size)} · 点击更换`
+              : role === "primary"
+                ? "PDF、Word、HTML、TXT / Markdown · 最大 20 MB"
+                : "原始附件 · 最大 20 MB"}
+          </span>
           <input
+            key={role}
+            className="sr-only"
+            aria-label="选择上传文件"
             type="file"
             disabled={busy}
-            accept=".pdf,.docx,.html,.htm,.txt,.md"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            accept={
+              role === "primary" ? ".pdf,.docx,.html,.htm,.txt,.md" : undefined
+            }
+            onChange={(e) => {
+              chooseFile(e.target.files?.[0] ?? null);
+              e.target.value = "";
+            }}
           />
         </label>
         {error && <ErrorNotice message={error} />}
@@ -369,7 +447,7 @@ export function UploadDialog({
           disabled={!file || (role === "secondary" && !parent)}
           onClick={upload}
         >
-          上传并保存
+          {busy ? "正在上传并处理…" : "上传并保存"}
         </ActionButton>
       </DialogContent>
     </Dialog>
@@ -394,6 +472,8 @@ interface LibraryProps {
   businessOnly?: boolean;
   ownerId?: string;
   uploadedDocument?: Document;
+  active?: boolean;
+  onDocumentsChange?: (documents: Document[]) => void;
 }
 
 function LibraryWorkspace({
@@ -405,6 +485,8 @@ function LibraryWorkspace({
   businessOnly = false,
   ownerId,
   uploadedDocument,
+  active = true,
+  onDocumentsChange,
 }: LibraryProps) {
   const [scope, setScope] = useState(initialCaseId ?? "");
   const [sourceScope, setSourceScope] = useState<"personal" | "system">(
@@ -421,25 +503,48 @@ function LibraryWorkspace({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [searchedQuery, setSearchedQuery] = useState("");
+  const [searchError, setSearchError] = useState("");
   const [nameQuery, setNameQuery] = useState("");
+  const [searchMode, setSearchMode] = useState("name");
+  const [roleFilter, setRoleFilter] = useState("");
   const [hits, setHits] = useState<Citation[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<Document>();
+  const [receipt, setReceipt] = useState<Document>();
+  const receiptId = receipt?.id;
+  const receiptStatus = receipt?.status;
+  const receiptError = receipt?.error;
+  useEffect(() => {
+    if (
+      !receiptId ||
+      receiptError ||
+      !["ready", "stored"].includes(receiptStatus ?? "")
+    )
+      return;
+    const timer = setTimeout(() => setReceipt(undefined), 5000);
+    return () => clearTimeout(timer);
+  }, [receiptId, receiptStatus, receiptError]);
   const [reload, setReload] = useState(0);
   const requests = useRef<{ search?: AbortController; more?: AbortController }>(
     {},
   );
-  const scopeKey = `${ownerId ?? "session"}:${scope}:${sourceScope}:${country}:${nameQuery}`;
+  const scopeKey = `${ownerId ?? "session"}:${scope}:${sourceScope}:${country}:${nameQuery}:${roleFilter}`;
   const currentScope = useRef(scopeKey);
   currentScope.current = scopeKey;
+  const notifyDocumentsChange = useRef(onDocumentsChange);
+  notifyDocumentsChange.current = onDocumentsChange;
   const resetReads = useCallback(() => {
     requests.current.search?.abort();
     requests.current.more?.abort();
     requests.current = {};
     setHits(null);
+    setSearchedQuery("");
+    setSearchError("");
     setSearching(false);
     setMoreBusy(false);
     setSelected(undefined);
+    setReceipt(undefined);
     setDocs([]);
     setTotal(0);
     setError("");
@@ -451,7 +556,28 @@ function LibraryWorkspace({
       active.search?.abort();
       active.more?.abort();
     };
-  }, [scope, country, sourceScope, nameQuery, ownerId]);
+  }, [scope, country, sourceScope, nameQuery, roleFilter, ownerId]);
+  const updateDocuments = useCallback((updates: Document[]) => {
+    const byId = new Map(updates.map((item) => [item.id, item]));
+    const update = (current: Document) => {
+      const next = byId.get(current.id);
+      return next ? mergeProcessingDocument(current, next) : current;
+    };
+    setDocs((current) => current.map(update));
+    setSelected((current) => current && update(current));
+    setReceipt((current) => current && update(current));
+    if (updates.length) notifyDocumentsChange.current?.(updates);
+  }, []);
+  const processing = useDocumentProcessing({
+    documents: [
+      ...docs,
+      ...(selected ? [selected] : []),
+      ...(receipt ? [receipt] : []),
+    ],
+    boundary: scopeKey,
+    active,
+    onUpdate: updateDocuments,
+  });
   useEffect(() => {
     if (
       !uploadedDocument ||
@@ -465,7 +591,8 @@ function LibraryWorkspace({
     setCountrySelection("all");
     setQuery("");
     setNameQuery("");
-    setSelected(uploadedDocument);
+    setRoleFilter("");
+    setReceipt(uploadedDocument);
   }, [uploadedDocument, initialCaseId, scopeLocked, resetReads]);
   useEffect(() => {
     if (!countries.ready) return;
@@ -479,6 +606,7 @@ function LibraryWorkspace({
     if (scope) params.set("case_id", scope);
     else if (country !== "all") params.set("country", country);
     if (nameQuery) params.set("q", nameQuery);
+    if (roleFilter) params.set("role", roleFilter);
     teaRequest<ListResult<Document>>(`/documents?${params}`, {
       signal: controller.signal,
     })
@@ -502,6 +630,7 @@ function LibraryWorkspace({
     country,
     sourceScope,
     nameQuery,
+    roleFilter,
     countries.ready,
     ownerId,
   ]);
@@ -520,6 +649,7 @@ function LibraryWorkspace({
       if (scope) params.set("case_id", scope);
       else if (country !== "all") params.set("country", country);
       if (nameQuery) params.set("q", nameQuery);
+      if (roleFilter) params.set("role", roleFilter);
       const data = await teaRequest<ListResult<Document>>(
         `/documents?${params}`,
         { signal: abort.signal },
@@ -551,7 +681,7 @@ function LibraryWorkspace({
     const requestedScope = scopeKey;
     requests.current.search = abort;
     setSearching(true);
-    setError("");
+    setSearchError("");
     try {
       const data = await searchDocuments(
         {
@@ -562,10 +692,12 @@ function LibraryWorkspace({
         },
         abort.signal,
       );
-      if (!abort.signal.aborted && currentScope.current === requestedScope)
+      if (!abort.signal.aborted && currentScope.current === requestedScope) {
         setHits(data.items);
+        setSearchedQuery(query.trim());
+      }
     } catch (e) {
-      if (!abort.signal.aborted) setError(errorMessage(e));
+      if (!abort.signal.aborted) setSearchError(errorMessage(e));
     } finally {
       if (requests.current.search === abort)
         requests.current.search = undefined;
@@ -575,9 +707,9 @@ function LibraryWorkspace({
   return (
     <div className="tea-page tea-library">
       <SectionHeading title={scope ? "业务资料" : "资料库"}>
-        <Button onClick={() => onUpload(scope || undefined)}>
+        <Button size="sm" onClick={() => onUpload(scope || undefined)}>
           <Upload size={15} />
-          {scope ? "上传到本业务" : "上传到我的资料"}
+          上传资料
         </Button>
       </SectionHeading>
       {!businessOnly && (
@@ -612,11 +744,6 @@ function LibraryWorkspace({
           </Button>
         </div>
       )}
-      <p className="tea-note">
-        {sourceScope === "system"
-          ? "法规总库由所有用户共享，仅供查阅。上传资料将保存到你的私人资料或业务。"
-          : "资料仅当前账号可见；业务资料保存在对应业务中。"}
-      </p>
       {!scopeLocked && (
         <label className="tea-field">
           <span>资料范围</span>
@@ -670,9 +797,13 @@ function LibraryWorkspace({
         </label>
       )}
       <form
-        className="tea-search-bar"
+        className="tea-library-search"
         onSubmit={(e) => {
           e.preventDefault();
+          if (searchMode === "content") {
+            void search();
+            return;
+          }
           resetReads();
           setNameQuery(query.trim());
           setReload((value) => value + 1);
@@ -686,30 +817,82 @@ function LibraryWorkspace({
             requests.current.search?.abort();
             requests.current.search = undefined;
             setSearching(false);
+            setSearchError("");
             setQuery(e.target.value);
             setHits(null);
           }}
-          placeholder="输入资料名称或正文关键词…"
+          maxLength={200}
+          placeholder={
+            searchMode === "name" ? "搜索文件名称" : "搜索正文关键词"
+          }
         />
-        <Button type="submit" variant="outline" disabled={!countries.ready}>
-          查找文件
-        </Button>
+        <select
+          aria-label="搜索方式"
+          value={searchMode}
+          onChange={(event) => {
+            requests.current.search?.abort();
+            requests.current.search = undefined;
+            setSearching(false);
+            setSearchError("");
+            setHits(null);
+            setSearchMode(event.target.value);
+          }}
+        >
+          <option value="name">文件名</option>
+          <option value="content">正文</option>
+        </select>
         <ActionButton
           busy={searching}
-          title="按当前国家检索正文"
-          type="button"
+          size="icon"
+          variant="ghost"
+          aria-label={searchMode === "name" ? "查找文件" : "检索"}
+          title={searchMode === "name" ? "查找文件" : "检索正文"}
+          type="submit"
           disabled={
-            !query.trim() || !countries.ready || (!scope && country === "all")
+            !countries.ready ||
+            (searchMode === "content" &&
+              (!query.trim() || (!scope && country === "all")))
           }
-          onClick={() => void search()}
         >
-          检索
+          {!searching && <ArrowRight size={16} />}
         </ActionButton>
       </form>
-      {!scope && country === "all" && (
-        <p className="tea-note">
-          当前可按文件名称查找全部私人资料。检索正文请先选择资料国家。
-        </p>
+      {!scope && country === "all" && searchMode === "content" && (
+        <p className="tea-library-hint">检索正文请先选择国家。</p>
+      )}
+      {receipt && (
+        <div
+          className={`tea-upload-receipt ${documentState(receipt).tone}`}
+          role="status"
+        >
+          <DocumentStatusIcon document={receipt} />
+          <div>
+            <strong>{receipt.title || receipt.filename}</strong>
+            <span>
+              {receipt.status === "processing"
+                ? "已上传 · 处理中"
+                : documentState(receipt).label}
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSelected(receipt)}
+          >
+            查看
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label="关闭上传提示"
+            onClick={() => setReceipt(undefined)}
+          >
+            <X size={14} />
+          </Button>
+        </div>
+      )}
+      {processing.error && (
+        <ErrorNotice message={processing.error} onRetry={processing.retry} />
       )}
       {countries.error && (
         <ErrorNotice message={countries.error} onRetry={countries.retry} />
@@ -717,12 +900,15 @@ function LibraryWorkspace({
       {error && (
         <ErrorNotice message={error} onRetry={() => setReload((r) => r + 1)} />
       )}
+      {searchError && (
+        <ErrorNotice message={searchError} onRetry={() => void search()} />
+      )}
       {loading ? (
         <Busy />
-      ) : hits ? (
+      ) : error && !docs.length ? null : hits ? (
         <div className="tea-search-results">
           <div className="tea-list-label">
-            找到 {hits.length} 条相关内容
+            {searchedQuery} · {hits.length} 条结果
             <Button
               variant="ghost"
               onClick={() => {
@@ -746,54 +932,114 @@ function LibraryWorkspace({
         </div>
       ) : (
         <>
-          <div className="tea-list-label">
-            资料目录 <span>{total} 份文件</span>
+          <div className="tea-library-list-heading">
+            <div
+              className="tea-library-filters"
+              role="group"
+              aria-label="文件用途筛选"
+            >
+              {[
+                ["", "全部"],
+                ["primary", "主文件"],
+                ["secondary", "附件"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  aria-pressed={roleFilter === value}
+                  onClick={() => {
+                    if (roleFilter === value) return;
+                    resetReads();
+                    setRoleFilter(value!);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span>{total} 份</span>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label="刷新资料"
+              title="刷新资料"
+              onClick={() => {
+                setReload((value) => value + 1);
+                processing.retry();
+              }}
+            >
+              <RefreshCw size={14} />
+            </Button>
           </div>
           {docs.length ? (
             <div className="tea-document-list">
               {docs.map((doc) => (
                 <button
-                  className="tea-file-row"
+                  className={`tea-file-row tea-library-file ${receipt?.id === doc.id ? "is-recent" : ""}`}
                   key={doc.id}
                   onClick={() => setSelected(doc)}
                 >
                   <span className="tea-file-icon">
-                    <FileText size={21} />
+                    {doc.role === "secondary" ? (
+                      <Paperclip size={20} />
+                    ) : (
+                      <FileText size={21} />
+                    )}
                   </span>
                   <div>
-                    <strong>{doc.title || doc.filename}</strong>
+                    <strong title={doc.title || doc.filename}>
+                      {doc.title || doc.filename}
+                    </strong>
                     <p>
-                      {doc.source_scope === "system" ? "共享法规" : "私人资料"}{" "}
-                      · {doc.role === "primary" ? "主文件" : "关联附件"} · v
-                      {doc.version} · {dateLabel(doc.created_at)}
-                      {doc.case_id &&
-                        ` · ${cases.find((item) => item.id === doc.case_id)?.title ?? "业务资料"}`}
+                      <span>
+                        {doc.filename.split(".").pop()?.toUpperCase()} ·{" "}
+                        {documentSize(doc.size)}
+                      </span>
+                      <span>
+                        v{doc.version} · {dateLabel(doc.created_at)}
+                      </span>
+                      {!scope && doc.case_id && (
+                        <span>
+                          {cases.find((item) => item.id === doc.case_id)
+                            ?.title ?? "业务资料"}
+                        </span>
+                      )}
                     </p>
+                    <span
+                      className={`tea-document-state ${documentState(doc).tone}`}
+                    >
+                      <DocumentStatusIcon document={doc} />
+                      {documentState(doc).label}
+                    </span>
                   </div>
-                  <span
-                    className={`tea-status ${doc.status === "ready" ? "completed" : doc.status === "failed" ? "needs_input" : "pending"}`}
-                  >
-                    {doc.status === "ready"
-                      ? `${doc.chunk_count} 个片段`
-                      : doc.status === "stored"
-                        ? "原文已保存"
-                        : doc.status === "failed"
-                          ? "解析失败"
-                          : "处理中"}
-                  </span>
+                  <ChevronRight size={15} className="tea-file-chevron" />
                 </button>
               ))}
             </div>
           ) : (
             <Empty
               icon={<BookOpen size={32} />}
-              title={nameQuery ? "没有找到匹配文件" : "资料库准备好了"}
+              title={
+                nameQuery
+                  ? "没有找到匹配文件"
+                  : roleFilter
+                    ? "暂无此类文件"
+                    : "暂无资料"
+              }
             >
-              {nameQuery
-                ? "调整资料名称或国家筛选后重试。"
-                : sourceScope === "system"
-                  ? "当前国家暂未收录法规，可切换国家查看。"
-                  : "上传私人资料，或切换业务查看已有材料。"}
+              {nameQuery ? (
+                "调整资料名称或国家筛选后重试。"
+              ) : sourceScope === "system" ? (
+                "可切换国家查看。"
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onUpload(scope || undefined)}
+                >
+                  <Upload size={14} />
+                  上传资料
+                </Button>
+              )}
             </Empty>
           )}
         </>
@@ -812,9 +1058,7 @@ function LibraryWorkspace({
         <DialogContent className="tea-theme tea-dialog tea-document-dialog">
           <DialogHeader>
             <DialogTitle>{selected?.title}</DialogTitle>
-            <DialogDescription>
-              原始文件与解析内容保留版本关联。
-            </DialogDescription>
+            <DialogDescription>{selected?.filename}</DialogDescription>
           </DialogHeader>
           {selected && (
             <LibraryDocumentDetails
@@ -826,8 +1070,16 @@ function LibraryWorkspace({
               onSaved={(next) => {
                 setSelected(next);
                 setDocs((current) =>
-                  current.map((doc) => (doc.id === next.id ? next : doc)),
+                  current.map((item) => (item.id === next.id ? next : item)),
                 );
+                setReceipt((current) =>
+                  current?.id === next.id ? next : current,
+                );
+                notifyDocumentsChange.current?.([next]);
+              }}
+              onUpload={() => {
+                setSelected(undefined);
+                onUpload(scope || undefined);
               }}
             />
           )}
@@ -837,18 +1089,28 @@ function LibraryWorkspace({
   );
 }
 
+function DocumentStatusIcon({ document }: { document: Document }) {
+  if (document.status === "processing")
+    return <Loader2 size={13} className="tea-spin" />;
+  if (document.status === "failed" || document.error)
+    return <AlertCircle size={13} />;
+  return <Check size={13} />;
+}
+
 function LibraryDocumentDetails({
   document,
   ownerId,
   revision,
   onSelect,
   onSaved,
+  onUpload,
 }: {
   document: Document;
   ownerId?: string;
   revision: number;
   onSelect: (document: Document) => void;
   onSaved: (document: Document) => void;
+  onUpload: () => void;
 }) {
   const tabs = [
     ["content", "正文"],
@@ -863,13 +1125,26 @@ function LibraryDocumentDetails({
           {document.source_scope === "system" ? "共享法规 · 只读" : "私人资料"}
         </span>
         <span>版本 {document.version}</span>
-        <span>{(document.size / 1024).toFixed(1)} KB</span>
+        <span>{documentSize(document.size)}</span>
         <Button asChild size="sm" variant="outline">
           <a href={downloadUrl(document.id)}>
             <ArrowDownToLine size={14} />
             下载原文
           </a>
         </Button>
+      </div>
+      <div
+        className={`tea-document-processing ${documentState(document).tone}`}
+        role="status"
+      >
+        <DocumentStatusIcon document={document} />
+        <strong>{documentState(document).label}</strong>
+        {document.status === "processing" && <span>完成后自动更新</span>}
+        {document.status === "failed" && document.source_scope !== "system" && (
+          <Button size="sm" variant="outline" onClick={onUpload}>
+            重新上传
+          </Button>
+        )}
       </div>
       {document.error && <ErrorNotice message={document.error} />}
       <DocumentMetadataEditor
@@ -891,7 +1166,10 @@ function LibraryDocumentDetails({
               该文件为关联附件，仅保存原文，不参与解析或检索。
             </div>
           ) : (
-            <DocumentExcerpts documentId={document.id} />
+            <DocumentExcerpts
+              key={`${document.id}:${document.status}:${document.chunk_count}`}
+              documentId={document.id}
+            />
           )}
         </TabsContent>
         <TabsContent value="versions">
@@ -988,7 +1266,17 @@ function DocumentExcerpts({ documentId }: { documentId: string }) {
               </article>
             ))}
             {!page.data.elements.length && (
-              <Empty title="暂无解析内容">可下载原始文件查看。</Empty>
+              <Empty
+                title={
+                  page.data.document.status === "processing"
+                    ? "正在处理正文"
+                    : page.data.document.status === "failed"
+                      ? "正文解析失败"
+                      : "暂无解析内容"
+                }
+              >
+                可下载原始文件查看。
+              </Empty>
             )}
           </div>
           {page.data.element_total > DOCUMENT_PAGE_SIZE && (

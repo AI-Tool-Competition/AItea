@@ -219,7 +219,8 @@ def test_provider_timeout_keeps_attempt_and_releases_capacity_for_next_request(e
     content = make_pdf([("Visible source", True)])
     page = parse_file("scan.pdf", content)["pages"][0]
     result = parsing._ocr_one_page(content, page)
-    assert result["status"] == "pending_ocr" and result["deferred_reason"] == "provider_retry"
+    assert result["status"] == "ocr_failed"
+    assert result["ocr"]["request_outcome"] == "unknown_transport_result"
     assert result["ocr"]["attempts"] == 1
     assert slots.acquire(timeout=0)
     assert not slots.acquire(timeout=0)

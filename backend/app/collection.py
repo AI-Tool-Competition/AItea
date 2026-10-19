@@ -1208,7 +1208,8 @@ class CollectionService:
 
             def update(conn):
                 page = next(p for p in manifest["pages"] if p["page"] == evidence["page"])
-                page["ocr"]["error_response"] = {
+                request = validate_response_binding(evidence, doc["content_hash"], page)
+                request["error_response"] = {
                     **{key: value for key, value in evidence.items() if key != "response_base64"},
                     "blob": reference,
                 }

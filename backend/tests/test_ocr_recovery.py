@@ -192,6 +192,8 @@ def test_transient_region_failures_keep_attempts_then_stop(monkeypatch):
 
     data, page = uncertain_page("NOMOR 19 TAHUN 2025", "NOMOR 19 TAHUN 2023")
     calls = []
+    clock = [100.0]
+    monkeypatch.setattr(ocr_recovery.time, "time", lambda: clock[0])
 
     def fail(_):
         calls.append(True)
@@ -209,6 +211,7 @@ def test_transient_region_failures_keep_attempts_then_stop(monkeypatch):
         assert result["status"] == ("pending_ocr" if attempt < 3 else "ocr_uncertain")
         if attempt < 3:
             assert result["ocr"]["recovery"]["retry_after_seconds"] == 5 * (2 ** (attempt - 1))
+            clock[0] += result["ocr"]["recovery"]["retry_after_seconds"]
     ocr_recovery.recover_page_step(data, result, on_region=save)
     assert len(calls) == 3
 

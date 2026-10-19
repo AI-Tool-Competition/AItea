@@ -12,7 +12,10 @@ from difflib import SequenceMatcher
 import hashlib
 import json
 import math
+import os
 import re
+import time
+from uuid import uuid4
 
 from .ingestion_quality import anchor_present, number_anchors, validate_ocr_page
 from .pdf_limits import ARCHIVE_MAX_PAGES
@@ -636,12 +639,13 @@ def recover_page_step(
     *,
     on_region: Callable[[dict], dict],
     on_page: Callable[[dict], None] | None = None,
+    on_response_error: Callable[[dict], dict] | None = None,
     archive_path=None,
     archive_size: int | None = None,
 ) -> dict:
     """At most one blind region request per step; all attempts are checkpointable."""
     from .parsing import ProcessingDeferred, render_pdf_region_bounded
-    from .vision import OCRResponseError, transcribe_region
+    from .vision import OCRResponseError, REGION_PROMPT_VERSION, transcribe_region
 
     if content is None:
         from .parsing import _archive_reference
@@ -671,6 +675,11 @@ def recover_page_step(
         task["status"] = "conflict"
         task["error"] = task["reason"]
         return _finish(updated)
+    retry_at = task.get("retry_not_before", 0)
+    if type(retry_at) in {int, float} and math.isfinite(retry_at) and retry_at > time.time():
+        updated.update(status="pending_ocr", deferred_reason="provider_retry")
+        recovery.update(status="deferred", retry_after_seconds=retry_at - time.time())
+        return updated
     pass_number = len(task["reading_ids"])
     box = task["region_bbox"] if pass_number == 0 else task["verify_bbox"]
     try:
@@ -726,7 +735,33 @@ def recover_page_step(
             recovery["regions"].append(record)
         else:
             record = existing
+            from .ocr_error_evidence import preserve_previous_region_attempt
+
+            preserve_previous_region_attempt(record)
+            if record.get("request_id") and not record.get("error") and not record.get("reading"):
+                record["request_outcome"] = "unknown_after_interruption"
+                task["status"] = recovery["status"] = "failed"
+                updated["status"] = "ocr_uncertain"
+                metadata.setdefault("uncertain_spans", []).append("region_request_outcome_unknown")
+                return updated
+            record.update({key: value for key, value in rendered.items() if key != "image_base64"})
+            record.update(image_blob=reference, pass_number=pass_number)
         task["attempts"][pass_number] += 1
+        record.update(
+            attempts=task["attempts"][pass_number],
+            request_id=uuid4().hex,
+            prompt_version=REGION_PROMPT_VERSION,
+            requested_model=os.getenv("LLM_MODEL", "").strip()[:200],
+        )
+        for key in (
+            "error",
+            "error_response",
+            "finish_reason",
+            "http_status",
+            "retry_after_seconds",
+            "retry_not_before",
+        ):
+            record.pop(key, None)
         updated.update(status="pending_ocr")
         updated.pop("deferred_reason", None)
         recovery["status"] = "pending"
@@ -743,8 +778,44 @@ def recover_page_step(
         except OCRResponseError as exc:
             record["error"] = str(exc)[:500]
             record["finish_reason"] = exc.finish_reason
+            if exc.request_outcome_unknown:
+                record["request_outcome"] = "unknown_transport_result"
+            if exc.http_status is not None:
+                record["http_status"] = exc.http_status
+            if exc.response_evidence is not None and on_response_error is not None:
+                evidence = {
+                    **deepcopy(exc.response_evidence),
+                    **{
+                        key: record[key]
+                        for key in (
+                            "source_hash",
+                            "page",
+                            "region_id",
+                            "region_bbox",
+                            "pass_number",
+                            "request_id",
+                            "image_sha256",
+                            "prompt_version",
+                            "requested_model",
+                        )
+                    },
+                    "request_kind": "region",
+                    "attempt": record["attempts"],
+                    "finish_reason": exc.finish_reason,
+                }
+                if exc.request_outcome_unknown:
+                    evidence["request_outcome"] = "unknown_transport_result"
+                reference = on_response_error(deepcopy(evidence))
+                if not isinstance(reference, dict):
+                    raise ValueError("局部识别错误响应存储回调必须返回持久引用。")
+                record["error_response"] = {
+                    **{key: value for key, value in evidence.items() if key != "response_base64"},
+                    "blob": reference,
+                }
             if exc.retryable and task["attempts"][pass_number] < 3:
-                delay = 5 * (2 ** (task["attempts"][pass_number] - 1))
+                delay = max(5 * (2 ** (task["attempts"][pass_number] - 1)), exc.retry_after or 0)
+                task["retry_not_before"] = time.time() + delay
+                record.update(retry_after_seconds=delay, retry_not_before=task["retry_not_before"])
                 recovery.update(status="deferred", retry_after_seconds=delay)
                 updated["deferred_reason"] = "provider_retry"
                 return updated
@@ -754,6 +825,7 @@ def recover_page_step(
             metadata.setdefault("uncertain_spans", []).append("region_provider_failed")
             return updated
         record.update(reading=reading, reading_hash=_digest(reading))
+        task.pop("retry_not_before", None)
         record.pop("error", None)
     task["reading_ids"].append(record["region_id"])
     if len(task["reading_ids"]) == 2:

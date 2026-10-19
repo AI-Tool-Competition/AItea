@@ -61,10 +61,15 @@ class OCRResponseError(ValueError):
         finish_reason: str | None = None,
         retryable: bool = False,
         response_evidence: dict | None = None,
+        retry_after: float | None = None,
+        http_status: int | None = None,
     ):
         super().__init__(message)
         self.finish_reason = finish_reason
         self.retryable = retryable
+        self.retry_after = retry_after if retryable else None
+        self.http_status = http_status
+        self.request_outcome_unknown = False
         # This bounded payload is never part of the exception message, page
         # text or search chunks. Only an explicit persistence callback uses it.
         self.response_evidence = response_evidence
@@ -88,8 +93,11 @@ def _response_error(
     finish_reason: str | None = None,
     observed_bytes: int | None = None,
     response_complete: bool = True,
+    retryable: bool = False,
+    retry_after: float | None = None,
+    http_status: int | None = None,
 ) -> OCRResponseError:
-    """Retain only a bounded response from a successful HTTP call, never headers."""
+    """Retain a bounded response body, never credentials or arbitrary headers."""
     raw = raw.encode("utf-8", errors="replace") if isinstance(raw, str) else raw
     observed = len(raw) if observed_bytes is None else observed_bytes
     captured = raw[:MAX_ERROR_RESPONSE_BYTES]
@@ -97,7 +105,13 @@ def _response_error(
     # response. Do not persist that response, including in diagnostic storage.
     credential = os.getenv("LLM_API_KEY", "").strip().encode()
     if credential and credential in raw:
-        return OCRResponseError(message, finish_reason=finish_reason)
+        return OCRResponseError(
+            message,
+            finish_reason=finish_reason,
+            retryable=retryable,
+            retry_after=retry_after,
+            http_status=http_status,
+        )
     evidence = {
         "format": "ocr-error-response-v1",
         "error_code": error_code,
@@ -112,7 +126,18 @@ def _response_error(
         # transcription's finish reason and never grants text completeness.
         "response_complete": response_complete,
     }
-    return OCRResponseError(message, finish_reason=finish_reason, response_evidence=evidence)
+    if http_status is not None:
+        evidence["http_status"] = http_status
+    if retry_after is not None:
+        evidence["retry_after_seconds"] = retry_after
+    return OCRResponseError(
+        message,
+        finish_reason=finish_reason,
+        response_evidence=evidence,
+        retryable=retryable,
+        retry_after=retry_after,
+        http_status=http_status,
+    )
 
 
 def vision_ocr_worker_limit() -> int:
@@ -142,10 +167,12 @@ def vision_ocr_capacity_state() -> dict:
     return _OCR_SLOTS.snapshot()
 
 
-def _report_provider_result(*, status_code: int | None = None, timeout: str | None = None) -> None:
+def _report_provider_result(
+    *, status_code: int | None = None, timeout: str | None = None, retry_after: float | None = None
+) -> None:
     from .parsing import _OCR_SLOTS
 
-    _OCR_SLOTS.report_provider_result(status_code=status_code, timeout=timeout)
+    _OCR_SLOTS.report_provider_result(status_code=status_code, timeout=timeout, retry_after=retry_after)
 
 
 def vision_ocr_unavailable_reason() -> str | None:
@@ -175,6 +202,8 @@ def vision_ocr_configured() -> bool:
 
 def _invoke(body: dict) -> tuple[dict, str, str]:
     deadline = time.monotonic() + 65
+    data = bytearray()
+    received_status = None
     try:
         with httpx.Client(
             timeout=httpx.Timeout(60, connect=10), follow_redirects=False, trust_env=False
@@ -185,6 +214,40 @@ def _invoke(body: dict) -> tuple[dict, str, str]:
                 json=body,
                 headers={"Authorization": "Bearer " + os.environ["LLM_API_KEY"].strip()},
             ) as response:
+                received_status = response.status_code
+                if not response.is_success:
+                    from .ingestion import _retry_after
+
+                    status = response.status_code
+                    retryable = status in {408, 429} or status >= 500
+                    delay = _retry_after(response.headers.get("Retry-After")) if retryable else None
+                    # Even without a provider delay, shared rate limiting must
+                    # not immediately consume another page's request budget.
+                    if status == 429 and delay is None:
+                        delay = 30.0
+                    _report_provider_result(status_code=status, retry_after=delay)
+                    captured, observed, complete = bytearray(), 0, True
+                    try:
+                        for block in response.iter_bytes():
+                            observed += len(block)
+                            captured.extend(block[: max(0, MAX_ERROR_RESPONSE_BYTES - len(captured))])
+                            if observed > MAX_ERROR_RESPONSE_BYTES or time.monotonic() > deadline:
+                                complete = False
+                                break
+                    except httpx.HTTPError:
+                        complete = False
+                    raise _response_error(
+                        "图片识别服务请求失败，请检查配置或稍后重试。",
+                        body,
+                        bytes(captured),
+                        error_code=f"http_{status}",
+                        payload_kind="provider_http_error",
+                        observed_bytes=observed,
+                        response_complete=complete,
+                        retryable=retryable,
+                        retry_after=delay,
+                        http_status=status,
+                    )
                 response.raise_for_status()
                 data = bytearray()
                 for block in response.iter_bytes():
@@ -209,11 +272,19 @@ def _invoke(body: dict) -> tuple[dict, str, str]:
             _report_provider_result(status_code=exc.response.status_code)
         elif isinstance(exc, (httpx.ReadTimeout, httpx.ConnectTimeout)):
             _report_provider_result(timeout=type(exc).__name__)
-        retryable = isinstance(exc, httpx.RequestError) or (
-            isinstance(exc, httpx.HTTPStatusError)
-            and (exc.response.status_code in {408, 429} or exc.response.status_code >= 500)
+        retryable = isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout))
+        error = _response_error(
+            "图片识别服务请求失败，请检查配置或稍后重试。",
+            body,
+            bytes(data),
+            error_code=type(exc).__name__,
+            payload_kind="transport_error",
+            response_complete=False,
+            retryable=retryable,
+            http_status=received_status,
         )
-        raise OCRResponseError("图片识别服务请求失败，请检查配置或稍后重试。", retryable=retryable) from exc
+        error.request_outcome_unknown = not retryable
+        raise error from exc
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise _response_error(
             "图片识别服务返回格式无效。",
@@ -299,6 +370,11 @@ def transcribe_page(rendered: dict) -> dict:
         ],
     }
     payload, raw, finish = _invoke(body)
+    return decode_page_response(body, payload, raw, finish, model=model, native_hint=native_hint)
+
+
+def decode_page_response(body, payload, raw, finish, *, model, native_hint):
+    """Strictly decode a returned page; this pure step performs no HTTP calls."""
     original_response = payload["choices"][0]["message"]["content"]
     try:
         value = json.loads(raw)
@@ -319,6 +395,8 @@ def transcribe_page(rendered: dict) -> dict:
         and set(value) == {"type", "complete", "printed_page", "text", "uncertain_spans", "is_blank"}
     ):
         value = {key: item for key, item in value.items() if key != "type"}
+    elif isinstance(value, dict) and set(value) == {"type", "content"} and value.get("type") == "json_object":
+        value = value["content"]
     if (
         not isinstance(value, dict)
         or set(value) != {"complete", "printed_page", "text", "uncertain_spans", "is_blank"}
@@ -514,10 +592,18 @@ def transcribe_region(rendered: dict) -> dict:
         if exc.finish_reason == "length":
             exc.retryable = True
         raise
+    original_response = payload["choices"][0]["message"]["content"]
     try:
         value = json.loads(raw)
     except (ValueError, RecursionError) as exc:
-        raise OCRResponseError("局部识别 JSON 格式无效。", finish_reason=finish) from exc
+        raise _response_error(
+            "局部识别 JSON 格式无效。",
+            body,
+            original_response,
+            error_code="invalid_region_json",
+            payload_kind="assistant_message",
+            finish_reason=finish,
+        ) from exc
     if (
         not isinstance(value, dict)
         or set(value) != {"text", "uncertain_spans", "graphic_marks"}
@@ -530,7 +616,14 @@ def transcribe_region(rendered: dict) -> dict:
             for key in ("uncertain_spans", "graphic_marks")
         )
     ):
-        raise OCRResponseError("局部识别内容未通过结构与长度校验。", finish_reason=finish)
+        raise _response_error(
+            "局部识别内容未通过结构与长度校验。",
+            body,
+            original_response,
+            error_code="invalid_region_schema",
+            payload_kind="assistant_message",
+            finish_reason=finish,
+        )
     if "[illegible]" in value["text"].casefold() and not value["uncertain_spans"]:
         value["uncertain_spans"].append("illegible_printed_text")
     returned_model = payload.get("model")

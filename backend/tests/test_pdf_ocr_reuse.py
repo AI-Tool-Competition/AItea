@@ -360,7 +360,7 @@ def test_request_checkpoint_failure_stops_provider(enabled, monkeypatch, error_t
     assert requests == []
 
 
-def test_crash_checkpoint_restarts_at_attempt_three_and_never_calls_fourth(enabled, monkeypatch):
+def test_crash_checkpoint_preserves_unknown_paid_intent_without_reissuing(enabled, monkeypatch):
     content = make_pdf([(NATIVE, True)])
     page = parse_file("scan.pdf", content)["pages"][0]
     checkpoints = []
@@ -371,14 +371,18 @@ def test_crash_checkpoint_restarts_at_attempt_three_and_never_calls_fourth(enabl
         raise RuntimeError("process interrupted during provider request")
 
     monkeypatch.setattr(vision, "transcribe_page", interrupted)
-    for attempt in (1, 2, 3):
-        with pytest.raises(RuntimeError, match="process interrupted"):
-            parsing._ocr_one_page(content, page, on_page=lambda p: checkpoints.append(deepcopy(p)))
-        page = checkpoints[-1]
-        assert page["ocr"]["attempts"] == attempt and page["status"] == "pending_ocr"
-    monkeypatch.setattr(parsing, "render_pdf_page_bounded", lambda *_: pytest.fail("exhausted page rendered"))
-    exhausted = parsing._ocr_one_page(content, page)
-    assert exhausted["status"] == "ocr_failed" and exhausted["ocr"]["attempts"] == 3 and len(calls) == 3
+    with pytest.raises(RuntimeError, match="process interrupted"):
+        parsing._ocr_one_page(content, page, on_page=lambda p: checkpoints.append(deepcopy(p)))
+    page = checkpoints[-1]
+    assert page["ocr"]["attempts"] == 1 and page["status"] == "pending_ocr"
+    monkeypatch.setattr(
+        parsing, "render_pdf_page_bounded", lambda *_: pytest.fail("unknown request rendered")
+    )
+    held = parsing._ocr_one_page(content, page)
+    assert held["status"] == "ocr_failed" and held["ocr"]["attempts"] == 1 and len(calls) == 1
+    assert held["ocr"]["request_outcome"] == "unknown_after_interruption"
+    assert held["ocr_attempt_history"][0]["previous_page"] == page
+    assert parsing._ocr_one_page(content, held) == held and len(calls) == 1
 
 
 @pytest.mark.parametrize("attempt", [-1, 4, True, "1"])

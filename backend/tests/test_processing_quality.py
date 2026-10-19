@@ -223,7 +223,10 @@ def test_rendered_image_is_saved_before_model_call_in_account_blob_store(service
 
 
 @pytest.mark.parametrize("damage", [None, "source", "page", "request", "hash", "oversize", "lease"])
-def test_failed_ocr_response_is_private_durable_evidence_bound_to_request(service, monkeypatch, damage):
+@pytest.mark.parametrize("request_kind", ["page", "region"])
+def test_failed_ocr_response_is_private_durable_evidence_bound_to_request(
+    service, monkeypatch, damage, request_kind
+):
     import base64
     import hashlib
     from app import parsing, vision
@@ -268,6 +271,16 @@ def test_failed_ocr_response_is_private_durable_evidence_bound_to_request(servic
             "prompt_version": evidence["prompt_version"],
             "requested_model": evidence["requested_model"],
         }
+        if request_kind == "region":
+            evidence.update(
+                request_kind="region", region_id="d" * 64, region_bbox=[1, 2, 3, 4], pass_number=0
+            )
+            record = {
+                **page["ocr"],
+                "page": 1,
+                **{key: evidence[key] for key in ("region_id", "region_bbox", "pass_number")},
+            }
+            page["ocr"] = {"recovery": {"regions": [record]}}
         on_page(page)
         if damage == "source":
             evidence["source_hash"] = "c" * 64
@@ -307,7 +320,10 @@ def test_failed_ocr_response_is_private_durable_evidence_bound_to_request(servic
         assert path.parent.parent.parent.name == hashlib.sha256(b"owner").hexdigest()
         assert json.loads(path.read_bytes()) == evidence
         assert hashlib.sha256(path.read_bytes()).hexdigest() == reference["content_hash"]
-        assert manifest["pages"][0]["ocr"]["error_response"]["blob"] == reference
+        request = manifest["pages"][0]["ocr"]
+        if request_kind == "region":
+            request = request["recovery"]["regions"][0]
+        assert request["error_response"]["blob"] == reference
         assert all("invalid paid response" not in str(chunk) for chunk in manifest.get("chunks", []))
 
 

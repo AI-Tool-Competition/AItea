@@ -1,10 +1,43 @@
 """Persist bounded failed OCR responses against a previously saved request."""
 
 import base64
+from copy import deepcopy
 import hashlib
+import json
 
 from .db import dump
 from .vision import MAX_ERROR_RESPONSE_BYTES
+
+
+def preserve_previous_page_attempt(page):
+    """Append a bounded prior checkpoint before replacing request metadata."""
+    metadata = page.get("ocr") or {}
+    if not metadata.get("attempts"):
+        return
+    history = page.get("ocr_attempt_history", [])
+    if not isinstance(history, list) or len(history) > 3:
+        raise ValueError("识别尝试历史格式无效")
+    previous = {key: deepcopy(value) for key, value in page.items() if key != "ocr_attempt_history"}
+    raw = json.dumps(
+        previous, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    if len(raw) > 2 * 1024 * 1024:
+        raise ValueError("识别尝试检查点超过存储限额")
+    digest = hashlib.sha256(raw).hexdigest()
+    if history and history[-1].get("previous_page_sha256") == digest:
+        return
+    if len(history) >= 3:
+        raise ValueError("识别尝试历史已达到上限")
+    page["ocr_attempt_history"] = [
+        *deepcopy(history),
+        {
+            "protocol": "ocr-page-attempt-history-v1",
+            "source_hash": page["source_hash"],
+            "page": page["page"],
+            "previous_page_sha256": digest,
+            "previous_page": previous,
+        },
+    ]
 
 
 def validate_response_binding(evidence, source_hash, request_page):
@@ -19,6 +52,25 @@ def validate_response_binding(evidence, source_hash, request_page):
     ):
         raise ValueError("识别错误响应与原件或物理页不符")
     request = request_page.get("ocr", {})
+    if evidence.get("request_kind") == "region":
+        regions = request.get("recovery", {}).get("regions", []) if isinstance(request, dict) else []
+        matches = [
+            r for r in regions if isinstance(r, dict) and r.get("region_id") == evidence.get("region_id")
+        ]
+        if (
+            not evidence.get("region_id")
+            or len(matches) != 1
+            or type(evidence.get("pass_number")) is not int
+            or evidence["pass_number"] not in (0, 1)
+            or any(
+                matches[0].get(key) != evidence.get(key)
+                for key in ("source_hash", "page", "region_bbox", "pass_number")
+            )
+        ):
+            raise ValueError("局部识别错误响应与已保存区域不符")
+        request = matches[0]
+    elif evidence.get("request_kind") not in (None, "page"):
+        raise ValueError("识别错误响应请求类型无效")
     if (
         not isinstance(request, dict)
         or not evidence.get("request_id")
@@ -35,6 +87,30 @@ def validate_response_binding(evidence, source_hash, request_page):
         )
     ):
         raise ValueError("识别错误响应与已保存请求不一致")
+    return request
+
+
+def preserve_previous_region_attempt(record):
+    """Keep prior attempts on the same crop without nesting its own history."""
+    if not (record.get("attempts") or record.get("error") or record.get("request_id")):
+        return
+    history = record.get("attempt_history", [])
+    if not isinstance(history, list) or len(history) > 3:
+        raise ValueError("局部识别尝试历史格式无效")
+    previous = {key: deepcopy(value) for key, value in record.items() if key != "attempt_history"}
+    raw = json.dumps(
+        previous, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    if len(raw) > 2 * 1024 * 1024 or len(history) >= 3:
+        raise ValueError("局部识别尝试历史超过存储限额")
+    record["attempt_history"] = [
+        *deepcopy(history),
+        {
+            "protocol": "ocr-region-attempt-history-v1",
+            "previous_region_sha256": hashlib.sha256(raw).hexdigest(),
+            "previous_region": previous,
+        },
+    ]
 
 
 def persist_response_evidence(blobs, owner, evidence, *, source_hash, request_page):

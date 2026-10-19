@@ -49,9 +49,9 @@ def test_initial_target_and_floor_preserve_configured_maximum(adaptive, monkeypa
     assert all(slots.acquire(timeout=0) for _ in range(target))
     assert not slots.acquire(timeout=0)
     state = slots.snapshot()
-    assert (state["maximum"], state["target"], state["floor"]) == (maximum, target, min(maximum, 8))
+    assert (state["maximum"], state["target"], state["floor"]) == (maximum, target, 1)
     slots.report_provider_result(status_code=503)
-    assert slots.snapshot()["target"] == (max(min(maximum, 8), target // 2) if enabled else target)
+    assert slots.snapshot()["target"] == (max(1, target // 2) if enabled else target)
     for _ in range(target):
         slots.release()
     with pytest.raises(ValueError, match="not acquired"):
@@ -135,7 +135,7 @@ def test_existing_permits_drain_and_floor_failure_restarts_cooldown(adaptive):
     clock[0] += 29
     slots.report_provider_result(status_code=503)
     assert slots.snapshot()["cooldown_remaining_seconds"] == 30
-    assert slots.snapshot()["decreases"] == 2
+    assert slots.snapshot()["decreases"] == 3
     assert slots.snapshot()["peak"] == 32 and slots.snapshot()["active"] == 0
 
 
@@ -286,7 +286,7 @@ def test_partial_http_200_body_timeout_is_failure_and_never_counted_as_healthy(a
     with pytest.raises(vision.OCRResponseError) as error:
         vision._invoke({})
     state = slots.snapshot()
-    assert error.value.retryable and len(calls) == 1
+    assert not error.value.retryable and error.value.request_outcome_unknown and len(calls) == 1
     assert state["target"] == 8 and state["capacity_failures"] == 1
     assert state["successful_responses"] == 0
 

@@ -111,10 +111,11 @@ def test_interrupted_batch_keeps_successful_inflight_page_and_returns_all_slots(
     result = parsing.ocr_bounded(
         "scan.pdf", content, "application/pdf", saved, on_page=checkpoint, on_image=save_image
     )
-    assert result["quality"]["complete"]
+    assert not result["quality"]["complete"]
+    assert result["pages"][0]["ocr"]["request_outcome"] == "unknown_after_interruption"
     assert result["pages"][1] == completed
     assert requests.count("Second visible source") == 1
-    assert requests.count("First visible source") == 2
+    assert requests.count("First visible source") == 1
     assert slots.snapshot()["active"] == 0
 
 
@@ -186,16 +187,17 @@ def test_full_64_http_wave_drains_rate_limit_and_timeout_without_new_requests(mo
                 assert not slots.acquire(timeout=0)
                 assert state["cooldown_remaining_seconds"] == 30
             else:
-                assert slots.acquire(timeout=0) and slots.acquire(timeout=0)
+                # A fixed capacity still respects the provider's minimum wait.
+                assert state["provider_wait_remaining_seconds"] == 30
                 assert not slots.acquire(timeout=0)
-                slots.release()
-                slots.release()
         finally:
             rate_release.set()
             timeout_release.set()
             success_release.set()
         results = [future.result(timeout=10) for future in futures]
-    assert all(isinstance(result, vision.OCRResponseError) and result.retryable for result in results[:2])
+    assert all(isinstance(result, vision.OCRResponseError) for result in results[:2])
+    assert results[0].retryable and not results[1].retryable
+    assert results[1].request_outcome_unknown
     assert all(isinstance(result, tuple) for result in results[2:])
     assert active == slots.snapshot()["active"] == 0
     assert calls == peak == slots.snapshot()["peak"] == 64

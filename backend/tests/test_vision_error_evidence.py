@@ -19,6 +19,7 @@ from test_vision_ocr import fake_provider, payload
 
 @pytest.fixture
 def enabled(monkeypatch):
+    monkeypatch.setattr(parsing, "_OCR_SLOTS", parsing._VisionSlots())
     monkeypatch.setenv("VISION_OCR_ENABLED", "true")
     monkeypatch.setenv("LLM_BASE_URL", "https://provider.invalid/v1")
     monkeypatch.setenv("LLM_API_KEY", "private-diagnostic-test-key")

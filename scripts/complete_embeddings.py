@@ -632,7 +632,9 @@ def main():
         )
     )
     consumed_recovery = (
-        consumed_recovery_inputs(output, recovery_selection["sha256"])
+        consumed_recovery_inputs(output, recovery_selection["sha256"]).intersection(
+            recovery_selection["input_hashes"]
+        )
         if recovery_selection
         else set()
     )

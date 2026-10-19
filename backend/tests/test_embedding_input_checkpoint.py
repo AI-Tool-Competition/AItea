@@ -586,6 +586,20 @@ def test_runner_recovers_only_selected_unknowns_and_never_repays_saved_inputs(
         snapshot["recovery_selection"]["sha256"]
         == report["configuration"]["retry_unresolved_selection_sha256"]
     )
+    # An unrelated first attempt in a selection-bound run is still quarantined,
+    # but cannot be counted as spending an authorization it never belonged to.
+    with (output / "requests.jsonl").open("a") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "run_id": report["run_id"],
+                    "http_started": True,
+                    "http_status": 504,
+                    "input_hashes": [hashes[docs[2]["id"]]],
+                }
+            )
+            + "\n"
+        )
     before = {doc["id"]: vectors(service, doc) for doc in docs}
     retained_journal = (output / "requests.jsonl").read_text()
     monkeypatch.setattr(

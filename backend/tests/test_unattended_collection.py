@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 import threading
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 import zipfile
 
 import pytest
@@ -91,7 +91,14 @@ def environment(tmp_path, monkeypatch):
     def download(url, **options):
         with options["connection_slot"](urlsplit(url).hostname):
             with call_lock:
-                calls.append({"url": url, "validators": dict(options.get("validators", {})), "at": clock[0]})
+                calls.append(
+                    {
+                        "url": url,
+                        "validators": dict(options.get("validators", {})),
+                        "accept_compressed_json": options.get("accept_compressed_json", False),
+                        "at": clock[0],
+                    }
+                )
             response = responses[url]
             if callable(response):
                 response = response(url, options)
@@ -119,7 +126,7 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(collection, "_download", download)
     serial = [0]
 
-    def make(sources=None, *, limits=None, root=None, pool_path=None):
+    def make(sources=None, *, limits=None, root=None, pool_path=None, country="SG"):
         serial[0] += 1
         pool_path = pool_path or tmp_path / f"pool-{serial[0]}.json"
         if not pool_path.exists():
@@ -135,7 +142,7 @@ def environment(tmp_path, monkeypatch):
             **(limits or {}),
         }
         collector = collection.Collector(
-            pool_path, root or tmp_path / f"collector-{serial[0]}", "SG", limits=settings
+            pool_path, root or tmp_path / f"collector-{serial[0]}", country, limits=settings
         )
         return collector
 
@@ -146,7 +153,12 @@ def environment(tmp_path, monkeypatch):
         return [row for row in values if kind is None or row["kind"] == kind]
 
     def restart(collector):
-        return make(root=collector.root, pool_path=collector.pool_path, limits=collector.limits)
+        return make(
+            root=collector.root,
+            pool_path=collector.pool_path,
+            limits=collector.limits,
+            country=collector.country,
+        )
 
     return SimpleNamespace(
         clock=clock,
@@ -597,3 +609,126 @@ def test_explicit_empty_catalogue_has_low_frequency_recheck_and_retains_raw_resp
     raw = receipt["raw_response"]
     assert collection.valid_cached(collector.root, raw)
     assert not state["cache"]
+
+
+SETNEG = "https://jdih.setneg.go.id/api/hukumproduk/"
+SETNEG_ROOT = SETNEG + "produkhukum?jns=PERPU&length=50&start=0"
+
+
+def setneg_source(**changes):
+    return source(
+        "id-setneg-perpu",
+        host="jdih.setneg.go.id",
+        path="/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0",
+        **{"country": "ID", "kind": "catalogue", **changes},
+    )
+
+
+def setneg_responses(count=51):
+    """Generate bounded rows using the already captured Setneg fixture schema."""
+    template = json.loads((ROOT / "backend/tests/fixtures/discovery/setneg-detail.json").read_text())
+    rows, responses = [], {}
+    for index in range(count):
+        row = {
+            **template["row"][0],
+            "idperaturan": f"P{50000 + index}",
+            "jns": "PERPU",
+            "no_peraturan": str(index + 1),
+            "tahun": "2026",
+            "tentang": f"Synthetic food scope fixture {index + 1}",
+        }
+        rows.append(row)
+        name = f"PERPU {index + 1} Tahun 2026.pdf"
+        detail = SETNEG + "detaildata?" + urlencode({"jns": "PERPU", "no": str(index + 1), "thn": "2026"})
+        original = SETNEG + "pdf?" + urlencode({"f": name, "fl": row["idperaturan"], "l": "uploads"})
+        responses[detail] = {
+            "content": json.dumps({**template, "row": [row], "file": [{"realName": name}]}).encode(),
+            "mime_type": "application/json",
+        }
+        responses[original] = pdf(str(index + 1))
+    for start in range(0, count, 50):
+        url = SETNEG + "produkhukum?" + urlencode({"jns": "PERPU", "length": 50, "start": start})
+        responses[url] = {
+            "content": json.dumps({"jml": count, "jn": ["PERPU"], "data": rows[start : start + 50]}).encode(),
+            "mime_type": "application/json",
+        }
+    return responses
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"url": SETNEG_ROOT.replace("jdih.setneg.go.id", "other.go.id"), "allowed_hosts": ["other.go.id"]},
+        {"url": SETNEG_ROOT.replace("jns=PERPU", "jns=UU")},
+        {"url": SETNEG_ROOT.replace("length=50", "length=20")},
+        {"url": SETNEG_ROOT.replace("start=0", "start=50")},
+        {"url": SETNEG_ROOT + "&extra=1"},
+        {"allowed_hosts": ["jdih.setneg.go.id", "other.go.id"]},
+        {"country": "SG"},
+        {"setneg_type": "PP"},
+        {"kind": "guidance"},
+        {"id": "id-setneg-other"},
+    ],
+)
+def test_special_setneg_source_cannot_change_reviewed_host_url_type_or_scope(environment, changes):
+    with pytest.raises((ValueError, collection.DownloadError)):
+        environment.make([setneg_source(**changes)], country=changes.get("country", "ID"))
+    assert environment.calls == []
+
+
+def test_setneg_full_fifty_row_page_keeps_next_catalog_detail_and_original_mappings(environment):
+    env = environment
+    configured = setneg_source()
+    collector = env.make([configured], country="ID")
+    env.responses.update(setneg_responses())
+    collector.tick()
+    state = collector.state["sources"]["id-setneg-perpu"]
+    assert state["health"] == "healthy"
+    root = state["cache"][SETNEG_ROOT]
+    discovery = root["discovery"]
+    assert discovery["scope"] == {
+        "provider": "setneg",
+        "jns": "PERPU",
+        "total": 51,
+        "offset": 0,
+        "page_size": 50,
+        "returned": 50,
+    }
+    assert len(discovery["links"]) == 51
+    assert sum(row["purpose"] == "detail" for row in discovery["links"]) == 50
+    next_catalog = SETNEG + "produkhukum?jns=PERPU&length=50&start=50"
+    assert next_catalog in state["frontier"]
+    next_page = collector.fetch(configured, next_catalog)
+    assert next_page["asset"]["discovery"]["scope"]["returned"] == 1
+    assert next_page["asset"]["discovery"]["scope"]["offset"] == 50
+    originals = [asset for url, asset in state["cache"].items() if "/pdf?" in url]
+    assert originals
+    assert all(collection.valid_cached(collector.root, asset) for asset in originals)
+    mapped = [row for row in env.events(collector, "mapped_resource") if "/pdf?" in row["target_url"]]
+    assert mapped and all("/detaildata?" in row["parent_url"] for row in mapped)
+    assert all(row["accept_compressed_json"] for row in env.calls)
+    assert len(env.calls) <= collector.limits["requests_per_source_cycle"] + 1
+
+
+@pytest.mark.parametrize("country", ["ID", "SG"])
+def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recipes_stay_bounded(
+    environment, country
+):
+    env = environment
+    pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    configured = pool["sources"]
+    assert len(configured) == 16
+    originals = [row for row in configured if row["id"] != "id-setneg-perpu"]
+    assert len(originals) == 15
+    for item in originals:
+        recipe = collection.recipe(item)
+        assert "setneg_type" not in recipe
+        assert "required_query_by_host" not in recipe
+        assert recipe["max_links"] == 32
+    collector = env.make(configured, country=country)
+    env.responses.update({item["url"]: html() for item in collector.sources})
+    env.responses.update(setneg_responses(count=1))
+    for item in collector.sources:
+        collector.fetch(item, item["url"])
+    special = {item["url"] for item in collector.sources if item["id"] == "id-setneg-perpu"}
+    assert all(row["accept_compressed_json"] == (row["url"] in special) for row in env.calls)

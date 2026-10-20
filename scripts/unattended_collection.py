@@ -35,6 +35,8 @@ from official_source_supervisor_recovery import lock, load, write  # noqa: E402
 from source_health import choose_sources, due, observe, replacement_decisions  # noqa: E402
 
 PROTOCOL = "aitea-unattended-collection-v1"
+SETNEG_ID = "id-setneg-perpu"
+SETNEG_URL = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0"
 LIMITS = {
     "workers": 4,
     "sources_per_tick": 4,
@@ -85,6 +87,16 @@ def source_pool(path, country):
         scope = source["country"]
         hosts = source["allowed_hosts"]
         normalized, host = _validated_url(source["url"])
+        if identifier == SETNEG_ID or host == "jdih.setneg.go.id":
+            if (
+                identifier != SETNEG_ID
+                or scope != "ID"
+                or hosts != ["jdih.setneg.go.id"]
+                or normalized != SETNEG_URL
+                or source["kind"] != "catalogue"
+                or source.get("setneg_type", "PERPU") != "PERPU"
+            ):
+                raise ValueError("Setneg collection must retain the reviewed PERPU scope")
         if (
             scope not in {"ID", "SG"}
             or not isinstance(hosts, list)
@@ -109,7 +121,7 @@ def source_pool(path, country):
 def recipe(source):
     root_path = urlsplit(source["url"]).path or "/"
     root_pattern = "^" + re.escape(root_path) + "$"
-    return {
+    result = {
         "adapter": "html_links",
         "allowed_hosts": source["allowed_hosts"],
         "catalog_patterns": [root_pattern] if source["kind"] == "catalogue" else [],
@@ -120,6 +132,13 @@ def recipe(source):
         "exclude_terms": ["facebook", "instagram", "privacy policy", "careers", "login"],
         "max_links": 32,
     }
+    if source["id"] == SETNEG_ID:
+        result.update(
+            setneg_type="PERPU",
+            required_query_by_host={"jdih.setneg.go.id": {"jns": "PERPU"}},
+            max_links=51,
+        )
+    return result
 
 
 def valid_cached(root, cached):
@@ -286,6 +305,7 @@ class Collector:
                 validators=validators,
                 connection_slot=lambda host: self.slot(host, source),
                 accept_compressed_html=True,
+                accept_compressed_json=source["id"] == SETNEG_ID,
                 max_bytes=self.limits["max_response_bytes"],
             )
             if fetched.get("not_modified"):

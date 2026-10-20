@@ -633,6 +633,49 @@
         ]
       },
       "empty_catalogue": true
+    },
+    {
+      "id": "id-setneg-perpu",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚国家秘书处 Perppu 正式法规目录",
+      "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0",
+      "priority": 88,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.setneg.go.id"
+      ],
+      "discovery_keywords": [
+        "PERPU",
+        "PERPPU",
+        "peraturan pemerintah",
+        "pengganti undang-undang"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.setneg.go.id/",
+        "checked_at": "2026-10-20T07:34:18.470485+00:00",
+        "server_status": "http_404_pending_spaced_recheck",
+        "historical_success": {
+          "catalogue_record_count": 33,
+          "acquired_records": 23,
+          "assets": 24,
+          "catalogue_raw_sha256": "ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774",
+          "catalogue_path": "/data/wenbo/Projects/AItea/.dev/ingestion-continuation-20261020/periodic-official-validation-20261020/id-perpu/cycles/cycle-000001-dc1edd77b69b/source/files/blobs/923b237dba3b279b3c1c158b6817cc58fdd8acf8487b83889b858c8bacf27349/ca/0d/ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774"
+        },
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/setneg-catalogue-check/verification.json",
+        "server_receipt_sha256": "0b2762de9a018cf1d7b6be1c3160380ee372c112803fdc13edacdd8bc1a155f8",
+        "limitations": [
+          "2026-10-20本次length20与原length50目录均HTTP404；不是当前可达来源或已经过期网站的结论。",
+          "需要精确源recipe的setneg_type=PERPU与固定jns，并只在此源允许受限JSON压缩。",
+          "历史原件和15来源账本应保留；本条只新增来源，不重置模型尝试或旧HTTP请求计数。"
+        ],
+        "collector_scope_note": "Retains exact prior PERPU catalogue endpoint; 50 rows plus next page bounded to 51 links; historical originals retained, current 404 pending recheck."
+      }
     }
   ]
 }

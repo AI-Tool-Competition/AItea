@@ -419,7 +419,24 @@ def test_provider_cooldown_and_available_at_are_both_respected(scope):
     assert records(snapshot / "payments.jsonl")[0]["at"] >= provider_at
 
 
-def test_real_runner_bad_model_config_is_observable_before_service_or_requests(scope):
+def test_real_runner_bad_model_config_is_observable_before_service_or_requests(scope, tmp_path, monkeypatch):
+    # A later app import must not replace the explicit empty models file with
+    # credentials from a local dotenv file. Use only synthetic provider values.
+    ambient = tmp_path / "ambient.env"
+    ambient.write_text(
+        "LLM_BASE_URL=https://unused.example/v1\nLLM_API_KEY=fixture-key\nLLM_MODEL=fixture-ocr\n"
+    )
+    hook = tmp_path / "dotenv-hook"
+    hook.mkdir()
+    (hook / "sitecustomize.py").write_text(
+        "import dotenv\n"
+        "original = dotenv.load_dotenv\n"
+        "def load_fixture(*args, **kwargs):\n"
+        f"    return original({str(ambient)!r}, override=False)\n"
+        "dotenv.load_dotenv = load_fixture\n"
+    )
+    python_path = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", str(hook) + (os.pathsep + python_path if python_path else ""))
     _, snapshot, start, _ = scope
     assert start(real_runner=True).wait(12) == 2
     assert state(snapshot)["status"] == "failed_configuration"

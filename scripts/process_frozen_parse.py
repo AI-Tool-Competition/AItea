@@ -265,14 +265,9 @@ def main():
     )
     output = args.snapshot / "runs" / args.run_id
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    from dotenv import dotenv_values
+    from verify_ingestion import configure_models
 
-    for key in list(os.environ):
-        if key.startswith(("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_")):
-            os.environ.pop(key)
-    for key, value in dotenv_values(args.models_env, interpolate=False).items():
-        if key.startswith(("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_")) and value is not None:
-            os.environ[key] = value
+    configure_models(args.models_env)
     os.environ.update(
         VISION_OCR_ENABLED="true",
         VISION_OCR_WORKERS=str(args.ocr_workers),

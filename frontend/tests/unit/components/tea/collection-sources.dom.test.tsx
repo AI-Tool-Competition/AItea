@@ -66,6 +66,47 @@ afterEach(() => {
 });
 
 describe("collection source operations", () => {
+  it("shows a failed directory read without an empty-library message or false count and recovers on retry", async () => {
+    let failed = true;
+    rs.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      if (failed) throw new TypeError("network lost");
+      return response({ items: [source], total: 1 });
+    });
+    render(<Sources compact />);
+    await screen.findByRole("alert");
+    expect(screen.queryByText("暂无来源")).toBeNull();
+    expect(screen.queryByText("0 个来源")).toBeNull();
+    failed = false;
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByRole("button", { name: "查看 法规库" });
+    expect(screen.getByText("1 个来源")).toBeTruthy();
+  });
+
+  it("keeps run details on demand and aborts the progress read when its dialog closes", async () => {
+    let progressSignal: AbortSignal | null | undefined;
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url, options) => {
+        if (pathOf(url).includes("/collection-runs/")) {
+          progressSignal = options?.signal;
+          return new Promise<Response>(() => undefined);
+        }
+        return response({ items: [{ ...source, latest_run: run }], total: 1 });
+      });
+    render(<Sources compact />);
+    await screen.findByRole("button", { name: "查看 法规库" });
+    expect(
+      fetcher.mock.calls.some(([url]) =>
+        pathOf(url).includes("/collection-runs/"),
+      ),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "查看 法规库" }));
+    await waitFor(() => expect(progressSignal).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(progressSignal?.aborted).toBe(true));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it.each(["collection", "discovery"] as const)(
     "resumes cancelled %s work even when no download failed",
     async (kind) => {
@@ -358,7 +399,8 @@ describe("collection source operations", () => {
         return response({ items: [source], total: 1 });
       });
     render(<Sources compact />);
-    fireEvent.click(await screen.findByRole("button", { name: "配置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看 法规库" }));
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
     fireEvent.change(screen.getByLabelText("来源名称"), {
       target: { value: "我的来源名称" },
     });
@@ -411,6 +453,7 @@ describe("collection source operations", () => {
         return response({ items: [{ ...source, latest_run: run }], total: 1 });
       });
     render(<Sources compact />);
+    fireEvent.click(await screen.findByRole("button", { name: "查看 法规库" }));
     await screen.findByText("已存 1 / 3");
     fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
     await screen.findByText("已存 2 / 3");
@@ -449,7 +492,9 @@ describe("collection source operations", () => {
         return response({ items: [source], total: 1 });
       });
     render(<Sources compact />);
-    fireEvent.click(await screen.findByRole("button", { name: "配置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看 法规库" }));
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.click(screen.getByText("采集设置"));
     fireEvent.change(screen.getByLabelText("资料级别"), {
       target: { value: "secondary" },
     });
@@ -563,6 +608,7 @@ describe("collection source operations", () => {
       return response({ items: [{ ...source, latest_run: run }], total: 1 });
     });
     const view = render(<Sources compact />);
+    fireEvent.click(await screen.findByRole("button", { name: "查看 法规库" }));
     await waitFor(() => expect(progressSignal).toBeTruthy());
     view.unmount();
     expect(progressSignal?.aborted).toBe(true);
@@ -579,9 +625,10 @@ describe("collection source operations", () => {
     fireEvent.change(screen.getByLabelText("来源名称"), {
       target: { value: "官方批次" },
     });
-    fireEvent.change(screen.getByLabelText("公开 HTTPS 地址"), {
+    fireEvent.change(screen.getByLabelText("来源地址"), {
       target: { value: "https://example.com/list" },
     });
+    fireEvent.click(screen.getByText("采集设置"));
     fireEvent.change(screen.getByLabelText("采集组"), {
       target: { value: "ID" },
     });

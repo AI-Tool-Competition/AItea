@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 
 import { Sources } from "@/components/tea/sources";
@@ -171,6 +172,94 @@ afterEach(() => {
 });
 
 describe("document-driven collection checklists", () => {
+  it("keeps country selection available after a plan read fails", async () => {
+    rs.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+      pathOf(url).endsWith("/collection-plans/indonesia")
+        ? response(
+            { error: { code: "unavailable", message: "清单暂时无法读取" } },
+            503,
+          )
+        : reads(url),
+    );
+    render(<Sources compact ownerId="owner-one" />);
+    await screen.findByRole("alert");
+    fireEvent.change(screen.getByRole("combobox", { name: "国家清单" }), {
+      target: { value: "singapore" },
+    });
+    await screen.findByRole("button", { name: "1.1 主法规采集" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the directory compact and loads candidates only inside the selected item's dialog", async () => {
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) => reads(url));
+    render(<Sources compact ownerId="owner-one" />);
+    await screen.findByRole("button", { name: "1.1 主法规采集" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      fetcher.mock.calls.some(([url]) => pathOf(url).includes("/candidates?")),
+    ).toBe(false);
+    await openItem();
+    expect(screen.getByRole("dialog", { name: "1.1 主法规采集" })).toBeTruthy();
+    fireEvent.click(await screen.findByLabelText("选择 待核对法规"));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await openItem();
+    expect(
+      (await screen.findByLabelText<HTMLInputElement>("选择 待核对法规"))
+        .checked,
+    ).toBe(true);
+  });
+
+  it("resets pagination for search and classification changes and switches country plans", async () => {
+    const many = {
+      ...plan,
+      items: Array.from({ length: 23 }, (_, index) => ({
+        ...item,
+        id: `1.${index + 1}`,
+        title: `法规 ${index + 1}`,
+        chapter_id: index < 21 ? "1" : "2",
+      })),
+      chapters: [...plan.chapters, { id: "2", title: "国际条约", notes: [] }],
+    };
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) =>
+        pathOf(url).endsWith("/collection-plans/indonesia")
+          ? response({ plan: many, items: [] })
+          : reads(url),
+      );
+    render(<Sources compact ownerId="owner-one" />);
+    await screen.findByRole("button", { name: "1.1 法规 1" });
+    expect(screen.queryByRole("button", { name: "1.23 法规 23" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByRole("button", { name: "1.23 法规 23" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "筛选章节" }), {
+      target: { value: "2" },
+    });
+    expect(screen.getByRole("button", { name: "1.22 法规 22" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "1.21 法规 21" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索采集条目" }), {
+      target: { value: "法规 23" },
+    });
+    expect(screen.getByRole("button", { name: "1.23 法规 23" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "1.22 法规 22" })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "国家清单" }), {
+      target: { value: "singapore" },
+    });
+    await screen.findByRole("button", { name: "1.1 主法规采集" });
+    expect(
+      screen.getByRole<HTMLInputElement>("textbox", { name: "搜索采集条目" })
+        .value,
+    ).toBe("");
+    expect(
+      fetcher.mock.calls.some(([url]) =>
+        pathOf(url).endsWith("/collection-plans/singapore"),
+      ),
+    ).toBe(true);
+  });
+
   it("shows each country and chapter before sources exist, and configures the selected version", async () => {
     let configured = false;
     const fetcher = rs
@@ -191,12 +280,22 @@ describe("document-driven collection checklists", () => {
         return reads(url);
       });
     render(<Sources compact ownerId="owner-one" />);
-    expect(await screen.findByRole("button", { name: /印尼/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /新加坡/ })).toBeTruthy();
-    expect(await screen.findByText("国家立法")).toBeTruthy();
+    const country = await screen.findByRole("combobox", { name: "国家清单" });
+    expect(within(country).getByRole("option", { name: "印尼" })).toBeTruthy();
+    expect(
+      within(country).getByRole("option", { name: "新加坡" }),
+    ).toBeTruthy();
+    expect(
+      await screen.findByRole("combobox", { name: "筛选章节" }),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "1.2 条件性法规" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "配置本清单" }));
-    await screen.findByText(/章 · 2 项 · 已配置 2 项/);
+    fireEvent.keyDown(screen.getByRole("button", { name: "清单操作" }), {
+      key: "ArrowDown",
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "配置本清单" }),
+    );
+    await screen.findByText("已配置 2 项");
     const submit = fetcher.mock.calls.find(
       ([, options]) => options?.method === "POST",
     )!;
@@ -261,7 +360,7 @@ describe("document-driven collection checklists", () => {
     render(<Sources compact ownerId="owner-one" />);
     await openItem();
     expect(screen.getByText("目录")).toBeTruthy();
-    expect(screen.getByText("目录只用于发现候选，确认后才入库。")).toBeTruthy();
+    expect(screen.getByText("先发现候选，再选择入库。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "发现候选" }));
     await screen.findByText("已读 1 / 1 页");
     expect(screen.queryByText("已存 1 / 1")).toBeNull();
@@ -475,7 +574,6 @@ describe("document-driven collection checklists", () => {
     );
     render(<Sources compact ownerId="owner-one" />);
     await openItem();
-    expect(screen.getByText("待续页面 12")).toBeTruthy();
     expect(
       screen.getByRole<HTMLButtonElement>("button", { name: "继续发现" })
         .disabled,
@@ -532,6 +630,7 @@ describe("document-driven collection checklists", () => {
     await screen.findByText("绑定来源");
     expect(screen.queryByRole("button", { name: "配置" })).toBeNull();
     expect(screen.queryByRole("button", { name: "立即抓取" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看 绑定来源" }));
     expect(screen.getByLabelText<HTMLInputElement>("启用").disabled).toBe(true);
   });
 

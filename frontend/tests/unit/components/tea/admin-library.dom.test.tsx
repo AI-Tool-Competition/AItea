@@ -56,11 +56,20 @@ describe("admin library", () => {
   it("keeps source samples read-only and restores the real source list on exit", async () => {
     const fetch = rs
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({ items: [], total: 0 })));
+      .mockImplementation(
+        async () => new Response(JSON.stringify({ items: [], total: 0 })),
+      );
     const view = render(<Sources key="samples" compact samples />);
     expect(screen.getByText("进口登记资料 · 开发样例")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "立即抓取" })).toBeNull();
     expect(screen.queryByRole("button", { name: "添加来源" })).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "查看 进口登记资料 · 开发样例" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "进口登记资料 · 开发样例" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "配置" })).toBeNull();
     expect(
       screen
         .getAllByRole<HTMLInputElement>("checkbox")

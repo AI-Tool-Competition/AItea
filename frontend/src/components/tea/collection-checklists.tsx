@@ -1,9 +1,15 @@
 "use client";
 
-import { ChevronDown, ChevronRight, ListChecks } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ChevronRight, ListChecks, MoreHorizontal, Search } from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { errorMessage, post, TeaApiError, teaRequest } from "@/core/tea/api";
 import { checklistPlanRequests } from "@/core/tea/collection-drafts";
@@ -22,6 +28,9 @@ import {
 } from "./collection-checklist-item";
 import { collectionActive } from "./collection-run";
 import { ActionButton, Busy, Empty, ErrorNotice } from "./shared";
+import { SourceDialog } from "./source-dialog";
+
+const PAGE_SIZE = 20;
 
 const coverageLabels: Record<ChecklistItemState["coverage"], string> = {
   not_started: "未开始",
@@ -81,30 +90,45 @@ export function CollectionChecklists({ ownerId }: { ownerId?: string }) {
     return <Empty icon={<ListChecks size={28} />} title="暂无采集清单" />;
   return (
     <div className="ta-checklists">
-      <div className="ta-checklist-countries" aria-label="国家清单">
-        {plans.map((plan) => (
-          <Button
-            key={plan.id}
-            variant={selected === plan.id ? "secondary" : "ghost"}
-            aria-pressed={selected === plan.id}
-            onClick={() => setSelected(plan.id)}
-          >
-            {countryLabel(plan.country)}
-            <span>{plan.item_count} 项</span>
-          </Button>
-        ))}
-      </div>
       {selected && (
-        <ChecklistPlan key={selected} id={selected} ownerId={ownerId} />
+        <ChecklistPlan
+          key={selected}
+          id={selected}
+          ownerId={ownerId}
+          countryControl={
+            <select
+              aria-label="国家清单"
+              value={selected}
+              onChange={(event) => setSelected(event.target.value)}
+            >
+              {plans.map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  {countryLabel(plan.country)}
+                </option>
+              ))}
+            </select>
+          }
+        />
       )}
     </div>
   );
 }
 
-function ChecklistPlan({ id, ownerId }: { id: string; ownerId?: string }) {
+function ChecklistPlan({
+  id,
+  ownerId,
+  countryControl,
+}: {
+  id: string;
+  ownerId?: string;
+  countryControl: ReactNode;
+}) {
   const [data, setData] = useState<CollectionBlueprintDetail>();
   const [open, setOpen] = useState("");
   const [query, setQuery] = useState("");
+  const [chapter, setChapter] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [requirementsOpen, setRequirementsOpen] = useState(false);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
@@ -164,12 +188,13 @@ function ChecklistPlan({ id, ownerId }: { id: string; ownerId?: string }) {
     setActionError("");
     setNotice("");
     try {
-      await post<{ created: number; existing: number }>(
+      const result = await post<{ created: number; existing: number }>(
         `/collection-plans/${encodeURIComponent(id)}/configure`,
         { expected_version: data.plan.version },
         abort.signal,
       );
       if (abort.signal.aborted) return;
+      setNotice(`已配置 ${result.created + result.existing} 项`);
       setRefresh((value) => value + 1);
     } catch (e) {
       if (!abort.signal.aborted) setActionError(errorMessage(e));
@@ -218,46 +243,71 @@ function ChecklistPlan({ id, ownerId }: { id: string; ownerId?: string }) {
     }
   }
   if (!data)
-    return error ? (
-      <ErrorNotice
-        message={error}
-        onRetry={() => setRefresh((value) => value + 1)}
-      />
-    ) : (
-      <Busy />
+    return (
+      <>
+        <div className="tea-source-filters tea-source-loading">
+          {countryControl}
+        </div>
+        {error ? (
+          <ErrorNotice
+            message={error}
+            onRetry={() => setRefresh((value) => value + 1)}
+          />
+        ) : (
+          <Busy />
+        )}
+      </>
     );
   const { plan, items: states } = data;
   const statesById = new Map(states.map((state) => [state.item_id, state]));
   const needle = query.trim().toLocaleLowerCase();
   const visible = plan.items.filter(
     (item) =>
-      !needle ||
-      [item.id, item.title, ...item.tags]
-        .join(" ")
-        .toLocaleLowerCase()
-        .includes(needle),
+      (!chapter || item.chapter_id === chapter) &&
+      (!needle ||
+        [item.id, item.title, ...item.tags]
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(needle)),
   );
-  const configured = states.filter((state) => state.source_id).length;
+  const pageOffset = Math.min(
+    offset,
+    Math.max(0, Math.ceil(visible.length / PAGE_SIZE) - 1) * PAGE_SIZE,
+  );
+  const openedItem = plan.items.find((item) => item.id === open);
   const onRefresh = () => setRefresh((value) => value + 1);
   return (
     <section className="ta-checklist-plan" aria-label={plan.title}>
-      <div className="ta-checklist-header">
-        <div>
-          <h3>{plan.title}</h3>
-          <p>
-            {plan.chapters.length} 章 · {plan.items.length} 项 · 已配置{" "}
-            {configured} 项
-          </p>
-        </div>
-        <div className="ta-checklist-header-actions">
-          <ActionButton
-            variant="outline"
-            busy={configuring}
-            disabled={discovering}
-            onClick={() => void configure()}
-          >
-            配置本清单
-          </ActionButton>
+      <div className="tea-source-filters">
+        <label className="tea-source-search">
+          <Search size={16} aria-hidden="true" />
+          <Input
+            aria-label="搜索采集条目"
+            placeholder="搜索条目"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setOffset(0);
+            }}
+          />
+        </label>
+        {countryControl}
+        <select
+          aria-label="筛选章节"
+          value={chapter}
+          onChange={(event) => {
+            setChapter(event.target.value);
+            setOffset(0);
+          }}
+        >
+          <option value="">全部分类</option>
+          {plan.chapters.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.title}
+            </option>
+          ))}
+        </select>
+        <div className="tea-source-toolbar-actions">
           <ActionButton
             busy={discovering}
             disabled={configuring}
@@ -265,6 +315,27 @@ function ChecklistPlan({ id, ownerId }: { id: string; ownerId?: string }) {
           >
             发现全部
           </ActionButton>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="清单操作"
+                disabled={configuring || discovering}
+              >
+                <MoreHorizontal size={18} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="tea-theme">
+              <DropdownMenuItem onSelect={() => void configure()}>
+                配置本清单
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRequirementsOpen(true)}>
+                清单说明
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onRefresh}>刷新列表</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
       {notice && (
@@ -293,141 +364,153 @@ function ChecklistPlan({ id, ownerId }: { id: string; ownerId?: string }) {
         />
       )}
       {error && <ErrorNotice message={error} onRetry={onRefresh} />}
-      <details className="tea-config-details ta-checklist-requirements">
-        <summary>清单说明与适用范围</summary>
-        <p>{plan.description}</p>
-        <RequirementList title="通用要求" items={plan.principles} />
-        {plan.channels.map((channel, index) => {
-          const title = channel.title ?? channel.name ?? `渠道 ${index + 1}`;
-          const itemIds = channel.item_ids ?? [];
-          return (
-            <section key={channel.id ?? channel.name ?? `${title}-${index}`}>
-              <RequirementList
-                title={title}
-                items={requirementItems(channel.questions)}
-              />
-              {channel.sources && (
-                <RequirementList
-                  title="资料来源"
-                  items={requirementItems(channel.sources)}
-                />
-              )}
-              {itemIds.length > 0 && (
-                <div className="ta-checklist-channel-items">
-                  {itemIds.map((code) => (
-                    <Button
-                      key={code}
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setQuery("");
-                        setOpen(code);
-                      }}
-                    >
-                      {code}
-                    </Button>
-                  ))}
-                </div>
-              )}
-            </section>
-          );
-        })}
-        <p className="ta-hint">
-          依据：{plan.source_document.filename} · {plan.source_document.date} ·
-          第 {plan.version} 版
-        </p>
-      </details>
-      <div className="ta-checklist-filter">
-        <Input
-          aria-label="搜索采集条目"
-          placeholder="搜索编号、名称或标签"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <span>{visible.length} 项</span>
+      <div
+        className="tea-source-table-head ta-checklist-table-head"
+        aria-hidden="true"
+      >
+        <span>采集条目</span>
+        <span>分类</span>
+        <span>已入库</span>
+        <span>状态</span>
+        <span />
       </div>
-      <div className="ta-checklist-chapters">
-        {plan.chapters.map((chapter) => {
-          const chapterItems = visible.filter(
-            (item) => item.chapter_id === chapter.id,
-          );
-          if (!chapterItems.length) return null;
+      <div className="ta-checklist-rows">
+        {visible.slice(pageOffset, pageOffset + PAGE_SIZE).map((item) => {
+          const state = statesById.get(item.id);
           return (
-            <section className="ta-checklist-chapter" key={chapter.id}>
-              <div className="ta-checklist-chapter-title">
-                <span>{chapter.id}</span>
-                <h4>{chapter.title}</h4>
-                <small>{chapterItems.length} 项</small>
-              </div>
-              {chapter.notes.length > 0 && (
-                <details className="ta-checklist-chapter-notes">
-                  <summary>本章要求</summary>
-                  <RequirementList items={chapter.notes} />
-                </details>
-              )}
-              <div className="ta-checklist-rows">
-                {chapterItems.map((item) => {
-                  const state = statesById.get(item.id);
-                  const expanded = open === item.id;
-                  const label = state
-                    ? coverageLabels[state.coverage]
-                    : "未开始";
-                  return (
-                    <article
-                      className={`ta-checklist-row${expanded ? "is-open" : ""}`}
-                      key={item.id}
-                    >
-                      <button
-                        type="button"
-                        className="ta-checklist-row-toggle"
-                        aria-expanded={expanded}
-                        aria-label={`${item.id} ${item.title}`}
-                        onClick={() => setOpen(expanded ? "" : item.id)}
-                      >
-                        <span className="ta-checklist-row-chevron">
-                          {expanded ? (
-                            <ChevronDown size={16} />
-                          ) : (
-                            <ChevronRight size={16} />
-                          )}
-                        </span>
-                        <span className="ta-checklist-item-code">
-                          {item.id}
-                        </span>
-                        <span className="ta-checklist-item-title">
-                          <strong>{item.title}</strong>
-                          {item.conditional && <small>按条件采集</small>}
-                        </span>
-                        <span className="ta-checklist-row-count">
-                          候选 {state?.counts.candidates ?? 0} · 已存{" "}
-                          {state?.counts.stored ?? 0}
-                        </span>
-                        <span
-                          className={`ta-checklist-coverage ${state?.coverage ?? "not_started"}`}
-                        >
-                          {label}
-                        </span>
-                      </button>
-                      {expanded && (
-                        <ChecklistItemDetail
-                          key={item.id}
-                          planId={id}
-                          collection={`country:${plan.country}`}
-                          item={item}
-                          state={state}
-                          ownerId={ownerId}
-                          onRefresh={onRefresh}
-                        />
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
+            <article className="ta-checklist-row" key={item.id}>
+              <button
+                type="button"
+                className="ta-checklist-row-toggle"
+                aria-haspopup="dialog"
+                aria-label={`${item.id} ${item.title}`}
+                onClick={() => setOpen(item.id)}
+              >
+                <span className="ta-checklist-item-title">
+                  <span className="ta-checklist-item-code">{item.id}</span>
+                  <strong>{item.title}</strong>
+                </span>
+                <span className="ta-checklist-item-category">
+                  {
+                    plan.chapters.find(
+                      (chapter) => chapter.id === item.chapter_id,
+                    )?.title
+                  }
+                </span>
+                <span className="ta-checklist-row-count">
+                  {state && state.counts.stored > 0 ? state.counts.stored : "—"}
+                </span>
+                <span
+                  className={`ta-checklist-coverage ${state?.coverage ?? "not_started"}`}
+                >
+                  {state ? coverageLabels[state.coverage] : "未开始"}
+                </span>
+                <ChevronRight
+                  className="tea-source-row-chevron"
+                  size={15}
+                  aria-hidden="true"
+                />
+              </button>
+            </article>
           );
         })}
         {!visible.length && <Empty title="没有匹配的条目" />}
       </div>
+      <div className="ta-pagination tea-source-pagination">
+        <span>{visible.length} 项</span>
+        {visible.length > PAGE_SIZE && (
+          <div>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!pageOffset}
+              onClick={() => setOffset(Math.max(0, pageOffset - PAGE_SIZE))}
+            >
+              上一页
+            </Button>
+            <span>
+              {Math.floor(pageOffset / PAGE_SIZE) + 1} /{" "}
+              {Math.ceil(visible.length / PAGE_SIZE)}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pageOffset + PAGE_SIZE >= visible.length}
+              onClick={() => setOffset(pageOffset + PAGE_SIZE)}
+            >
+              下一页
+            </Button>
+          </div>
+        )}
+      </div>
+      <SourceDialog
+        title={openedItem ? `${openedItem.id} ${openedItem.title}` : "采集条目"}
+        open={!!openedItem}
+        onClose={() => setOpen("")}
+      >
+        {openedItem && (
+          <ChecklistItemDetail
+            key={openedItem.id}
+            planId={id}
+            collection={`country:${plan.country}`}
+            item={openedItem}
+            state={statesById.get(openedItem.id)}
+            ownerId={ownerId}
+            onRefresh={onRefresh}
+          />
+        )}
+      </SourceDialog>
+      <SourceDialog
+        title="清单说明"
+        open={requirementsOpen}
+        onClose={() => setRequirementsOpen(false)}
+      >
+        <div className="ta-checklist-requirements">
+          <p>{plan.description}</p>
+          <RequirementList title="通用要求" items={plan.principles} />
+          {plan.chapters.map((chapter) => (
+            <RequirementList
+              key={chapter.id}
+              title={chapter.title}
+              items={chapter.notes}
+            />
+          ))}
+          {plan.channels.map((channel, index) => {
+            const title = channel.title ?? channel.name ?? `渠道 ${index + 1}`;
+            return (
+              <section key={channel.id ?? channel.name ?? `${title}-${index}`}>
+                <RequirementList
+                  title={title}
+                  items={requirementItems(channel.questions)}
+                />
+                {channel.sources && (
+                  <RequirementList
+                    title="资料来源"
+                    items={requirementItems(channel.sources)}
+                  />
+                )}
+                {!!channel.item_ids?.length && (
+                  <div className="ta-checklist-channel-items">
+                    {channel.item_ids.map((code) => (
+                      <Button
+                        key={code}
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setRequirementsOpen(false);
+                          setOpen(code);
+                        }}
+                      >
+                        {code}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      </SourceDialog>
     </section>
   );
 }

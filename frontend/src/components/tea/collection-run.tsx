@@ -41,7 +41,7 @@ export function collectionStatus(run: CollectionRun) {
   }[run.status];
 }
 
-function currentProgress(next: CollectionRun, current: CollectionRun) {
+export function currentProgress(next: CollectionRun, current: CollectionRun) {
   // The API emits UTC ISO timestamps; compare without losing sub-millisecond precision.
   return (
     next.revision > current.revision ||

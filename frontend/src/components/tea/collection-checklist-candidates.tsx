@@ -204,7 +204,7 @@ export function ChecklistCandidates({
                 />
                 选择本页
               </label>
-              <span>已选 {selected.length} / 200</span>
+              <span>已选 {selected.length} 项</span>
             </div>
           )}
           <ul className="ta-checklist-candidate-list">
@@ -238,13 +238,20 @@ export function ChecklistCandidates({
                     )}
                     <div className="ta-checklist-candidate-text">
                       {href ? (
-                        <a href={href} target="_blank" rel="noreferrer">
+                        <a
+                          href={href}
+                          title={candidate.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
                           {title}
                         </a>
                       ) : (
                         <strong>{title}</strong>
                       )}
-                      <small>{candidate.url}</small>
+                      {href && title !== candidate.url && (
+                        <small>{new URL(href).hostname}</small>
+                      )}
                       <div className="ta-checklist-candidate-meta">
                         <span>{statusLabels[candidate.status]}</span>
                         {origin && (
@@ -328,7 +335,7 @@ export function ChecklistCandidates({
           {!page.items.length && (
             <p className="ta-checklist-no-candidates">
               {status === "pending"
-                ? "暂无待确认候选。可先运行发现，或查看已入库与已排除条目。"
+                ? "暂无候选"
                 : status === "stored"
                   ? "尚无已入库资料。"
                   : "尚无排除记录。"}

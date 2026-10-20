@@ -165,85 +165,36 @@ export function ChecklistItemDetail({
   }
   return (
     <div className="ta-checklist-item-detail">
-      <div className="ta-checklist-item-overview">
-        <RequirementList title="采集范围" items={item.scope_include} />
-        <ul className="ta-checklist-entries">
-          {item.entries.map((entry, index) => {
-            const href = safeSourceUrl(entry.url);
-            return (
-              <li key={`${entry.url}:${index}`}>
-                <span>{purposeLabels[entry.purpose]}</span>
-                <div>
-                  {href ? (
-                    <a href={href} target="_blank" rel="noreferrer">
-                      {new URL(href).hostname}
-                      <ExternalLink size={12} />
-                    </a>
-                  ) : (
-                    <strong>来源链接不可用</strong>
-                  )}
-                  <small>{entry.url}</small>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-      <div className="ta-collection-tags">
-        {item.tags.map((tag) => (
-          <span key={tag}>{tag}</span>
-        ))}
-      </div>
-      <details className="tea-config-details ta-checklist-requirements">
-        <summary>完整采集要求</summary>
-        <RequirementList
-          title="来源说明"
-          items={item.entries.map(
-            (entry) => `${entry.url}${entry.note ? `：${entry.note}` : ""}`,
-          )}
-        />
-        <RequirementList title="排除范围" items={item.scope_exclude} />
-        <RequirementList title="采集步骤" items={item.steps} />
-        <RequirementList title="保留字段" items={item.fields} />
-        <RequirementList title="版本规则" items={item.version_rules} />
-        <RequirementList title="关联规则" items={item.relation_rules} />
-        <RequirementList title="验收要求" items={item.acceptance} />
-        <div className="ta-checklist-requirement">
-          <h5>文档原文</h5>
-          <p className="ta-checklist-verbatim">{item.verbatim_requirements}</p>
-        </div>
-        <div className="ta-checklist-limits">
-          {Object.entries(item.limits)
-            .filter(
-              ([name, value]) =>
-                name in limitLabels &&
-                (typeof value === "string" || typeof value === "number"),
-            )
-            .map(([name, value]) => (
-              <span key={name}>
-                {limitLabels[name]}：{String(value)}
-              </span>
-            ))}
-        </div>
-      </details>
+      <ul className="ta-checklist-entries" aria-label="来源地址">
+        {item.entries.map((entry, index) => {
+          const href = safeSourceUrl(entry.url);
+          return (
+            <li key={`${entry.url}:${index}`}>
+              <span>{purposeLabels[entry.purpose]}</span>
+              {href ? (
+                <a
+                  href={href}
+                  title={entry.url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {new URL(href).hostname}
+                  <ExternalLink size={12} />
+                </a>
+              ) : (
+                <strong>来源链接不可用</strong>
+              )}
+            </li>
+          );
+        })}
+      </ul>
       {item.execution === "dataset_review" ? (
         <div className="ta-checklist-review-only">
           <strong>候选命题需核验</strong>
           <p>按清单逐条核对原文、出处与适用范围，再确认可用资料。</p>
-          <RequirementList title="核验要求" items={item.acceptance} />
         </div>
       ) : (
         <>
-          <div className="ta-checklist-item-counts" aria-label="条目进度">
-            <span>已读 {state?.counts.pages ?? 0} 页</span>
-            {!!state?.counts.remaining_pages && (
-              <span>待续页面 {state.counts.remaining_pages}</span>
-            )}
-            <span>候选 {state?.counts.candidates ?? 0}</span>
-            <span>已存 {state?.counts.stored ?? 0}</span>
-            <span>已解析 {state?.counts.parsed ?? 0}</span>
-            <span>已审核 {state?.counts.reviewed ?? 0}</span>
-          </div>
           {item.conditional && (
             <label className="tea-checkbox ta-checklist-condition">
               <input
@@ -258,7 +209,7 @@ export function ChecklistItemDetail({
             </label>
           )}
           <div className="ta-checklist-discover">
-            <p className="ta-hint">目录只用于发现候选，确认后才入库。</p>
+            <p className="ta-hint">先发现候选，再选择入库。</p>
             <ActionButton
               variant="outline"
               busy={busy === "discover"}
@@ -377,6 +328,39 @@ export function ChecklistItemDetail({
           )}
         </>
       )}
+      <details className="tea-config-details ta-checklist-requirements">
+        <summary>采集要求</summary>
+        <RequirementList title="采集范围" items={item.scope_include} />
+        <RequirementList
+          title="来源说明"
+          items={item.entries.map(
+            (entry) => `${entry.url}${entry.note ? `：${entry.note}` : ""}`,
+          )}
+        />
+        <RequirementList title="排除范围" items={item.scope_exclude} />
+        <RequirementList title="采集步骤" items={item.steps} />
+        <RequirementList title="保留字段" items={item.fields} />
+        <RequirementList title="版本规则" items={item.version_rules} />
+        <RequirementList title="关联规则" items={item.relation_rules} />
+        <RequirementList title="验收要求" items={item.acceptance} />
+        <div className="ta-checklist-requirement">
+          <h5>文档原文</h5>
+          <p className="ta-checklist-verbatim">{item.verbatim_requirements}</p>
+        </div>
+        <div className="ta-checklist-limits">
+          {Object.entries(item.limits)
+            .filter(
+              ([name, value]) =>
+                name in limitLabels &&
+                (typeof value === "string" || typeof value === "number"),
+            )
+            .map(([name, value]) => (
+              <span key={name}>
+                {limitLabels[name]}：{String(value)}
+              </span>
+            ))}
+        </div>
+      </details>
     </div>
   );
 }

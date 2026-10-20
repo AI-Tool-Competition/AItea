@@ -1,9 +1,15 @@
 "use client";
-import { Clock3, Globe2, Plus, RefreshCw } from "lucide-react";
+import { ChevronRight, Globe2, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { errorMessage, patch, post, teaRequest } from "@/core/tea/api";
+import {
+  errorMessage,
+  patch,
+  post,
+  safeSourceUrl,
+  teaRequest,
+} from "@/core/tea/api";
 import { sourceSamples } from "@/core/tea/library-samples";
 import {
   type CollectionRun,
@@ -16,6 +22,7 @@ import {
   CollectionProgress,
   collectionActive,
   collectionStatus,
+  currentProgress,
 } from "./collection-run";
 import {
   ActionButton,
@@ -25,6 +32,7 @@ import {
   ErrorNotice,
   SectionHeading,
 } from "./shared";
+import { SourceDialog } from "./source-dialog";
 import { SourceForm } from "./source-form";
 
 const PAGE_SIZE = 20;
@@ -84,6 +92,7 @@ export function CustomSources({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [editor, setEditor] = useState<"new" | Source>();
+  const [selected, setSelected] = useState("");
   const [revision, setRevision] = useState(0);
   const pending = useRef(new Map<string, AbortController>());
   const requestIds = useRef(new Map<string, string>());
@@ -102,24 +111,56 @@ export function CustomSources({
       return;
     }
     const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setLoading(true);
-    teaRequest<ListResult<Source>>(
-      `/sources?limit=${PAGE_SIZE}&offset=${offset}`,
-      { signal: abort.signal },
-    )
-      .then((result) => {
-        if (abort.signal.aborted) return;
-        setSources(result.items);
-        setTotal(result.total);
-        setError("");
-      })
-      .catch((e) => {
-        if (!abort.signal.aborted) setError(errorMessage(e));
-      })
-      .finally(() => {
-        if (!abort.signal.aborted) setLoading(false);
-      });
-    return () => abort.abort();
+    function load() {
+      teaRequest<ListResult<Source>>(
+        `/sources?limit=${PAGE_SIZE}&offset=${offset}`,
+        { signal: abort.signal },
+      )
+        .then((result) => {
+          if (abort.signal.aborted) return;
+          setSources((current) =>
+            result.items.map((next) => {
+              const previous = current.find((item) => item.id === next.id);
+              if (!previous) return next;
+              if ((previous.revision ?? 1) > (next.revision ?? 1))
+                return previous;
+              const latest = previous.latest_run;
+              if (
+                latest &&
+                (!next.latest_run ||
+                  (latest.id === next.latest_run.id
+                    ? !currentProgress(next.latest_run, latest)
+                    : latest.created_at > next.latest_run.created_at))
+              )
+                return { ...next, latest_run: latest };
+              return next;
+            }),
+          );
+          setTotal(result.total);
+          setError("");
+          if (
+            result.items.some(
+              (source) =>
+                collectionActive(source.latest_run) ||
+                (source.latest_run?.processing ?? 0) > 0,
+            )
+          )
+            timer = setTimeout(load, 3000);
+        })
+        .catch((e) => {
+          if (!abort.signal.aborted) setError(errorMessage(e));
+        })
+        .finally(() => {
+          if (!abort.signal.aborted) setLoading(false);
+        });
+    }
+    load();
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
   }, [revision, samples, offset, ownerId]);
 
   async function mutate(source: Source, collect: boolean) {
@@ -140,6 +181,8 @@ export function CustomSources({
         );
         if (abort.signal.aborted) return;
         requestIds.current.delete(source.id);
+        setSelected(source.id);
+        setRevision((value) => value + 1);
         setSources((all) =>
           all.map((item) =>
             item.id === source.id ? { ...item, latest_run: run } : item,
@@ -169,16 +212,19 @@ export function CustomSources({
     }
   }
   const addButton = !samples && (
-    <Button onClick={() => setEditor(editor === "new" ? undefined : "new")}>
+    <Button onClick={() => setEditor("new")}>
       <Plus size={15} />
-      {editor === "new" ? "收起添加" : "添加来源"}
+      添加来源
     </Button>
   );
+  const selectedSource = sources.find((source) => source.id === selected);
   return (
-    <div className="tea-page tea-sources">
+    <div className="tea-page tea-sources tea-custom-sources">
       {compact ? (
         <div className="ta-source-toolbar">
-          <span>{loading ? "读取中…" : `${total} 个来源`}</span>
+          <span>
+            {loading ? "读取中…" : error ? "来源" : `${total} 个来源`}
+          </span>
           {addButton}
         </div>
       ) : (
@@ -190,133 +236,187 @@ export function CustomSources({
           onRetry={() => setRevision((value) => value + 1)}
         />
       )}
-      {editor && !samples && (
-        <SourceForm
-          key={editor === "new" ? "new" : editor.id}
-          ownerId={ownerId}
-          source={editor === "new" ? undefined : editor}
-          onClose={() => setEditor(undefined)}
-          onSaved={() => {
-            setEditor(undefined);
-            setRevision((value) => value + 1);
-          }}
-        />
-      )}
+      <SourceDialog
+        title={editor === "new" ? "添加来源" : "配置来源"}
+        open={!!editor && !samples}
+        onClose={() => setEditor(undefined)}
+      >
+        {editor && (
+          <SourceForm
+            key={editor === "new" ? "new" : editor.id}
+            ownerId={ownerId}
+            source={editor === "new" ? undefined : editor}
+            onClose={() => setEditor(undefined)}
+            onSaved={() => {
+              setEditor(undefined);
+              setRevision((value) => value + 1);
+            }}
+          />
+        )}
+      </SourceDialog>
       {loading ? (
         <Busy />
       ) : sources.length ? (
         <div className="tea-source-list">
+          <div
+            className="tea-source-table-head tea-custom-source-head"
+            aria-hidden="true"
+          >
+            <span>来源</span>
+            <span>最近采集</span>
+            <span>状态</span>
+            <span />
+          </div>
           {sources.map((source) => (
             <article key={source.id}>
-              <div className="tea-source-top">
-                <span className="tea-source-icon">
-                  <Globe2 size={22} />
-                </span>
-                <div>
-                  <h3>{source.name}</h3>
-                  <p>{source.url}</p>
-                </div>
-                <label className="tea-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={source.enabled}
-                    disabled={
-                      busy.has(source.id) || samples || !!source.checklist
-                    }
-                    onChange={() => void mutate(source, false)}
-                  />
-                  启用
-                </label>
-              </div>
-              <div className="tea-source-meta">
+              <button
+                className="tea-source-name"
+                aria-label={`查看 ${source.name}`}
+                aria-haspopup="dialog"
+                onClick={() => setSelected(source.id)}
+              >
+                <strong>{source.name}</strong>
                 <span>
-                  <Clock3 size={13} />每 {source.interval_hours} 小时检查
+                  {safeSourceUrl(source.url)
+                    ? new URL(source.url).hostname
+                    : source.url}
                 </span>
-                <span>
-                  {samples
-                    ? "未抓取"
-                    : source.last_fetched_at
-                      ? `上次 ${dateLabel(source.last_fetched_at)}`
-                      : "尚未抓取"}
-                </span>
+              </button>
+              <span className="tea-source-last-fetched">
+                {source.last_fetched_at
+                  ? dateLabel(source.last_fetched_at)
+                  : "—"}
+              </span>
+              <span
+                className={`tea-source-status${source.last_error || source.latest_run?.status === "partial" ? "has-error" : ""}`}
+              >
+                {source.latest_run
+                  ? collectionStatus(source.latest_run)
+                  : source.last_error
+                    ? "需处理"
+                    : source.enabled
+                      ? "已启用"
+                      : "已停用"}
+              </span>
+              <div className="tea-source-row-actions">
                 {!samples && !source.checklist && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEditor(source)}
-                    >
-                      配置
-                    </Button>
-                    <ActionButton
-                      variant="outline"
-                      size="sm"
-                      busy={busy.has(source.id)}
-                      disabled={
-                        busy.has(source.id) ||
-                        collectionActive(source.latest_run)
-                      }
-                      onClick={() => void mutate(source, true)}
-                    >
-                      <RefreshCw size={13} />
-                      立即抓取
-                    </ActionButton>
-                  </>
+                  <ActionButton
+                    variant="ghost"
+                    size="sm"
+                    busy={busy.has(source.id)}
+                    disabled={
+                      busy.has(source.id) || collectionActive(source.latest_run)
+                    }
+                    onClick={() => void mutate(source, true)}
+                  >
+                    <RefreshCw size={13} />
+                    立即抓取
+                  </ActionButton>
                 )}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`来源详情 ${source.name}`}
+                  onClick={() => setSelected(source.id)}
+                >
+                  <ChevronRight size={16} />
+                </Button>
               </div>
-              <div className="ta-collection-tags">
-                {source.checklist && (
-                  <span>
-                    清单 {source.checklist.item_id} · {source.checklist.country}
-                  </span>
-                )}
-                {source.plan && !source.checklist && (
-                  <span>
-                    {source.plan.collection === "default"
-                      ? "默认采集组"
-                      : source.plan.collection}{" "}
-                    ·{" "}
-                    {source.plan.level === "secondary"
-                      ? "二级法规"
-                      : "一级资料"}
-                  </span>
-                )}
-                {source.tags.map((tag) => (
-                  <span key={tag}>{tag}</span>
-                ))}
-              </div>
-              {!samples && source.latest_run && (
-                <CollectionProgress
-                  key={source.latest_run.id}
-                  initial={source.latest_run}
-                  onChange={(run) =>
-                    setSources((all) =>
-                      all.map((item) =>
-                        item.id === source.id && item.latest_run?.id === run.id
-                          ? { ...item, latest_run: run }
-                          : item,
-                      ),
-                    )
-                  }
-                />
-              )}
-              {!samples && (
-                <SourceHistory
-                  sourceId={source.id}
-                  latestId={source.latest_run?.id}
-                />
-              )}
-              {source.last_error && !source.latest_run && (
-                <ErrorNotice message={source.last_error} />
-              )}
             </article>
           ))}
         </div>
-      ) : (
+      ) : !error ? (
         <Empty icon={<Globe2 size={30} />} title="暂无来源">
           添加官方页面或文件地址。
         </Empty>
-      )}
+      ) : null}
+      <SourceDialog
+        title={selectedSource?.name ?? "来源详情"}
+        open={!!selectedSource}
+        onClose={() => setSelected("")}
+      >
+        {selectedSource && (
+          <div className="tea-source-detail">
+            {safeSourceUrl(selectedSource.url) && (
+              <a
+                className="tea-source-address"
+                href={safeSourceUrl(selectedSource.url)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {selectedSource.url}
+              </a>
+            )}
+            <div className="tea-source-settings-line">
+              <span>每 {selectedSource.interval_hours} 小时采集</span>
+              <label className="tea-checkbox">
+                <input
+                  type="checkbox"
+                  checked={selectedSource.enabled}
+                  disabled={
+                    busy.has(selectedSource.id) ||
+                    samples ||
+                    !!selectedSource.checklist
+                  }
+                  onChange={() => void mutate(selectedSource, false)}
+                />
+                启用
+              </label>
+              {!samples && !selectedSource.checklist && (
+                <ActionButton
+                  variant="outline"
+                  size="sm"
+                  busy={busy.has(selectedSource.id)}
+                  disabled={
+                    busy.has(selectedSource.id) ||
+                    collectionActive(selectedSource.latest_run)
+                  }
+                  onClick={() => void mutate(selectedSource, true)}
+                >
+                  立即抓取
+                </ActionButton>
+              )}
+              {!samples && !selectedSource.checklist && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelected("");
+                    setEditor(selectedSource);
+                  }}
+                >
+                  配置
+                </Button>
+              )}
+            </div>
+            {!samples && selectedSource.latest_run && (
+              <CollectionProgress
+                key={selectedSource.latest_run.id}
+                initial={selectedSource.latest_run}
+                onChange={(run) =>
+                  setSources((all) =>
+                    all.map((source) =>
+                      source.id === selectedSource.id &&
+                      source.latest_run?.id === run.id
+                        ? { ...source, latest_run: run }
+                        : source,
+                    ),
+                  )
+                }
+              />
+            )}
+            {!samples && (
+              <SourceHistory
+                sourceId={selectedSource.id}
+                latestId={selectedSource.latest_run?.id}
+              />
+            )}
+            {selectedSource.last_error && !selectedSource.latest_run && (
+              <ErrorNotice message={selectedSource.last_error} />
+            )}
+          </div>
+        )}
+      </SourceDialog>
       {total > PAGE_SIZE && (
         <div className="ta-pagination">
           <span>

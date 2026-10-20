@@ -1735,79 +1735,175 @@
   font-size: 14px;
   color: var(--foreground);
 }
+/* Source directory: one toolbar and continuous rows. */
+.tea-sources {
+  min-width: 0;
+}
 .tea-source-form {
+  margin: 0;
+}
+.tea-source-options {
+  margin: 20px 0;
+  font-size: 13px;
+}
+.tea-source-options > summary {
+  color: var(--muted-foreground);
+}
+.tea-source-options[open] > summary {
+  margin-bottom: 18px;
+}
+.tea-source-options .tea-checkbox {
+  margin: 14px 0 22px;
+}
+.tea-source-dialog {
+  width: calc(100% - 32px);
+  max-width: 880px !important;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow: hidden;
+}
+.tea-source-dialog [data-slot="dialog-title"] {
+  padding-right: 24px;
+  font-size: 18px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.tea-source-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.tea-source-dialog .tea-field > span {
+  font-size: 13px;
+}
+.tea-source-form .ta-collection-actions {
+  margin-top: 20px;
+}
+.tea-source-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 120px minmax(140px, 200px) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+.tea-source-filters > select {
+  height: 38px;
+  min-width: 0;
+  width: 100%;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--background);
-  padding: 24px;
-  margin-bottom: 25px;
+  color: var(--foreground);
+  font-size: 13px;
 }
-.tea-source-form > [data-slot="button"] {
+.tea-source-filters > select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.tea-source-filters.tea-source-loading {
+  grid-template-columns: 120px;
+}
+.tea-source-search {
+  min-width: 0;
+  position: relative;
+}
+.tea-source-search > svg {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+.tea-source-search > input {
+  height: 38px;
+  padding-left: 36px;
+  font-size: 13px;
+}
+.tea-source-toolbar-actions,
+.tea-source-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.tea-source-table-head {
+  align-items: center;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
   font-size: 12px;
 }
-.tea-source-list {
+.tea-source-list > article,
+.tea-custom-source-head {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px 110px 140px;
+  align-items: center;
   gap: 16px;
 }
 .tea-source-list > article {
-  border: 1px solid var(--border);
-  background: var(--background);
-  border-radius: var(--radius-md);
-  padding: 22px;
+  padding: 16px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
 }
-.tea-source-top {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-}
-.tea-source-icon {
-  width: 43px;
-  height: 43px;
+.tea-source-name {
   display: grid;
-  place-items: center;
-  background: var(--muted);
-  color: var(--foreground);
-  border-radius: var(--radius-md);
-}
-.tea-source-top > div {
-  flex: 1;
   min-width: 0;
+  gap: 5px;
+  text-align: left;
+  cursor: pointer;
 }
-.tea-source-top h3 {
+.tea-source-name strong {
   font-size: 14px;
   font-weight: 500;
-  color: var(--foreground);
+  overflow-wrap: anywhere;
 }
-.tea-source-top p {
-  font-size: 12px;
+.tea-source-name > span {
   color: var(--muted-foreground);
-  white-space: nowrap;
+  font-size: 12px;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
-  margin-top: 7px;
 }
-.tea-source-top > .tea-checkbox {
+.tea-source-name:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+.tea-source-last-fetched,
+.tea-source-status,
+.tea-source-row-chevron {
+  color: var(--muted-foreground);
   font-size: 12px;
-  color: var(--foreground);
 }
-.tea-source-meta {
+.tea-source-status.has-error {
+  color: var(--destructive);
+}
+.tea-source-address {
+  display: block;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.tea-source-settings-line {
   display: flex;
   align-items: center;
-  gap: 18px;
-  border-top: 1px solid var(--border);
-  margin-top: 18px;
-  padding-top: 14px;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px 0;
   font-size: 12px;
   color: var(--muted-foreground);
 }
-.tea-source-meta > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.tea-source-meta [data-slot="button"] {
-  font-size: 12px;
+.tea-source-settings-line > [data-slot="button"] {
   margin-left: auto;
+}
+.tea-source-pagination {
+  margin-top: 16px;
+}
+.tea-source-pagination > div {
+  align-items: center;
 }
 .tea-account-page h1 {
   font-size: 24px;
@@ -2207,36 +2303,6 @@
   }
   .tea-agent-steps > div > .tea-checkbox {
     font-size: 12px;
-  }
-  .tea-source-form,
-  .tea-source-list > article {
-    padding: 16px;
-  }
-  .tea-source-top {
-    gap: 9px;
-  }
-  .tea-source-icon {
-    width: 34px;
-    height: 36px;
-  }
-  .tea-source-top h3 {
-    font-size: 12px;
-  }
-  .tea-source-top p {
-    font-size: 12px;
-  }
-  .tea-source-top .tea-checkbox {
-    font-size: 12px;
-  }
-  .tea-source-meta {
-    flex-wrap: wrap;
-    gap: 12px;
-    font-size: 12px;
-  }
-  .tea-source-meta [data-slot="button"] {
-    width: 100%;
-    font-size: 12px;
-    margin: 0;
   }
   .tea-dialog {
     padding: 23px 20px;
@@ -2727,9 +2793,6 @@
   .ta-collection-counts {
     gap: 6px 12px;
   }
-  .tea-source-meta {
-    flex-wrap: wrap;
-  }
   .ta-relation-form {
     padding: 12px;
   }
@@ -2765,10 +2828,8 @@
   overflow-wrap: anywhere;
 }
 
-/* Document checklists: compact chapter rows, requirements on demand. */
-.ta-checklist-header-actions,
+/* Collection requirements stay inside the selected source dialog. */
 .ta-checklist-tabs,
-.ta-checklist-countries,
 .ta-checklist-channel-items,
 .ta-checklist-candidate-tabs {
   display: flex;
@@ -2777,21 +2838,23 @@
   gap: 6px;
 }
 .ta-checklist-tabs {
-  padding-bottom: 16px;
-  margin-bottom: 18px;
-  border-bottom: 1px solid var(--border);
+  gap: 20px;
+  margin-bottom: 20px;
 }
-.ta-checklist-countries {
-  margin-bottom: 22px;
-}
-.ta-checklist-countries span {
+.ta-checklist-tabs > [data-slot="button"] {
+  background: transparent;
   color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 400;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0 0 10px;
+  height: auto;
+  font-size: 14px;
 }
-.ta-checklist-header,
-.ta-checklist-filter,
-.ta-checklist-chapter-title,
+.ta-checklist-tabs > [aria-pressed="true"] {
+  border-bottom-color: var(--foreground);
+  color: var(--foreground);
+  font-weight: 500;
+}
 .ta-checklist-discover,
 .ta-checklist-candidates-toolbar,
 .ta-checklist-selection,
@@ -2801,27 +2864,16 @@
   justify-content: space-between;
   gap: 12px;
 }
-.ta-checklist-header h3 {
-  font-size: 16px;
-  font-weight: 500;
-  line-height: 1.6;
-}
-.ta-checklist-header p,
 .ta-checklist-notice,
-.ta-checklist-filter > span,
-.ta-checklist-chapter-title small,
 .ta-checklist-selection > span {
   font-size: 12px;
   color: var(--muted-foreground);
-}
-.ta-checklist-header p {
-  margin-top: 5px;
 }
 .ta-checklist-notice {
   margin: 12px 0;
 }
 .ta-checklist-requirements {
-  margin: 14px 0;
+  margin: 20px 0 0;
   font-size: 12px;
   line-height: 1.8;
 }
@@ -2852,97 +2904,58 @@
 .ta-checklist-requirement li + li {
   margin-top: 4px;
 }
-.ta-checklist-filter {
-  margin: 18px 0;
-  justify-content: flex-start;
-}
-.ta-checklist-filter > input {
-  max-width: 360px;
-}
-.ta-checklist-filter > span {
-  white-space: nowrap;
-}
-.ta-checklist-chapters {
-  display: grid;
-  gap: 28px;
-}
-.ta-checklist-chapter-title {
-  justify-content: flex-start;
-  margin-bottom: 8px;
-}
-.ta-checklist-chapter-title > span {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.ta-checklist-chapter-title h4 {
-  font-size: 13px;
-  font-weight: 500;
-}
-.ta-checklist-chapter-title small {
-  margin-left: auto;
-}
-.ta-checklist-chapter-notes {
-  margin: 8px 0 12px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-}
-.ta-checklist-chapter-notes summary {
-  cursor: pointer;
-}
-.ta-checklist-rows {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.ta-checklist-row + .ta-checklist-row {
-  border-top: 1px solid var(--border);
-}
+.ta-checklist-table-head,
 .ta-checklist-row-toggle {
   display: grid;
-  grid-template-columns: 16px 38px minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) 180px 76px 84px 16px;
+  gap: 16px;
+}
+.ta-checklist-row {
+  border-bottom: 1px solid var(--border);
+}
+.ta-checklist-row-toggle {
   align-items: center;
   width: 100%;
-  gap: 12px;
-  padding: 17px 16px;
+  padding: 18px 8px;
   text-align: left;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 .ta-checklist-row-toggle:hover,
-.ta-checklist-row.is-open > .ta-checklist-row-toggle {
+.tea-source-list > article:hover {
   background: var(--muted);
 }
 .ta-checklist-row-toggle:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
-.ta-checklist-row-chevron,
-.ta-checklist-item-code,
-.ta-checklist-row-count {
-  color: var(--muted-foreground);
+.ta-checklist-item-title {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  min-width: 0;
 }
 .ta-checklist-item-code {
+  flex: 0 0 28px;
+  font-size: 12px;
+  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
-}
-.ta-checklist-item-title {
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 .ta-checklist-item-title strong {
   font-weight: 500;
-  font-size: 13px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
-.ta-checklist-item-title small {
-  display: block;
-  margin-top: 3px;
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
+.ta-checklist-item-category,
+.ta-checklist-row-count,
 .ta-checklist-coverage {
-  min-width: 4em;
   color: var(--muted-foreground);
-  text-align: right;
+  font-size: 12px;
+}
+.ta-checklist-item-category {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ta-checklist-coverage.blocked {
   color: var(--destructive);
@@ -2952,13 +2965,7 @@
   color: var(--foreground);
 }
 .ta-checklist-item-detail {
-  border-top: 1px solid var(--border);
-  padding: 4px 20px 20px 82px;
-}
-.ta-checklist-item-overview {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 28px;
+  min-width: 0;
 }
 .ta-checklist-entries {
   list-style: none;
@@ -2978,16 +2985,12 @@
   color: var(--muted-foreground);
   font-size: 11px;
 }
-.ta-checklist-entries li > div {
-  min-width: 0;
-}
 .ta-checklist-entries a {
   display: inline-flex;
   gap: 5px;
   align-items: baseline;
   overflow-wrap: anywhere;
 }
-.ta-checklist-entries small,
 .ta-checklist-candidate-text > small {
   display: block;
   overflow-wrap: anywhere;
@@ -2995,8 +2998,7 @@
   color: var(--muted-foreground);
   font-size: 11px;
 }
-.ta-checklist-limits,
-.ta-checklist-item-counts {
+.ta-checklist-limits {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 18px;
@@ -3120,41 +3122,68 @@
   margin-top: 6px;
 }
 @media (max-width: 960px) {
-  .ta-checklist-row-count {
-    display: none;
+  .tea-source-filters {
+    grid-template-columns: minmax(140px, 1fr) 100px 140px auto;
   }
+  .ta-checklist-table-head,
   .ta-checklist-row-toggle {
-    grid-template-columns: 16px 34px minmax(0, 1fr) auto;
-  }
-  .ta-checklist-item-detail {
-    padding-left: 20px;
+    grid-template-columns: minmax(0, 1fr) 120px 60px 70px 16px;
+    gap: 12px;
   }
 }
 @media (max-width: 640px) {
-  .ta-checklist-header,
-  .ta-checklist-discover {
-    align-items: flex-start;
-    flex-direction: column;
+  .tea-source-filters {
+    grid-template-columns: 1fr 1fr auto;
+    gap: 10px 8px;
+    margin-bottom: 20px;
   }
-  .ta-checklist-countries {
-    margin-bottom: 16px;
+  .tea-source-search {
+    grid-column: 1 / -1;
   }
+  .tea-source-filters > select {
+    font-size: 12px;
+  }
+  .tea-source-toolbar-actions [data-slot="button"] {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+  .ta-checklist-table-head,
   .ta-checklist-row-toggle {
-    grid-template-columns: 12px 28px minmax(0, 1fr);
-    padding: 14px 12px;
+    grid-template-columns: minmax(0, 1fr) 60px 14px;
+    gap: 10px;
+  }
+  .ta-checklist-table-head > :nth-child(2),
+  .ta-checklist-table-head > :nth-child(3),
+  .ta-checklist-item-category,
+  .ta-checklist-row-count {
+    display: none;
+  }
+  .ta-checklist-item-title {
     gap: 8px;
   }
-  .ta-checklist-coverage {
-    grid-column: 3;
-    text-align: left;
-    font-size: 11px;
+  .ta-checklist-item-title strong {
+    font-size: 13px;
   }
-  .ta-checklist-item-detail {
-    padding: 2px 12px 16px;
+  .ta-checklist-row-toggle {
+    padding: 16px 0;
   }
-  .ta-checklist-item-overview {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
+  .tea-source-dialog {
+    padding: 22px 18px;
+  }
+  .tea-source-list > article,
+  .tea-custom-source-head {
+    grid-template-columns: minmax(0, 1fr) 72px 36px;
+    gap: 8px;
+  }
+  .tea-custom-source-head > :nth-child(2),
+  .tea-source-last-fetched {
+    display: none;
+  }
+  .tea-source-row-actions > [data-slot="button"]:first-child:not(:only-child) {
+    display: none;
+  }
+  .tea-source-dialog .ta-collection-actions {
+    flex-wrap: wrap;
   }
   .ta-checklist-candidates-toolbar {
     gap: 5px;

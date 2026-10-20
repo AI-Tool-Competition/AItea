@@ -201,31 +201,16 @@ export function SourceForm({
       }}
     >
       <fieldset disabled={busy} className="ta-form-fields">
-        <div className="tea-form-row">
-          <label className="tea-field">
-            <span>来源名称</span>
-            <Input
-              required
-              value={draft.name}
-              onChange={(e) => update({ ...draft, name: e.target.value })}
-            />
-          </label>
-          <label className="tea-field">
-            <span>检查间隔 · 小时</span>
-            <Input
-              required
-              type="number"
-              min={1}
-              max={8760}
-              value={draft.interval_hours}
-              onChange={(e) =>
-                update({ ...draft, interval_hours: Number(e.target.value) })
-              }
-            />
-          </label>
-        </div>
         <label className="tea-field">
-          <span>公开 HTTPS 地址</span>
+          <span>来源名称</span>
+          <Input
+            required
+            value={draft.name}
+            onChange={(e) => update({ ...draft, name: e.target.value })}
+          />
+        </label>
+        <label className="tea-field">
+          <span>来源地址</span>
           <Input
             required
             type="url"
@@ -235,61 +220,27 @@ export function SourceForm({
             placeholder="https://…"
           />
         </label>
-        <div className="tea-form-row">
-          <label className="tea-field">
-            <span>采集组</span>
-            <Input
-              required
-              value={draft.plan.collection}
-              onChange={(e) => plan({ collection: e.target.value })}
-              placeholder="ID / SG"
-            />
-          </label>
-          <label className="tea-field">
-            <span>资料级别</span>
-            <select
-              value={draft.plan.level}
-              onChange={(e) =>
-                plan({ level: e.target.value as CollectionPlan["level"] })
-              }
-            >
-              <option value="primary">一级 · 主资料</option>
-              <option value="secondary">二级 · 引用法规</option>
-            </select>
-          </label>
-        </div>
-        {draft.plan.level === "secondary" && (
-          <fieldset className="ta-collection-fieldset">
-            <legend>关联一级资料</legend>
-            <DocumentChooser
-              ownerId={ownerId}
-              sourceScope="personal"
-              primaryOnly
-              selected={draft.plan.primary_document_ids}
-              onChange={(ids) => plan({ primary_document_ids: ids })}
-            />
-          </fieldset>
-        )}
-        <label className="tea-field">
-          <span>标签</span>
-          <Input
-            value={draft.tags}
-            onChange={(e) => update({ ...draft, tags: e.target.value })}
-            placeholder="国家, 清单编号, 主题"
-          />
-        </label>
-        <details className="tea-config-details">
-          <summary>批量与附件</summary>
-          <label className="tea-field">
-            <span>补充地址 · 每行一个</span>
-            <Textarea
-              rows={4}
-              value={draft.seed_text}
-              onChange={(e) => update({ ...draft, seed_text: e.target.value })}
-              placeholder="https://…"
-            />
-          </label>
+        <details
+          className="tea-config-details tea-source-options"
+          onInvalid={(event) => {
+            event.currentTarget.open = true;
+          }}
+        >
+          <summary>采集设置</summary>
           <div className="tea-form-row">
+            <label className="tea-field">
+              <span>检查间隔 · 小时</span>
+              <Input
+                required
+                type="number"
+                min={1}
+                max={8760}
+                value={draft.interval_hours}
+                onChange={(e) =>
+                  update({ ...draft, interval_hours: Number(e.target.value) })
+                }
+              />
+            </label>
             <label className="tea-field">
               <span>单次文件上限</span>
               <Input
@@ -301,17 +252,67 @@ export function SourceForm({
                 onChange={(e) => plan({ max_items: Number(e.target.value) })}
               />
             </label>
-            <label className="tea-checkbox">
-              <input
-                type="checkbox"
-                checked={draft.plan.discover_attachments}
-                onChange={(e) =>
-                  plan({ discover_attachments: e.target.checked })
-                }
+          </div>
+          <div className="tea-form-row">
+            <label className="tea-field">
+              <span>采集组</span>
+              <Input
+                required
+                value={draft.plan.collection}
+                onChange={(e) => plan({ collection: e.target.value })}
+                placeholder="ID / SG"
               />
-              保存页面中的同站附件
+            </label>
+            <label className="tea-field">
+              <span>资料级别</span>
+              <select
+                value={draft.plan.level}
+                onChange={(e) =>
+                  plan({ level: e.target.value as CollectionPlan["level"] })
+                }
+              >
+                <option value="primary">一级 · 主法规</option>
+                <option value="secondary">二级 · 引用法规</option>
+              </select>
             </label>
           </div>
+          {draft.plan.level === "secondary" && (
+            <fieldset className="ta-collection-fieldset">
+              <legend>关联一级资料</legend>
+              <DocumentChooser
+                ownerId={ownerId}
+                sourceScope="personal"
+                primaryOnly
+                selected={draft.plan.primary_document_ids}
+                onChange={(ids) => plan({ primary_document_ids: ids })}
+              />
+            </fieldset>
+          )}
+          <label className="tea-field">
+            <span>标签</span>
+            <Input
+              value={draft.tags}
+              onChange={(e) => update({ ...draft, tags: e.target.value })}
+              placeholder="用逗号分隔"
+            />
+          </label>
+          <label className="tea-field">
+            <span>补充地址 · 每行一个</span>
+            <Textarea
+              rows={4}
+              value={draft.seed_text}
+              onChange={(e) => update({ ...draft, seed_text: e.target.value })}
+              placeholder="https://…"
+            />
+          </label>
+          <label className="tea-checkbox">
+            <input
+              type="checkbox"
+              checked={draft.plan.discover_attachments}
+              onChange={(e) => plan({ discover_attachments: e.target.checked })}
+            />
+            保存同站附件
+          </label>
         </details>
         {error && <ErrorNotice message={error} />}
         {conflict && !latest && (
@@ -375,7 +376,7 @@ export function SourceForm({
             disabled={busy}
             onClick={onClose}
           >
-            收起
+            取消
           </Button>
         </div>
       </fieldset>

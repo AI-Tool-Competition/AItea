@@ -485,7 +485,13 @@ class Collector:
                         parents = item.get(
                             "parents", [{"url": item["parent_url"], "content_hash": item["parent_hash"]}]
                         )
-                        if parent in parents:
+                        prior_parent = previous_asset or next(
+                            (known for known in reversed(parents) if known["url"] == url), None
+                        )
+                        parent_changed = (
+                            prior_parent is not None and prior_parent["content_hash"] != asset["content_hash"]
+                        )
+                        if parent in parents and not parent_changed:
                             continue
                         self.event(
                             "source_reference",
@@ -498,11 +504,13 @@ class Collector:
                         item.update(
                             parent_url=url,
                             parent_hash=asset["content_hash"],
-                            parents=(parents + [parent])[-8:],
+                            parents=([known for known in parents if known != parent] + [parent])[-8:],
                         )
-                        # A new referring version deserves a conditional check,
-                        # while existing HTTP backoff remains authoritative.
-                        if item.get("health", {}).get("health") == "healthy":
+                        # A changed known parent version invalidates its target.
+                        # A first reference from a different page only adds a
+                        # mapping: shared navigation must not repeatedly consume
+                        # quota ahead of undiscovered originals.
+                        if parent_changed and item.get("health", {}).get("health") == "healthy":
                             item["health"]["next_at"] = time.time()
                         if due(item.get("health"), time.time()):
                             urls.appendleft(candidate)

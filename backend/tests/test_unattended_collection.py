@@ -595,6 +595,104 @@ def test_parent_version_and_multiple_parent_references_are_preserved(environment
     assert all(row["legal_review"] == "unreviewed" for row in env.events(collector, "content_version"))
 
 
+def test_new_parent_references_reuse_healthy_common_original_and_preserve_budget_for_new_pdfs(environment):
+    env = environment
+    collector = env.make()
+    origin = source()["url"]
+    shared = "https://one.gov.sg/shared-food.pdf"
+    details = [f"https://one.gov.sg/detail-{index:02}" for index in range(10)]
+    originals = [f"https://one.gov.sg/food-{index:02}.pdf" for index in range(10)]
+    env.responses.update({origin: html(shared, *details), shared: pdf("shared")})
+    for index, (detail, original) in enumerate(zip(details, originals, strict=True)):
+        env.responses[detail] = html(shared, original, text=f"Food official guidance {index}")
+        env.responses[original] = pdf(str(index))
+
+    for _ in range(6):
+        collector.tick()
+        env.clock[0] += collector.limits["tick_seconds"]
+
+    state = collector.state["sources"]["sg-main"]
+    called = [row["url"] for row in env.calls]
+    assert called.count(shared) == 1
+    assert all(called.count(original) == 1 for original in originals)
+    assert len(called) == 22  # One root, one shared original, ten details and ten new originals.
+    assert state["scheduling_status"] != "budget_wait"
+    references = [row for row in env.events(collector, "source_reference") if row["target_url"] == shared]
+    assert {row["parent_url"] for row in references} == {origin, *details}
+    assert len(state["frontier"][shared]["parents"]) == 8
+    assert all(collection.valid_cached(collector.root, state["cache"][url]) for url in originals)
+
+    # The root's original reference has rotated out of the bounded active
+    # parents list. Reobserving that unchanged root must still reuse the PDF.
+    env.clock[0] = state["root_next_at"]
+    collector.tick()
+    assert [row["url"] for row in env.calls].count(shared) == 1
+    assert len(env.calls) == 23
+
+
+def test_changed_known_parent_content_revalidates_original_before_its_normal_recheck(environment):
+    env = environment
+    collector = env.make()
+    origin = source()["url"]
+    detail, target = "https://one.gov.sg/details", "https://one.gov.sg/food.pdf"
+    first_root = html(detail, text="Food initial official root")
+    first_detail = html(target, text="Food initial official detail")
+    second_detail = html(target, text="Food revised official detail")
+    env.responses.update(
+        {
+            origin: first_root,
+            detail: first_detail,
+            target: pdf("first"),
+        }
+    )
+    collector.tick()
+    first_state = collector.state["sources"]["sg-main"]
+    scheduled_target_recheck = first_state["frontier"][target]["health"]["next_at"]
+    assert [row["url"] for row in env.calls] == [origin, detail, target]
+
+    env.clock[0] = first_state["root_next_at"]
+    assert env.clock[0] < scheduled_target_recheck
+    env.responses.update(
+        {
+            origin: html(detail, text="Food revised official root"),
+            detail: second_detail,
+            target: pdf("second"),
+        }
+    )
+    collector.tick()
+    assert [row["url"] for row in env.calls] == [origin, detail, target, origin, detail, target]
+    current = collector.state["sources"]["sg-main"]
+    asset = current["cache"][target]
+    assert asset["content_hash"] == hashlib.sha256(pdf("second")).hexdigest()
+    assert collection.valid_cached(collector.root, asset)
+    references = [
+        row
+        for row in env.events(collector, "source_reference")
+        if row["parent_url"] == detail and row["target_url"] == target
+    ]
+    assert {row["parent_hash"] for row in references} == {
+        hashlib.sha256(first_detail).hexdigest(),
+        hashlib.sha256(second_detail).hexdigest(),
+    }
+    mapping = [row for row in env.events(collector, "mapped_resource") if row["target_url"] == target][-1]
+    assert mapping["parent_hash"] == hashlib.sha256(second_detail).hexdigest()
+    assert mapping["target_hash"] == asset["content_hash"]
+
+    # A previous A hash remains among the parents after B. Returning to A is
+    # still a real observed version change, so it must refresh the target.
+    env.clock[0] = current["root_next_at"]
+    assert env.clock[0] < scheduled_target_recheck
+    env.responses.update({origin: first_root, detail: first_detail, target: pdf("third")})
+    collector.tick()
+    assert [row["url"] for row in env.calls] == [origin, detail, target] * 3
+    reverted = collector.state["sources"]["sg-main"]["cache"][target]
+    assert reverted["content_hash"] == hashlib.sha256(pdf("third")).hexdigest()
+    assert collection.valid_cached(collector.root, reverted)
+    mapping = [row for row in env.events(collector, "mapped_resource") if row["target_url"] == target][-1]
+    assert mapping["parent_hash"] == hashlib.sha256(first_detail).hexdigest()
+    assert mapping["target_hash"] == reverted["content_hash"]
+
+
 def test_explicit_empty_catalogue_has_low_frequency_recheck_and_retains_raw_response(environment):
     env = environment
     configured = source(kind="catalogue", interval_seconds=7 * 86400)

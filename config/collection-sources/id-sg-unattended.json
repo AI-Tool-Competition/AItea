@@ -1,0 +1,681 @@
+{
+  "protocol": "aitea-official-source-pool-v1",
+  "countries": [
+    "ID",
+    "SG"
+  ],
+  "sources": [
+    {
+      "id": "id-kemendag-regulations",
+      "country": "ID",
+      "topics": [
+        "trade",
+        "imports",
+        "origin",
+        "consumer_protection"
+      ],
+      "title": "印度尼西亚贸易部官方法规目录",
+      "url": "https://jdih.kemendag.go.id/peraturan",
+      "priority": 100,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.kemendag.go.id"
+      ],
+      "discovery_keywords": [
+        "impor",
+        "perdagangan",
+        "asal barang",
+        "perlindungan konsumen",
+        "ekspor"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.kemendag.go.id/peraturan",
+        "checked_at": "2026-10-20T06:43:50.287704+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "贸易准入、进口限制、消费者保护及原产地实施规范；仅取与已确认法律问题有关的正式文件。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-kemendag-regulations.json",
+        "server_receipt_sha256": "a704bcbfe420bad7d8d9dbaa275aaa39f70854502afe2328cc5631af7d304ef9",
+        "body_sha256": "00bb0f6955bfa88b181c7970a27f7d235dc0ddb4c898c3a4585d0f3c4632369e",
+        "limitations": [
+          "目录包含其他贸易部门事项，需按主题筛选；同一次浏览曾被拒绝，但本机有界直连已取得真实法规目录。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-sfa-labelling",
+      "country": "SG",
+      "topics": [
+        "food_safety",
+        "food_labelling",
+        "tea_imports"
+      ],
+      "title": "新加坡食品局预包装食品标签要求",
+      "url": "https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food",
+      "priority": 99,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.sfa.gov.sg"
+      ],
+      "discovery_keywords": [
+        "labelling",
+        "prepacked food",
+        "food regulations",
+        "food import",
+        "health claims"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food",
+        "checked_at": "2026-10-20T06:43:50.288390+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "核对茶叶标签、进口商责任及营养健康声称的官方转介，保留指引与法规正文的区别。",
+        "checklist_items": [
+          "SG-3.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-sfa-labelling.json",
+        "server_receipt_sha256": "dda2ede3d884458ab81d5be07195228b1e1cf5d5f1daac21e9343b7dff394472",
+        "body_sha256": "0a31c838f61ca5ff680e5bc5973a89b05ca150959221e995db06c8bdba82ae64",
+        "limitations": [
+          "指南解释适用要求；2025 修订及 2026 生效信息须回查其正式法规和具体版本。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-bpom-regulations",
+      "country": "ID",
+      "topics": [
+        "food_safety",
+        "food_labelling",
+        "food_packaging",
+        "tea_imports"
+      ],
+      "title": "印度尼西亚 BPOM 食品药品监管官方法规目录",
+      "url": "https://jdih.pom.go.id/rule",
+      "priority": 98,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.pom.go.id"
+      ],
+      "discovery_keywords": [
+        "pangan",
+        "label",
+        "kemasan",
+        "impor",
+        "registrasi pangan"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.pom.go.id/rule",
+        "checked_at": "2026-10-20T06:43:50.289935+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "发现加工食品注册、食品标签、包装、食品安全和进口监管正式文件及修改关系。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpom-regulations.json",
+        "server_receipt_sha256": "c3ec41c2124a4d11609fa4c27c4f2aa127d9f002cd7ee384cd37cf89687a58d0",
+        "body_sha256": "0b6125a34b321dc790b545ab5055b0f2799ad64b7abcb7556d68abb0bb535668",
+        "limitations": [
+          "BPOM 同时监管药品、化妆品；只收与茶叶食品相关材料，不扩采无关药品栏目。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-customs-import",
+      "country": "SG",
+      "topics": [
+        "customs",
+        "imports",
+        "gst",
+        "tariff_classification"
+      ],
+      "title": "新加坡海关商业进口义务概览",
+      "url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/",
+      "priority": 97,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.customs.gov.sg"
+      ],
+      "discovery_keywords": [
+        "import",
+        "permit",
+        "GST",
+        "customs value",
+        "rules of origin"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/",
+        "checked_at": "2026-10-20T06:43:50.286710+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "发现进口主体、许可、估价、留档、税费及原产地相关正式解释；普通干茶与即饮产品分开判断。",
+        "checklist_items": [
+          "SG-3.1"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-customs-import.json",
+        "server_receipt_sha256": "e689b3140716def34a9d68f8e82f7c4ee170694c37d34a3f3d7e52564556533d",
+        "body_sha256": "d6ddd8d823fca294f867ed10454bf62feca34fd9f0394f298c51d5f63be3fab4",
+        "limitations": [
+          "本页为官方指引，不能代替 Customs Act、GST Act 和 RIEA 的特定适用条文。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-bpjph-nonhalal-regulation",
+      "country": "ID",
+      "topics": [
+        "halal",
+        "food_labelling",
+        "tea_imports"
+      ],
+      "title": "印度尼西亚 BPJPH 非清真标识正式规则入口",
+      "url": "https://bpjph.halal.go.id/read/keterangan-tidak-halal",
+      "priority": 92,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "bpjph.halal.go.id"
+      ],
+      "discovery_keywords": [
+        "peraturan",
+        "keterangan tidak halal",
+        "jaminan produk halal",
+        "dokumen regulasi"
+      ],
+      "verification": {
+        "official_evidence_url": "https://bpjph.halal.go.id/read/keterangan-tidak-halal",
+        "checked_at": "2026-10-20T06:44:34.091813+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "发布机关页面直接列示 BPJPH 3/2026 正式规则原件入口；用于核对非清真说明、产品适用条件及食品标识。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpjph-nonhalal-regulation.json",
+        "server_receipt_sha256": "7e352acf80ad921df7455f7e9a64fd705a9abc16d612ec3ac0075f0c1b018b21",
+        "body_sha256": "97d19c0ed40d55a6fc49fa8d2b93897454e82961e71dae3e5285b54b10e87cf9",
+        "limitations": [
+          "规则是否适用于具体纯茶、配料茶必须按原文核验；页面可达不等于原件已下载或法律效力已审核。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-iras-imports",
+      "country": "SG",
+      "topics": [
+        "gst",
+        "imports",
+        "tax"
+      ],
+      "title": "新加坡 IRAS 进口货物 GST 指引",
+      "url": "https://www.iras.gov.sg/taxes/goods-services-tax-%28gst%29/claiming-gst-%28input-tax%29/importing-of-goods/",
+      "priority": 91,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.iras.gov.sg"
+      ],
+      "discovery_keywords": [
+        "import",
+        "GST",
+        "input tax",
+        "guide on imports",
+        "low-value goods"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.iras.gov.sg/taxes/goods-services-tax-%28gst%29/claiming-gst-%28input-tax%29/importing-of-goods/",
+        "checked_at": "2026-10-20T06:43:51.893887+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "核对进口 GST、抵扣与相关 e-Tax Guides，区分进口商、本地零售和海外供应商事实。",
+        "checklist_items": [
+          "SG-3.3"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-iras-imports.json",
+        "server_receipt_sha256": "19b6dada1bfc1d4a335b4151cf7232781933b0ada21605694532275365d6be6d",
+        "body_sha256": "5814610eea78c597638353d85883d6fe5bf2fe9a49676f1f31e7ce3b43ba0b3f",
+        "limitations": [
+          "不扩采个人税、房产税及全部税种；关税优惠不等于 GST 豁免。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-bkpm-regulations",
+      "country": "ID",
+      "topics": [
+        "investment",
+        "business_licensing",
+        "company"
+      ],
+      "title": "印度尼西亚投资与下游产业部 BKPM 官方法律资料库",
+      "url": "https://jdih.bkpm.go.id/id",
+      "priority": 86,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.bkpm.go.id"
+      ],
+      "discovery_keywords": [
+        "investasi",
+        "penanaman modal",
+        "perizinan berusaha",
+        "KBLI",
+        "perdagangan"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.bkpm.go.id/id",
+        "checked_at": "2026-10-20T06:43:57.131842+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "定位外国投资、经营准入、贸易主体和风险分类经营许可的正式依据及关联规范。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.1"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bkpm-regulations.json",
+        "server_receipt_sha256": "f297374f07df751bbed744180ba61189e900598185390984e45ca1e10d861bbc",
+        "body_sha256": "6cd3d6b6eaeed020988f25eb19e574ef8ff7a0a7ffa77a9317daaa5d77e6bbbd",
+        "limitations": [
+          "不收 OSS 界面点击、表格填写教程和不相关投资宣传；单个目录不能证明全量法规覆盖。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-enterprisesg-rcep",
+      "country": "SG",
+      "topics": [
+        "treaties",
+        "rcep",
+        "origin",
+        "trade"
+      ],
+      "title": "新加坡 EnterpriseSG RCEP 官方协定与实施入口",
+      "url": "https://www.enterprisesg.gov.sg/grow-your-business/go-global/international-agreements/free-trade-agreements/find-an-fta/rcep",
+      "priority": 85,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.enterprisesg.gov.sg"
+      ],
+      "discovery_keywords": [
+        "RCEP",
+        "agreement",
+        "origin",
+        "tariff",
+        "China"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.enterprisesg.gov.sg/grow-your-business/go-global/international-agreements/free-trade-agreements/find-an-fta/rcep",
+        "checked_at": "2026-10-20T06:43:55.247019+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "发现 RCEP 正文和原产地/关税附件，关联新加坡与中国贸易适用条件；与国内实施法规分别保存。",
+        "checklist_items": [
+          "SG-5.1"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-enterprisesg-rcep.json",
+        "server_receipt_sha256": "d1cef9a32c5f5e470aae5ae76edf9fc4ac8d379f1c0ef5ee3a141e816b99d47a",
+        "body_sha256": "ee3122fa841b81e1508598d8d9e90a4488f2b619994746b43bc7f1cfe24e94f9",
+        "limitations": [
+          "不能仅凭协定名称推定茶叶自动享受优惠；外部链接须经独立官方来源核验后另行批准，不能由本条跨域自动扩采。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-acra-compliance",
+      "country": "SG",
+      "topics": [
+        "company",
+        "business_registration",
+        "governance"
+      ],
+      "title": "新加坡 ACRA 商业主体合规要求",
+      "url": "https://www.acra.gov.sg/regulations/compliance-requirements/",
+      "priority": 78,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.acra.gov.sg"
+      ],
+      "discovery_keywords": [
+        "company",
+        "compliance",
+        "directors",
+        "annual filing",
+        "foreign company"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.acra.gov.sg/regulations/compliance-requirements/",
+        "checked_at": "2026-10-20T06:43:53.594513+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "定位进口经销/零售主体的存续、董事和必要申报义务，区分自设公司与已有进口商合作。",
+        "checklist_items": [
+          "SG-3.4"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-acra-compliance.json",
+        "server_receipt_sha256": "706ef801d78ae77f674ab1e2c921cca5b94de705baed58b4634ed118295d49ae",
+        "body_sha256": "d40dc79e3a703a6bc8d4090878d43528b0344aa6fb8c40f57f822bc27a8016b9",
+        "limitations": [
+          "不扩采 VCC、审计行业监管、完整企业名录、付费档案及 Bizfile 操作。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-pdpc-marketing",
+      "country": "SG",
+      "topics": [
+        "privacy",
+        "marketing",
+        "ecommerce"
+      ],
+      "title": "新加坡 PDPC 禁止来电与营销规则官方指引",
+      "url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
+      "priority": 72,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.pdpc.gov.sg"
+      ],
+      "discovery_keywords": [
+        "Do Not Call",
+        "marketing",
+        "consent",
+        "personal data",
+        "advisory guidelines"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions",
+        "checked_at": "2026-10-20T06:43:56.431646+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "支撑茶叶会员社群、短信/电话营销和客户资料使用的合规判断，保留指引版本及正式法源引用。",
+        "checklist_items": [
+          "SG-3.6"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-pdpc-marketing.json",
+        "server_receipt_sha256": "35c50eebcc23d9bd05df9ee503533c21fa03c8295305e19edc066e71dbe3b80e",
+        "body_sha256": "9c85a98512f711bce259dfb67a429a4629b38eb4cea1cf968f37d64172162716",
+        "limitations": [
+          "不将模板、工具或培训说明当成具有同等效力的法律；只采与经营场景相关资料。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "sg-ipos-trademark-guides",
+      "country": "SG",
+      "topics": [
+        "trademarks",
+        "branding",
+        "geographical_indications"
+      ],
+      "title": "新加坡 IPOS 商标官方指南与审查手册入口",
+      "url": "https://www.ipos.gov.sg/about-ip/trade-marks/tm-guides/",
+      "priority": 70,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.ipos.gov.sg"
+      ],
+      "discovery_keywords": [
+        "trade marks",
+        "work manual",
+        "legislation",
+        "geographical indications",
+        "licence"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.ipos.gov.sg/about-ip/trade-marks/tm-guides/",
+        "checked_at": "2026-10-20T06:43:58.431491+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "发现茶品牌商标、许可和标识审查所需官方材料；关联 Trade Marks Act/Rules 及具体版本。",
+        "checklist_items": [
+          "SG-3.7"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-ipos-trademark-guides.json",
+        "server_receipt_sha256": "05d8835da671bd973eaa5c16fd2dcb1f44670b3d3f8e47d4e576a17e3116e3ac",
+        "body_sha256": "f6abc3c48c20e17120554c7444ef028d9b827be1d930dca12b9ffa761a6d89ca",
+        "limitations": [
+          "排除专利全库和付费代理宣传；商标注册、商业登记及产地声称不能互相替代。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-kemenkeu-www-regulations",
+      "country": "ID",
+      "topics": [
+        "customs",
+        "tax",
+        "imports",
+        "origin"
+      ],
+      "title": "印度尼西亚财政部官方法律资料库",
+      "url": "https://www.jdih.kemenkeu.go.id/",
+      "priority": 60,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.jdih.kemenkeu.go.id"
+      ],
+      "discovery_keywords": [
+        "kepabeanan",
+        "pajak",
+        "impor",
+        "tarif",
+        "asal barang"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.jdih.kemenkeu.go.id/dok/144-pmk-04-2022/summary",
+        "checked_at": "2026-10-20T06:44:34.090818+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "定位进口税费、估价、海关、税收及协定实施部长规章，保留修订/废止关系。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.3"
+        ],
+        "server_status": "access_unavailable",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-kemenkeu-www-regulations.json",
+        "server_receipt_sha256": "b821b77375ba46d25079cd2e881db20d82e50f127ab3bd91251d61114283fc68",
+        "body_sha256": null,
+        "limitations": [
+          "本机 www 与非 www 入口本次均 DNS 超时；官方网页仍可由检索核到，记为暂时访问失败，不认定网站已过期或法规失效。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-pajak-regulations",
+      "country": "ID",
+      "topics": [
+        "tax",
+        "imports",
+        "business_tax"
+      ],
+      "title": "印度尼西亚税务总局官方税务法规目录",
+      "url": "https://pajak.go.id/id/peraturan",
+      "priority": 55,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "pajak.go.id"
+      ],
+      "discovery_keywords": [
+        "pajak",
+        "impor",
+        "pertambahan nilai",
+        "penghasilan",
+        "peraturan"
+      ],
+      "verification": {
+        "official_evidence_url": "https://pajak.go.id/id/peraturan",
+        "checked_at": "2026-10-20T06:43:56.052691+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "核对经营主体税务、进口增值税和适用年度的正式法规及参数。",
+        "checklist_items": [
+          "ID-4.3"
+        ],
+        "server_status": "access_unavailable",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-pajak-regulations.json",
+        "server_receipt_sha256": "6feaa729ee47d108cd781ded01ed23d25596d4b5bc78a54b2e726c7ebbaa6cb7",
+        "body_sha256": null,
+        "limitations": [
+          "本机连接失败；检索仍列出 2026 年 10 月税务材料，不能据连接失败认定失效。动态税率与汇率必须保存适用时间。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-ditjenpp-regulations",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚法律法规总局正式法规数据库",
+      "url": "https://peraturan.go.id/",
+      "priority": 45,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "peraturan.go.id"
+      ],
+      "discovery_keywords": [
+        "perdagangan",
+        "pangan",
+        "impor",
+        "penanaman modal",
+        "kepabeanan"
+      ],
+      "verification": {
+        "official_evidence_url": "https://peraturan.go.id/",
+        "checked_at": "2026-10-20T06:44:01.329577+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "作为部委发布机关之外的正式法规核对来源，按文号及法律问题补原文与公布信息。",
+        "checklist_items": [
+          "ID-1.3",
+          "ID-1.4",
+          "ID-1.5",
+          "ID-1.6",
+          "ID-1.8"
+        ],
+        "server_status": "access_unavailable",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-ditjenpp-regulations.json",
+        "server_receipt_sha256": "4c4904a39e766fccdb885039a6937f4d34d136b3f3a7159b53ce674f945639da",
+        "body_sha256": null,
+        "limitations": [
+          "本机连接失败，暂作低优先级可复查候选；不替代各原件版本和法效核验。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      }
+    },
+    {
+      "id": "id-bpjph-regulations",
+      "country": "ID",
+      "topics": [
+        "halal",
+        "food_labelling",
+        "tea_imports"
+      ],
+      "title": "印度尼西亚 BPJPH 新版清真法律资料库",
+      "url": "https://jdih.halal.go.id/",
+      "priority": 20,
+      "kind": "catalogue",
+      "interval_seconds": 604800,
+      "allowed_hosts": [
+        "jdih.halal.go.id"
+      ],
+      "discovery_keywords": [
+        "jaminan produk halal",
+        "peraturan",
+        "sertifikat halal",
+        "produk luar negeri"
+      ],
+      "verification": {
+        "official_evidence_url": "https://bpjph.halal.go.id/berita/",
+        "checked_at": "2026-10-20T06:43:55.201634+00:00",
+        "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
+        "business_use": "监测发布机关新的清真法规、行政义务和正式规则原件目录。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.2"
+        ],
+        "server_status": "reachable_empty_catalogue",
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpjph-regulations.json",
+        "server_receipt_sha256": "cc251272e80b36393102c0609d069f0d40f496c2f0c939d4e6e55cf81d22f137",
+        "body_sha256": "9e543958d6391fd9dcee133949c0aec52592f7e75282c5dca22004a413905bdc",
+        "limitations": [
+          "首页能访问，但本次页面明确显示 Belum Ada Peraturan / Tidak ada kategori tersedia；保持空目录记录，不计已取得任何法规正文。",
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+        ]
+      },
+      "empty_catalogue": true
+    },
+    {
+      "id": "id-setneg-perpu",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚国家秘书处 Perppu 正式法规目录",
+      "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0",
+      "priority": 88,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.setneg.go.id"
+      ],
+      "discovery_keywords": [
+        "PERPU",
+        "PERPPU",
+        "peraturan pemerintah",
+        "pengganti undang-undang"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.setneg.go.id/",
+        "checked_at": "2026-10-20T07:34:18.470485+00:00",
+        "server_status": "http_404_pending_spaced_recheck",
+        "historical_success": {
+          "catalogue_record_count": 33,
+          "acquired_records": 23,
+          "assets": 24,
+          "catalogue_raw_sha256": "ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774",
+          "catalogue_path": "/data/wenbo/Projects/AItea/.dev/ingestion-continuation-20261020/periodic-official-validation-20261020/id-perpu/cycles/cycle-000001-dc1edd77b69b/source/files/blobs/923b237dba3b279b3c1c158b6817cc58fdd8acf8487b83889b858c8bacf27349/ca/0d/ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774"
+        },
+        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/setneg-catalogue-check/verification.json",
+        "server_receipt_sha256": "0b2762de9a018cf1d7b6be1c3160380ee372c112803fdc13edacdd8bc1a155f8",
+        "limitations": [
+          "2026-10-20本次length20与原length50目录均HTTP404；不是当前可达来源或已经过期网站的结论。",
+          "需要精确源recipe的setneg_type=PERPU与固定jns，并只在此源允许受限JSON压缩。",
+          "历史原件和15来源账本应保留；本条只新增来源，不重置模型尝试或旧HTTP请求计数。"
+        ],
+        "collector_scope_note": "Retains exact prior PERPU catalogue endpoint; 50 rows plus next page bounded to 51 links; historical originals retained, current 404 pending recheck."
+      }
+    }
+  ]
+}

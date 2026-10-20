@@ -234,10 +234,14 @@ def test_whole_transport_failure_batch_cools_source_without_consuming_detail_que
     assert len(requested) == before
 
 
-def test_resume_rejects_changed_plan_and_unapproved_external_location(tmp_path):
+def test_resume_rejects_changed_plan_and_unapproved_external_location(tmp_path, monkeypatch):
     output = tmp_path / "collection"
-    with pytest.raises(ValueError, match="explicit storage root"):
-        collector.open_state(output, resume=False, definition_hash="first")
+    # The test runner may keep tmp_path inside the real project's approved .dev.
+    # Model a separate project so this assertion always exercises an external path.
+    with monkeypatch.context() as isolated:
+        isolated.setattr(collector, "ROOT", tmp_path / "separate-project")
+        with pytest.raises(ValueError, match="explicit storage root"):
+            collector.open_state(output, resume=False, definition_hash="first")
     state = collector.open_state(output, resume=False, definition_hash="first", storage_root=tmp_path)
     state.close()
     with pytest.raises(ValueError, match="immutable collection plan changed"):

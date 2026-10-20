@@ -53,4 +53,6 @@ HTTP 410 记录资源已撤下；404 需至少 3 次、间隔至少 1 小时且�
 
 来源配置和额度与已有状态绑定，直接改动会拒绝继续，避免偷偷扩大范围或重置额度。升级时先停止服务、备份现有数据和配置，保留历史来源 ID 及账本，再审核迁移；`make collection-prepare` 对相同配置幂等，对不同旧配置拒绝覆盖。
 
+仅移动项目路径且国家、来源池 SHA 和额度均不变时：取得旧采集目录锁，复制到新卷的临时目录，逐文件核对 SHA；只变更 `state.json` 的 `binding.root` 为新输出目录的真实绝对路径，核对其他字段与所有请求/原件未变，再原子发布新目录。保存旧状态摘要、新状态摘要、逐文件清单和迁移时间，旧副本保留。随后在新项目重新准备 fleet/unit，停用旧服务后启用新服务。来源池或额度变更不能套用这一单字段路径迁移，也不能删除历史账本重建。
+
 实现依据：[systemd 服务重启与停止语义](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)、[systemd 进程组终止语义](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)、[HTTP 410](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.5.11) 与 [Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3)。

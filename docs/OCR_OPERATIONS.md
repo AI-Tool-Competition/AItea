@@ -20,6 +20,11 @@ uv run --project backend python scripts/process_frozen_parse.py \
 ```
 
 每次使用新的 `run-id`。`--document-ids` 可进一步限定最多 20 个冻结 ID。
+`--ocr-workers` 支持 1–64，`--document-workers` 支持 1–32，默认均为 2。
+`--ocr-start-workers` 可从 1 起步但不能超过 OCR 最大并发；未指定时沿用共享额度的自适应起点。
+例如 `--ocr-workers 64 --ocr-start-workers 16 --document-workers 16` 允许跨文档填满 64 个识别槽，
+仍保持单文档每批最多 4 页、共享处理任务额度、限流退避和原有页级质量门禁。
+应按供应商成功率逐步提高实际并发；此上限不保证供应商持续吞吐，也不代表识别内容已经通过校验。
 同一快照有进程锁；报告保存领取范围、实际 HTTP 状态、并发峰值、页完成数和未通过质量门禁的页数。
 `metric_schema_version: 2` 的报告以本次运行每份文档首次领取前的状态为增量基线，
 保存在原子写入的 `run-baseline.json`，同时绑定版本、原件与 manifest SHA256。

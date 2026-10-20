@@ -19,6 +19,72 @@ RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
 
 
+def parse_arguments(*options):
+    return RUNNER.parse_args(
+        [
+            "--data-dir",
+            "unopened",
+            "--snapshot",
+            "unopened",
+            "--models-env",
+            "unopened",
+            "--run-id",
+            "capacity-check",
+            *options,
+        ]
+    )
+
+
+def test_default_ocr_continuation_keeps_existing_capacity():
+    args = parse_arguments()
+    assert (args.ocr_workers, args.ocr_start_workers, args.document_workers) == (2, None, 2)
+
+
+@pytest.mark.parametrize("maximum,start,documents", [(16, 4, 8), (64, 16, 16), (64, 64, 32)])
+def test_operator_can_use_existing_shared_ocr_capacity(monkeypatch, maximum, start, documents):
+    from app import parsing
+
+    args = parse_arguments(
+        "--ocr-workers",
+        str(maximum),
+        "--ocr-start-workers",
+        str(start),
+        "--document-workers",
+        str(documents),
+    )
+    monkeypatch.setenv("VISION_OCR_WORKERS", str(args.ocr_workers))
+    monkeypatch.setenv("VISION_OCR_ADAPTIVE", "true")
+    slots = parsing._VisionSlots(initial_target=args.ocr_start_workers)
+    assert all(slots.acquire(timeout=0) for _ in range(start))
+    assert not slots.acquire(timeout=0)
+    assert slots.snapshot()["maximum"] == maximum
+    # Upstream failure limits new work but does not cancel acquired page requests.
+    slots.report_provider_result(status_code=429, retry_after=10)
+    assert slots.snapshot()["target"] == max(1, start // 2)
+    for _ in range(start):
+        slots.release()
+    assert slots.snapshot()["active"] == 0
+    assert not slots.acquire(timeout=0)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ("--ocr-workers", "0"),
+        ("--ocr-workers", "65"),
+        ("--ocr-start-workers", "0"),
+        ("--ocr-start-workers", "65"),
+        ("--document-workers", "0"),
+        ("--document-workers", "33"),
+        ("--ocr-workers", "16", "--ocr-start-workers", "32"),
+    ],
+)
+def test_invalid_ocr_capacity_is_rejected_before_opening_a_snapshot(options):
+    with pytest.raises(SystemExit) as error:
+        parse_arguments(*options)
+    assert error.value.code == 2
+
+
 def test_run_progress_counts_only_new_text_across_multiple_claims():
     manifest = {
         "pages": [

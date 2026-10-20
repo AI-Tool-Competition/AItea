@@ -454,7 +454,12 @@ def test_fleet_term_child_exit75_is_stopped_and_restarts_automatically(fleet):
     assert all(task["last_returncode"] == 75 for task in stopped["tasks"].values())
     assert all((fleet.project / country / "drained").exists() for country in ("id", "sg"))
     replacement = fleet.start()
-    wait_for(lambda: len(launches(fleet)) == len(launches(fleet, "sg")) == 2)
+    wait_for(
+        lambda: (
+            len(launches(fleet)) == len(launches(fleet, "sg")) == 2
+            and all(task["status"] == "running" for task in saved(fleet)["tasks"].values())
+        )
+    )
     assert replacement.poll() is None
     assert all(task["status"] == "running" for task in saved(fleet)["tasks"].values())
     replacement.terminate()

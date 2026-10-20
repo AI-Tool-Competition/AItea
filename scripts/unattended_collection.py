@@ -22,7 +22,7 @@ import signal
 import sys
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +52,35 @@ LIMITS = {
     "min_free_bytes": 8 * 1024**3,
     "tick_seconds": 30,
 }
+
+
+RCEP_SOURCE_ID = "sg-enterprisesg-rcep"
+RCEP_POLICY_VERSION = "china-singapore-tariff-scope-v1"
+# SG-5.1 scopes tariff schedules to China/Singapore actual trade. General treaty
+# text, PSR/origin annexes and China/Singapore schedules remain discoverable.
+RCEP_OUTSIDE_SCOPE = (
+    r"^/-/media/esg/files/non-financial-assistance/for-companies/free-trade-agreements/"
+    r"rcep/rcep_(?:Australia|Brunei_Darussalam|Cambodia|Indonesia|Japan|Korea|Lao_PDR|"
+    r"Malaysia|Myanmar|New_Zealand|Philippines|Thailand|Viet_Nam)_"
+    r"(?:Schedule(?:_[^/?]*)?|Appendix_on_Tariff_Differentials)\.pdf$"
+)
+
+
+def rcep_policy(source):
+    return (
+        source["id"] == RCEP_SOURCE_ID
+        and source["country"] == "SG"
+        and urlsplit(source["url"]).hostname == "www.enterprisesg.gov.sg"
+    )
+
+
+def scope_excluded(source, url):
+    parsed = urlsplit(url)
+    return bool(
+        rcep_policy(source)
+        and parsed.hostname == "www.enterprisesg.gov.sg"
+        and re.search(RCEP_OUTSIDE_SCOPE, unquote(parsed.path), re.I)
+    )
 
 
 class Deferred(Exception):
@@ -132,6 +161,8 @@ def recipe(source):
         "exclude_terms": ["facebook", "instagram", "privacy policy", "careers", "login"],
         "max_links": 32,
     }
+    if rcep_policy(source):
+        result["exclude_patterns"] = [RCEP_OUTSIDE_SCOPE]
     if source["id"] == SETNEG_ID:
         result.update(
             setneg_type="PERPU",
@@ -206,6 +237,7 @@ class Collector:
                 interval_seconds=source["interval_seconds"],
             )
         self.state["active_sources"] = []
+        self.apply_candidate_policy()
         self.save()
 
     def save(self):
@@ -403,6 +435,158 @@ class Collector:
                 self.requests[receipt["request_id"]] = receipt
         return receipt
 
+    def apply_candidate_policy(self):
+        """Replay verified cached discovery once, without GETs, receipts or quota changes."""
+        for source in self.sources:
+            if not rcep_policy(source):
+                continue
+            current = self.state["sources"].setdefault(source["id"], {})
+            if current.get("candidate_policy", {}).get("version") == RCEP_POLICY_VERSION:
+                continue
+            cache = current.get("cache", {})
+            frontier = current.setdefault("frontier", {})
+            excluded = 0
+            for url, item in frontier.items():
+                if not scope_excluded(source, url):
+                    continue
+                marker = {"version": RCEP_POLICY_VERSION, "reason": "third_country_tariff_schedule"}
+                if item.get("scope_excluded") != marker:
+                    self.event(
+                        "candidate_scope_excluded",
+                        source_id=source["id"],
+                        target_url=url,
+                        parent_url=item["parent_url"],
+                        parent_hash=item["parent_hash"],
+                        policy=marker,
+                        retained_cached_hash=cache.get(url, {}).get("content_hash"),
+                    )
+                    item["scope_excluded"] = marker
+                excluded += 1
+            cached = cache.get(source["url"])
+            before = set(frontier)
+            replay_status, root_hash = "no_cached_root", None
+            if cached and valid_cached(self.root, cached):
+                raw = (self.root / cached["path"]).read_bytes()
+                inspected = discover_page(source["url"], raw, cached["mime_type"], recipe(source))
+                if inspected.get("matched"):
+                    refreshed = {**cached, "discovery": inspected}
+                    cache[source["url"]] = refreshed
+                    self.map_links(source, source["url"], refreshed, cached, frontier, cache, deque())
+                    replay_status, root_hash = "verified_cached_discovery", cached["content_hash"]
+                else:
+                    replay_status = "cached_discovery_unmatched"
+            elif cached:
+                replay_status = "cached_integrity_failed"
+            added = len(set(frontier) - before)
+            current["candidate_policy"] = {
+                "version": RCEP_POLICY_VERSION,
+                "applied_at": time.time(),
+                "replay_status": replay_status,
+                "root_hash": root_hash,
+            }
+            # Existing upstream/quota cooldowns remain lower bounds. Newly found
+            # URLs may run before the unchanged root's next daily recheck.
+            if added and current.get("health") == "healthy":
+                current["next_at"] = max(
+                    time.time() + self.limits["tick_seconds"],
+                    current.get("retry_not_before") or 0,
+                    max((self.host_cooldowns.get(h, 0) for h in source["allowed_hosts"]), default=0),
+                )
+            self.event(
+                "candidate_policy_applied",
+                source_id=source["id"],
+                policy_version=RCEP_POLICY_VERSION,
+                replay_status=replay_status,
+                root_hash=root_hash,
+                excluded_frontier=excluded,
+                discovered_candidates=added,
+                network_requests=0,
+            )
+
+    def map_links(self, source, url, asset, previous_asset, frontier, cache, urls):
+        for link in asset.get("discovery", {}).get("links", []):
+            candidate, host = _validated_url(link["url"])
+            if (
+                host not in source["allowed_hosts"]
+                or candidate == source["url"]
+                or scope_excluded(source, candidate)
+            ):
+                continue
+            parent = {"url": url, "content_hash": asset["content_hash"]}
+            if candidate in frontier:
+                item = frontier[candidate]
+                parents = item.get(
+                    "parents", [{"url": item["parent_url"], "content_hash": item["parent_hash"]}]
+                )
+                prior_parent = previous_asset or next(
+                    (known for known in reversed(parents) if known["url"] == url), None
+                )
+                parent_changed = (
+                    prior_parent is not None and prior_parent["content_hash"] != asset["content_hash"]
+                )
+                if parent in parents and not parent_changed:
+                    continue
+                self.event(
+                    "source_reference",
+                    source_id=source["id"],
+                    parent_url=url,
+                    parent_hash=asset["content_hash"],
+                    target_url=candidate,
+                    last_known_target_hash=cache.get(candidate, {}).get("content_hash"),
+                )
+                item.update(
+                    parent_url=url,
+                    parent_hash=asset["content_hash"],
+                    parents=([known for known in parents if known != parent] + [parent])[-8:],
+                )
+                # A changed known parent version invalidates its target.
+                # A first reference from a different page only adds a
+                # mapping: shared navigation must not repeatedly consume
+                # quota ahead of undiscovered originals.
+                if parent_changed and item.get("health", {}).get("health") == "healthy":
+                    item["health"]["next_at"] = time.time()
+                if due(item.get("health"), time.time()):
+                    urls.appendleft(candidate)
+                continue
+            if len(frontier) >= self.limits["max_frontier"]:
+                victim = min(
+                    frontier,
+                    key=lambda k: (
+                        -int(bool(frontier[k].get("attempt_count"))),
+                        frontier[k].get("discovered_at", 0),
+                        k,
+                    ),
+                )
+                self.event(
+                    "frontier_archived",
+                    source_id=source["id"],
+                    url=victim,
+                    mapping=frontier.pop(victim),
+                )
+            frontier[candidate] = {
+                "parent_url": url,
+                "parent_hash": asset["content_hash"],
+                "parents": [parent],
+                "title": link.get("title", ""),
+                "purpose": link["purpose"],
+                "attempt_count": 0,
+                "discovered_at": time.time(),
+            }
+            self.event(
+                "source_reference",
+                source_id=source["id"],
+                parent_url=url,
+                parent_hash=asset["content_hash"],
+                target_url=candidate,
+                last_known_target_hash=cache.get(candidate, {}).get("content_hash"),
+            )
+            # Use this same bounded cycle for newly discovered useful
+            # originals, rather than delaying the first follow to tomorrow.
+            if link["purpose"] == "document":
+                urls.appendleft(candidate)
+            else:
+                urls.append(candidate)
+
     def collect_source(self, source, previous):
         current = copy.deepcopy(previous)
         cache, frontier = dict(current.get("cache", {})), dict(current.get("frontier", {}))
@@ -418,7 +602,9 @@ class Collector:
                     pair[0],
                 ),
             )
-            if url != source["url"] and due(item.get("health"), time.time())
+            if url != source["url"]
+            and not scope_excluded(source, url)
+            and due(item.get("health"), time.time())
         ]
         urls = deque(urls)
         visited = set()
@@ -427,7 +613,11 @@ class Collector:
         receipts = []
         while urls and len(receipts) < self.limits["requests_per_source_cycle"]:
             url = urls.popleft()
-            if url in visited or (url != source["url"] and url not in frontier):
+            if (
+                url in visited
+                or scope_excluded(source, url)
+                or (url != source["url"] and url not in frontier)
+            ):
                 continue
             visited.add(url)
             try:
@@ -475,84 +665,7 @@ class Collector:
                         "cache_metadata_archived", source_id=source["id"], url=victim, asset=cache.pop(victim)
                     )
                 cache[url] = asset
-                for link in asset.get("discovery", {}).get("links", []):
-                    candidate, host = _validated_url(link["url"])
-                    if host not in source["allowed_hosts"] or candidate == source["url"]:
-                        continue
-                    parent = {"url": url, "content_hash": asset["content_hash"]}
-                    if candidate in frontier:
-                        item = frontier[candidate]
-                        parents = item.get(
-                            "parents", [{"url": item["parent_url"], "content_hash": item["parent_hash"]}]
-                        )
-                        prior_parent = previous_asset or next(
-                            (known for known in reversed(parents) if known["url"] == url), None
-                        )
-                        parent_changed = (
-                            prior_parent is not None and prior_parent["content_hash"] != asset["content_hash"]
-                        )
-                        if parent in parents and not parent_changed:
-                            continue
-                        self.event(
-                            "source_reference",
-                            source_id=source["id"],
-                            parent_url=url,
-                            parent_hash=asset["content_hash"],
-                            target_url=candidate,
-                            last_known_target_hash=cache.get(candidate, {}).get("content_hash"),
-                        )
-                        item.update(
-                            parent_url=url,
-                            parent_hash=asset["content_hash"],
-                            parents=([known for known in parents if known != parent] + [parent])[-8:],
-                        )
-                        # A changed known parent version invalidates its target.
-                        # A first reference from a different page only adds a
-                        # mapping: shared navigation must not repeatedly consume
-                        # quota ahead of undiscovered originals.
-                        if parent_changed and item.get("health", {}).get("health") == "healthy":
-                            item["health"]["next_at"] = time.time()
-                        if due(item.get("health"), time.time()):
-                            urls.appendleft(candidate)
-                        continue
-                    if len(frontier) >= self.limits["max_frontier"]:
-                        victim = min(
-                            frontier,
-                            key=lambda k: (
-                                -int(bool(frontier[k].get("attempt_count"))),
-                                frontier[k].get("discovered_at", 0),
-                                k,
-                            ),
-                        )
-                        self.event(
-                            "frontier_archived",
-                            source_id=source["id"],
-                            url=victim,
-                            mapping=frontier.pop(victim),
-                        )
-                    frontier[candidate] = {
-                        "parent_url": url,
-                        "parent_hash": asset["content_hash"],
-                        "parents": [parent],
-                        "title": link.get("title", ""),
-                        "purpose": link["purpose"],
-                        "attempt_count": 0,
-                        "discovered_at": time.time(),
-                    }
-                    self.event(
-                        "source_reference",
-                        source_id=source["id"],
-                        parent_url=url,
-                        parent_hash=asset["content_hash"],
-                        target_url=candidate,
-                        last_known_target_hash=cache.get(candidate, {}).get("content_hash"),
-                    )
-                    # Use this same bounded cycle for newly discovered useful
-                    # originals, rather than delaying the first follow to tomorrow.
-                    if link["purpose"] == "document":
-                        urls.appendleft(candidate)
-                    else:
-                        urls.append(candidate)
+                self.map_links(source, url, asset, previous_asset, frontier, cache, urls)
             if url == source["url"] and outcome["status"] != "success":
                 break
             if self.host_cooldowns.get(urlsplit(url).hostname, 0) > time.time():
@@ -578,7 +691,11 @@ class Collector:
                 interval_seconds=source["interval_seconds"],
             )
         candidates = [current.get("root_next_at", current.get("next_at", time.time()))]
-        candidates.extend(item.get("health", {}).get("next_at", time.time()) for item in frontier.values())
+        candidates.extend(
+            item.get("health", {}).get("next_at", time.time())
+            for url, item in frontier.items()
+            if not scope_excluded(source, url)
+        )
         next_at = max(time.time() + self.limits["tick_seconds"], min(candidates))
         if deferred is not None and deferred.status != "stopping":
             next_at = max(next_at, time.time() + max(300, deferred.retry_after))

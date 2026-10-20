@@ -830,3 +830,200 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
         collector.fetch(item, item["url"])
     special = {item["url"] for item in collector.sources if item["id"] == "id-setneg-perpu"}
     assert all(row["accept_compressed_json"] == (row["url"] in special) for row in env.calls)
+
+
+RCEP_ROOT = (
+    "https://www.enterprisesg.gov.sg/grow-your-business/go-global/international-agreements/"
+    "free-trade-agreements/find-an-fta/rcep"
+)
+RCEP_FILES = (
+    "https://www.enterprisesg.gov.sg/-/media/ESG/Files/Non-Financial-Assistance/"
+    "For-Companies/Free-Trade-Agreements/RCEP/"
+)
+
+
+def rcep_source(**changes):
+    return source(
+        "sg-enterprisesg-rcep",
+        host="www.enterprisesg.gov.sg",
+        path=RCEP_ROOT.split("www.enterprisesg.gov.sg", 1)[1],
+        **{"discovery_keywords": ["RCEP", "agreement", "origin", "tariff", "China"], **changes},
+    )
+
+
+def real_rcep_html():
+    path = ROOT / "backend/tests/fixtures/discovery/sg-enterprisesg-rcep-20261020.html"
+    provenance = json.loads(path.with_suffix(".provenance.json").read_text())
+    content = path.read_bytes()
+    assert hashlib.sha256(content).hexdigest() == provenance["sha256"]
+    return content
+
+
+def test_real_rcep_html_filters_third_country_tariffs_before_link_cap():
+    from app.discovery import discover_page
+
+    configured = rcep_source()
+    legacy_recipe = collection.recipe(configured)
+    legacy_recipe.pop("exclude_patterns")
+    before = discover_page(RCEP_ROOT, real_rcep_html(), "text/html", legacy_recipe)
+    after = discover_page(RCEP_ROOT, real_rcep_html(), "text/html", collection.recipe(configured))
+    assert len(before["links"]) == 32 and before["warnings"]
+    assert not any("RCEP_China_" in link["url"] for link in before["links"])
+    links = [link["url"] for link in after["links"]]
+    assert len(links) == 17 and not after["warnings"]
+    assert sum("RCEP_China_" in url for url in links) == 6
+    assert RCEP_FILES + "RCEP_Annex_3A.pdf" in links
+    assert RCEP_FILES + "RCEP_legal_text" in links
+    assert not any(collection.scope_excluded(configured, url) for url in links)
+
+
+@pytest.mark.parametrize(
+    ("filename", "excluded"),
+    [
+        ("RCEP_Viet_Nam_Appendix_on_Tariff_Differentials.pdf", True),
+        ("RCEP_Indonesia_Schedule_for_China.pdf", True),
+        ("RCEP_Korea_Schedule_for_China.pdf", True),
+        ("RCEP_Malaysia_Schedule_TRQ.pdf", True),
+        ("RCEP_China_Schedule_for_ASEAN.pdf", False),
+        ("RCEP_China_Appendix_on_Tariff_Differentials.pdf", False),
+        ("RCEP_Singapore_Schedule.pdf", False),
+        ("RCEP_Annex_3A.pdf", False),
+        ("RCEP_Viet_Nam_Product_Specific_Rules.pdf", False),
+        ("RCEP_legal_text", False),
+    ],
+)
+def test_rcep_scope_exclusion_is_narrow_to_source_host_and_tariff_instrument(filename, excluded):
+    configured = rcep_source()
+    url = RCEP_FILES + filename
+    assert collection.scope_excluded(configured, url) is excluded
+    assert not collection.scope_excluded({**configured, "id": "sg-another-source"}, url)
+    assert not collection.scope_excluded(configured, url.replace("www.enterprisesg.gov.sg", "www.mti.gov.sg"))
+    assert "exclude_patterns" not in collection.recipe(source())
+
+
+def seed_legacy_rcep_cache(env, monkeypatch):
+    """Create real local legacy bytes/receipts using only the mocked HTTPS edge."""
+    configured = rcep_source()
+    collector = env.make([configured])
+    env.responses[RCEP_ROOT] = real_rcep_html()
+    original_recipe = collection.recipe
+
+    def legacy_recipe(source):
+        result = original_recipe(source)
+        result.pop("exclude_patterns", None)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(collection, "recipe", legacy_recipe)
+        root_receipt = collector.fetch(configured, RCEP_ROOT)
+    bad = RCEP_FILES + "RCEP_Viet_Nam_Appendix_on_Tariff_Differentials.pdf"
+    env.responses[bad] = pdf("legacy-viet-nam-appendix")
+    bad_receipt = collector.fetch(configured, bad)
+    root_asset = root_receipt["asset"]
+    frontier = {
+        link["url"]: {
+            "parent_url": RCEP_ROOT,
+            "parent_hash": root_asset["content_hash"],
+            "parents": [{"url": RCEP_ROOT, "content_hash": root_asset["content_hash"]}],
+            "purpose": link["purpose"],
+            "title": link["title"],
+            "attempt_count": 0,
+            "discovered_at": env.clock[0],
+        }
+        for link in root_asset["discovery"]["links"]
+    }
+    frontier[bad].update(
+        attempt_count=1,
+        health=collection.observe(None, bad_receipt["outcome"], now=env.clock[0], interval_seconds=7 * 86400),
+    )
+    current = collection.observe(None, root_receipt["outcome"], now=env.clock[0], interval_seconds=86400)
+    current.update(
+        cache={RCEP_ROOT: root_asset, bad: bad_receipt["asset"]},
+        frontier=frontier,
+        root_next_at=env.clock[0] + 86400,
+        next_at=env.clock[0] + 3600,
+        retry_not_before=env.clock[0] + 3600,
+        scheduling_status="budget_wait",
+    )
+    collector.state["sources"][configured["id"]] = current
+    collector.save()
+    return configured, collector, bad
+
+
+def test_rcep_policy_replays_verified_cached_html_once_without_requests_or_quota_reset(
+    environment, monkeypatch
+):
+    env = environment
+    configured, first, bad = seed_legacy_rcep_cache(env, monkeypatch)
+    before_state = deepcopy(first.state)
+    before_requests = {p: p.read_bytes() for p in first.root.glob("requests/*/*.json")}
+    before_calls = len(env.calls)
+    before_bytes = {p: p.read_bytes() for p in first.root.glob("files/blobs/*/*/*/*")}
+    resumed = env.make([configured], root=first.root, pool_path=first.pool_path)
+    current = resumed.state["sources"][configured["id"]]
+    assert current["candidate_policy"]["replay_status"] == "verified_cached_discovery"
+    assert (
+        current["candidate_policy"]["root_hash"]
+        == before_state["sources"][configured["id"]]["cache"][RCEP_ROOT]["content_hash"]
+    )
+    assert len(env.calls) == before_calls
+    assert {p: p.read_bytes() for p in before_requests} == before_requests
+    assert {p: p.read_bytes() for p in before_bytes} == before_bytes
+    assert resumed.binding == first.binding
+    assert current["retry_not_before"] == before_state["sources"][configured["id"]]["retry_not_before"]
+    assert current["next_at"] >= current["retry_not_before"]
+    assert current["frontier"][bad]["attempt_count"] == 1
+    assert current["frontier"][bad]["scope_excluded"]["version"] == collection.RCEP_POLICY_VERSION
+    assert current["cache"][bad] == before_state["sources"][configured["id"]]["cache"][bad]
+    assert RCEP_FILES + "RCEP_China_Schedule_for_ASEAN.pdf" in current["frontier"]
+    assert RCEP_FILES + "RCEP_Annex_3A.pdf" in current["frontier"]
+    assert not env.events(resumed, "mapped_resource") and not env.events(resumed, "content_version")
+    event_counts = {
+        kind: len(env.events(resumed, kind))
+        for kind in ["candidate_scope_excluded", "candidate_policy_applied", "source_reference"]
+    }
+    assert event_counts["candidate_scope_excluded"] == 28
+    assert (
+        len(env.events(resumed, "candidate_policy_applied")) == 2
+    )  # Fresh empty source, then legacy replay.
+    again = env.make([configured], root=first.root, pool_path=first.pool_path)
+    assert {kind: len(env.events(again, kind)) for kind in event_counts} == event_counts
+    assert len(env.calls) == before_calls
+
+
+def test_rcep_existing_excluded_frontier_is_retained_but_not_dispatched(environment, monkeypatch):
+    env = environment
+    configured, first, bad = seed_legacy_rcep_cache(env, monkeypatch)
+    resumed = env.make([configured], root=first.root, pool_path=first.pool_path)
+    current = resumed.state["sources"][configured["id"]]
+    for url, item in current["frontier"].items():
+        if not collection.scope_excluded(configured, url):
+            env.responses[url] = pdf(url.rsplit("/", 1)[-1]) if item["purpose"] == "document" else html()
+    calls_before = len(env.calls)
+    env.clock[0] = current["retry_not_before"]
+    resumed.tick()
+    fresh_calls = [r["url"] for r in env.calls[calls_before:]]
+    assert len(fresh_calls) == resumed.limits["requests_per_source_cycle"]
+    assert all(not collection.scope_excluded(configured, url) for url in fresh_calls)
+    assert any("RCEP_China_" in url or "RCEP_Annex_3A" in url for url in fresh_calls)
+    latest = resumed.state["sources"][configured["id"]]
+    assert latest["frontier"][bad]["attempt_count"] == 1
+    assert collection.valid_cached(resumed.root, latest["cache"][bad])
+
+
+def test_rcep_policy_does_not_rediscover_from_corrupt_cached_root(environment, monkeypatch):
+    env = environment
+    configured, first, _ = seed_legacy_rcep_cache(env, monkeypatch)
+    root_asset = first.state["sources"][configured["id"]]["cache"][RCEP_ROOT]
+    path = first.root / root_asset["path"]
+    path.chmod(0o600)
+    path.write_bytes(b"damaged fixture")
+    requests_before = {p: p.read_bytes() for p in first.root.glob("requests/*/*.json")}
+    calls_before = len(env.calls)
+    resumed = env.make([configured], root=first.root, pool_path=first.pool_path)
+    current = resumed.state["sources"][configured["id"]]
+    assert current["candidate_policy"]["replay_status"] == "cached_integrity_failed"
+    assert not any("RCEP_China_" in url for url in current["frontier"])
+    assert not env.events(resumed, "source_reference")
+    assert len(env.calls) == calls_before
+    assert {p: p.read_bytes() for p in requests_before} == requests_before

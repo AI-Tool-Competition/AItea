@@ -27,7 +27,7 @@ export SYNC
 
 PNPM := npx --yes pnpm@10.26.2
 
-.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory collect-resources
+.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory collect-resources collection-prepare collection-status
 
 help:
 	@printf '%s\n' \
@@ -43,6 +43,7 @@ help:
 	  'make build / start    构建 / 启动本地生产预览' \
 	  'make archive-inventory COUNTRY=ID  导出资料目录，可选 OWNER=账号ID' \
 	  'make collect-resources OUTPUT=data/campaigns/run ORIGINALS=2  并发采集；RESUME=1 续跑' \
+	  'make collection-prepare / collection-status  准备 / 检查无人值守官方采集服务' \
 	  'make worktree NAME=feature/foo  创建隔离开发工作树' \
 	  '选项：SYNC=auto|force|skip，API_PORT=8000，WEB_PORT=3000'
 
@@ -91,6 +92,12 @@ collect-resources: export TEA_CAMPAIGN_RESUME = $(RESUME)
 collect-resources: export TEA_CAMPAIGN_EXTEND = $(EXTEND)
 collect-resources:
 	uv run --project backend --locked python scripts/collect_resources.py
+
+collection-prepare:
+	uv run --project backend --locked python scripts/prepare_collection_service.py
+
+collection-status:
+	uv run --project backend --locked python scripts/collection_watchdog.py status --fleet "$(CURDIR)/.dev/collection-service/fleet.json" --state-dir "$(CURDIR)/.dev/collection-service/state"
 
 backend-check:
 	uv run --project backend --locked pytest backend/tests --basetemp="$(PYTEST_BASETEMP)"

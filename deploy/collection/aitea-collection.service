@@ -1,0 +1,30 @@
+# Render with collection_watchdog.py render-unit; install as a systemd user unit.
+# The collector owns its durable request ledgers. This unit never clears them.
+[Unit]
+Description=AItea unattended collection fleet
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=@WORKING_DIRECTORY@
+ExecStart=@EXEC_START@
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=75
+# The watchdog forwards TERM only to processes whose complete identity matches,
+# and waits for their own bounded request windows to drain. A main-process
+# crash under KillMode=mixed kills the remaining cgroup; collection then resumes
+# from durable ledgers. Bare-watchdog recovery can adopt surviving local children.
+KillMode=mixed
+TimeoutStopSec=180
+SendSIGKILL=yes
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aitea-collection
+
+[Install]
+WantedBy=default.target

@@ -9,8 +9,12 @@ from __future__ import annotations
 import json
 import base64
 import hashlib
+import fcntl
 import os
 import re
+import stat
+import threading
+from pathlib import Path
 import time
 from urllib.parse import urlsplit
 
@@ -140,6 +144,84 @@ def _response_error(
     )
 
 
+def deepseek_vision_model(model=None) -> bool:
+    name = (model if model is not None else os.getenv("LLM_MODEL", "")).strip().casefold()
+    host = urlsplit(os.getenv("LLM_BASE_URL", "")).hostname or ""
+    return bool(re.search(r"(?:^|[^a-z0-9])deepseek(?:[^a-z0-9]|$)", name)) or host in {
+        "api.deepseek.com",
+        "api.deepseek.cn",
+    }
+
+
+class _DeepSeekImageSlot:
+    """One image request per canonical data root, including other worker processes."""
+
+    def __init__(self):
+        self._threads = threading.Lock()
+        self._owned = threading.local()
+
+    def acquire(self, *, timeout):
+        if getattr(self._owned, "depth", 0):
+            self._owned.depth += 1
+            return True
+        deadline = time.monotonic() + timeout
+        if not self._threads.acquire(timeout=max(0, timeout)):
+            return False
+        fd = None
+        try:
+            data = Path(os.getenv("TEA_DATA_DIR") or Path(__file__).resolve().parents[2] / "data").resolve(
+                strict=True
+            )
+            runtime = data / ".runtime"
+            if runtime.is_symlink():
+                raise ValueError("图片识别运行目录不能使用符号链接。")
+            runtime.mkdir(mode=0o700, exist_ok=True)
+            fd = os.open(runtime / "deepseek-vision.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1:
+                raise ValueError("图片识别单槽必须使用独立普通文件。")
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._owned.fd, self._owned.depth = fd, 1
+                    return True
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        os.close(fd)
+                        fd = None
+                        self._threads.release()
+                        return False
+                    time.sleep(min(0.025, remaining))
+        except BaseException:
+            if fd is not None:
+                os.close(fd)
+            self._threads.release()
+            raise
+
+    def release(self):
+        depth = getattr(self._owned, "depth", 0)
+        if not depth:
+            raise ValueError("图片识别单槽未由当前线程持有。")
+        self._owned.depth = depth - 1
+        if depth == 1:
+            try:
+                os.close(self._owned.fd)
+            finally:
+                self._threads.release()
+
+
+_DEEPSEEK_IMAGE_SLOT = _DeepSeekImageSlot()
+
+
+class OCRCapacityDeferred(OCRResponseError):
+    """No request was sent; callers must not count this as a paid unknown outcome."""
+
+    request_sent = False
+
+    def __init__(self):
+        super().__init__("图片识别正在等待单槽容量。", retryable=True, retry_after=5)
+
+
 def vision_ocr_worker_limit() -> int:
     """Explicit per-process capacity shared by page, image and recovery work."""
     try:
@@ -148,7 +230,7 @@ def vision_ocr_worker_limit() -> int:
         raise ValueError("VISION_OCR_WORKERS must be between 1 and 64") from exc
     if not 1 <= value <= 64:
         raise ValueError("VISION_OCR_WORKERS must be between 1 and 64")
-    return value
+    return 1 if deepseek_vision_model() else value
 
 
 def vision_ocr_adaptive_enabled() -> bool:
@@ -201,6 +283,17 @@ def vision_ocr_configured() -> bool:
 
 
 def _invoke(body: dict) -> tuple[dict, str, str]:
+    if not deepseek_vision_model(body.get("model")):
+        return _invoke_provider(body)
+    if not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=5):
+        raise OCRCapacityDeferred()
+    try:
+        return _invoke_provider(body)
+    finally:
+        _DEEPSEEK_IMAGE_SLOT.release()
+
+
+def _invoke_provider(body: dict) -> tuple[dict, str, str]:
     deadline = time.monotonic() + 65
     data = bytearray()
     received_status = None

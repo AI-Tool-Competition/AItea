@@ -15,7 +15,7 @@ from uuid import uuid4
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from threading import BoundedSemaphore, Condition, Lock
+from threading import BoundedSemaphore, Condition, Lock, get_ident
 
 from .vision import vision_ocr_adaptive_enabled, vision_ocr_worker_limit
 from .pdf_limits import ARCHIVE_MAX_PAGES
@@ -92,39 +92,63 @@ class _VisionSlots:
         self._changed_at = self._cooldown_until = 0.0
         self._blocked_until = 0.0
         self._last_failure = None
+        self._deepseek_owners = set()
 
     def acquire(self, *, timeout):
-        maximum, adaptive = vision_ocr_worker_limit(), vision_ocr_adaptive_enabled()
-        with self._condition:
-            if self._maximum is None:
-                if self._initial_target is not None and self._initial_target > maximum:
-                    raise ValueError("Initial OCR concurrency cannot exceed the configured maximum.")
-                self._maximum, self._adaptive = maximum, adaptive
-                self._target = min(maximum, self._initial_target or 16) if adaptive else maximum
-                self._floor = 1
-                self._changed_at = self._clock()
-            elif maximum != self._maximum:
-                raise ValueError("VISION_OCR_WORKERS changed; restart this worker before processing.")
-            elif adaptive != self._adaptive:
-                raise ValueError("VISION_OCR_ADAPTIVE changed; restart this worker before processing.")
-            # Keep timed waits bounded even with a test-controlled adaptation clock.
-            deadline = time.monotonic() + timeout
-            while self._active >= self._target or self._clock() < self._blocked_until:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                blocked = max(0, self._blocked_until - self._clock())
-                self._condition.wait(min(remaining, blocked) if blocked else remaining)
-            self._active += 1
-            self._peak = max(self._peak, self._active)
-            return True
+        from .vision import _DEEPSEEK_IMAGE_SLOT, deepseek_vision_model
+
+        shared = deepseek_vision_model()
+        if shared and not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=timeout):
+            return False
+        acquired = False
+        try:
+            maximum, adaptive = vision_ocr_worker_limit(), vision_ocr_adaptive_enabled()
+            with self._condition:
+                if self._maximum is None:
+                    if self._initial_target is not None and self._initial_target > maximum and not shared:
+                        raise ValueError("Initial OCR concurrency cannot exceed the configured maximum.")
+                    self._maximum, self._adaptive = maximum, adaptive
+                    self._target = min(maximum, self._initial_target or 16) if adaptive else maximum
+                    self._floor = 1
+                    self._changed_at = self._clock()
+                elif maximum != self._maximum:
+                    raise ValueError("VISION_OCR_WORKERS changed; restart this worker before processing.")
+                elif adaptive != self._adaptive:
+                    raise ValueError("VISION_OCR_ADAPTIVE changed; restart this worker before processing.")
+                # Keep timed waits bounded even with a test-controlled adaptation clock.
+                deadline = time.monotonic() + timeout
+                while self._active >= self._target or self._clock() < self._blocked_until:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    blocked = max(0, self._blocked_until - self._clock())
+                    self._condition.wait(min(remaining, blocked) if blocked else remaining)
+                self._active += 1
+                if shared:
+                    self._deepseek_owners.add(get_ident())
+                acquired = True
+                self._peak = max(self._peak, self._active)
+                return True
+
+        finally:
+            if shared and not acquired:
+                _DEEPSEEK_IMAGE_SLOT.release()
 
     def release(self):
+        from .vision import _DEEPSEEK_IMAGE_SLOT
+
         with self._condition:
             if not self._active:
                 raise ValueError("VISION_OCR_WORKERS capacity was not acquired.")
+            shared = get_ident() in self._deepseek_owners
+            if self._deepseek_owners and not shared:
+                raise ValueError("DeepSeek image capacity must return from its owning thread.")
+            if shared:
+                self._deepseek_owners.remove(get_ident())
             self._active -= 1
             self._condition.notify_all()
+        if shared:
+            _DEEPSEEK_IMAGE_SLOT.release()
 
     def report_provider_result(self, *, status_code=None, timeout=None, retry_after=None):
         with self._condition:

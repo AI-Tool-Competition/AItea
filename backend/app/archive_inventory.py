@@ -333,6 +333,107 @@ def _document_metadata(conn, ids):
     return classifications, references
 
 
+def _retrieval_available(conn):
+    required = {
+        "retrieval_documents": {"document_id", "source_hash", "complete", "chunk_count"},
+        "retrieval_chunks": {"rowid", "document_id", "input_hash"},
+        "retrieval_vectors": {"chunk_rowid", "fingerprint", "input_hash"},
+    }
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)", tuple(required)
+        )
+    }
+    return all(
+        table in tables and columns <= {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for table, columns in required.items()
+    )
+
+
+def _retrieval_metadata(conn, ids, available):
+    """Three bounded queries per document batch; never select a vector BLOB."""
+    names = (
+        "index_present",
+        "indexed_chunk_count",
+        "declared_chunk_count",
+        "source_hash_matches",
+        "complete",
+        "matching_vector_count",
+        "fingerprint_counts",
+    )
+    if not available:
+        return {identifier: {"status": "unknown_schema", **dict.fromkeys(names)} for identifier in ids}
+    result = {
+        identifier: {
+            "status": "available",
+            "index_present": False,
+            "indexed_chunk_count": 0,
+            "declared_chunk_count": None,
+            "source_hash_matches": None,
+            "complete": None,
+            "matching_vector_count": 0,
+            "fingerprint_counts": {},
+        }
+        for identifier in ids
+    }
+    marks = ",".join("?" for _ in ids)
+    for row in conn.execute(
+        f"""SELECT i.document_id,i.chunk_count,i.complete,i.source_hash=d.content_hash source_hash_matches
+        FROM retrieval_documents i JOIN documents d ON d.id=i.document_id
+        WHERE i.document_id IN ({marks})""",
+        ids,
+    ):
+        result[row["document_id"]].update(
+            index_present=True,
+            declared_chunk_count=row["chunk_count"],
+            source_hash_matches=bool(row["source_hash_matches"]),
+            complete=bool(row["complete"]),
+        )
+    for row in conn.execute(
+        f"""SELECT document_id,COUNT(*) chunk_count FROM retrieval_chunks
+        WHERE document_id IN ({marks}) GROUP BY document_id""",
+        ids,
+    ):
+        result[row["document_id"]]["indexed_chunk_count"] = row["chunk_count"]
+    for row in conn.execute(
+        f"""SELECT c.document_id,v.fingerprint,COUNT(*) vector_count
+        FROM retrieval_chunks c JOIN retrieval_vectors v ON v.chunk_rowid=c.rowid AND v.input_hash=c.input_hash
+        WHERE c.document_id IN ({marks}) GROUP BY c.document_id,v.fingerprint
+        ORDER BY c.document_id,v.fingerprint""",
+        ids,
+    ):
+        record = result[row["document_id"]]
+        record["matching_vector_count"] += row["vector_count"]
+        record["fingerprint_counts"][row["fingerprint"]] = row["vector_count"]
+    return result
+
+
+def _text_completeness(conn, ids):
+    """Apply the real parser gate, retaining only one bounded manifest at a time."""
+    marks = ",".join("?" for _ in ids)
+    result = {}
+    for row in conn.execute(
+        f"""SELECT id,role,CASE WHEN length(CAST(manifest AS BLOB))<={MAX_MANIFEST_BYTES}
+        THEN manifest END manifest FROM documents WHERE id IN ({marks})""",
+        ids,
+    ):
+        anomalies = []
+        complete = False
+        if row["role"] == "primary":
+            if row["manifest"] is None:
+                complete = None
+                anomalies.append("manifest_completeness_unavailable")
+            else:
+                manifest = _json_value(row["manifest"], dict, {}, anomalies, "manifest")
+                try:
+                    complete = not anomalies and text_complete(manifest)
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    anomalies.append("invalid_manifest_structure")
+        result[row["id"]] = (complete, anomalies)
+    return result
+
+
 def _documents(conn, partitions, originals, summary, owner, country):
     where, params = _where(owner, country)
     cursor = conn.execute(
@@ -343,7 +444,6 @@ def _documents(conn, partitions, originals, summary, owner, country):
         json_valid(d.manifest) manifest_valid,
         CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.elements') END element_count,
         CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.chunks') END chunk_count,
-        CASE WHEN json_valid(d.manifest) THEN json_extract(d.manifest,'$.quality.complete') END text_complete,
         CASE WHEN json_valid(d.manifest) THEN json_extract(d.manifest,'$.quality.page_count') END page_count,
         CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.quality.pending_pages') END pending_pages,
         CASE WHEN json_valid(d.manifest) THEN json_array_length(d.manifest,'$.quality.failed_pages') END failed_pages,
@@ -356,9 +456,14 @@ def _documents(conn, partitions, originals, summary, owner, country):
         params,
     )
     for batch in _batches(cursor):
-        classifications, references = _document_metadata(conn, [row["id"] for row in batch])
+        ids = [row["id"] for row in batch]
+        classifications, references = _document_metadata(conn, ids)
+        retrieval = _retrieval_metadata(conn, ids, summary["retrieval_status"] == "available")
+        completeness = _text_completeness(conn, ids)
         for row in batch:
             original, anomalies = originals.inspect(row["storage_path"], row["size"])
+            complete, completeness_anomalies = completeness[row["id"]]
+            anomalies.extend(completeness_anomalies)
             tags = _json_value(row["tags"], list, [], anomalies, "tags")
             levels = classifications.get(row["id"], [])
             for item in levels:
@@ -422,6 +527,7 @@ def _documents(conn, partitions, originals, summary, owner, country):
                 "size": row["size"],
                 "original": original,
                 "review": review,
+                "retrieval": retrieval[row["id"]],
                 "parsing": {
                     "status": row["status"],
                     "phase": row["phase"],
@@ -431,7 +537,7 @@ def _documents(conn, partitions, originals, summary, owner, country):
                     "chunk_count": row["chunk_count"],
                     "parser": row["parser"],
                     "has_error": bool(row["has_error"]),
-                    "complete": None if row["text_complete"] is None else row["text_complete"] == 1,
+                    "complete": complete,
                     "page_count": row["page_count"],
                     "pending_pages": row["pending_pages"],
                     "failed_pages": row["failed_pages"],
@@ -1830,7 +1936,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 5 if include_source_mapping else 4,
+                "format_version": 6,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -1849,6 +1955,8 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 "original_check": "path_existence_and_size_only",
                 "content_hashes": "database_values_not_recomputed",
                 "scope": "stored_records_only",
+                "retrieval_status": "available" if _retrieval_available(conn) else "unknown_schema",
+                "retrieval_scope": "stored_index_and_input_hash_matching_vectors_not_rag_eligibility",
             }
             if include_text:
                 summary.update(text_documents=0, complete_text_documents=0)

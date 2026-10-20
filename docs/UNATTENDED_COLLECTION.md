@@ -1,5 +1,7 @@
 # 官方资料持续采集
 
+已存资料的原件、正文、一二级映射、向量状态及待补缺口，可用 `make collection-catalog` 生成统一入口，见 [COLLECTION_MATERIALS.md](COLLECTION_MATERIALS.md)。
+
 `make collection-prepare` 在当前项目 `.dev/collection-service/` 生成绑定绝对路径及校验和的双国任务配置和 systemd 用户服务。使用既有 uv 环境，不启动模型调用，也不修改既有 OCR、向量任务或业务账号。来源池与核验记录见 [OFFICIAL_SOURCE_POOL.md](OFFICIAL_SOURCE_POOL.md)。
 
 ## 启动和恢复

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sqlite3
+import struct
 from pathlib import Path
 
 import pytest
@@ -138,6 +139,186 @@ def records(report, owner="owner-a", country="ID", filename="documents.jsonl"):
     namespace = hashlib.sha256(owner.encode()).hexdigest()
     path = report["path"] / namespace / country / filename
     return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def index_records(archive, document_id, *, current=True, complete=True, vectors=None):
+    vectors = vectors if vectors is not None else [("model-a", True), ("model-b", True), ("model-a", False)]
+    with archive.db.transaction() as conn:
+        source_hash = conn.execute(
+            "SELECT content_hash FROM documents WHERE id=?", (document_id,)
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO retrieval_documents VALUES(?,?,?,?,1)",
+            (document_id, source_hash if current else "stale-source", int(complete), len(vectors)),
+        )
+        for index, (fingerprint, matching) in enumerate(vectors):
+            cursor = conn.execute(
+                """INSERT INTO retrieval_chunks(document_id,chunk_id,ordinal,text,retrieval_text,tokens,
+                locator,content_hash,input_hash) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    document_id,
+                    f"chunk-{index}",
+                    index,
+                    "PRIVATE_INDEX_TEXT",
+                    "PRIVATE_INDEX_CONTEXT",
+                    "PRIVATE_INDEX_TOKENS",
+                    "{}",
+                    "body-hash",
+                    f"input-{index}",
+                ),
+            )
+            conn.execute("INSERT OR IGNORE INTO retrieval_models VALUES(?,2)", (fingerprint,))
+            conn.execute(
+                "INSERT INTO retrieval_vectors VALUES(?,?,?,?,?)",
+                (
+                    cursor.lastrowid,
+                    fingerprint,
+                    f"input-{index}" if matching else "stale-input",
+                    2,
+                    struct.pack("<ff", 0.6, 0.8),
+                ),
+            )
+
+
+def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_bytes_or_rag_claims(archive):
+    document(archive, "indexed")
+    document(archive, "not-indexed")
+    document(archive, "other-owner", owner="owner-b")
+    index_records(archive, "indexed")
+    index_records(archive, "other-owner", vectors=[("PRIVATE_OTHER_MODEL", True)])
+    report = export(archive, owner="owner-a", country="ID")
+    metadata = {row["document_id"]: row["retrieval"] for row in records(report)}
+    assert metadata["indexed"] == {
+        "status": "available",
+        "index_present": True,
+        "indexed_chunk_count": 3,
+        "declared_chunk_count": 3,
+        "source_hash_matches": True,
+        "complete": True,
+        "matching_vector_count": 2,
+        "fingerprint_counts": {"model-a": 1, "model-b": 1},
+    }
+    assert metadata["not-indexed"] == {
+        "status": "available",
+        "index_present": False,
+        "indexed_chunk_count": 0,
+        "declared_chunk_count": None,
+        "source_hash_matches": None,
+        "complete": None,
+        "matching_vector_count": 0,
+        "fingerprint_counts": {},
+    }
+    content = "\n".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
+    assert all(
+        secret not in content
+        for secret in ("PRIVATE_INDEX_TEXT", "PRIVATE_INDEX_CONTEXT", "PRIVATE_OTHER_MODEL")
+    )
+    assert '"vector"' not in content and '"retrieval_eligible":true' not in content
+    assert report["summary"]["format_version"] == 6
+    assert (
+        report["summary"]["retrieval_scope"]
+        == "stored_index_and_input_hash_matching_vectors_not_rag_eligibility"
+    )
+
+
+def test_retrieval_inventory_distinguishes_stale_source_partial_index_and_declared_count(archive):
+    document(archive, "stale")
+    index_records(archive, "stale", current=False, complete=False)
+    with archive.db.transaction() as conn:
+        conn.execute("UPDATE retrieval_documents SET chunk_count=8 WHERE document_id='stale'")
+    metadata = records(export(archive))[0]["retrieval"]
+    assert metadata["source_hash_matches"] is False
+    assert metadata["complete"] is False
+    assert metadata["indexed_chunk_count"] == 3
+    assert metadata["declared_chunk_count"] == 8
+    assert metadata["matching_vector_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("manifest", "expected"),
+    [
+        ({"elements": [{"text": "body"}], "chunks": [{"text": "body"}]}, True),
+        (
+            {
+                "parser": "html-basic",
+                "parser_version": "2",
+                "elements": [{"text": "body"}],
+                "chunks": [{"text": "body"}],
+                "quality": {"complete": True},
+            },
+            False,
+        ),
+        (
+            {
+                "chunks": [{"text": "body"}],
+                "quality": {"complete": True},
+                "pages": [
+                    {"page": 1, "status": "ocr_complete", "text": "body", "ocr": {"uncertain_spans": ["1"]}}
+                ],
+            },
+            False,
+        ),
+    ],
+)
+def test_inventory_text_complete_uses_real_gate_instead_of_quality_flag(archive, manifest, expected):
+    from app.ingestion_quality import text_complete
+
+    document(archive, "law")
+    with archive.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=? WHERE id='law'", (json.dumps(manifest),))
+    row = records(export(archive))[0]
+    assert row["parsing"]["complete"] is expected
+    assert row["parsing"]["complete"] is text_complete(manifest)
+
+
+def test_retrieval_inventory_uses_same_snapshot_across_batches_and_concurrent_vector_updates(
+    archive, monkeypatch
+):
+    from app import archive_inventory
+
+    for identifier in ("first", "second"):
+        document(archive, identifier)
+        index_records(archive, identifier, vectors=[("model-a", True)])
+    monkeypatch.setattr(archive_inventory, "BATCH_SIZE", 1)
+    write_document = archive_inventory._write_document
+    changed = []
+
+    def concurrent_change(stream, record):
+        write_document(stream, record)
+        if not changed:
+            changed.append(True)
+            with archive.db.transaction() as conn:
+                conn.execute(
+                    """DELETE FROM retrieval_vectors WHERE chunk_rowid IN
+                    (SELECT rowid FROM retrieval_chunks WHERE document_id='second')"""
+                )
+
+    monkeypatch.setattr(archive_inventory, "_write_document", concurrent_change)
+    report = export(archive)
+    assert [row["retrieval"]["matching_vector_count"] for row in records(report)] == [1, 1]
+    with archive.db.transaction() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] == 1
+
+
+def test_retrieval_inventory_reads_metadata_in_bounded_batches_not_per_document(archive, monkeypatch):
+    from app import archive_inventory
+
+    for identifier in ("one", "two", "three"):
+        document(archive, identifier)
+    monkeypatch.setattr(archive_inventory, "BATCH_SIZE", 2)
+    connect = sqlite3.connect
+    statements = []
+
+    def traced(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(archive_inventory.sqlite3, "connect", traced)
+    report = export(archive)
+    assert len(records(report)) == 3
+    assert sum("FROM retrieval_documents i JOIN documents" in sql for sql in statements) == 2
+    assert sum("FROM retrieval_chunks" in sql for sql in statements) == 4
 
 
 def test_accounts_countries_and_history_have_stable_separate_catalogs(archive):
@@ -498,7 +679,7 @@ def test_large_treaty_page_exports_all_bounded_records_and_scalar_provenance_wit
         assert row["source_url"] == page_record["final_url"]
         assert row["source_original"] == page_record["original"]
         assert row["retrieval_eligible"] is False and row["export_status"] == "exported"
-    assert report["summary"]["format_version"] == 4
+    assert report["summary"]["format_version"] == 6
     assert report["summary"]["catalog_documents"] == 40
     assert report["summary"]["catalog_document_gaps"] == report["summary"]["anomalies"] == 0
     assert report["summary"]["countries"]["ID"]["catalog_documents"] == 40
@@ -799,6 +980,14 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
     report = export(archive)
     assert report["summary"]["schema_version"] == version
     assert records(report)[0]["document_id"] == "law"
+    retrieval = records(report)[0]["retrieval"]
+    assert retrieval["status"] == ("available" if version >= 10 else "unknown_schema")
+    if version < 10:
+        assert all(value is None for key, value in retrieval.items() if key != "status")
+    else:
+        assert retrieval["index_present"] is False
+        assert retrieval["indexed_chunk_count"] == retrieval["matching_vector_count"] == 0
+        assert retrieval["source_hash_matches"] is None and retrieval["complete"] is None
     assert archive.db.path.read_bytes() == before
 
 

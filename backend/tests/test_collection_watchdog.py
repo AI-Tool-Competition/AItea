@@ -504,3 +504,40 @@ def test_rendered_unit_passes_real_systemd_analyze_verify(fleet):
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_delayed_exit_observation_does_not_reset_crash_backoff():
+    task = {"restart_seconds": 0.15, "max_restart_seconds": 2}
+    state = {"failures": 3, "started_at": 0, "stable_run": False}
+    watchdog.record_exit(state, task, now=100, returncode=7)
+    assert state["failures"] == 4
+    assert state["restart_delay"] == 1.2
+    # A verified stable run resets past crashes on its next actual exit.
+    state["stable_run"] = True
+    watchdog.record_exit(state, task, now=200, returncode=7)
+    assert state["failures"] == 1
+    assert state["restart_delay"] == 0.15
+
+
+def test_verified_stable_run_resets_backoff_after_real_crashes(fleet):
+    directory = fleet.project / "id"
+    directory.mkdir()
+    (directory / "exit").touch()
+    process = fleet.start()
+    wait_for(lambda: saved(fleet).get("tasks", {}).get("id", {}).get("failures", 0) >= 2)
+    (directory / "exit").unlink()
+    wait_for(lambda: saved(fleet)["tasks"]["id"].get("stable_run"), seconds=10)
+    before = saved(fleet)["tasks"]["id"]
+    assert before["failures"] >= 2 and before["alive_observed_monotonic"] > 0
+    os.kill(before["identity"]["pid"], signal.SIGKILL)
+    wait_for(
+        lambda: (
+            (current := saved(fleet)["tasks"]["id"])["failures"] == 1
+            and current["status"] == "running"
+            and current["identity"]["pid"] != before["identity"]["pid"]
+        )
+    )
+    current = saved(fleet)["tasks"]["id"]
+    assert current["stable_run"] is False
+    assert current["restart_delay"] == 0.15
+    assert process.poll() is None

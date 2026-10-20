@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -156,6 +155,48 @@ def hold_previous_ambiguous_page(page):
     return updated
 
 
+def inspect_frozen_document(data_dir, initial, identifier, *, successful_pages=()):
+    """Read only; shared by the bounded runner and its offline supervisor."""
+    with closing(read_db(data_dir)) as conn:
+        row = conn.execute(
+            "SELECT d.*,j.phase,j.status job_status,j.available_at,j.lease_token,j.lease_until,"
+            "m.payload metadata,m.revision metadata_revision FROM documents d "
+            "JOIN processing_jobs j ON j.document_id=d.id "
+            "LEFT JOIN document_metadata m ON m.document_id=d.id WHERE d.id=?",
+            (identifier,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("Frozen document or processing job disappeared: " + identifier)
+    old = initial[identifier]
+    for key in (
+        "owner_id",
+        "version",
+        "content_hash",
+        "storage_path",
+        "size",
+        "role",
+        "source_url",
+        "family_id",
+        "case_id",
+        "parent_id",
+        "title",
+        "filename",
+        "mime_type",
+        "metadata_revision",
+    ):
+        if row[key] != old[key]:
+            raise ValueError("Frozen document source guard changed: " + identifier)
+    if hashlib.sha256((row["metadata"] or "").encode()).hexdigest() != old["metadata_sha256"]:
+        raise ValueError("Frozen document legal metadata changed: " + identifier)
+    manifest = json.loads(row["manifest"])
+    for key, value in old["protected_provenance"].items():
+        if digest(manifest.get(key)) != value:
+            raise ValueError("Stored source provenance changed: " + identifier)
+    verify_successful_pages(old["pages"], manifest.get("pages", []))
+    verify_successful_pages(successful_pages, manifest.get("pages", []))
+    return dict(row), manifest
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -171,18 +212,21 @@ def parse_args(argv=None):
     parser.add_argument("--document-workers", type=int, choices=range(1, 33), default=2)
     parser.add_argument("--seconds", type=int, choices=range(30, 3601), default=300)
     parser.add_argument("--claim-limit", type=int, choices=range(1, 1001), default=20)
+    parser.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Continue this fixed scope in bounded windows",
+    )
+    parser.add_argument("--supervisor-lock-fd", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.ocr_start_workers is not None and args.ocr_start_workers > args.ocr_workers:
         parser.error("OCR starting concurrency cannot exceed the maximum")
+    if args.supervise and args.supervisor_lock_fd is not None:
+        parser.error("A supervised child cannot start another supervisor")
     return args
 
 
-def main():
-    args = parse_args()
-    os.umask(0o077)
-    args.data_dir = args.data_dir.resolve(strict=True)
-    args.snapshot = args.snapshot.resolve(strict=True)
-    report, initial = frozen_inputs(args.snapshot, args.data_dir)
+def selected_documents(args, initial):
     selected = args.document_ids.split(",") if args.document_ids else list(initial)
     if (
         not selected
@@ -196,8 +240,29 @@ def main():
         )
     ):
         raise ValueError("Require unique authorized IDs and a safe run identifier")
-    lock_file = (args.snapshot / ".parse-owner.lock").open("a")
-    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return selected
+
+
+def main():
+    args = parse_args()
+    os.umask(0o077)
+    args.data_dir = args.data_dir.resolve()
+    args.snapshot = args.snapshot.resolve(strict=True)
+    from frozen_parse_supervisor import (
+        acquire_parse_lock,
+        classify_document,
+        supervise,
+        verify_child_binding,
+    )
+
+    if args.supervise:
+        return supervise(args, Path(__file__))
+    report, initial = frozen_inputs(args.snapshot, args.data_dir)
+    selected = selected_documents(args, initial)
+    _lock_file = acquire_parse_lock(args.snapshot, args.supervisor_lock_fd)
+    successful_guard = (
+        verify_child_binding(args, Path(__file__)) if args.supervisor_lock_fd is not None else {}
+    )
     output = args.snapshot / "runs" / args.run_id
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
     from dotenv import dotenv_values
@@ -220,6 +285,18 @@ def main():
     from app.service import Service
 
     parsing._OCR_SLOTS = parsing._VisionSlots(initial_target=args.ocr_start_workers)
+    if not vision.vision_ocr_configured():
+        from embedding_supervisor import persist
+
+        persist(
+            output / "startup-error.json",
+            {
+                "run_id": args.run_id,
+                "reason": "invalid_ocr_configuration",
+                "requests_started": False,
+            },
+        )
+        raise ValueError("Invalid OCR model configuration")
 
     def forbidden(*_args, **_kwargs):
         raise RuntimeError("Frozen parse runner cannot call embedding or download")
@@ -227,7 +304,6 @@ def main():
     ingestion.embed_texts = forbidden
     ingestion.download = forbidden
     service = Service(args.data_dir)
-    assert vision.vision_ocr_configured()
     service.collection.fetch_item = forbidden
     stop = Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -335,40 +411,13 @@ def main():
             os.fsync(stream.fileno())
         temporary.replace(output / name)
 
-    def inspect_document(identifier, *, protect=True):
-        with closing(read_db(args.data_dir)) as conn:
-            row = conn.execute(
-                "SELECT d.*,j.phase,j.status job_status,j.available_at,j.lease_token,j.lease_until,m.payload metadata,m.revision metadata_revision FROM documents d JOIN processing_jobs j ON j.document_id=d.id LEFT JOIN document_metadata m ON m.document_id=d.id WHERE d.id=?",
-                (identifier,),
-            ).fetchone()
-        old = initial[identifier]
-        for key in (
-            "owner_id",
-            "version",
-            "content_hash",
-            "storage_path",
-            "size",
-            "role",
-            "source_url",
-            "family_id",
-            "case_id",
-            "parent_id",
-            "title",
-            "filename",
-            "mime_type",
-            "metadata_revision",
-        ):
-            if row[key] != old[key]:
-                raise ValueError("Frozen document source guard changed: " + identifier)
-        if hashlib.sha256((row["metadata"] or "").encode()).hexdigest() != old["metadata_sha256"]:
-            raise ValueError("Frozen document legal metadata changed: " + identifier)
-        manifest = json.loads(row["manifest"])
-        if protect:
-            for key, value in old["protected_provenance"].items():
-                if digest(manifest.get(key)) != value:
-                    raise ValueError("Stored source provenance changed: " + identifier)
-            verify_successful_pages(old["pages"], manifest.get("pages", []))
-        return dict(row), manifest
+    def inspect_document(identifier):
+        return inspect_frozen_document(
+            args.data_dir,
+            initial,
+            identifier,
+            successful_pages=successful_guard.get(identifier, ()),
+        )
 
     def job(claim):
         identifier = claim["document_id"]
@@ -434,6 +483,7 @@ def main():
         return summary
 
     futures = {}
+    held = set()
     last_progress = last_heartbeat = 0.0
     claim_count = 0
     blockers = []
@@ -451,6 +501,7 @@ def main():
     save(
         "run-input.json",
         {
+            "run_id": args.run_id,
             "pid": os.getpid(),
             "owner_id": report["owner_id"],
             "initial_id_list_sha256": report["initial_id_list_sha256"],
@@ -489,7 +540,9 @@ def main():
                     candidates = [
                         identifier
                         for identifier in selected
-                        if identifier in available and identifier not in futures.values()
+                        if identifier in available
+                        and identifier not in futures.values()
+                        and identifier not in held
                     ]
                     # Fair rounds prevent long documents from being permanently displaced;
                     # within each round, missing native text and nearly complete PDFs go first.
@@ -510,6 +563,13 @@ def main():
                     ]:
                         row, manifest = inspect_document(identifier)
                         if not parse_job_due(row, time.time()):
+                            continue
+                        if (
+                            args.supervisor_lock_fd is not None
+                            and classify_document(row, manifest, time.time())["status"] != "ready"
+                        ):
+                            held.add(identifier)
+                            event("supervised_document_held", document_id=identifier)
                             continue
                         claim = retry_local_database(
                             lambda identifier=identifier: service.collection.claim_processing(
@@ -578,6 +638,9 @@ def main():
         "report.json",
         {
             **summary,
+            "run_id": args.run_id,
+            "workers_running": False,
+            "selected_ids_sha256": digest(selected),
             "status": "blocked" if blockers else "drained",
             "blockers": blockers,
             "document_checkpoints": completed,
@@ -594,4 +657,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

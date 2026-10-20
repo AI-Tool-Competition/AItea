@@ -193,6 +193,46 @@ def test_image_http_route_requires_login_and_sets_private_raster_headers(tmp_pat
         assert "sandbox" in response.headers["content-security-policy"]
 
 
+@pytest.mark.parametrize("nested_link", ["file", "owner"])
+def test_saved_page_image_allows_configured_data_link_but_rejects_nested_links(tmp_path, nested_link):
+    actual = tmp_path / "restored-data"
+    actual.mkdir()
+    configured = tmp_path / "data"
+    configured.symlink_to(actual, target_is_directory=True)
+    with TestClient(create_app(configured)) as client:
+        assert client.post("/api/tea/auth/demo", json={}).status_code == 200
+        service = client.app.state.service
+        owner = client.get("/api/tea/auth/me").json()["id"]
+        pixels = raster()
+        blob = service.archive.blobs.put_bytes(owner, pixels)
+        manifest = {
+            "elements": [],
+            "pages": [
+                {
+                    "page": 1,
+                    "ocr": {
+                        "image_blob": {
+                            "content_hash": blob.digest,
+                            "size": blob.size,
+                            "mime_type": "image/png",
+                        }
+                    },
+                }
+            ],
+        }
+        identifier = original(service, b"pdf", manifest, owner)
+        url = f"/api/tea/documents/{identifier}/images/page-1"
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.content == pixels
+        # Even identical image bytes may not be reached through a link inside CAS.
+        source = blob.path if nested_link == "file" else blob.path.parents[2]
+        outside = tmp_path / "untrusted"
+        source.rename(outside)
+        source.symlink_to(outside, target_is_directory=nested_link == "owner")
+        assert client.get(url).status_code == 422
+
+
 def test_shared_law_image_reads_source_owners_pixels_without_changing_eligibility(service):
     from app.system_library import SYSTEM_OWNER_ID, ensure_principal
     from test_system_library import original as public_original

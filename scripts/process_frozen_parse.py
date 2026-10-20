@@ -156,7 +156,7 @@ def hold_previous_ambiguous_page(page):
     return updated
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, required=True)
@@ -166,12 +166,19 @@ def main():
         "--document-ids",
         help="At most 20 IDs from the frozen set; otherwise schedule that set fairly",
     )
-    parser.add_argument("--ocr-workers", type=int, choices=(1, 2, 4), default=2)
-    parser.add_argument("--ocr-start-workers", type=int, choices=(1, 2, 4))
-    parser.add_argument("--document-workers", type=int, choices=range(1, 9), default=2)
+    parser.add_argument("--ocr-workers", type=int, choices=range(1, 65), default=2)
+    parser.add_argument("--ocr-start-workers", type=int, choices=range(1, 65))
+    parser.add_argument("--document-workers", type=int, choices=range(1, 33), default=2)
     parser.add_argument("--seconds", type=int, choices=range(30, 3601), default=300)
     parser.add_argument("--claim-limit", type=int, choices=range(1, 1001), default=20)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.ocr_start_workers is not None and args.ocr_start_workers > args.ocr_workers:
+        parser.error("OCR starting concurrency cannot exceed the maximum")
+    return args
+
+
+def main():
+    args = parse_args()
     os.umask(0o077)
     args.data_dir = args.data_dir.resolve(strict=True)
     args.snapshot = args.snapshot.resolve(strict=True)

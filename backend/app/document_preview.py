@@ -216,8 +216,8 @@ def _blob_image(service, row, reference):
         raise ValueError("图片存储引用无效。")
     owner_digest = hashlib.sha256(row["owner_id"].encode()).hexdigest()
     # Derive the account's CAS path; never open a path supplied by a manifest.
-    path = service.db.files_dir / "blobs" / owner_digest / digest[:2] / digest[2:4] / digest
     root = service.db.files_dir.resolve()
+    path = root / "blobs" / owner_digest / digest[:2] / digest[2:4] / digest
     if not path.resolve().is_relative_to(root) or path.resolve() != path.absolute():
         raise ValueError("图片存储引用无效。")
     from .archive_parsing import _open_original

@@ -170,11 +170,11 @@ def simple(**extra):
 def test_default_export_remains_v4_and_explicit_mapping_is_private_v5(archive):
     put(archive, "law", simple())
     default = export_inventory(archive.db.data_dir)
-    assert default["summary"]["format_version"] == 4
+    assert default["summary"]["format_version"] == 6
     assert not list(default["path"].rglob("source-mapping.jsonl"))
     report = export_inventory(archive.db.data_dir, owner="a", country="ID", include_source_mapping=True)
     rows = records(report)
-    assert report["summary"]["format_version"] == 5
+    assert report["summary"]["format_version"] == 6
     assert report["summary"]["source_mapping_documents"] == 1
     assert report["summary"]["source_mapping_records"] == len(rows)
     assert rows[0]["text_complete"] is True

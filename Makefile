@@ -27,7 +27,7 @@ export SYNC
 
 PNPM := npx --yes pnpm@10.26.2
 
-.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory collect-resources collection-prepare collection-status
+.PHONY: help setup dev dev-foreground dev-stop dev-status dev-list dev-clean dev-check start worktree check backend-check frontend-check build archive-inventory collection-catalog collect-resources collection-prepare collection-status
 
 help:
 	@printf '%s\n' \
@@ -42,6 +42,7 @@ help:
 	  'make check            运行后端、前端类型与茶业务交互检查' \
 	  'make build / start    构建 / 启动本地生产预览' \
 	  'make archive-inventory COUNTRY=ID  导出资料目录，可选 OWNER=账号ID' \
+	  'make collection-catalog [COUNTRY=ID|SG]  导出共享总库、原件、文本、映射和采集状态目录' \
 	  'make collect-resources OUTPUT=data/campaigns/run ORIGINALS=2  并发采集；RESUME=1 续跑' \
 	  'make collection-prepare / collection-status  准备 / 检查无人值守官方采集服务' \
 	  'make worktree NAME=feature/foo  创建隔离开发工作树' \
@@ -82,6 +83,10 @@ archive-inventory: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 archive-inventory: export TEA_INVENTORY_OWNER = $(OWNER)
 archive-inventory:
 	cd backend && uv run --locked python -m app.archive_inventory
+
+collection-catalog: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
+collection-catalog:
+	cd backend && uv run --locked python -m app.collection_catalog
 
 collect-resources: export TEA_CAMPAIGN_OUTPUT = $(if $(strip $(OUTPUT)),$(abspath $(OUTPUT)))
 collect-resources: export TEA_CAMPAIGN_ITEMS = $(ITEMS)

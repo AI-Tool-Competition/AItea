@@ -95,6 +95,7 @@ docker compose up --build
 - `docs/DATA_BACKUP.md`：完整实例备份、校验与恢复演练。
 - `docs/INGESTION.md`：解析器来源、格式支持、检索与采集限制。
 - `docs/UNATTENDED_COLLECTION.md`：官方来源持续更新、失效留证、换源、无人值守服务与恢复。
+- `docs/COLLECTION_MATERIALS.md`：`make collection-catalog` 整理共享总库、原件、文本、版本关系、向量状态与原始采集缺口。
 - `docs/plans/2026-10-11-tea-export-workbench.md`：已批准设计对应的实施与验收清单。
 
 本地文档与文件内容不作为系统指令执行。依法务配置检索到的内容只作为证据输入，任务状态始终由业务服务判断。

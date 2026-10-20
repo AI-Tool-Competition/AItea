@@ -138,6 +138,19 @@ export interface DocumentMetadata {
   review_status: "draft" | "published";
 }
 export interface Document {
+  processing_detail?: {
+    state:
+      | "running"
+      | "queued"
+      | "ocr_disabled"
+      | "needs_review"
+      | "failed"
+      | "complete"
+      | "stored"
+      | "incomplete";
+    phase: string | null;
+    retry_after_seconds: number | null;
+  };
   source_scope?: "personal" | "system";
   country?: string | null;
   family_id?: string;

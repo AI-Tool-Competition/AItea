@@ -83,14 +83,14 @@ describe("upload and library journey", () => {
       await rs.advanceTimersByTimeAsync(0);
     });
     expect(
-      screen.getByRole("button", { name: /产品说明.*处理中/ }),
+      screen.getByRole("button", { name: /产品说明.*等待处理/ }),
     ).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "查看" }));
     await act(async () => {
       await rs.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByRole("heading", { name: "正在处理正文" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "等待处理" })).toBeTruthy();
     processed = true;
     await act(async () => {
       await rs.advanceTimersByTimeAsync(3000);

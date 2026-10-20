@@ -19,7 +19,12 @@ export function useDocumentProcessing({
   const pending = [
     ...new Set(
       documents
-        .filter((item) => item.status === "processing")
+        .filter(
+          (item) =>
+            item.status === "processing" ||
+            item.processing_detail?.state === "running" ||
+            item.processing_detail?.state === "queued",
+        )
         .map((item) => item.id),
     ),
   ]

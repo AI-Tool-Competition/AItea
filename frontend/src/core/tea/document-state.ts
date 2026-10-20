@@ -12,11 +12,27 @@ export function documentState(document: Document) {
       label: "原件已保存",
       tone: "stored",
     };
-  if (document.status === "processing")
+  const detail = document.processing_detail;
+  if (detail?.state === "running")
     return {
-      label: "处理中",
+      label: detail.phase === "embed" ? "正在建立索引" : "处理中",
       tone: "processing",
     };
+  if (detail?.state === "ocr_disabled")
+    return { label: "识别未启用", tone: "warning" };
+  if (detail?.state === "needs_review")
+    return { label: "需核对", tone: "warning" };
+  if (detail?.state === "failed") return { label: "处理失败", tone: "failed" };
+  if (detail?.state === "queued")
+    return {
+      label: detail.phase === "embed" ? "等待索引" : "等待处理",
+      tone: "warning",
+    };
+  if (detail?.state === "incomplete")
+    return { label: "正文待完善", tone: "warning" };
+  if (detail?.state === "complete") return { label: "已解析", tone: "ready" };
+  if (document.status === "processing")
+    return { label: "等待处理", tone: "warning" };
   if (document.status === "failed")
     return {
       label: "解析失败",
@@ -38,5 +54,31 @@ export function mergeProcessingDocument(
     status: next.status,
     error: next.error,
     chunk_count: next.chunk_count,
+    ...(next.processing_detail !== undefined && {
+      processing_detail: next.processing_detail,
+    }),
   };
+}
+
+export function documentProcessingMessage(document: Document) {
+  switch (document.processing_detail?.state) {
+    case "running":
+      return document.processing_detail.phase === "embed"
+        ? "正在建立检索索引，已有正文可继续查看。"
+        : "任务正在执行，已有正文可继续查看。";
+    case "ocr_disabled":
+      return "文字核验需要图片识别，当前未启用；原件及已有正文已保留。";
+    case "needs_review":
+      return "部分文字或来源映射需要核对；原件及已有正文已保留。";
+    case "failed":
+      return "处理未成功；原件及已有正文已保留，请核对处理记录。";
+    case "incomplete":
+      return "正文尚未完整处理；可查看已有内容或下载原件。";
+    case "queued":
+      return "等待执行任务；当前没有有效的运行任务，原件及已有正文已保留。";
+    default:
+      return document.status === "processing"
+        ? "等待处理；暂未确认有正在执行的任务，可下载原件查看。"
+        : undefined;
+  }
 }

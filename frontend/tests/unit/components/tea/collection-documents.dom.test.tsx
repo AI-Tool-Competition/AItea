@@ -63,6 +63,36 @@ afterEach(() => {
 });
 
 describe("content-focused document preview", () => {
+  it.each([
+    ["queued", "等待处理"],
+    ["ocr_disabled", "识别未启用"],
+    ["needs_review", "需核对"],
+    ["failed", "处理失败"],
+    ["running", "处理中"],
+  ] as const)(
+    "preserves existing body and original access when %s",
+    (state, label) => {
+      const current: Document = {
+        ...document,
+        status: "processing",
+        processing_detail: { state, phase: "parse", retry_after_seconds: null },
+      };
+      render(
+        <DocumentPreview
+          document={current}
+          sample={{ ...sample, document: current }}
+        />,
+      );
+      expect(screen.getByRole("status").textContent).toBe(label);
+      expect(screen.getByRole("heading", { name: "申请条件" })).toBeTruthy();
+      expect(screen.getByRole("article", { name: "资料正文" })).toBeTruthy();
+      expect(documentProcessingText()).toContain("已");
+      expect(
+        screen.queryByRole("button", { name: /重新识别|启动识别/ }),
+      ).toBeNull();
+    },
+  );
+
   it("renders parsed headings, Markdown, tables and authenticated images with their summaries", () => {
     render(<DocumentPreview document={document} sample={sample} />);
     expect(screen.getByRole("heading", { name: "申请条件" })).toBeTruthy();
@@ -114,3 +144,7 @@ describe("content-focused document preview", () => {
     ).toBe("https://example.org/law");
   });
 });
+
+function documentProcessingText() {
+  return screen.getByRole("note").textContent ?? "";
+}

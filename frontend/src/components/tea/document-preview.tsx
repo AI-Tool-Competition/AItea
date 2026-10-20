@@ -13,7 +13,11 @@ import {
   safeSourceUrl,
   teaRequest,
 } from "@/core/tea/api";
-import { documentSize, documentState } from "@/core/tea/document-state";
+import {
+  documentProcessingMessage,
+  documentSize,
+  documentState,
+} from "@/core/tea/document-state";
 import {
   type Document,
   type DocumentDetail,
@@ -83,11 +87,15 @@ export function DocumentPreview({
   const total = page?.data.preview?.total ?? page?.data.element_total ?? 0;
   const summary = page?.data.preview?.summary;
   const currentDocument =
-    document.status === "processing" &&
-    page?.data.document.status !== "processing"
-      ? (page?.data.document ?? document)
-      : document;
+    page?.data.document.processing_detail && !document.processing_detail
+      ? page.data.document
+      : document.status === "processing" &&
+          page?.data.document.status !== "processing"
+        ? (page?.data.document ?? document)
+        : document;
   const visibleError = error ? error : processing?.error;
+  const state = documentState(currentDocument);
+  const processingMessage = documentProcessingMessage(currentDocument);
   return (
     <div className="tea-document-preview">
       <div className="tea-preview-toolbar">
@@ -95,11 +103,8 @@ export function DocumentPreview({
           {document.filename.split(".").at(-1)?.toUpperCase()} ·{" "}
           {documentSize(document.size)}
         </span>
-        <span
-          className={`tea-preview-status ${documentState(currentDocument).tone}`}
-          role="status"
-        >
-          {documentState(currentDocument).label}
+        <span className={`tea-preview-status ${state.tone}`} role="status">
+          {state.label}
         </span>
         {!sample && (
           <Button asChild size="sm" variant="ghost">
@@ -110,6 +115,11 @@ export function DocumentPreview({
           </Button>
         )}
       </div>
+      {processingMessage && (
+        <p className="tea-library-hint" role="note">
+          {processingMessage}
+        </p>
+      )}
       {visibleError && (
         <ErrorNotice
           message={visibleError}
@@ -145,11 +155,13 @@ export function DocumentPreview({
           {!blocks?.length && (
             <Empty
               title={
-                currentDocument.status === "processing"
+                state.tone === "processing"
                   ? "正在处理正文"
-                  : currentDocument.status === "failed"
+                  : state.tone === "failed"
                     ? "正文解析失败"
-                    : "暂无解析内容"
+                    : currentDocument.status === "processing"
+                      ? state.label
+                      : "暂无解析内容"
               }
             >
               可下载原始文件查看。

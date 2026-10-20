@@ -698,11 +698,7 @@ function LibraryWorkspace({
           <DocumentStatusIcon document={receipt} />
           <div>
             <strong>{receipt.title || receipt.filename}</strong>
-            <span>
-              {receipt.status === "processing"
-                ? "已上传 · 处理中"
-                : documentState(receipt).label}
-            </span>
+            <span>{documentState(receipt).label}</span>
           </div>
           <Button
             size="sm"
@@ -871,9 +867,10 @@ function LibraryWorkspace({
 }
 
 function DocumentStatusIcon({ document }: { document: Document }) {
-  if (document.status === "processing")
+  const state = documentState(document);
+  if (state.tone === "processing")
     return <Loader2 size={13} className="tea-spin" />;
-  if (document.status === "failed" || document.error)
+  if (state.tone === "failed" || state.tone === "warning")
     return <AlertCircle size={13} />;
   return <Check size={13} />;
 }

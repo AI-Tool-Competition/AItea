@@ -31,6 +31,48 @@ afterEach(() => {
 });
 
 describe("document processing updates", () => {
+  it("polls queued embeddings even when text is ready and stops after completion", async () => {
+    const indexed: Document = {
+      ...ready,
+      processing_detail: {
+        state: "complete",
+        phase: "embed",
+        retry_after_seconds: null,
+      },
+    };
+    const awaiting: Document = {
+      ...ready,
+      processing_detail: {
+        state: "queued",
+        phase: "embed",
+        retry_after_seconds: 10,
+      },
+    };
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(response(indexed));
+    const update = rs.fn();
+    const view = renderHook(
+      ({ document }) =>
+        useDocumentProcessing({
+          documents: [document],
+          boundary: "alice:index",
+          active: true,
+          onUpdate: update,
+        }),
+      { initialProps: { document: awaiting } },
+    );
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(3000);
+    });
+    expect(update).toHaveBeenCalledWith([indexed]);
+    view.rerender({ document: indexed });
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("updates processing files and stops reading once they finish", async () => {
     const fetcher = rs
       .spyOn(globalThis, "fetch")

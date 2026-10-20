@@ -117,7 +117,13 @@ export function Workspace({
           !next ||
           (current.status === next.status &&
             current.error === next.error &&
-            current.chunk_count === next.chunk_count)
+            current.chunk_count === next.chunk_count &&
+            current.processing_detail?.state ===
+              next.processing_detail?.state &&
+            current.processing_detail?.phase ===
+              next.processing_detail?.phase &&
+            current.processing_detail?.retry_after_seconds ===
+              next.processing_detail?.retry_after_seconds)
         )
           return current;
         changed = true;

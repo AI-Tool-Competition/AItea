@@ -266,12 +266,13 @@ class Service:
                 (case_id,),
             )
         ]
-        docs = [
-            self.document_dict(r)
-            for r in conn.execute(
-                "SELECT * FROM documents WHERE case_id=? ORDER BY created_at DESC LIMIT 200", (case_id,)
-            )
-        ]
+        docs = self.document_summaries(
+            conn.execute(
+                f"SELECT {DOCUMENT_SUMMARY} FROM documents WHERE case_id=? ORDER BY created_at DESC LIMIT 200",
+                (case_id,),
+            ).fetchall(),
+            conn,
+        )
         artifacts = [
             self.artifact_dict(r)
             for r in conn.execute(
@@ -707,7 +708,13 @@ class Service:
         return doc
 
     def document_dict(self, row, conn=None):
+        if conn is None:
+            with closing(self.db.connect()) as conn:
+                return self.document_dict(row, conn=conn)
+        from .document_processing import processing_details
+
         doc = self.document_base(row)
+        doc["processing_detail"] = processing_details(conn, [row["id"]]).get(row["id"])
         return self.archive.enrich(self.catalog.enrich_document(doc, conn=conn), conn=conn)
 
     def document_base(self, row):
@@ -725,6 +732,9 @@ class Service:
         if not rows:
             return []
         ids = [row["id"] for row in rows]
+        from .document_processing import processing_details
+
+        progress = processing_details(conn, ids)
         placeholders = ",".join("?" for _ in ids)
         metadata = {
             row["document_id"]: row
@@ -750,6 +760,7 @@ class Service:
         result = []
         for row in rows:
             doc = self.document_base(row)
+            doc["processing_detail"] = progress.get(row["id"])
             doc["country"] = countries.get(row["id"])
             saved = metadata.get(row["id"])
             if saved:
@@ -1136,7 +1147,7 @@ class Service:
             manifest = json.loads(row["manifest"])
             elements, chunks = manifest.get("elements", []), manifest.get("chunks", [])
             return {
-                "document": self.document_dict(row),
+                "document": self.document_dict(row, conn=conn),
                 "elements": elements[element_offset : element_offset + limit],
                 "chunks": [
                     {key: value for key, value in chunk.items() if key != "embedding"}

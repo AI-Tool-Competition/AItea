@@ -286,8 +286,9 @@ def new_task_state():
 
 
 def record_exit(state, task, now, returncode=None, *, globally_draining=False):
-    lasted = now - state.get("started_at", now)
-    failures = 1 if lasted >= task["max_restart_seconds"] else state["failures"] + 1
+    # Time spent waiting to observe an exit is not evidence of a healthy run.
+    # Only an identity-verified, continuously observed run may reset backoff.
+    failures = 1 if state.get("stable_run", False) else state["failures"] + 1
     delay = min(
         task["max_restart_seconds"],
         task["restart_seconds"] * 2 ** min(failures - 1, 30),
@@ -370,7 +371,14 @@ def _run(config_path, state_dir, *, poll_seconds):
                 if not alive and (
                     busy or saved["status"] in {"running", "starting", "draining", "blocked_owned_child"}
                 ):
-                    recovered = find_owned(task, saved, project)
+                    # A reaped direct Python child with a free inherited lock
+                    # cannot need PID-gap recovery. uv may leave its Python
+                    # subprocess alive, so its descendants must still be checked.
+                    known_exited = child is not None and child.returncode is not None
+                    uv_launcher = Path(task["command"][0]).resolve().name == "uv"
+                    recovered = (
+                        find_owned(task, saved, project) if busy or not known_exited or uv_launcher else None
+                    )
                     if recovered:
                         saved.update(identity=recovered, status="running", adopted_at=time.time())
                         alive = True
@@ -380,6 +388,9 @@ def _run(config_path, state_dir, *, poll_seconds):
                         continue
                 if alive:
                     active = True
+                    observed = saved.setdefault("alive_observed_monotonic", time.monotonic())
+                    if time.monotonic() - observed >= task["max_restart_seconds"]:
+                        saved["stable_run"] = True
                     saved["status"] = "draining" if draining or not task["enabled"] else "running"
                     # Re-read the complete identity immediately before sending a signal.
                     if (
@@ -422,7 +433,9 @@ def _run(config_path, state_dir, *, poll_seconds):
                     launch_token=token,
                     identity=None,
                     started_at=time.time(),
+                    stable_run=False,
                 )
+                saved.pop("alive_observed_monotonic", None)
                 saved["launches"] += 1
                 write(state_path, state)  # Durable intent precedes Popen.
                 with output.open() as writer:

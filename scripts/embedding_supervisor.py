@@ -155,7 +155,7 @@ def decide(state, report, *, timestamp, retry_after=0):
     }
 
 
-def supervise(args, runner: Path, arguments, initial_documents):
+def supervise(args, runner: Path, arguments, initial_documents, *, inherited_fds=()):
     from app.embedding_admission import process_identity
     from complete_embeddings import digest, document_worker_limit
 
@@ -300,7 +300,9 @@ def supervise(args, runner: Path, arguments, initial_documents):
                 log = output / f"supervised-{time.time_ns()}.log"
                 with log.open("w") as stream:
                     os.chmod(log, 0o600)
-                    child = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
+                    child = subprocess.Popen(
+                        command, stdout=stream, stderr=subprocess.STDOUT, pass_fds=inherited_fds
+                    )
                 state.update(
                     status="running",
                     reason="fixed_plan_active",

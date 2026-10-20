@@ -644,6 +644,49 @@ def recover_page_step(
     archive_path=None,
     archive_size: int | None = None,
 ) -> dict:
+    """Take shared image capacity before even direct callers persist request intent."""
+    from .vision import _DEEPSEEK_IMAGE_SLOT, deepseek_vision_model
+
+    def recover():
+        return _recover_page_step(
+            content,
+            page,
+            on_region=on_region,
+            on_page=on_page,
+            on_response_error=on_response_error,
+            archive_path=archive_path,
+            archive_size=archive_size,
+        )
+
+    current = (page.get("ocr") or {}).get("recovery")
+    if (
+        current
+        and current.get("version") == RECOVERY_VERSION
+        and current.get("status") in {"complete", "conflict", "failed"}
+    ):
+        return recover()  # Preserve cached terminal text while retaining source validation.
+    shared = deepseek_vision_model()
+    if shared and not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=5):
+        updated = deepcopy(page)
+        updated.update(status="pending_ocr", deferred_reason="ocr_capacity")
+        return updated
+    try:
+        return recover()
+    finally:
+        if shared:
+            _DEEPSEEK_IMAGE_SLOT.release()
+
+
+def _recover_page_step(
+    content: bytes | None,
+    page: dict,
+    *,
+    on_region: Callable[[dict], dict],
+    on_page: Callable[[dict], None] | None = None,
+    on_response_error: Callable[[dict], dict] | None = None,
+    archive_path=None,
+    archive_size: int | None = None,
+) -> dict:
     """At most one blind region request per step; all attempts are checkpointable."""
     from .parsing import ProcessingDeferred, render_pdf_region_bounded
     from .vision import OCRResponseError, REGION_PROMPT_VERSION, transcribe_region

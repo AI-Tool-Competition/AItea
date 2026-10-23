@@ -69,6 +69,7 @@ const sourceProviderLabels: Record<string, string> = {
   rcepsec: "RCEP 秘书处",
   ipos: "新加坡知识产权局",
   acra: "新加坡会计与企业管理局",
+  wto: "世界贸易组织",
 };
 const sourceUnitLabels: Record<string, string> = {
   preamble: "序言",
@@ -81,6 +82,8 @@ const sourceUnitLabels: Record<string, string> = {
   circular: "通告",
   practice_direction: "实务指引",
   registrar_interpretation: "注册局解释",
+  member_schedule: "成员服务承诺表",
+  wto_instrument: "WTO 文书",
   guide: "指南",
   manual_section: "工作手册章节",
   form_or_template: "表格/模板",

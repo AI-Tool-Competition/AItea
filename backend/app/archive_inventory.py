@@ -1753,7 +1753,7 @@ def _candidate_source_records(conn, partitions, summary, owner, country):
         evidence = source_record.get("evidence")
         digest = row["source_page_sha256"]
         if (
-            source_record.get("provider") not in {"setneg", "bkpm", "rcepsec", "ipos", "acra"}
+            source_record.get("provider") not in {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto"}
             or source_record.get("interpretation") != "unreviewed_source_values"
             or not isinstance(source_record.get("fields"), dict)
             or not isinstance(evidence, dict)

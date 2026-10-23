@@ -612,6 +612,48 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
                 AT,
             ),
         )
+        conn.execute(
+            """INSERT INTO checklist_candidates VALUES(
+            'candidate-wto','binding','https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?Open=True&filename=Q%3A%2FSCHD%2FGATS-SC%2FSC43S1.pdf',
+            'GATS/SC/43/Suppl.1',NULL,
+            'https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Language=English&Query=%40Symbol%3DGATS%2FSC%2F43%2A&XMLMaxHitsPerPage=100',
+            'pending',NULL,1,'',?)""",
+            (AT,),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate-wto',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "wto",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {
+                            "catalog_id": "123",
+                            "symbol": "GATS/SC/43/Suppl.1",
+                            "concerned_countries": "Indonesia",
+                            "public_access": "True",
+                            "filename_a": "Q:/SCHD/GATS-SC/SC43S1.pdf",
+                        },
+                        "structure": {
+                            "unit_type": "member_schedule",
+                            "number": "GATS/SC/43/Suppl.1",
+                            "parent_titles": ["GATS/SC/43", "English WTO Docs Online catalog"],
+                            "file_name": "SC43S1.pdf",
+                            "anchor_class": "",
+                            "link_mechanism": "official_xml_catalog",
+                        },
+                        "evidence": {
+                            "url": "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Language=English&Query=%40Symbol%3DGATS%2FSC%2F43%2A&XMLMaxHitsPerPage=100",
+                            "sha256": "f" * 64,
+                        },
+                    }
+                ),
+                "https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?DataSource=Cat&Language=English&Query=%40Symbol%3DGATS%2FSC%2F43%2A&XMLMaxHitsPerPage=100",
+                "f" * 64,
+                AT,
+            ),
+        )
     report = export(archive)
     pages = records(report, filename="discovery-pages.jsonl")
     assert len(pages) == 1 and report["summary"]["discovery_pages"] == 1
@@ -619,12 +661,13 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
     assert pages[0]["plan_version"] == 2 and pages[0]["checklist_item_id"] == "1.3"
     assert pages[0]["purpose"] == "catalog" and pages[0]["collection_item_id"] == "page-item"
     source_records = records(report, filename="candidate-source-records.jsonl")
-    assert len(source_records) == 5
+    assert len(source_records) == 6
     setneg_record = next(row for row in source_records if row["candidate_id"] == "candidate")
     bkpm_record = next(row for row in source_records if row["candidate_id"] == "candidate-bkpm")
     rcep_record = next(row for row in source_records if row["candidate_id"] == "candidate-rcep")
     ipos_record = next(row for row in source_records if row["candidate_id"] == "candidate-ipos")
     acra_record = next(row for row in source_records if row["candidate_id"] == "candidate-acra")
+    wto_record = next(row for row in source_records if row["candidate_id"] == "candidate-wto")
     assert setneg_record["source_record"]["fields"]["no_peraturan"] == "2"
     assert setneg_record["source_page_sha256"] == "a" * 64
     assert bkpm_record["source_record"]["provider"] == "bkpm"
@@ -636,7 +679,10 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
     assert ipos_record["anomalies"] == []
     assert acra_record["source_record"]["structure"]["unit_type"] == "practice_direction"
     assert acra_record["anomalies"] == []
-    assert report["summary"]["candidate_source_records"] == 5
+    assert wto_record["source_record"]["fields"]["symbol"] == "GATS/SC/43/Suppl.1"
+    assert wto_record["source_record"]["structure"]["unit_type"] == "member_schedule"
+    assert wto_record["anomalies"] == []
+    assert report["summary"]["candidate_source_records"] == 6
     docs = records(report)
     assert len(docs) == 1 and docs[0]["review"]["review_status"] == "draft"
     assert docs[0]["checklist_refs"][0]["source_id"] == "source"

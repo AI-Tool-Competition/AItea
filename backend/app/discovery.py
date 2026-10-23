@@ -13,7 +13,7 @@ from hashlib import sha256
 from html.parser import HTMLParser
 import json
 import re
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 from .ingestion import _decode, _validated_url
 
@@ -608,6 +608,42 @@ def _ipos_source_record(
     }
 
 
+def _wto_html_source_record(node, link_text: str, target: str, page_title: str, headings: list[str]) -> dict:
+    listing = node.parent
+    while listing is not None and listing.tag != "li":
+        listing = listing.parent
+    list_text = _bounded_dom_text(listing, max_chars=2000, max_nodes=512)[0] if listing else ""
+    source_context = " ".join([page_title, *headings, list_text, link_text])[:5000]
+    symbol_match = re.search(
+        r"\b(?:GATS/(?:SC|EL)/\d+(?:/(?:Suppl|Rev|Corr)\.\d+)*|WT/[A-Z0-9()/-]+(?:#[A-Z0-9()/.-]+)?)",
+        source_context,
+        re.I,
+    )
+    filename = unquote(urlsplit(target).path.rsplit("/", 1)[-1])
+    if not filename:
+        filename = parse_qs(urlsplit(target).query).get("filename", [""])[0].rsplit("/", 1)[-1]
+    unit_type = "schedule_reference" if "schedule" in source_context.casefold() else "legal_text_link"
+    return {
+        "provider": "wto",
+        "interpretation": "unreviewed_source_values",
+        "fields": {
+            "link_text": link_text[:1000],
+            "source_page_title": page_title[:1000],
+            "document_heading": headings[-1][:1000] if headings else "",
+            "list_context": list_text[:2000],
+            "linked_url": target[:2000],
+        },
+        "structure": {
+            "unit_type": unit_type,
+            "number": symbol_match[0][:300] if symbol_match else None,
+            "parent_titles": [value[:500] for value in headings[-5:]],
+            "file_name": filename[:300],
+            "anchor_class": (node.attributes.get("class") or "")[:200],
+            "link_mechanism": "official_page_link",
+        },
+    }
+
+
 class _FlightScripts(HTMLParser):
     """Collect literal Next Flight pushes without interpreting JavaScript."""
 
@@ -818,7 +854,13 @@ class _Page:
     """Extract bounded visible structure from an HTML5 tree without executing scripts."""
 
     def __init__(
-        self, *, literal_pdf_calls=False, lkpp_pdf_files=False, ipos_source=False, acra_source=False
+        self,
+        *,
+        literal_pdf_calls=False,
+        lkpp_pdf_files=False,
+        ipos_source=False,
+        acra_source=False,
+        wto_source=False,
     ):
         self.parts = []
         self.links: list[_Link] = []
@@ -832,6 +874,7 @@ class _Page:
         self.lkpp_pdf_files = lkpp_pdf_files
         self.ipos_source = ipos_source
         self.acra_source = acra_source
+        self.wto_source = wto_source
 
     def feed(self, content):
         self.parts.append(content)
@@ -1001,6 +1044,15 @@ class _Page:
                     target,
                     section_title,
                     provider="acra" if self.acra_source else "ipos",
+                )
+            elif self.wto_source and tag == "a":
+                link_title = anchor_text if anchor_text else label or target.rsplit("/", 1)[-1]
+                link.source_record = _wto_html_source_record(
+                    node,
+                    link_title,
+                    target,
+                    self.title[0] if self.title else "",
+                    heading_context.get(node.mem_id, []),
                 )
             self.links.append(link)
 
@@ -1440,6 +1492,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         lkpp_pdf_files=urlsplit(current).hostname == _LKPP_HOST,
         ipos_source=urlsplit(current).hostname == _IPOS_HOST,
         acra_source=urlsplit(current).hostname == "www.acra.gov.sg",
+        wto_source=rules.wto_public_catalog and urlsplit(current).hostname == "www.wto.org",
     )
     try:
         page.feed(_decode(content))
@@ -1573,6 +1626,19 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         if len(candidates) >= rules.max_links:
             warnings.append("单页候选达到上限，仍有链接未登记；不能据此认定目录完整。")
             break
+        if link.source_record and link.source_record.get("provider") == "wto":
+            parsed_candidate = urlsplit(candidate)
+            final_name = unquote(parsed_candidate.path.rsplit("/", 1)[-1])
+            if not final_name:
+                final_name = parse_qs(parsed_candidate.query).get("filename", [""])[0].rsplit("/", 1)[-1]
+            link.source_record["fields"]["linked_url"] = candidate[:2000]
+            link.source_record["structure"]["file_name"] = final_name[:300]
+            if parsed_candidate.path.casefold().endswith(".pdf"):
+                link.source_record["fields"]["file_format"] = "pdf"
+            elif parsed_candidate.path.casefold().endswith((".doc", ".docx")):
+                link.source_record["fields"]["file_format"] = parsed_candidate.path.rsplit(".", 1)[
+                    -1
+                ].casefold()
         entry = {"url": candidate, "purpose": candidate_purpose, "title": label}
         if link.source_locator:
             entry["source_locator"] = link.source_locator

@@ -163,6 +163,12 @@ def test_service_api_requires_actual_symbol_country_and_public_file(member):
     result = inspect(url, body, member, "text/xml")
     assert result["matched"] and len(result["links"]) == 1
     record = result["scope"]["documents"][0]
+    source_record = result["links"][0]["source_record"]
+    assert source_record["provider"] == "wto"
+    assert source_record["fields"]["symbol"] == record["symbol"]
+    assert source_record["fields"]["concerned_countries"] == MEMBERS[member]["name"]
+    assert source_record["structure"]["unit_type"] == "member_schedule"
+    assert source_record["structure"]["link_mechanism"] == "official_xml_catalog"
     assert record["source_metadata"]["SYMBOL"].endswith("/Suppl.4")
     assert record["source_metadata"]["HasAccess"] == "True"
     assert result["scope"]["source_sha256"] == sha256(body).hexdigest()
@@ -312,7 +318,7 @@ def test_oversized_xml_cannot_accept_a_complete_prefix_with_a_different_blob_has
 
 
 def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
-    for member, old_version, current_version in [("ID", 5, 6), ("SG", 2, 5)]:
+    for member, old_version, current_version in [("ID", 5, 7), ("SG", 2, 5)]:
         current = item(member)
         old = item(member, old_version)
         assert current["verbatim_requirements"] == old["verbatim_requirements"]
@@ -333,7 +339,7 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
         assert source.exists()
 
 
-@pytest.mark.parametrize("member,item,version", [("ID", "5.4", 6), ("SG", "5.2", 5)])
+@pytest.mark.parametrize("member,item,version", [("ID", "5.4", 7), ("SG", "5.2", 5)])
 @pytest.mark.parametrize(
     "extension,signature", [("doc", bytes.fromhex("d0cf11e0a1b11ae1")), ("docx", b"PK\x03\x04")]
 )
@@ -368,3 +374,8 @@ def test_generic_direct_legal_pdfs_come_only_from_configured_official_directory_
     assert [entry["url"] for entry in result["links"]] == [
         "https://www.wto.org/english/docs_e/legal_e/marrakesh_decl_e.pdf"
     ]
+    source_record = result["links"][0]["source_record"]
+    assert source_record["provider"] == "wto"
+    assert source_record["fields"]["link_text"] == "Declaration"
+    assert source_record["structure"]["file_name"] == "marrakesh_decl_e.pdf"
+    assert source_record["structure"]["link_mechanism"] == "official_page_link"

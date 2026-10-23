@@ -658,6 +658,31 @@ def _xml_catalog(url, content, mime, rules):
                         "purpose": "document",
                         "title": symbol,
                         "identity_key": f"wto-docs:{catid}:{slot}",
+                        "source_record": {
+                            "provider": "wto",
+                            "interpretation": "unreviewed_source_values",
+                            "fields": {
+                                "catalog_id": catid,
+                                "symbol": symbol,
+                                "title": fields.get("CATTITLE", ""),
+                                "concerned_countries": fields.get("CONCERNEDCOUNTRIES", ""),
+                                "collection": fields.get("COLLECTION", ""),
+                                "issued_at": fields.get("ISSUINGDATE", ""),
+                                "restriction_type": fields.get("RESTRICTIONTYPENAME", ""),
+                                "public_access": fields.get("HasAccess", ""),
+                                "filename_a": fields.get("FILENAMESA", ""),
+                                "filename_b": fields.get("FILENAMESB", ""),
+                                "filename_c": fields.get("FILENAMESC", ""),
+                            },
+                            "structure": {
+                                "unit_type": "member_schedule" if not generic else "wto_instrument",
+                                "number": symbol,
+                                "parent_titles": [family, "English WTO Docs Online catalog"],
+                                "file_name": filename.rsplit("/", 1)[-1],
+                                "anchor_class": "",
+                                "link_mechanism": "official_xml_catalog",
+                            },
+                        },
                     }
                 )
         safe_fields = (

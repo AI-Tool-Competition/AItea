@@ -31,7 +31,7 @@ MAX_RELATION_REGISTRIES = 32
 MAX_TOTAL_REGISTRY_BYTES = 32 * 1024 * 1024
 _DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _ASSET_POINTER = re.compile(
-    r"/(?:html_source/linked_images|assets_pending|legacy/conversion/images)/(0|[1-9][0-9]{0,3})\Z"
+    r"/(?:html_source/linked_images|assets_pending|legacy/conversion/images|mineru_chart_assets)/(0|[1-9][0-9]{0,3})\Z"
 )
 _PATH_KEYS = {
     "path",

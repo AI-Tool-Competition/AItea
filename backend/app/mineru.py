@@ -755,6 +755,10 @@ class MinerUParser:
                 120,
             )
             result["remote_parse"].update(profile=profile, profile_hash=fingerprint)
+            if manifest.get("mineru_chart_assets"):
+                from .native_asset_ocr import reuse_mineru_chart_checkpoints
+
+                result = reuse_mineru_chart_checkpoints(manifest, result)
             return result
         remote = manifest.setdefault("remote_parse", {})
         remote.update(

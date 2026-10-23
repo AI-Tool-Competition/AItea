@@ -246,9 +246,14 @@ def text_complete(manifest: dict) -> bool:
     if manifest.get("remote_parse"):
         from .mineru import manifest_valid
 
+        try:
+            chart_assets = assets(manifest)
+        except (ValueError, TypeError, KeyError):
+            return False
         return (
             manifest_valid(manifest)
             and manifest.get("quality", {}).get("complete") is True
+            and all(asset["asset_status"] == "ocr_complete" for asset in chart_assets)
             and all(
                 page.get("status") == "ocr_complete" and page.get("ocr", {}).get("complete") is True
                 for page in manifest.get("pages", [])

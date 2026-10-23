@@ -23,16 +23,19 @@ def processing_details(conn, document_ids):
             EXISTS(SELECT 1 FROM json_each(d.manifest,'$.pages') p
                 WHERE json_extract(p.value,'$.status')='ocr_failed') page_failed,
             EXISTS(SELECT 1 FROM json_each(COALESCE(
+                json_extract(d.manifest,'$.mineru_chart_assets'),
                 json_extract(d.manifest,'$.assets_pending'),
                 json_extract(d.manifest,'$.html_source.linked_images'),
                 json_extract(d.manifest,'$.legacy.conversion.images'),'[]')) a
                 WHERE COALESCE(json_extract(a.value,'$.asset_status'),'pending_vision')='pending_vision') asset_pending,
             EXISTS(SELECT 1 FROM json_each(COALESCE(
+                json_extract(d.manifest,'$.mineru_chart_assets'),
                 json_extract(d.manifest,'$.assets_pending'),
                 json_extract(d.manifest,'$.html_source.linked_images'),
                 json_extract(d.manifest,'$.legacy.conversion.images'),'[]')) a
                 WHERE json_extract(a.value,'$.asset_status') IN ('ocr_uncertain','image_reference_pending')) asset_review
             ,EXISTS(SELECT 1 FROM json_each(COALESCE(
+                json_extract(d.manifest,'$.mineru_chart_assets'),
                 json_extract(d.manifest,'$.assets_pending'),
                 json_extract(d.manifest,'$.html_source.linked_images'),
                 json_extract(d.manifest,'$.legacy.conversion.images'),'[]')) a

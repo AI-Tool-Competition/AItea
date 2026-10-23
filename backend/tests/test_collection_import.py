@@ -4,6 +4,7 @@ import json
 import hashlib
 import io
 import base64
+from copy import deepcopy
 from contextlib import closing
 from pathlib import Path
 
@@ -205,6 +206,60 @@ def test_html_image_import_rebinds_original_png_checkpoint_and_vectors_without_m
         )
         assert conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()[0] == len(rows)
     assert native.assets(refreshed)[0] == rebound
+
+
+def test_mineru_chart_checkpoint_identity_survives_owner_cas_rebinding():
+    from app.collection_import import _rewrite_manifest
+    from app.native_asset_ocr import assets
+
+    source_hash = hashlib.sha256(b"pdf source").hexdigest()
+    image = b"chart source image"
+    image_hash = hashlib.sha256(image).hexdigest()
+    old_path = f"files/blobs/{'a' * 64}/{image_hash[:2]}/{image_hash[2:4]}/{image_hash}"
+    new_path = f"files/blobs/{'b' * 64}/{image_hash[:2]}/{image_hash[2:4]}/{image_hash}"
+    element_key = "mineru-000001-000002"
+    manifest = {
+        "parser": "mineru",
+        "source_hash": source_hash,
+        "remote_parse": {"provider": "mineru", "state": "done"},
+        "mineru_chart_assets": [
+            {
+                "asset_key": "mineru-chart-" + hashlib.sha256(element_key.encode()).hexdigest()[:24],
+                "element_key": element_key,
+                "block_type": "chart",
+                "source_hash": source_hash,
+                "image_hash": image_hash,
+                "size": len(image),
+                "image_blob": {
+                    "content_hash": image_hash,
+                    "size": len(image),
+                    "storage_path": old_path,
+                },
+                "locator": {"kind": "pdf", "page": 1, "source_hash": source_hash},
+            }
+        ],
+    }
+    identity = assets(manifest)[0]["input_identity"]
+    inserted = deepcopy(manifest["mineru_chart_assets"][0])
+    inserted["element_key"] = "mineru-000001-000001"
+    inserted["asset_key"] = "mineru-chart-" + hashlib.sha256(
+        inserted["element_key"].encode()
+    ).hexdigest()[:24]
+    manifest["mineru_chart_assets"].insert(0, inserted)
+    assert next(
+        value for value in assets(manifest) if value["element_key"] == element_key
+    )["input_identity"] == identity
+    rebound, _ = _rewrite_manifest(
+        manifest,
+        {old_path: image_hash},
+        {image_hash: new_path},
+        {},
+        bound_hash=source_hash,
+        target_owner="target",
+    )
+    target_asset = next(value for value in assets(rebound) if value["element_key"] == element_key)
+    assert target_asset["image_blob"]["storage_path"] == new_path
+    assert target_asset["input_identity"] == identity
 
 
 def test_import_preserves_failed_response_evidence_without_indexing_its_body(pair):

@@ -508,3 +508,154 @@ def test_native_vision_rejects_wrong_schema_or_suspicious_empty_image(enabled, m
     monkeypatch.setattr(vision, "_invoke", lambda _: ({}, json.dumps(response), "stop"))
     with pytest.raises(vision.OCRResponseError):
         vision.transcribe_image({"image_base64": "ignored-by-test"})
+
+
+def test_chart_vision_prompt_keeps_exact_labels_and_never_estimates_plot_values(enabled, monkeypatch):
+    response = {
+        "complete": True,
+        "text": "| Year | Value |\n| 2024 | 17 |",
+        "uncertain_spans": [],
+        "is_blank": False,
+    }
+    requests = []
+
+    def invoke(body):
+        requests.append(body)
+        return ({"model": "provider-chart-model"}, json.dumps(response), "stop")
+
+    monkeypatch.setattr(vision, "_invoke", invoke)
+    result = vision.transcribe_chart_image({"image_base64": base64.b64encode(raster()).decode()})
+    prompt = " ".join(requests[0]["messages"][0]["content"].split())
+    assert result["prompt_version"] == vision.CHART_PROMPT_VERSION
+    assert "estimate values from plotted marks" in prompt
+    assert "every printed value" in prompt
+    assert "| 2024 | 17 |" in result["text"]
+
+
+@pytest.mark.parametrize("blank", [False, True])
+def test_mineru_chart_ocr_is_source_bound_structured_and_completes_only_with_evidence(
+    enabled, local_workers, monkeypatch, tmp_path, blank
+):
+    from app.blob_store import BlobStore
+    from app.ingestion_quality import text_complete
+    from app.mineru_results import reference
+
+    store = BlobStore(tmp_path / "files", max_bytes=8 * 1024 * 1024)
+    source = store.put_bytes("owner", b"verified-source-pdf")
+    chart = raster()
+    chart_blob = store.put_bytes("owner", chart)
+    result_hash = "a" * 64
+    page_text = "Article 1. Chart follows."
+    element_key = "mineru-000001-000002"
+    locator = {
+        "kind": "pdf",
+        "page": 1,
+        "physical_page": 1,
+        "bbox": [100, 200, 800, 700],
+        "coordinate_system": "mineru-0-1000",
+        "source_hash": source.digest,
+        "provider_task_id": "task-1",
+        "provider_page_idx": 0,
+    }
+    manifest = {
+        "parser": "mineru",
+        "parser_version": "api-v4",
+        "pipeline_version": "mineru-precise-v1",
+        "source_hash": source.digest,
+        "quality": {"status": "needs_review", "complete": False, "review_required": True, "review_pages": [1]},
+        "pages": [
+            {
+                "page": 1,
+                "status": "ocr_uncertain",
+                "source_hash": source.digest,
+                "text": page_text,
+                "reasons": ["chart_content_missing"],
+                "ocr": {
+                    "provider": "mineru",
+                    "task_id": "task-1",
+                    "batch_id": "batch-1",
+                    "provider_page_idx": 0,
+                    "part_first_page": 1,
+                    "result_hash": result_hash,
+                    "text_sha256": digest(page_text.encode()),
+                    "complete": False,
+                    "uncertain_spans": ["chart_content_missing"],
+                },
+            }
+        ],
+        "elements": [],
+        "chunks": [],
+        "remote_parse": {
+            "provider": "mineru",
+            "state": "done",
+            "source_hash": source.digest,
+            "page_count": 1,
+            "parts": [
+                {
+                    "task_id": "task-1",
+                    "batch_id": "batch-1",
+                    "source_hash": source.digest,
+                    "first_page": 1,
+                    "last_page": 1,
+                    "result_blob": {"content_hash": result_hash},
+                }
+            ],
+        },
+        "mineru_chart_assets": [
+            {
+                "asset_key": "mineru-chart-" + digest(element_key.encode())[:24],
+                "element_key": element_key,
+                "block_type": "chart",
+                "locator": locator,
+                "source_hash": source.digest,
+                "image_hash": chart_blob.digest,
+                "image_blob": reference(chart_blob),
+                "size": chart_blob.size,
+            }
+        ],
+    }
+    assert native.read_mineru_chart_images(store.files_dir, "owner", manifest) == {
+        manifest["mineru_chart_assets"][0]["asset_key"]: chart
+    }
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(
+        vision,
+        "transcribe_chart_image",
+        lambda _rendered: {
+            "text": "" if blank else "Chart title: Export value\n| Year | Value |\n| 2024 | 17 |",
+            "complete": True,
+            "is_blank": blank,
+            "uncertain_spans": [],
+            "model": "verified-chart-model",
+            "requested_model": "test-vision-model",
+            "prompt_version": vision.CHART_PROMPT_VERSION,
+            "review_status": "unreviewed",
+            "physical_pages_known": False,
+            "finish_reason": "stop",
+        },
+    )
+    result = native.ocr_native_assets_bounded(
+        None,
+        manifest,
+        max_assets=1,
+        image_contents={manifest["mineru_chart_assets"][0]["asset_key"]: chart},
+        on_image=lambda rendered: reference(store.put_bytes("owner", base64.b64decode(rendered["image_base64"]))),
+    )
+    if blank:
+        assert not text_complete(result)
+        assert result["pages"][0]["status"] == "ocr_uncertain"
+        assert "chart_content_missing" in result["pages"][0]["reasons"]
+        assert result["mineru_chart_assets"][0]["asset_status"] == "ocr_uncertain"
+    else:
+        assert text_complete(result)
+        assert result["pages"][0]["status"] == "ocr_complete"
+        assert result["pages"][0]["reasons"] == []
+        assert result["pages"][0]["ocr"]["supplemental_chart_assets"][0]["element_key"] == element_key
+        assert result["mineru_chart_assets"][0]["ocr"]["prompt_version"] == vision.CHART_PROMPT_VERSION
+        assert any(element["kind"] == "figure_transcription" for element in result["elements"])
+        reused = native.reuse_mineru_chart_checkpoints(result, deepcopy(manifest))
+        assert text_complete(reused)
+    changed = deepcopy(manifest)
+    changed["mineru_chart_assets"][0]["image_hash"] = "b" * 64
+    changed["mineru_chart_assets"][0]["image_blob"]["content_hash"] = "b" * 64
+    assert not text_complete(native.reuse_mineru_chart_checkpoints(result, changed))

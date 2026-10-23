@@ -158,6 +158,51 @@ def test_native_ocr_projection_binds_transcript_and_only_relative_cas_paths(unsa
         list(mappings(manifest, "d" * 64))
 
 
+def test_mineru_chart_projection_preserves_source_image_mapping_only_as_verified_cas():
+    from app.native_mapping_inventory import mappings
+
+    source_hash = "c" * 64
+    image_hash = hashlib.sha256(b"chart image").hexdigest()
+    image_path = f"files/blobs/{'a' * 64}/{image_hash[:2]}/{image_hash[2:4]}/{image_hash}"
+    manifest = {
+        "source_hash": source_hash,
+        "parser": "mineru",
+        "remote_parse": {"provider": "mineru", "state": "done"},
+        "mineru_chart_assets": [
+            {
+                "asset_key": "mineru-chart-0123456789abcdef01234567",
+                "element_key": "mineru-000001-000002",
+                "block_type": "chart",
+                "source_hash": source_hash,
+                "image_hash": image_hash,
+                "size": len(b"chart image"),
+                "image_blob": {
+                    "content_hash": image_hash,
+                    "size": len(b"chart image"),
+                    "mime_type": "image/png",
+                    "storage_path": image_path,
+                },
+                "locator": {
+                    "kind": "pdf",
+                    "page": 1,
+                    "physical_page": 1,
+                    "source_hash": source_hash,
+                    "provider_task_id": "task-1",
+                    "provider_page_idx": 0,
+                    "bbox": [1, 2, 3, 4],
+                    "coordinate_system": "mineru-0-1000",
+                },
+            }
+        ],
+    }
+    rows = list(mappings(manifest, "d" * 64))
+    assert rows[0][0] == "mineru_chart_image"
+    assert rows[0][2]["image_blob"]["storage_path"] == image_path
+    manifest["mineru_chart_assets"][0]["image_blob"]["storage_path"] = "/private/chart.png"
+    with pytest.raises(ValueError, match="original image blob"):
+        list(mappings(manifest, "d" * 64))
+
+
 def simple(**extra):
     return {
         "chunks": [{"id": "chunk", "text": "Native law text", "locator": {"kind": "text"}}],

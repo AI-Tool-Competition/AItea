@@ -1343,6 +1343,63 @@ class CollectionService:
                             max_assets=4,
                             image_contents=image_contents,
                         )
+                if (
+                    manifest.get("parser") == "mineru"
+                    and manifest.get("remote_parse", {}).get("state") == "done"
+                ):
+                    from .native_asset_ocr import (
+                        apply_asset_checkpoint,
+                        ocr_native_assets_bounded,
+                        pending_assets,
+                        read_mineru_chart_images,
+                    )
+                    from .vision import vision_ocr_configured, vision_ocr_request_worker_limit
+
+                    chart_pending = pending_assets(manifest)
+                    if chart_pending and vision_ocr_configured():
+                        # Persist the completed MinerU receipts before any vision
+                        # request so a timeout or worker restart resumes from the
+                        # exact source-bound chart checkpoint without re-parsing.
+                        with self.db.transaction() as conn:
+                            if not self._valid_claim(conn, claim, True):
+                                raise RuntimeError("图片识别租约已失效，停止提交 MinerU 结果。")
+                            conn.execute(
+                                "UPDATE documents SET manifest=? WHERE id=?",
+                                (dump(manifest), doc["id"]),
+                            )
+                        batch_size = min(20, vision_ocr_request_worker_limit())
+                        image_contents = read_mineru_chart_images(
+                            self.db.files_dir,
+                            claim["owner_id"],
+                            manifest,
+                            max_assets=batch_size,
+                        )
+
+                        def checkpoint_chart(value):
+                            with self.db.transaction() as conn:
+                                if not self._valid_claim(conn, claim, True):
+                                    raise RuntimeError("图表识别租约已失效，停止提交检查点。")
+                                current = json.loads(
+                                    conn.execute(
+                                        "SELECT manifest FROM documents WHERE id=?", (doc["id"],)
+                                    ).fetchone()[0]
+                                )
+                                if current.get("source_hash") != manifest.get("source_hash"):
+                                    raise ValueError("MinerU 图表原件版本已变化，未覆盖当前资料。")
+                                apply_asset_checkpoint(current, value)
+                                conn.execute(
+                                    "UPDATE documents SET manifest=? WHERE id=?",
+                                    (dump(current), doc["id"]),
+                                )
+
+                        manifest = ocr_native_assets_bounded(
+                            None,
+                            manifest,
+                            on_asset=checkpoint_chart,
+                            on_image=lambda rendered: self._persist_ocr_image(claim, rendered),
+                            max_assets=batch_size,
+                            image_contents=image_contents,
+                        )
             elif should_index and fingerprint and text_complete(manifest):
                 self.service.ragflow.step(doc, claim)
             manifest = preserve_import_origin(manifest)

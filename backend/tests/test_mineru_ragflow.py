@@ -1,6 +1,7 @@
 """Source-bound cloud parsing, resumable indexing and scoped RAGFlow retrieval."""
 
 from contextlib import closing
+from copy import deepcopy
 from datetime import date
 import hashlib
 import io
@@ -14,6 +15,7 @@ from app.db import now
 from app.ingestion_quality import text_complete
 from app.mineru import Admission, MinerUWait, manifest_valid
 from app.mineru_results import _assemble, _prepare, reference, resolve_reference
+from app.native_asset_ocr import assets
 from app.ragflow import RAGFlowError
 from app.service import Service
 from test_retrieval_index import body, seed
@@ -602,9 +604,14 @@ def test_capacity_refines_boundary_then_verifies_before_holding(tmp_path, monkey
 
 
 @pytest.mark.parametrize(
-    "content,complete", [("", False), ("<table><tr><td>Tea</td><td>5%</td></tr></table>", True)]
+    "content,caption,complete",
+    [
+        ("", "", False),
+        ("", "Figure 1. Regional output", False),
+        ("<table><tr><td>Tea</td><td>5%</td></tr></table>", "", True),
+    ],
 )
-def test_chart_keeps_asset_and_requires_readable_content(tmp_path, content, complete):
+def test_chart_keeps_asset_and_requires_readable_content(tmp_path, content, caption, complete):
     store, task = result_archive(tmp_path)
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as archive:
@@ -614,7 +621,13 @@ def test_chart_keeps_asset_and_requires_readable_content(tmp_path, content, comp
             json.dumps(
                 [
                     {"type": "text", "text": "lawful tea clause", "page_idx": 0},
-                    {"type": "chart", "content": content, "page_idx": 0, "img_path": "images/chart.jpg"},
+                    {
+                        "type": "chart",
+                        "content": content,
+                        "chart_caption": caption,
+                        "page_idx": 0,
+                        "img_path": "images/chart.jpg",
+                    },
                     {"type": "ref_text", "text": "Source reference", "page_idx": 0},
                 ]
             ),
@@ -633,3 +646,121 @@ def test_chart_keeps_asset_and_requires_readable_content(tmp_path, content, comp
         resolve_reference(artifacts["images/chart.jpg"], store.files_dir, "owner").read_bytes()
         == b"preserved raw image"
     )
+    if complete:
+        assert result["mineru_chart_assets"] == []
+    else:
+        chart_assets = assets(result)
+        assert len(chart_assets) == 1
+        assert chart_assets[0]["source_format"] == "mineru_chart"
+        assert chart_assets[0]["locator"]["page"] == 1
+        assert chart_assets[0]["image_hash"] == artifacts["images/chart.jpg"]["content_hash"]
+
+
+def test_processing_runs_source_bound_mineru_chart_ocr_before_indexing(workspace, monkeypatch):
+    from test_native_asset_ocr import raster
+
+    service = workspace
+    source = service.archive.blobs.put_bytes("owner", b"verified-chart-pdf")
+    chart_blob = service.archive.blobs.put_bytes("owner", raster())
+    result_hash, page_text = "a" * 64, "Article 1. Chart follows."
+    element_key = "mineru-000001-000002"
+    locator = {
+        "kind": "pdf",
+        "page": 1,
+        "physical_page": 1,
+        "bbox": [100, 200, 800, 700],
+        "coordinate_system": "mineru-0-1000",
+        "source_hash": source.digest,
+        "provider_task_id": "task-1",
+        "provider_page_idx": 0,
+    }
+    manifest = {
+        "parser": "mineru",
+        "parser_version": "api-v4",
+        "pipeline_version": "mineru-precise-v1",
+        "source_hash": source.digest,
+        "quality": {"status": "needs_review", "complete": False, "review_required": True, "review_pages": [1]},
+        "pages": [
+            {
+                "page": 1,
+                "status": "ocr_uncertain",
+                "source_hash": source.digest,
+                "text": page_text,
+                "reasons": ["chart_content_missing"],
+                "ocr": {
+                    "provider": "mineru",
+                    "task_id": "task-1",
+                    "batch_id": "batch-1",
+                    "provider_page_idx": 0,
+                    "part_first_page": 1,
+                    "result_hash": result_hash,
+                    "text_sha256": hashlib.sha256(page_text.encode()).hexdigest(),
+                    "complete": False,
+                    "uncertain_spans": ["chart_content_missing"],
+                },
+            }
+        ],
+        "elements": [],
+        "chunks": [],
+        "remote_parse": {
+            "provider": "mineru",
+            "state": "done",
+            "source_hash": source.digest,
+            "page_count": 1,
+            "parts": [
+                {
+                    "task_id": "task-1",
+                    "batch_id": "batch-1",
+                    "source_hash": source.digest,
+                    "first_page": 1,
+                    "last_page": 1,
+                    "result_blob": {"content_hash": result_hash},
+                }
+            ],
+        },
+        "mineru_chart_assets": [
+            {
+                "asset_key": "mineru-chart-" + hashlib.sha256(element_key.encode()).hexdigest()[:24],
+                "element_key": element_key,
+                "block_type": "chart",
+                "locator": locator,
+                "source_hash": source.digest,
+                "image_hash": chart_blob.digest,
+                "image_blob": reference(chart_blob),
+                "size": chart_blob.size,
+            }
+        ],
+    }
+    with service.db.transaction() as conn:
+        seed(conn, "chart-target", body())
+        conn.execute(
+            "UPDATE documents SET filename='chart.pdf',mime_type='application/pdf',storage_path=?,content_hash=?,size=?,manifest=? WHERE id='chart-target'",
+            (str(source.path), source.digest, source.size, json.dumps(manifest)),
+        )
+        service.collection.queue_processing(conn, "chart-target", "owner")
+    monkeypatch.setattr(service.collection.parser, "step", lambda *_args: deepcopy(manifest))
+    monkeypatch.setattr(service, "embedding_fingerprint", lambda: None)
+    monkeypatch.setattr("app.vision.vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(
+        "app.vision.transcribe_chart_image",
+        lambda _rendered: {
+            "text": "Chart title: Export value\n| Year | Value |\n| 2024 | 17 |",
+            "complete": True,
+            "is_blank": False,
+            "uncertain_spans": [],
+            "model": "verified-chart-model",
+            "requested_model": "test-vision-model",
+            "prompt_version": "mineru-chart-transcription-v1",
+            "review_status": "unreviewed",
+            "physical_pages_known": False,
+            "finish_reason": "stop",
+        },
+    )
+    claim = service.collection.claim_processing(owner_id="owner", document_ids=["chart-target"])
+    service.collection.process_item(claim)
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id='chart-target'").fetchone()[0])
+        job = dict(conn.execute("SELECT * FROM processing_jobs WHERE document_id='chart-target'").fetchone())
+    assert text_complete(saved)
+    assert saved["mineru_chart_assets"][0]["ocr"]["prompt_version"] == "mineru-chart-transcription-v1"
+    assert job["status"] == "completed"

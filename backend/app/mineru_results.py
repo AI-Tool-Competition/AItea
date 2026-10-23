@@ -289,7 +289,7 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
     from .vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
     store = BlobStore(Path(files_dir), max_bytes=MAX_SOURCE_BYTES)
-    pages, elements, part_receipts, section = [], [], [], []
+    pages, elements, part_receipts, section, chart_assets = [], [], [], [], []
     warnings, total_chars, image_count, table_count, formula_count = [], 0, 0, 0, 0
     for task in tasks:
         if task["source_hash"] != source_hash or task["state"] != "done":
@@ -424,9 +424,10 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
                 "provider_task_id": task["id"],
                 "provider_page_idx": local_page,
             }
+            element_key = f"mineru-{number:06}-{index:06}"
             elements.append(
                 ParsedElement(
-                    f"mineru-{number:06}-{index:06}",
+                    element_key,
                     element_kind,
                     len(elements),
                     text,
@@ -435,6 +436,21 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
                     metadata_json=metadata,
                 )
             )
+            if kind == "chart" and not chart and isinstance(metadata.get("image"), dict):
+                image_blob = metadata["image"]
+                chart_assets.append(
+                    {
+                        "asset_key": "mineru-chart-" + hashlib.sha256(element_key.encode()).hexdigest()[:24],
+                        "element_key": element_key,
+                        "block_type": "chart",
+                        "locator": locator,
+                        "section_path": list(section),
+                        "source_hash": source_hash,
+                        "image_hash": image_blob["content_hash"],
+                        "image_blob": image_blob,
+                        "size": image_blob["size"],
+                    }
+                )
             if text and kind not in {"discarded", "header", "footer", "page_number"}:
                 texts[local_page].append(text)
                 total_chars += len(text)
@@ -501,6 +517,7 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
         "review_required": bool(review),
         "source_incomplete_pages": [],
     }
+    result["mineru_chart_assets"] = chart_assets
     result["remote_parse"] = {
         "provider": "mineru",
         "model_version": "vlm",

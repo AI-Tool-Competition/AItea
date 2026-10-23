@@ -216,14 +216,42 @@ def _asset(value, base, manifest_hash):
         "asset_key package_part image_hash image_sha256 size relationship_id source_part mime_type "
         "width height frame_count state status image_bytes_verified original_object_mapping "
         "reference_sha256 format supported_for_vision reason dimensions_from pixels_verified "
+        "element_key block_type "
         "asset_status mapping_path source_format source_hash input_identity",
     )
     if "locator" in value:
         result["locator"] = locator(value["locator"])
+    if "section_path" in value:
+        path = value["section_path"]
+        if not isinstance(path, list) or len(path) > 128:
+            raise ValueError("invalid MinerU chart section path")
+        result["section_path"] = [
+            _scalar(item) for item in path if isinstance(item, str) and len(item) <= MAX_STRING
+        ]
+        if len(result["section_path"]) != len(path):
+            raise ValueError("invalid MinerU chart section label")
     if "content_base64" in value:
         result["bytes_reference"] = _inline(
             value, base, manifest_hash, "content_base64", hash_key="image_sha256"
         )
+    if "image_blob" in value:
+        reference = _select(value["image_blob"], "content_hash size mime_type")
+        path = value["image_blob"].get("storage_path")
+        match = re.fullmatch(
+            r"files/blobs/[a-f0-9]{64}/([a-f0-9]{2})/([a-f0-9]{2})/([a-f0-9]{64})",
+            path if isinstance(path, str) else "",
+        )
+        if not match or (
+            match[3] != reference.get("content_hash")
+            or match[1] != match[3][:2]
+            or match[2] != match[3][2:4]
+            or reference.get("content_hash") != value.get("image_hash")
+            or type(reference.get("size")) is not int
+            or reference.get("size") != value.get("size")
+        ):
+            raise ValueError("invalid native original image blob reference")
+        reference["storage_path"] = path
+        result["image_blob"] = reference
     if "ocr" in value:
         ocr = value["ocr"]
         proof = _select(
@@ -446,6 +474,21 @@ def mappings(manifest, manifest_hash):
             )
             yield emit("pdf_native_blank_page", base + "/native_blank", record)
         ocr = page.get("ocr", {})
+        if "supplemental_chart_assets" in ocr:
+            rows = ocr["supplemental_chart_assets"]
+            if not isinstance(rows, list) or len(rows) > 2000:
+                raise ValueError("invalid MinerU supplemental chart references")
+            yield emit(
+                "mineru_chart_page_transcription",
+                base + "/ocr/supplemental_chart_assets",
+                [
+                    _select(
+                        row,
+                        "asset_key element_key image_sha256 transcript_sha256 prompt_version review_status",
+                    )
+                    for _, row in _items(rows)
+                ],
+            )
         if "native_hint_strategy" in ocr:
             yield emit(
                 "pdf_ocr_native_hint",
@@ -533,6 +576,9 @@ def mappings(manifest, manifest_hash):
     for index, value in _items(manifest.get("assets_pending", [])):
         base = _pointer("/assets_pending", index)
         yield emit("image", base, _asset(value, base, manifest_hash))
+    for index, value in _items(manifest.get("mineru_chart_assets", [])):
+        base = _pointer("/mineru_chart_assets", index)
+        yield emit("mineru_chart_image", base, _asset(value, base, manifest_hash))
     for index, value in _items(manifest.get("tables", [])):
         base = _pointer("/tables", index)
         record = _select(value, "table row_count column_count")

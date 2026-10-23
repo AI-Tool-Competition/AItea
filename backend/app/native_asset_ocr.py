@@ -27,7 +27,7 @@ _PREFIX = "native-asset-ocr-"
 
 
 def _pixels_limit(source_format):
-    return MAX_HTML_PIXELS if source_format == "html" else MAX_PIXELS
+    return MAX_HTML_PIXELS if source_format in {"html", "mineru_chart"} else MAX_PIXELS
 
 
 def _digest(value):
@@ -35,10 +35,15 @@ def _digest(value):
 
 
 def _identity(value, source_hash, source_format, pointer):
+    image_blob = value.get("image_blob")
+    image_blob = image_blob if isinstance(image_blob, dict) else {}
     fields = {
         "source_hash": source_hash,
         "source_format": source_format,
-        "mapping_path": pointer,
+        # MinerU's stable element key, physical locator and exact chart bytes
+        # identify the asset; its position in the sidecar list may shift when
+        # another chart is added, so list position must not trigger a paid retry.
+        "mapping_path": None if source_format == "mineru_chart" else pointer,
         "locator": value.get("locator"),
         "image_sha256": value.get("image_hash", value.get("image_sha256")),
         "package_part": value.get("package_part"),
@@ -60,6 +65,17 @@ def _identity(value, source_hash, source_format, pointer):
                     "original_image_blob",
                     "protocol",
                 )
+            }
+        )
+    elif source_format == "mineru_chart":
+        fields.update(
+            {
+                "element_key": value.get("element_key"),
+                "section_path": value.get("section_path", []),
+                "image_blob": {
+                    key: image_blob.get(key) for key in ("content_hash", "size")
+                },
+                "block_type": value.get("block_type"),
             }
         )
     return _digest(json.dumps(fields, ensure_ascii=False, sort_keys=True, allow_nan=False).encode())
@@ -88,6 +104,9 @@ def assets(manifest: dict) -> list[dict]:
             raise ValueError("旧格式图片映射结构无效。")
         rows = legacy.get("conversion", {}).get("images", [])
         prefix, source_format = "/legacy/conversion/images", legacy.get("format")
+    elif manifest.get("parser") == "mineru" and manifest.get("remote_parse", {}).get("provider") == "mineru":
+        rows = manifest.get("mineru_chart_assets", [])
+        prefix, source_format = "/mineru_chart_assets", "mineru_chart"
     else:
         return []
     if rows == []:
@@ -95,7 +114,7 @@ def assets(manifest: dict) -> list[dict]:
     source_hash = manifest.get("source_hash")
     if not isinstance(source_hash, str) or not _HASH.fullmatch(source_hash):
         raise ValueError("原生图片父原件 hash 无效。")
-    if source_format not in {"docx", "html"} and legacy.get("source_hash") != source_hash:
+    if source_format not in {"docx", "html", "mineru_chart"} and legacy.get("source_hash") != source_hash:
         raise ValueError("旧格式图片与父原件不一致。")
     if not isinstance(rows, list) or len(rows) > MAX_ASSETS:
         raise ValueError("原生图片映射数量超过限制。")
@@ -105,22 +124,55 @@ def assets(manifest: dict) -> list[dict]:
             raise ValueError("原生图片缺少来源定位。")
         if raw["locator"].get("source_hash") != source_hash:
             raise ValueError("原生图片定位与父原件不一致。")
+        if source_format == "mineru_chart" and (
+            not isinstance(raw.get("element_key"), str)
+            or not re.fullmatch(r"mineru-\d{6}-\d{6}", raw["element_key"])
+        ):
+            raise ValueError("MinerU 图表结构块标识无效。")
         if source_format == "html":
             from .html_linked_asset_ocr import validate_binding
 
             validate_binding(manifest, raw)
         pointer = f"{prefix}/{index}"
         identity = _identity(raw, source_hash, source_format, pointer)
-        key = raw.get("asset_key") if source_format == "docx" else _PREFIX + identity[:24]
+        key = (
+            raw.get("asset_key")
+            if source_format in {"docx", "mineru_chart"}
+            else _PREFIX + identity[:24]
+        )
         if not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", key):
             raise ValueError("原生图片标识无效。")
-        if source_format != "docx" and raw.get("asset_key", key) != key:
+        if source_format not in {"docx", "mineru_chart"} and raw.get("asset_key", key) != key:
             raise ValueError("转换图片标识与来源不一致。")
+        if source_format == "mineru_chart" and key != "mineru-chart-" + hashlib.sha256(
+            raw["element_key"].encode()
+        ).hexdigest()[:24]:
+            raise ValueError("MinerU 图表标识与结构块不一致。")
         value = deepcopy(raw)
         default = "pending_vision"
-        if source_format not in {"docx", "html"} and raw.get("image_bytes_verified") is not True:
+        if source_format == "mineru_chart":
+            image_blob = raw.get("image_blob")
+            section_path = raw.get("section_path", [])
+            if (
+                raw.get("block_type") != "chart"
+                or not isinstance(image_blob, dict)
+                or image_blob.get("content_hash") != raw.get("image_hash")
+                or type(image_blob.get("size")) is not int
+                or not 0 < image_blob["size"] <= MAX_IMAGE_BYTES
+                or raw.get("size") != image_blob["size"]
+                or raw["locator"].get("kind") != "pdf"
+                or type(raw["locator"].get("page")) is not int
+                or raw["locator"].get("source_hash") != source_hash
+                or not isinstance(section_path, list)
+                or len(section_path) > 128
+                or any(not isinstance(part, str) or len(part) > 2000 for part in section_path)
+            ):
+                raise ValueError("MinerU 图表映射缺少有效标题层级或图片来源。")
+        if source_format not in {"docx", "html", "mineru_chart"} and raw.get("image_bytes_verified") is not True:
             default = "image_reference_pending"
         status = raw.get("asset_status", default)
+        if source_format == "mineru_chart" and default == "image_reference_pending" and status == "pending_vision":
+            status = default
         if status not in {
             "pending_vision",
             "ocr_complete",
@@ -153,7 +205,7 @@ def assets(manifest: dict) -> list[dict]:
                 or len(ocr["text"]) > 100_000
                 or ocr.get("protocol") != PROTOCOL
                 or ocr.get("locator") != raw["locator"]
-                or ocr.get("physical_pages_known") is not False
+                or ocr.get("physical_pages_known") is not (source_format == "mineru_chart")
                 or type(ocr.get("width")) is not int
                 or type(ocr.get("height")) is not int
                 or not 0 < ocr["width"] <= 10000
@@ -177,11 +229,33 @@ def assets(manifest: dict) -> list[dict]:
         raise ValueError("原生图片标识重复。")
     if source_format == "html" and len({value["object_key"] for value in result}) != len(result):
         raise ValueError("HTML 正文对象被重复绑定。")
+    if source_format == "mineru_chart" and len({value["element_key"] for value in result}) != len(result):
+        raise ValueError("MinerU 图表映射重复。")
     return result
 
 
 def pending_assets(manifest: dict) -> list[dict]:
     return [value for value in assets(manifest) if value["asset_status"] == "pending_vision"]
+
+
+def read_mineru_chart_images(files_dir, owner_id, manifest, *, max_assets=4):
+    """Read only hash-bound chart blobs selected for the next bounded OCR batch."""
+    from .blob_store import _verify_existing
+    from .mineru_results import resolve_reference
+
+    if type(max_assets) is not int or not 1 <= max_assets <= 20:
+        raise ValueError("单批 MinerU 图表数量必须在 1 至 20 之间。")
+    selected = pending_assets(manifest)[:max_assets]
+    result = {}
+    for asset in selected:
+        blob = asset["image_blob"]
+        path = resolve_reference(blob, files_dir, owner_id)
+        _verify_existing(path, blob["content_hash"], blob["size"])
+        raw = path.read_bytes()
+        if _digest(raw) != asset["image_hash"] or len(raw) != asset["size"]:
+            raise ValueError("MinerU 图表原件 hash 或大小不匹配。")
+        result[asset["asset_key"]] = raw
+    return result
 
 
 def apply_asset_checkpoint(manifest: dict, value: dict) -> None:
@@ -205,9 +279,31 @@ def apply_asset_checkpoint(manifest: dict, value: dict) -> None:
         rows = manifest["assets_pending"]
     elif value["source_format"] == "html":
         rows = manifest["html_source"]["linked_images"]
+    elif value["source_format"] == "mineru_chart":
+        rows = manifest["mineru_chart_assets"]
     else:
         rows = manifest["legacy"]["conversion"]["images"]
     rows[index] = deepcopy(value)
+
+
+def reuse_mineru_chart_checkpoints(previous: dict, parsed: dict) -> dict:
+    """Carry OCR only when the exact MinerU chart, page and image bytes recur."""
+    if (
+        previous.get("parser") != "mineru"
+        or parsed.get("parser") != "mineru"
+        or not previous.get("mineru_chart_assets")
+        or not parsed.get("mineru_chart_assets")
+    ):
+        return parsed
+    old_by_key = {value["element_key"]: value for value in assets(previous)}
+    reused = False
+    for current in assets(parsed):
+        old = old_by_key.get(current["element_key"])
+        if old is None or old["input_identity"] != current["input_identity"]:
+            continue
+        apply_asset_checkpoint(parsed, old)
+        reused = True
+    return rebuild_native_asset_text_bounded(parsed) if reused else parsed
 
 
 def summary(manifest: dict) -> dict:
@@ -263,6 +359,10 @@ def _extract(content, manifest, value, *, max_bytes=MAX_BYTES, image_content=Non
         from .html_linked_asset_ocr import extract_image
 
         raw = extract_image(content, manifest, value, image_content)
+    elif value["source_format"] == "mineru_chart":
+        raw = image_content
+        if not isinstance(raw, bytes) or not raw:
+            raise ValueError("MinerU 图表原件尚未从内容地址库读取。")
     elif value["source_format"] == "wpf":
         from .legacy_doc_parsing import _wpf_artifacts
 
@@ -303,12 +403,13 @@ def _render(content, manifest, value, archive_path=None, archive_size=None, imag
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     max_bytes = MAX_BYTES
-    if content is None:
+    mineru_chart_mode = value["source_format"] == "mineru_chart"
+    if content is None and not mineru_chart_mode:
         from .docx_archive_parsing import MAX_ARCHIVE_BYTES, read_docx_source
 
         content = read_docx_source(archive_path, source_hash=value["source_hash"], size=archive_size)
         max_bytes = MAX_ARCHIVE_BYTES
-    if _digest(content) != value["source_hash"]:
+    if not mineru_chart_mode and (not isinstance(content, bytes) or _digest(content) != value["source_hash"]):
         raise ValueError("原生图片父原件 hash 不匹配。")
     raw = _extract(content, manifest, value, max_bytes=max_bytes, image_content=image_content)
     try:
@@ -407,7 +508,13 @@ def _one(
     content, manifest, value, on_asset, on_image, archive_path=None, archive_size=None, image_content=None
 ):
     from .parsing import ProcessingDeferred, _OCR_SLOTS, _run_bounded
-    from .vision import IMAGE_PROMPT_VERSION, OCRCapacityDeferred, OCRResponseError, transcribe_image
+    from .vision import (
+        IMAGE_PROMPT_VERSION,
+        OCRCapacityDeferred,
+        OCRResponseError,
+        transcribe_chart_image,
+        transcribe_image,
+    )
 
     updated = deepcopy(value)
 
@@ -485,14 +592,27 @@ def _one(
         updated.update(ocr=metadata, asset_status="pending_vision")
         checkpoint()
         try:
-            transcript = transcribe_image(rendered)
+            transcript = (
+                transcribe_chart_image(rendered)
+                if value["source_format"] == "mineru_chart"
+                else transcribe_image(rendered)
+            )
         except (ValueError, OSError) as exc:
             return failure(exc)
         metadata.update(transcript)
+        if value["source_format"] == "mineru_chart":
+            # MinerU binds each chart crop to a verified physical page and bbox;
+            # the transcript is still only a chart-region reading.
+            metadata["physical_pages_known"] = True
         updated.update(
             ocr=metadata,
             asset_status="ocr_uncertain" if transcript["uncertain_spans"] else "ocr_complete",
         )
+        if value["source_format"] == "mineru_chart" and transcript["is_blank"]:
+            updated["asset_status"] = "ocr_uncertain"
+            updated["ocr"]["uncertain_spans"] = list(
+                dict.fromkeys([*updated["ocr"]["uncertain_spans"], "chart_has_no_transcribed_content"])
+            )
         updated.pop("error", None)
         checkpoint()
         return updated
@@ -517,8 +637,12 @@ def rebuild_native_asset_text(manifest):
             "asset_mapping_path": value["mapping_path"],
             "original_image_sha256": value["ocr"]["original_image_sha256"],
             "image_sha256": value["ocr"]["image_sha256"],
-            "source_kind": "native_image_transcription",
-            "physical_pages_known": False,
+            "source_kind": (
+                "mineru_chart_transcription"
+                if value["source_format"] == "mineru_chart"
+                else "native_image_transcription"
+            ),
+            "physical_pages_known": value["source_format"] == "mineru_chart",
         }
         elements.append(
             {
@@ -527,7 +651,7 @@ def rebuild_native_asset_text(manifest):
                 "order": len(elements),
                 "content_text": text,
                 "locator": locator,
-                "section_path": [],
+                "section_path": deepcopy(value.get("section_path") or []),
                 "metadata_json": {
                     "protocol": PROTOCOL,
                     "review_status": "unreviewed",
@@ -540,12 +664,59 @@ def rebuild_native_asset_text(manifest):
                 "id": key,
                 "text": text,
                 "retrieval_text": text,
-                "section_path": [],
+                "section_path": deepcopy(value.get("section_path") or []),
                 "locator": {**locator, "source_anchors": [deepcopy(locator)]},
                 "content_hash": _digest(text.encode()),
             }
         )
-    if len(elements) > 20000 or sum(len(e.get("content_text", "")) for e in elements) > 4_000_000:
+    maximum_text = 4_000_000
+    if result.get("parser") == "mineru" and result.get("remote_parse", {}).get("provider") == "mineru":
+        from .mineru_results import MAX_ASSEMBLED_TEXT_CHARACTERS
+
+        maximum_text = MAX_ASSEMBLED_TEXT_CHARACTERS
+        chart_assets = [value for value in assets(result) if value["source_format"] == "mineru_chart"]
+        by_page = {}
+        for value in chart_assets:
+            by_page.setdefault(value["locator"]["page"], []).append(value)
+        for page in result.get("pages", []):
+            if "chart_content_missing" not in page.get("reasons", []):
+                continue
+            mapped = by_page.get(page["page"], [])
+            if not mapped or any(
+                value["asset_status"] != "ocr_complete"
+                or not value.get("ocr", {}).get("text", "").strip()
+                for value in mapped
+            ):
+                continue
+            page["reasons"] = [reason for reason in page["reasons"] if reason != "chart_content_missing"]
+            proof = page.get("ocr") or {}
+            proof["supplemental_chart_assets"] = [
+                {
+                    "asset_key": value["asset_key"],
+                    "element_key": value["element_key"],
+                    "image_sha256": value["image_hash"],
+                    "transcript_sha256": _digest(value["ocr"]["text"].encode()),
+                    "prompt_version": value["ocr"].get("prompt_version"),
+                    "review_status": value["ocr"].get("review_status"),
+                }
+                for value in mapped
+            ]
+            proof["uncertain_spans"] = [reason for reason in proof.get("uncertain_spans", []) if reason != "chart_content_missing"]
+            proof["complete"] = not page["reasons"]
+            page["ocr"] = proof
+            page["status"] = "ocr_complete" if not page["reasons"] else "ocr_uncertain"
+        quality = result.get("quality") or {}
+        reviews = [page["page"] for page in result.get("pages", []) if page.get("status") != "ocr_complete"]
+        quality.update(
+            status="complete" if not reviews else "needs_review",
+            complete=not reviews,
+            completed_pages=[page["page"] for page in result.get("pages", []) if page.get("status") == "ocr_complete"],
+            review_pages=reviews,
+            review_required=bool(reviews),
+        )
+        result["quality"] = quality
+        result["mineru_chart_ocr"] = summary(result)
+    if len(elements) > 20000 or sum(len(e.get("content_text", "")) for e in elements) > maximum_text:
         raise ValueError("原生图片正文重组超过资源限制。")
     result.update(elements=elements, chunks=chunks, native_asset_ocr=summary(result))
     if result.get("parser") == "html-basic" and result.get("html_source", {}).get("linked_images"):
@@ -591,7 +762,8 @@ def ocr_native_assets_bounded(
         or sum(len(raw) for raw in image_contents.values()) > 32 * 1024 * 1024
     ):
         raise ValueError("HTML 图片原字节集合超过处理限制。")
-    if content is None:
+    mineru_chart_mode = manifest.get("parser") == "mineru" and manifest.get("remote_parse", {}).get("provider") == "mineru"
+    if content is None and not mineru_chart_mode:
         from .docx_archive_parsing import MAX_ARCHIVE_BYTES
 
         marker = manifest.get("archive_docx") or {}
@@ -606,7 +778,7 @@ def ocr_native_assets_bounded(
             or not archive_path
         ):
             raise ValueError("原生图片 DOCX 文件模式来源标记无效。")
-    elif (
+    elif content is not None and (
         archive_path is not None
         or archive_size is not None
         or not isinstance(content, bytes)
@@ -618,13 +790,18 @@ def ocr_native_assets_bounded(
     if len(json.dumps(manifest, ensure_ascii=False, allow_nan=False).encode()) > MAX_MANIFEST_BYTES:
         raise ValueError("原生图片 manifest 超过处理限制。")
     result = deepcopy(manifest)
-    if content is None:
+    if content is None and not mineru_chart_mode:
         _run_bounded(
             _worker, ("validate_source", (archive_path, manifest.get("source_hash"), archive_size)), 45
         )
     pending = pending_assets(result)[:max_assets]
     if pending and vision_ocr_configured():
-        executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="native-asset-ocr")
+        from .vision import vision_ocr_request_worker_limit
+
+        executor = ThreadPoolExecutor(
+            max_workers=min(max_assets, vision_ocr_request_worker_limit()),
+            thread_name_prefix="native-asset-ocr",
+        )
         futures = [
             executor.submit(
                 _one,

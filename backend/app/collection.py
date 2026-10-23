@@ -1300,6 +1300,14 @@ class CollectionService:
                                         "SELECT manifest FROM documents WHERE id=?", (doc["id"],)
                                     ).fetchone()[0]
                                 )
+                                if current.get("parser_version") != manifest.get("parser_version"):
+                                    if dump(current) != doc["manifest"]:
+                                        raise ValueError("HTML 原文映射在识别期间已变化，未覆盖当前资料。")
+                                    # Checkpoints must use the same structural
+                                    # map that produced the OCR identity. Older
+                                    # stored HTML maps are promoted atomically
+                                    # with the first verified OCR checkpoint.
+                                    current = deepcopy(manifest)
                                 apply_asset_checkpoint(current, value)
                                 conn.execute(
                                     "UPDATE documents SET manifest=? WHERE id=?",

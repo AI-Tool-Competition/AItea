@@ -230,6 +230,31 @@ def test_legal_queued_html_draft_resumes_and_secondary_legal_text_gets_no_vector
     assert len(calls) == 1
 
 
+def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypatch):
+    doc = bound(service, monkeypatch)
+    with service.db.transaction() as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
+        manifest["parser_version"] = "6"
+        manifest["html_source"]["mapping_version"] = "html-source-mapping-v6"
+        manifest["pipeline_version"] = "html-source-mapping-v6+layout-token-hierarchical-v2"
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
+    monkeypatch.setattr(vision, "transcribe_image", lambda *_: transcript())
+    monkeypatch.setattr(ingestion, "embed_texts", lambda *_: pytest.fail("Legal draft cannot embed"))
+    claim = service.collection.claim_processing(
+        owner_id="owner", document_ids=[doc["id"]], processing_policy=POLICY
+    )
+
+    service.collection.process_item(claim)
+
+    updated = json.loads(row(service, "documents", doc["id"])["manifest"])
+    assert updated["parser_version"] == "7"
+    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v7"
+    assert updated["html_source"]["linked_images"][0]["asset_status"] == "ocr_complete"
+    assert row(service, "processing_jobs", doc["id"])["status"] == "completed"
+
+
 def test_html_image_ocr_resumes_bounded_batches_until_all_images_are_processed(service, monkeypatch):
     from app.native_asset_ocr import assets
     from test_html_image_collection import image

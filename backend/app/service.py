@@ -80,6 +80,9 @@ class Service:
         from .retrieval import RetrievalIndex
 
         self.index = RetrievalIndex(self)
+        from .ragflow import RAGFlowIndex
+
+        self.ragflow = RAGFlowIndex(self)
         from .node_workspace import NodeWorkspace
 
         self.node_workspace = NodeWorkspace(self)
@@ -89,23 +92,22 @@ class Service:
         live = all(os.getenv(key) for key in ("LLM_API_KEY", "LLM_MODEL"))
         return {
             "assistant_mode": "live" if live else "demo",
-            "retrieval_mode": "hybrid" if self.embedding_fingerprint() else "lexical",
-            "parser": os.getenv("TEA_PARSER", "basic"),
+            "retrieval_mode": "ragflow" if self.embedding_fingerprint() else "unavailable",
+            "parser": "mineru",
         }
 
     def embedding_fingerprint(self):
-        from .retrieval import EMBEDDING_RECIPE
+        from .ragflow import profile
 
-        values = [os.getenv(key) for key in ("EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_API_KEY")]
-        return (
-            hashlib.sha256(dump([*values[:2], EMBEDDING_RECIPE]).encode()).hexdigest()
-            if all(values)
-            else None
-        )
+        return profile()
 
     def rerank_fingerprint(self):
-        values = [os.getenv(key) for key in ("RERANK_BASE_URL", "RERANK_MODEL", "RERANK_API_KEY")]
-        return hashlib.sha256(dump(values).encode()).hexdigest() if any(values) else None
+        model = os.getenv("RAGFLOW_RERANK_MODEL", "").strip()
+        return (
+            hashlib.sha256(dump([self.embedding_fingerprint(), model]).encode()).hexdigest()
+            if model
+            else None
+        )
 
     def template(self, owner, template_id, conn=None):
         if template_id == RETIRED_TEMPLATE_ID:
@@ -814,11 +816,9 @@ class Service:
         from .parsing import parse_bounded
         from .ingestion_quality import (
             has_mapped_source_objects,
-            ocr_work_pending,
             quality_warning,
             text_complete,
         )
-        from .vision import vision_ocr_configured
 
         if len(content) > MAX_UPLOAD:
             fail(413, "file_too_large", "文件不能超过 20 MB")
@@ -895,41 +895,25 @@ class Service:
         status = "stored" if role == "secondary" else "ready"
         if role == "primary":
             try:
-                manifest = parse_bounded(
-                    filename, content, mime_type, parser=os.getenv("TEA_PARSER", "basic")
-                )
+                manifest = parse_bounded(filename, content, mime_type, parser="mineru")
                 if (
                     not manifest.get("elements")
                     and not manifest.get("pages")
                     and not has_mapped_source_objects(manifest)
+                    and not manifest.get("remote_parse")
                 ):
                     raise ValueError("文件没有可提取的正文；扫描件可能需要 OCR")
                 if manifest.get("warnings"):
                     error = "解析提示：" + "；".join(str(item) for item in manifest["warnings"])[:450]
                 if not text_complete(manifest):
                     error = quality_warning(manifest)
-                    if ocr_work_pending(manifest) and vision_ocr_configured():
+                    if manifest.get("remote_parse", {}).get("state") == "planned":
                         status = "processing"
                     else:
                         status = "failed"
             except Exception as exc:
                 logger.info("document_parse_failed", extra={"parser_error": type(exc).__name__})
                 status, error = "failed", str(exc)[:500]
-            if status == "ready" and text_complete(manifest):
-                from .ingestion import embed_texts
-                from .retrieval import embedding_text, input_hash
-
-                try:
-                    vectors = embed_texts([embedding_text(c) for c in manifest.get("chunks", [])])
-                    if vectors is not None:
-                        for chunk, vector in zip(manifest["chunks"], vectors, strict=True):
-                            chunk["embedding"] = vector
-                            chunk["embedding_input_hash"] = input_hash(embedding_text(chunk))
-                        manifest["embedding_fingerprint"] = self.embedding_fingerprint()
-                except Exception:
-                    embedding_error = "原文和关键词索引已保存，但向量服务暂不可用；请检查模型配置后重新上传。"
-                    error = "；".join(item for item in (error, embedding_error) if item)[:500]
-                    manifest["embedding_error"] = embedding_error
         id, storage_path = uid(), blob.path
         try:
             with self.db.transaction() as conn:
@@ -1352,15 +1336,15 @@ class Service:
             def adapt(result):
                 outputs = [step.get("output_data") or {} for step in result.get("trace", [])]
                 hybrid = any(
-                    output.get("retrieval_mode") == "hybrid"
-                    or any(item.get("mode") == "hybrid" for item in output.get("coverage", []))
+                    output.get("retrieval_mode") == "ragflow"
+                    or any(item.get("mode") == "ragflow" for item in output.get("coverage", []))
                     for output in outputs
                 )
                 return {
                     **result,
                     "checks": [],
                     "stage_id": stage["id"],
-                    "retrieval_mode": "hybrid" if hybrid else "lexical",
+                    "retrieval_mode": "ragflow" if hybrid else "unavailable",
                 }
 
             legal_options = {

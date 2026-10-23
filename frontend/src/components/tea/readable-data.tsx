@@ -72,6 +72,8 @@ export const valueLabels: Record<string, string> = {
   conflict: "有冲突",
   lexical: "关键词检索",
   hybrid: "混合检索",
+  ragflow: "RAGFlow 混合检索",
+  unavailable: "检索未就绪",
   number: "数字",
   text: "短文字",
   textarea: "多行文字",

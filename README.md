@@ -48,9 +48,11 @@ make dev WEB_PORT=3001 API_PORT=8001
 复制 `.env.example` 为 `.env`，设置后端模型接口、密钥和模型名称，然后重启。所有模型凭据只在后端使用，不能放进 `NEXT_PUBLIC_*`。
 
 - `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`：OpenAI-compatible 生成接口；示例默认使用 Aerisun 的 `deepseek-v4.1-flash`，需填写该网关密钥。聊天将稳定案情放在提示前缀供网关自动缓存，并记录供应商返回的缓存命中/未命中 token 数。
-- `EMBEDDING_BASE_URL`、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`：向量接口。
-- `RERANK_BASE_URL`、`RERANK_API_KEY`、`RERANK_MODEL`：可选的 `/rerank` 重排接口，仅排序已经通过权限与法规有效性过滤的候选；失败时保留原结果并提示。
-- 未配置生成接口时，页面标为演示助手；未配置向量接口时，使用词项检索。
+- `MINERU_API_TOKEN`：MinerU 云端精准解析；本机不运行 OCR 或 MinerU 模型。
+- `EMBEDDING_BASE_URL`、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`：原有云端向量接口，由本机 RAGFlow 调用。先运行 `make ragflow-up`，再运行 `make ragflow-bootstrap` 注册模型并生成集成配置。
+- `RAGFLOW_RERANK_MODEL`：可选的 RAGFlow 重排模型 ID。
+- 未配置生成接口时，页面标为演示助手；未配置 RAGFlow 时明确显示检索未就绪。
+- 普通用户部署、原文证据、断点续跑及自动并发探测见 [MinerU 与 RAGFlow](docs/MINERU_RAGFLOW.md)。
 - 在资料库上传文件，或在资料来源页面配置经过确认的官方 HTTPS 来源。
 - 采集资料默认待审核；在资料预览中设置类别、法域、生效日期并审核后，才作为回答依据。用户业务材料与法规资料明确区分。
 - 当前提供六堡茶赴印尼／新加坡的线上、线下四条路线；手册中的监管适用和办理证据仍须人工复核。

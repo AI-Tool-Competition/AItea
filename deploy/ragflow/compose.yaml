@@ -1,0 +1,101 @@
+# Pinned against infiniflow/ragflow v1.0.0-rc2. MinerU and embedding run by API.
+name: aitea-ragflow
+services:
+  ragflow:
+    image: infiniflow/ragflow:v1.0.0-rc2
+    command: [--enable-adminserver, --init-superuser, --disable-ingestor, --disable-syncer]
+    env_file: ${AITEA_RAGFLOW_ENV_FILE:?Run make ragflow-prepare}
+    environment:
+      DOC_ENGINE: infinity
+      DB_TYPE: mysql
+      KVROCKS_HOST: kvrocks
+      KVROCKS_PORT: 6379
+      NATS_HOST: nats
+      NATS_PORT: 4222
+      MINIO_HOST: minio
+      INFINITY_HOST: infinity
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DBNAME: rag_flow
+      HF_ENDPOINT: https://huggingface.co
+    ports:
+      - 127.0.0.1:${AITEA_RAGFLOW_WEB_PORT:-18080}:80
+      - 127.0.0.1:${AITEA_RAGFLOW_API_PORT:-19380}:9380
+    volumes:
+      - ${AITEA_RAGFLOW_RUNTIME:?}/service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template:ro
+      - ${AITEA_RAGFLOW_DATA:?}/logs:/ragflow/logs
+    depends_on:
+      mysql: {condition: service_healthy}
+      kvrocks: {condition: service_healthy}
+      infinity: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      nats: {condition: service_started}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:9380/api/v1/system/healthz]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+  mysql:
+    image: mysql:8.0.40
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?}
+    command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_unicode_ci, --default-authentication-plugin=mysql_native_password, --init-file=/data/application/init.sql, --innodb-buffer-pool-size=256M, --max-connections=200]
+    volumes:
+      - ${AITEA_RAGFLOW_DATA:?}/mysql:/var/lib/mysql
+      - ./init.sql:/data/application/init.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin ping -uroot --silent']
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+  minio:
+    image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
+    command: [server, --console-address, ':9001', /data]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?}
+    volumes:
+      - ${AITEA_RAGFLOW_DATA:?}/minio:/data
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:9000/minio/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
+  kvrocks:
+    image: apache/kvrocks:2.16.0
+    user: '0:0'
+    entrypoint: [/bin/sh, /etc/kvrocks/entrypoint.sh]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+    volumes:
+      - ${AITEA_RAGFLOW_DATA:?}/kvrocks:/var/lib/kvrocks
+      - ./kvrocks-entrypoint.sh:/etc/kvrocks/entrypoint.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping']
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
+  nats:
+    image: nats:2.14.2
+    command: [-js, -sd, /data]
+    volumes:
+      - ${AITEA_RAGFLOW_DATA:?}/nats:/data
+    restart: unless-stopped
+  infinity:
+    image: infiniflow/infinity:v0.7.4-x64-v3
+    command: [-f, /infinity_conf.toml]
+    volumes:
+      - ${AITEA_RAGFLOW_DATA:?}/infinity:/var/infinity
+      - ./infinity.toml:/infinity_conf.toml:ro
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:23820/admin/node/current]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped

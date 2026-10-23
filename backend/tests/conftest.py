@@ -10,6 +10,14 @@ def isolated_providers(monkeypatch):
     for prefix in ("LLM", "EMBEDDING", "RERANK", "VISION"):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             monkeypatch.setenv(f"{prefix}_{field}", "")
+    for key in (
+        "MINERU_API_TOKEN",
+        "RAGFLOW_BASE_URL",
+        "RAGFLOW_API_KEY",
+        "RAGFLOW_EMBEDDING_MODEL",
+        "RAGFLOW_RERANK_MODEL",
+    ):
+        monkeypatch.setenv(key, "")
     monkeypatch.setenv("VISION_OCR_ENABLED", "false")
     monkeypatch.setenv("VISION_OCR_WORKERS", "2")
     monkeypatch.delenv("VISION_OCR_REQUEST_WORKERS", raising=False)

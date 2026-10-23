@@ -28,7 +28,6 @@ from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from email.message import EmailMessage
@@ -39,7 +38,6 @@ from .html_parsing import HTMLDocument as _HTMLDocument
 from .pdf_table_detection import VERSION as _TABLE_LAYOUT_VERSION
 from .public_search import EGazetteSearchRequest
 from .vendor.geo_parser.document_ingestion import (
-    DoclingDocumentParser,
     ParsedDocument,
     ParsedElement,
     _parse_native_text,
@@ -422,53 +420,16 @@ def parse_file(
         raise ValueError("secondary 文档仅保存原件，禁止解析或建立索引。")
     if not content or len(content) > MAX_BYTES:
         raise ValueError("文档不能为空且不能超过 20 MB。")
+    from .mineru import supports, pending_manifest
+
+    if supports(filename, mime_type):
+        return pending_manifest(filename, hashlib.sha256(content).hexdigest())
     extension = Path(filename).suffix.lower()
-    if not extension:
-        extension = _MIME_EXTENSIONS.get(mime_type.split(";")[0].strip().lower(), "")
-        filename += extension
-    if extension == ".xls" and parser == "basic":
-        from .xls_parsing import parse_xls
-
-        return parse_xls(content, filename=filename)
-    if extension == ".mdb" and parser == "basic":
-        from .mdb_parsing import parse_mdb
-
-        return parse_mdb(content, filename=filename)
-    if extension in {".doc", ".wpf", ".wpd"} and parser == "basic":
-        from .legacy_doc_parsing import parse_legacy_doc, parse_wpf
-
-        return (parse_legacy_doc if extension == ".doc" else parse_wpf)(content, filename=filename)
-    supported = {".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf"}
-    if extension not in supported:
-        raise ValueError("支持 PDF、DOCX、XLS、HTML、TXT 和 Markdown；MDB、DOC 和 WPF 需配置只读工具。")
-    if parser == "docling":
-        # Explicit opt-in prevents accidental model downloads on a basic installation.
-        if not os.environ.get("DOCLING_MODELS_PATH"):
-            raise ValueError("Docling 需要配置已安装模型目录 DOCLING_MODELS_PATH。")
-        try:
-            document = DoclingDocumentParser(document_timeout_seconds=90).parse(
-                filename=filename, mime_type=mime_type, content=content
-            )
-        except ImportError as exc:
-            raise ValueError("Docling 可选依赖尚未安装。") from exc
-        if document.assets:
-            document = replace(
-                document, assets=[], warnings=[*document.warnings, "图像尚未经过视觉核验，未用于检索或引用。"]
-            )
-    elif parser != "basic":
-        raise ValueError("未知解析器，仅支持 basic 或 docling。")
-    elif extension in {".txt", ".md", ".markdown"}:
-        if len(content) > MAX_TEXT:
-            raise ValueError("文本超过处理限制。")
-        document = _parse_native_text(filename=filename, content=content)
-    elif extension in {".html", ".htm"}:
-        document = _parse_html(content)
-    elif extension == ".docx":
-        from .docx_parsing import parse_docx
-
-        return parse_docx(content, filename=filename)
-    else:
-        document = _parse_pdf(content)
+    if extension not in {".txt", ".md", ".markdown"}:
+        raise ValueError("此文件格式未获 MinerU 精准解析支持，请提供 PDF、Office、图片或 HTML 原件。")
+    if len(content) > MAX_TEXT:
+        raise ValueError("文本超过处理限制。")
+    document = _parse_native_text(filename=filename, content=content)
     html_source = getattr(document, "html_source", {})
     if (not document.elements and not document.pages and not html_source.get("objects")) or sum(
         len(x.content_text) for x in document.elements

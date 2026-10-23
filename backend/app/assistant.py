@@ -397,7 +397,7 @@ def run_workflow(
         "citations": [],
         "stage_id": stage["id"],
         "assistant_mode": mode,
-        "retrieval_mode": "lexical",
+        "retrieval_mode": "unavailable",
     }
     tool_run = ToolRun(emit, check_cancelled)
     stopped = False

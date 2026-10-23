@@ -1,0 +1,46 @@
+general:
+  heartbeat_interval: 3s
+api:
+  host: 0.0.0.0
+  http_port: 9380
+admin:
+  host: 0.0.0.0
+  http_port: 9381
+mysql:
+  name: rag_flow
+  user: root
+  password: '${MYSQL_PASSWORD}'
+  host: mysql
+  port: 3306
+  max_connections: 100
+  stale_timeout: 300
+  max_allowed_packet: 67108864
+minio:
+  user: '${MINIO_USER}'
+  password: '${MINIO_PASSWORD}'
+  host: minio:9000
+infinity:
+  uri: infinity:23817
+  postgres_port: 5432
+  db_name: default_db
+kvrocks:
+  db: 1
+  password: '${REDIS_PASSWORD}'
+  host: kvrocks:6379
+nats:
+  host: nats
+  port: 4222
+otel:
+  enable: false
+ingestor:
+  mq_type: nats
+  max_concurrent_workers: 1
+  page_concurrency: 1
+  compiler_pool_size: 0
+file_syncer:
+  max_concurrent_syncs: 1
+user_default_llm:
+  default_models:
+    embedding_model:
+      api_key: '${AITEA_EMBEDDING_API_KEY}'
+      base_url: '${AITEA_EMBEDDING_BASE_URL}'

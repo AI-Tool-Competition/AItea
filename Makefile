@@ -45,6 +45,8 @@ help:
 	  'make collection-catalog [COUNTRY=ID|SG]  导出共享总库、原件、文本、映射和采集状态目录' \
 	  'make collect-resources OUTPUT=data/campaigns/run ORIGINALS=2  并发采集；RESUME=1 续跑' \
 	  'make collection-prepare / collection-status  准备 / 检查无人值守官方采集服务' \
+	  'make ragflow-up / ragflow-bootstrap  启动本机 RAGFlow / 注册云端向量模型' \
+	  'make ragflow-status / ragflow-stop   查看 / 停止本机 RAGFlow，保留数据' \
 	  'make worktree NAME=feature/foo  创建隔离开发工作树' \
 	  '选项：SYNC=auto|force|skip，API_PORT=8000，WEB_PORT=3000'
 
@@ -78,6 +80,16 @@ start:
 
 worktree:
 	python3 scripts/worktree.py
+
+.PHONY: ragflow-prepare ragflow-up ragflow-status ragflow-stop
+ragflow-prepare:
+	uv run --project backend --locked python scripts/ragflow.py prepare
+ragflow-up:
+	uv run --project backend --locked python scripts/ragflow.py up
+ragflow-status:
+	uv run --project backend --locked python scripts/ragflow.py status
+ragflow-stop:
+	uv run --project backend --locked python scripts/ragflow.py stop
 
 archive-inventory: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 archive-inventory: export TEA_INVENTORY_OWNER = $(OWNER)
@@ -116,3 +128,6 @@ check: backend-check frontend-check
 
 build:
 	cd frontend && SKIP_ENV_VALIDATION=1 $(PNPM) build
+
+ragflow-bootstrap:
+	uv run --project backend --locked python scripts/ragflow.py bootstrap

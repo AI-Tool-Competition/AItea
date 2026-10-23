@@ -243,6 +243,18 @@ def pdf_source_bindings_valid(manifest: dict) -> bool:
 def text_complete(manifest: dict) -> bool:
     from .native_asset_ocr import assets
 
+    if manifest.get("remote_parse"):
+        from .mineru import manifest_valid
+
+        return (
+            manifest_valid(manifest)
+            and manifest.get("quality", {}).get("complete") is True
+            and all(
+                page.get("status") == "ocr_complete" and page.get("ocr", {}).get("complete") is True
+                for page in manifest.get("pages", [])
+            )
+        )
+
     try:
         image_assets = assets(manifest)
         if not (manifest.get("elements") or manifest.get("chunks") or manifest.get("pages") or image_assets):
@@ -319,6 +331,8 @@ def quality_warning(manifest: dict) -> str | None:
 
     if text_complete(manifest):
         return None
+    if manifest.get("remote_parse", {}).get("state") in {"planned", "pending"}:
+        return "MinerU 精准解析正在排队或处理中；原件及任务回执已保存。"
     quality = manifest.get("quality") or {}
     pending = len(ocr_pending(manifest))
     failed = len(quality.get("failed_pages", []))

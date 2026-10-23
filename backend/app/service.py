@@ -1969,9 +1969,30 @@ class Service:
         scope, arguments = (worker_scope or BackgroundWorkerScope()).sql("s.owner_id")
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
-                """SELECT id,owner_id,last_attempt_at,interval_hours,status FROM sources s WHERE enabled=1
+                """SELECT id,owner_id,last_attempt_at,interval_hours,status,
+                EXISTS(
+                    SELECT 1 FROM checklist_bindings b
+                    JOIN checklist_candidates c ON c.binding_id=b.id
+                    WHERE b.source_id=s.id AND b.owner_id=s.owner_id AND c.status='pending'
+                        AND json_extract(b.snapshot,'$.item.execution')='discovery'
+                        AND json_extract(b.snapshot,'$.item.conditional')=0
+                        AND NOT EXISTS(
+                            SELECT 1 FROM collection_items i WHERE i.candidate_id=c.id
+                        )
+                ) AS has_unattempted_candidates
+                FROM sources s WHERE enabled=1
                 AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))
-                AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now'))"""
+                AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now')
+                    OR EXISTS(
+                        SELECT 1 FROM checklist_bindings b
+                        JOIN checklist_candidates c ON c.binding_id=b.id
+                        WHERE b.source_id=s.id AND b.owner_id=s.owner_id AND c.status='pending'
+                            AND json_extract(b.snapshot,'$.item.execution')='discovery'
+                            AND json_extract(b.snapshot,'$.item.conditional')=0
+                            AND NOT EXISTS(
+                                SELECT 1 FROM collection_items i WHERE i.candidate_id=c.id
+                            )
+                    ))"""
                 + scope
                 + " ORDER BY COALESCE(last_attempt_at,''),id LIMIT 100",
                 arguments,
@@ -1980,7 +2001,8 @@ class Service:
         return [
             {"id": r["id"], "owner_id": r["owner_id"]}
             for r in rows
-            if r["last_attempt_at"] is None
+            if r["has_unattempted_candidates"]
+            or r["last_attempt_at"] is None
             or datetime.fromisoformat(r["last_attempt_at"]) + timedelta(hours=r["interval_hours"]) <= current
         ]
 

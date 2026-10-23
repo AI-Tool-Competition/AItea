@@ -11,11 +11,13 @@ from fastapi.testclient import TestClient
 
 from admin_helpers import grant_admin, login_admin
 
+from app.db import now
 from app.main import create_app
 from app.service import Service
 
 PLAN = "indonesia-20261003"
 BASE = f"/api/tea/collection-plans/{PLAN}"
+SG_PLAN = "singapore-demo-20261009"
 
 
 @pytest.fixture
@@ -333,6 +335,84 @@ def test_scheduled_checklist_collects_pending_candidates_without_manual_request(
             "SELECT json_extract(plan,'$.checklist.kind') FROM collection_runs WHERE id=?", (run["id"],)
         ).fetchone()[0]
     assert queued == "queued" and kind == "collection"
+
+
+def test_new_candidates_bypass_poll_interval_once_but_failed_fetches_keep_backoff(client):
+    configure(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with service.db.transaction() as conn:
+        binding = conn.execute(
+            "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='1.3'",
+            (owner, PLAN),
+        ).fetchone()
+        conn.execute(
+            "UPDATE sources SET enabled=1,interval_hours=24,last_attempt_at=? WHERE id=?",
+            (now(), binding["source_id"]),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,identity_key,discovered_from,status,created_at)
+            VALUES('new-scheduled-candidate',?,?,?,NULL,?,'pending',?)""",
+            (
+                binding["id"],
+                "https://peraturan.bpk.go.id/Details/456/fixture",
+                "New fixture regulation",
+                "https://peraturan.bpk.go.id/Search?jenis=8",
+                now(),
+            ),
+        )
+
+    with closing(service.db.connect()) as conn:
+        assert service.collection.source_due(conn, owner, binding["source_id"])
+    assert any(row["id"] == binding["source_id"] for row in service.due_sources())
+    run = service.collection.enqueue_scheduled(owner, binding["source_id"])
+    assert run["kind"] == "collection" and run["total"] == 1
+    with service.db.transaction() as conn:
+        item = conn.execute(
+            "SELECT id FROM collection_items WHERE candidate_id='new-scheduled-candidate'"
+        ).fetchone()
+        conn.execute("UPDATE collection_items SET status='failed' WHERE id=?", (item["id"],))
+        conn.execute("UPDATE collection_runs SET status='partial' WHERE id=?", (run["id"],))
+        conn.execute("UPDATE checklist_candidates SET status='pending' WHERE id='new-scheduled-candidate'")
+        assert not service.collection.source_due(conn, owner, binding["source_id"])
+    assert not any(row["id"] == binding["source_id"] for row in service.due_sources())
+
+
+def test_unattempted_conditional_candidates_do_not_bypass_poll_interval(client):
+    plan_url = f"/api/tea/collection-plans/{SG_PLAN}"
+    response = client.post(
+        plan_url + "/configure",
+        json={"expected_version": client.get(plan_url).json()["plan"]["version"]},
+    )
+    assert response.status_code == 200, response.text
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with service.db.transaction() as conn:
+        binding = conn.execute(
+            "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='4.1'",
+            (owner, SG_PLAN),
+        ).fetchone()
+        conn.execute(
+            "UPDATE sources SET enabled=1,interval_hours=24,last_attempt_at=? WHERE id=?",
+            (now(), binding["source_id"]),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,identity_key,discovered_from,status,created_at)
+            VALUES('conditional-scheduled-candidate',?,?,?,NULL,?,'pending',?)""",
+            (
+                binding["id"],
+                "https://www.judiciary.gov.sg/hearings/court-hearings",
+                "Conditional fixture",
+                "https://www.judiciary.gov.sg/",
+                now(),
+            ),
+        )
+
+    with closing(service.db.connect()) as conn:
+        assert not service.collection.source_due(conn, owner, binding["source_id"])
+    assert not any(row["id"] == binding["source_id"] for row in service.due_sources())
 
 
 def test_scheduled_checklist_rechecks_stored_candidate_after_catalog_poll(client, tmp_path):

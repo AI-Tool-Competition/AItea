@@ -164,7 +164,20 @@ class CollectionService:
         return (
             conn.execute(
                 """SELECT 1 FROM sources s WHERE s.id=? AND s.owner_id=? AND s.enabled=1
-            AND (s.last_attempt_at IS NULL OR julianday(s.last_attempt_at)+s.interval_hours/24.0<=julianday('now'))
+            AND (
+                s.last_attempt_at IS NULL
+                OR julianday(s.last_attempt_at)+s.interval_hours/24.0<=julianday('now')
+                OR EXISTS(
+                    SELECT 1 FROM checklist_bindings b
+                    JOIN checklist_candidates c ON c.binding_id=b.id
+                    WHERE b.source_id=s.id AND b.owner_id=s.owner_id AND c.status='pending'
+                        AND json_extract(b.snapshot,'$.item.execution')='discovery'
+                        AND json_extract(b.snapshot,'$.item.conditional')=0
+                        AND NOT EXISTS(
+                            SELECT 1 FROM collection_items i WHERE i.candidate_id=c.id
+                        )
+                )
+            )
             AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))""",
                 (source_id, owner),
             ).fetchone()

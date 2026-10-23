@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 6,
+  "version": 7,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -320,7 +320,9 @@
       "verbatim_requirements": "抓取内容标题 | Undang-Undang（UU）｜法律\n网页链接 | https://peraturan.bpk.go.id/Search?jenis=8\n截图示范 | \n抓取注意事项 | 采集步骤：在本页各条目红框所示的 Download file 位置下载 PDF 法律文件；按BPK UU列表进入详情，核对编号、制定机关、公布和生效日期，保存正文、Penjelasan及附件；读取修改、废止和UJI MATERI关系，再关联完整MK判决。\n内容取舍：保留BPK所收现行及历史UU，正文、说明、附件和效力证据必须齐备，缺失会误判规则或时间。其他官方来源用于交叉核验，同份原件不重复入库。\n检索适用：法律问题先按主体、事项、地域和时点筛选UU，再查实施规范和司法材料。正文与官方说明配套使用；历史问题使用当时版本，失效法律不进入默认现行检索。\n冲突与更新：核对宪法、有关TAP及MK审查结果。同级新旧和特别规定结合修改与过渡条款判断。定期检查列表及关系，新增修订版本；部分失效按条款调整，历史原件保留。",
       "execution": "discovery",
       "adapter": "bpk",
-      "limits": {}
+      "limits": {
+        "max_original_bytes": 134217728
+      }
     },
     {
       "id": "1.4",
@@ -389,7 +391,9 @@
       "verbatim_requirements": "抓取内容标题 | Peraturan Pemerintah Pengganti Undang-Undang（Perppu／Perpu）｜代法律政府条例\n网页链接 | https://peraturan.bpk.go.id/Search?jenis=9\n截图示范 | \n抓取注意事项 | 采集步骤：在本页各条目红框所示的 Download file 位置下载 PDF 法律文件，保存正文、说明和附件，读取Ditetapkan dengan等关系；跟踪DPR批准、否决及相应UU或撤销文件，核对每一阶段日期和现行控制文本。\n内容取舍：现行和历史Perppu及审批结果必须保留，缺失会误把已转化或撤销文件作为当前依据。审批证据归法规生命周期，不另列司法解释；一般议会新闻不入正文库。\n检索适用：查询紧急立法及其调整事项时，先核问题时点的Perppu状态；已批准转为UU的事项，以对应时点的控制文本检索，不能同时把两份原件当作独立现行义务。\n冲突与更新：Perppu与UU同级，须服从宪法和有关TAP。BPK的Berlaku标签不能单独证明状态，须核关系和DPR结果；新增批准或撤销证据时更新版本关联，不删除历史文本。",
       "execution": "discovery",
       "adapter": "bpk",
-      "limits": {}
+      "limits": {
+        "max_original_bytes": 134217728
+      }
     },
     {
       "id": "1.5",
@@ -458,7 +462,9 @@
       "verbatim_requirements": "抓取内容标题 | Peraturan Pemerintah（PP）｜政府条例\n网页链接 | https://peraturan.bpk.go.id/Search?jenis=10\n截图示范 | \n抓取注意事项 | 采集步骤：逐页遍历BPK的PP目录，在每条法规卡片红框内的Download file区域点击PDF文件名下载，完整保存正文、说明（Penjelasan）及附件。逐项点击标题进入详情页，保存法规元数据、制定依据、修改及废止关系，并与下载文件关联；将多部UU与PP逐项关联，核对过渡和生效条款。截图中的PP Nomor 31 Tahun 2026.pdf仅为下载位置示范，采集覆盖既定PP范围。\n内容取舍：保留BPK所收全部现行及历史PP；实施条件、附件和授权依据必须收录，缺失会遗漏UU的具体规则。其他来源只作核验和同件去重，不设“一部UU对应固定几部PP”的数量假定。\n检索适用：UU规定需进一步实施或法律问题取决于具体条件、计算标准、程序时，在相关UU之后调用PP，随后查Perpres和有授权的部门实施规范。\n冲突与更新：PP不得超越或抵触UU／Perppu；须结合授权及MA有关审查结果判断。同级版本核修改和过渡条款，定期增量检查；部分修改按条款处理，旧版保留。",
       "execution": "discovery",
       "adapter": "bpk",
-      "limits": {}
+      "limits": {
+        "max_original_bytes": 134217728
+      }
     },
     {
       "id": "1.6",
@@ -528,7 +534,9 @@
       "verbatim_requirements": "抓取内容标题 | Peraturan Presiden（Perpres）｜总统条例\n网页链接 | https://peraturan.bpk.go.id/Search?jenis=11\n截图示范 | \n抓取注意事项 | 采集步骤：在本页各条目红框所示的 Download file 位置下载 PDF 法律文件；从BPK列表进入详情，保存现行及历史正文、说明和附件，核对制定依据、用途、生效日期及修改废止关系，关联PP、UU或被批准的国际协定。\n内容取舍：保留BPK所收全部Perpres，法定条件和附件必须保存，不按业务领域删除正式法规。新闻与重复转载不收；条约批准文本不能替代完整协定及附件。\n检索适用：问题涉及总统权限或上位法实施安排时，在相关UU／PP之后检索。机构组织材料按问题相关度调用，具体行业义务仍须查正式实施文件。\n冲突与更新：不得抵触UU／Perppu和PP；核MA审查及明确修改、废止关系。定期增量检查，区分批准法自身生效与条约生效；全部失效移出当前有效检索，历史原文保留。",
       "execution": "discovery",
       "adapter": "bpk",
-      "limits": {}
+      "limits": {
+        "max_original_bytes": 134217728
+      }
     },
     {
       "id": "1.7",
@@ -1497,7 +1505,9 @@
       "verbatim_requirements": "抓取内容标题 | 投资｜BKPM／投资部正式规范及法律适用补强\n网页链接 | https://jdih.bkpm.go.id/id/search\n截图示范 | \n\n抓取注意事项 | 采集步骤：从BKPM JDIH按类型、年份查询，点击列表截图红框内的文件条目进入详情页；在详情页截图红框所示 Dokumen 区域点击 Unduh，下载保存 PDF 法律文件正文，并保存必要附件和法律依据。先与法规主库比对同件，再补缺少的原件、状态和关系，识别同号异版。截图用于示范进入详情页和下载文件的操作，具体文件是否收录仍按本条内容取舍标准判断。\n内容取舍：准入、投资义务、限制及监管标准会影响法律结论，相关正式Peraturan和规范性Keputusan／SE保留。OSS操作、办事步骤、表格填写及内部行政文件不收。\n检索适用：投资准入、股权限制或投资合规问题先查UU、PP、Perpres及正式部门法规，再用BKPM补强。许可证的法定条件可解释，平台逐步操作不展开。\n冲突与更新：目录文件逐件核文书性质、制定权限和授权，不能同赋法阶；补强口径与正式法规冲突须回查上位依据。新规关联替代、撤销与适用日，疑点人工核验。",
       "execution": "discovery",
       "adapter": "html_links",
-      "limits": {},
+      "limits": {
+        "max_original_bytes": 134217728
+      },
       "trusted_hosts": [
         "jdih-storage.bkpm.go.id"
       ]

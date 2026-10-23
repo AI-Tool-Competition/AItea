@@ -62,6 +62,14 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
     assert all(item["source_id"] is None for item in singapore["items"])
 
 
+def test_oversized_official_law_items_have_explicit_bounded_caps(client):
+    plan = client.app.state.service.checklists.plans[PLAN]
+    items = {item["id"]: item for item in plan["items"]}
+    assert plan["version"] == 7
+    for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
+        assert items[item_id]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
+
+
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
     assert configure(client) == {"created": 29, "existing": 0}
     assert configure(client) == {"created": 0, "existing": 29}
@@ -105,7 +113,11 @@ def test_configuration_schedules_only_unconditional_automated_sources(client):
     singapore_plan = "singapore-demo-20261009"
     client.post(
         f"/api/tea/collection-plans/{singapore_plan}/configure",
-        json={"expected_version": client.get(f"/api/tea/collection-plans/{singapore_plan}").json()["plan"]["version"]},
+        json={
+            "expected_version": client.get(f"/api/tea/collection-plans/{singapore_plan}").json()["plan"][
+                "version"
+            ]
+        },
     ).raise_for_status()
     service = client.app.state.service
     with closing(service.db.connect()) as conn:
@@ -197,6 +209,13 @@ def test_selected_candidates_retain_country_tier_and_immutable_run_snapshot(clie
     response = client.post(url, json=payload)
     assert response.status_code == 202, response.text
     assert client.post(url, json=payload).json()["id"] == response.json()["id"]
+    with closing(client.app.state.service.db.connect()) as conn:
+        run_plan = json.loads(
+            conn.execute("SELECT plan FROM collection_runs WHERE id=?", (response.json()["id"],)).fetchone()[
+                0
+            ]
+        )
+    assert run_plan["max_original_bytes"] == 128 * 1024 * 1024
     drain_downloads(client)
     stored = client.get(BASE + "/items/1.3/candidates?status=stored").json()["items"][0]
     document = client.get(f"/api/tea/documents/{stored['document_id']}").json()["document"]

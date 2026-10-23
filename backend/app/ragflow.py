@@ -24,6 +24,7 @@ from .db import dump, now
 SCHEMA_VERSION = 21
 RECIPE = "mineru-ragflow-structured-v1"
 _ID = re.compile(r"[a-zA-Z0-9_-]{1,128}\Z")
+MAX_RECONCILE_INTENTS = 500
 
 
 def _digest(value):
@@ -100,10 +101,13 @@ class RAGFlowClient:
             raise RAGFlowError("https_required")
         self.key = os.environ["RAGFLOW_API_KEY"]
 
-    def call(self, method, path, *, payload=None, params=None, files=None):
+    def call(self, method, path, *, payload=None, params=None, files=None, timeout=None):
+        request_timeout = 120 if timeout is None else min(30, max(1, float(timeout)))
         try:
             with httpx.Client(
-                timeout=httpx.Timeout(120, connect=5), trust_env=False, follow_redirects=False
+                timeout=httpx.Timeout(request_timeout, connect=min(5, request_timeout)),
+                trust_env=False,
+                follow_redirects=False,
             ) as client:
                 with client.stream(
                     method,
@@ -235,6 +239,101 @@ class RAGFlowIndex:
             "SELECT min(next_at) FROM ragflow_chunks WHERE generation=? AND state!='done'", (bound[2],)
         ).fetchone()[0]
         return max(0, (next_at or 0) - time.time())
+
+    def reconcile_pending_intents(self, document_id, owner_id):
+        """Read remote receipts for an exhausted generation without creating chunks."""
+        fingerprint = profile()
+        if not fingerprint:
+            raise RAGFlowError("not_configured")
+        with closing(self.db.connect()) as conn:
+            bound = self.binding(conn, document_id, fingerprint, include_chunks=False)
+            if not bound or bound[0]["owner_id"] != owner_id:
+                return None
+            doc, _chunks, generation = bound
+            remote = conn.execute(
+                """SELECT dataset_id,remote_id,state FROM ragflow_documents
+                WHERE generation=? AND owner_id=? AND profile=?""",
+                (generation, owner_id, fingerprint),
+            ).fetchone()
+            intents = {
+                row["local_id"]: row["content_hash"]
+                for row in conn.execute(
+                    """SELECT local_id,content_hash FROM ragflow_chunks
+                    WHERE generation=? AND state='intent' ORDER BY local_id LIMIT ?""",
+                    (generation, MAX_RECONCILE_INTENTS + 1),
+                )
+            }
+            local_chunks = {
+                chunk["chunk_id"]: dict(chunk)
+                for chunk in conn.execute(
+                    """SELECT x.* FROM retrieval_chunks x JOIN ragflow_chunks c
+                    ON c.local_id=x.chunk_id AND c.generation=? AND c.state='intent'
+                    WHERE x.document_id=? ORDER BY x.chunk_id LIMIT ?""",
+                    (generation, document_id, MAX_RECONCILE_INTENTS + 1),
+                )
+            }
+        if len(intents) > MAX_RECONCILE_INTENTS:
+            raise RAGFlowError("reconcile_intent_limit")
+        if not remote or not remote["dataset_id"] or not remote["remote_id"] or not intents:
+            return {
+                "generation": generation,
+                "source_hash": doc["content_hash"],
+                "source_version": doc["version"],
+                "index_revision": doc["index_revision"],
+                "dataset_id": remote["dataset_id"] if remote else None,
+                "remote_id": remote["remote_id"] if remote else None,
+                "intents": intents,
+                "matches": {},
+            }
+        client = RAGFlowClient()
+        path = f"/datasets/{_identifier(remote['dataset_id'])}/documents/{_identifier(remote['remote_id'])}/chunks"
+        wanted = {chunk_content(chunk): local_id for local_id, chunk in local_chunks.items()}
+        matches = {}
+        pages = 0
+        remote_chunk_count = 0
+        deadline = time.monotonic() + 15
+        for page in range(1, 42):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RAGFlowError("reconcile_deadline")
+            data = client.call(
+                "GET",
+                path,
+                params={"page": page, "page_size": 500},
+                timeout=min(5, remaining),
+            )
+            items = data.get("chunks", [])
+            pages += 1
+            remote_chunk_count += len(items)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content_with_weight") or item.get("content")
+                identifier = item.get("chunk_id") or item.get("id")
+                local_id = wanted.get(content) if isinstance(content, str) else None
+                if local_id and identifier:
+                    matches[local_id] = {
+                        "remote_id": _identifier(identifier),
+                        "content_hash": intents[local_id],
+                    }
+            if len(matches) == len(wanted):
+                break
+            if len(items) < 500:
+                break
+        else:
+            raise RAGFlowError("reconcile_limit")
+        return {
+            "generation": generation,
+            "source_hash": doc["content_hash"],
+            "source_version": doc["version"],
+            "index_revision": doc["index_revision"],
+            "dataset_id": remote["dataset_id"],
+            "remote_id": remote["remote_id"],
+            "intents": intents,
+            "matches": matches,
+            "remote_chunk_count": remote_chunk_count,
+            "pages": pages,
+        }
 
     def _guard(self, conn, doc, claim, generation, fingerprint):
         if not self.service.collection._valid_claim(conn, claim, True):
@@ -380,16 +479,25 @@ class RAGFlowIndex:
         unknown = any(states[c["chunk_id"]]["state"] == "intent" for c in due)
         existing = {}
         if unknown:
+            wanted = {
+                chunk_content(chunk): chunk["chunk_id"]
+                for chunk in due
+                if states[chunk["chunk_id"]]["state"] == "intent"
+            }
             for page in range(1, 42):
                 data = client.call("GET", path, params={"page": page, "page_size": 500})
                 items = data.get("chunks", [])
                 for item in items:
+                    if not isinstance(item, dict):
+                        continue
                     # RAGFlow's chunks endpoint exposes indexed text as
                     # content_with_weight; accept content too for compatible
                     # versions and test doubles that return the create shape.
                     content = item.get("content_with_weight") or item.get("content")
-                    if content:
+                    if isinstance(content, str) and content in wanted:
                         existing[content] = _identifier(item.get("id") or item.get("chunk_id"))
+                if len(existing) == len(wanted):
+                    break
                 if len(items) < 500:
                     break
             else:

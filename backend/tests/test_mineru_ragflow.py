@@ -6,6 +6,7 @@ from datetime import date
 import hashlib
 import io
 import json
+import time
 from threading import Lock
 import zipfile
 
@@ -16,7 +17,7 @@ from app.ingestion_quality import text_complete
 from app.mineru import Admission, MinerUWait, manifest_valid
 from app.mineru_results import _assemble, _prepare, reference, resolve_reference
 from app.native_asset_ocr import assets
-from app.ragflow import RAGFlowError
+from app.ragflow import RAGFlowError, chunk_content
 from app.service import Service
 from test_retrieval_index import body, seed
 
@@ -38,7 +39,7 @@ class Remote:
         self.chunks, self.calls, self.lock = {}, [], Lock()
         self.lose_response = False
 
-    def call(self, method, path, *, payload=None, params=None, files=None):
+    def call(self, method, path, *, payload=None, params=None, files=None, timeout=None):
         with self.lock:
             self.calls.append((method, path, payload, params))
             if path == "/datasets":
@@ -156,6 +157,124 @@ def test_lost_embedding_response_is_reconciled_without_resubmission(workspace, m
         conn.execute("UPDATE ragflow_chunks SET next_at=0")
     assert workspace.ragflow.step(document, claim) == 0
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+
+
+def test_recovery_reconciles_exact_remote_receipt_without_resubmitting(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch)
+    assert workspace.ragflow.step(document, claim) == 1
+    remote.lose_response = True
+    with pytest.raises(RAGFlowError):
+        workspace.ragflow.step(document, claim)
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
+    workspace.collection._failure(
+        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
+    )
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+    result = workspace.collection.recovery.run_due()
+    assert result["reconciled"] == 1, json.dumps(result)
+    with closing(workspace.db.connect()) as conn:
+        chunk = conn.execute("SELECT state,remote_id FROM ragflow_chunks").fetchone()
+        job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()
+        recovery = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
+    assert chunk["state"] == "done" and chunk["remote_id"]
+    assert job["status"] == "queued"
+    assert recovery["status"] == "queued" and recovery["reason"] == "remote_receipts_reconciled"
+    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+
+    claim = workspace.collection.claim_processing(owner_id="owner", document_ids=[document["id"]])
+    assert claim
+    workspace.collection.process_item(claim)
+    with closing(workspace.db.connect()) as conn:
+        assert conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0] == "completed"
+        assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
+        assert conn.execute("SELECT status FROM collection_recovery_jobs").fetchone()[0] == "completed"
+    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+
+
+def test_recovery_keeps_unmatched_paid_intent_blocked_without_resubmitting(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch)
+    assert workspace.ragflow.step(document, claim) == 1
+    remote.lose_response = True
+    with pytest.raises(RAGFlowError):
+        workspace.ragflow.step(document, claim)
+    remote.chunks.clear()
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
+    workspace.collection._failure(
+        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
+    )
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+
+    result = workspace.collection.recovery.run_due()
+
+    assert result["reconciled"] == 0
+    assert result["partially_reconciled"] == 0
+    with closing(workspace.db.connect()) as conn:
+        chunk = conn.execute("SELECT state FROM ragflow_chunks").fetchone()
+        job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()
+        recovery = conn.execute("SELECT status,reason,available_at FROM collection_recovery_jobs").fetchone()
+    assert chunk["state"] == "intent"
+    assert job["status"] == "failed"
+    assert recovery["status"] == "blocked" and recovery["reason"] == "paid_result_unknown"
+    assert recovery["available_at"] > time.time()
+    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+
+
+def test_recovery_does_not_query_ragflow_for_legacy_unknown_embedding(workspace, monkeypatch):
+    remote, _document, claim = prepared(workspace, monkeypatch)
+    workspace.collection._failure(
+        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
+    )
+    result = workspace.collection.recovery.run_due()
+    assert result["reconciled"] == 0 and result["receipt_audit_errors"] == 0
+    assert remote.calls == []
+    with closing(workspace.db.connect()) as conn:
+        row = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
+    assert tuple(row) == ("blocked", "paid_result_unknown")
+
+
+def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch, count=2)
+    assert workspace.ragflow.step(document, claim) == 1
+    remote.lose_response = True
+    with pytest.raises(RAGFlowError):
+        workspace.ragflow.step(document, claim)
+    with closing(workspace.db.connect()) as conn:
+        bound = workspace.ragflow.binding(conn, document["id"], workspace.embedding_fingerprint())
+        _doc, chunks, generation = bound
+    remote.chunks.clear()
+    remote.chunks["verified-receipt"] = {
+        "chunk_id": "verified-receipt",
+        "content_with_weight": chunk_content(chunks[0]),
+    }
+    with workspace.db.transaction() as conn:
+        conn.execute(
+            "UPDATE ragflow_chunks SET state='intent',intent_at=?,next_at=0 WHERE generation=?",
+            (time.time() - 1000, generation),
+        )
+    workspace.collection._failure(
+        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
+    )
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+    posts_before = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
+
+    result = workspace.collection.recovery.run_due()
+
+    assert result["partially_reconciled"] == 1
+    assert result["reconciled"] == 0
+    with closing(workspace.db.connect()) as conn:
+        states = [row[0] for row in conn.execute("SELECT state FROM ragflow_chunks ORDER BY local_id")]
+        job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
+        recovery = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
+    assert states == ["done", "intent"] or states == ["intent", "done"]
+    assert job == "failed"
+    assert tuple(recovery) == ("blocked", "paid_result_unknown")
+    posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
+    assert posts_after == posts_before
 
 
 def test_queue_recovers_lost_embedding_response_without_repeating_the_write(workspace, monkeypatch):

@@ -46,33 +46,42 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(result["chunks"][0]["locator"]["kind"], "html")
         self.assertEqual(result["chunks"][0]["section_path"], ["Law", "Article 1"])
 
-    def test_docx_heading_and_paragraph_original_order(self):
+    def test_docx_is_deferred_to_mineru_without_local_text_extraction(self):
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as archive:
             archive.writestr(
                 "word/document.xml",
                 """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>产品信息</w:t></w:r></w:p><w:p><w:r><w:t>净含量250克</w:t></w:r></w:p></w:body></w:document>""",
             )
-        result = self.ingestion.parse_file("product.docx", data.getvalue())
-        self.assertEqual(result["chunks"][0]["section_path"], ["产品信息"])
-        self.assertEqual(result["chunks"][0]["locator"]["paragraph_start"], 2)
+        with patch.object(self.ingestion, "_parse_native_text", side_effect=AssertionError("local DOCX parsing")):
+            result = self.ingestion.parse_file("product.docx", data.getvalue())
+        self.assertEqual(result["parser"], "mineru")
+        self.assertFalse(result["quality"]["complete"])
+        self.assertEqual(result["chunks"], [])
+        self.assertEqual(result["remote_parse"]["state"], "planned")
 
-    def test_unsupported_format_and_xml_entities_rejected(self):
+    def test_unsupported_format_rejected_and_docx_is_deferred_without_xml_expansion(self):
         with self.assertRaises(ValueError):
-            self.ingestion.parse_file("legacy.doc", b"not a DOCX")
+            self.ingestion.parse_file("unsupported.exe", b"not a document")
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as archive:
             archive.writestr("word/document.xml", '<!DOCTYPE test [<!ENTITY x "oops">]><test>&x;</test>')
-        with self.assertRaisesRegex(ValueError, "DOCTYPE|ENTITY"):
-            self.ingestion.parse_file("bad.docx", data.getvalue())
+        with patch.object(self.ingestion, "_parse_native_text", side_effect=AssertionError("local XML parsing")):
+            result = self.ingestion.parse_file("bad.docx", data.getvalue())
+        self.assertEqual(result["parser"], "mineru")
+        self.assertEqual(result["chunks"], [])
+        self.assertEqual(result["remote_parse"]["state"], "planned")
 
-    def test_docx_compressed_xml_bomb_rejected_before_expansion(self):
+    def test_docx_compressed_xml_bomb_is_never_expanded_locally(self):
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("word/document.xml", b"x" * (16 * 1024 * 1024 + 1))
         self.assertLess(len(data.getvalue()), 100000)
-        with self.assertRaisesRegex(ValueError, "正文超过"):
-            self.ingestion.parse_file("compressed.docx", data.getvalue())
+        with patch.object(self.ingestion, "_parse_native_text", side_effect=AssertionError("local XML expansion")):
+            result = self.ingestion.parse_file("compressed.docx", data.getvalue())
+        self.assertEqual(result["parser"], "mineru")
+        self.assertEqual(result["chunks"], [])
+        self.assertEqual(result["remote_parse"]["state"], "planned")
 
     def test_chinese_retrieval_preserves_provenance_and_no_arbitrary_hits(self):
         chunks = [
@@ -197,7 +206,7 @@ class IngestionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "时间"):
             self.ingestion._public_addresses("example.com", deadline=time.monotonic() - 1)
 
-    def test_pdf_extracts_actual_text_and_page_number(self):
+    def test_pdf_is_deferred_to_mineru_without_local_text_extraction(self):
         from pypdf import PdfWriter
         from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -218,24 +227,26 @@ class IngestionTests(unittest.TestCase):
         page[NameObject("/Contents")] = writer._add_object(stream)
         output = io.BytesIO()
         writer.write(output)
-        result = self.ingestion.parse_file("product.pdf", output.getvalue())
-        self.assertIn("Tea product 250 grams", result["chunks"][0]["text"])
-        self.assertEqual(result["chunks"][0]["locator"], {"kind": "pdf", "page": 1})
+        with patch.object(self.ingestion, "_parse_pdf", side_effect=AssertionError("local PDF parsing")):
+            result = self.ingestion.parse_file("product.pdf", output.getvalue())
+        self.assertEqual(result["parser"], "mineru")
+        self.assertFalse(result["quality"]["complete"])
+        self.assertEqual(result["chunks"], [])
+        self.assertEqual(result["remote_parse"]["state"], "planned")
 
-    def test_blank_pdf_requires_full_page_pixel_proof_before_completion(self):
+    def test_blank_pdf_is_deferred_instead_of_locally_marked_complete(self):
         from pypdf import PdfWriter
 
         writer = PdfWriter()
         writer.add_blank_page(width=100, height=100)
         output = io.BytesIO()
         writer.write(output)
-        result = self.ingestion.parse_file("scan.pdf", output.getvalue())
+        with patch.object(self.ingestion, "_parse_pdf", side_effect=AssertionError("local PDF parsing")):
+            result = self.ingestion.parse_file("scan.pdf", output.getvalue())
         self.assertEqual(result["chunks"], [])
-        self.assertTrue(result["quality"]["complete"])
-        self.assertEqual(result["quality"]["pending_pages"], [])
-        proof = result["pages"][0]["native_blank"]
-        self.assertEqual(proof["proof_kind"], "verified_full_page_opaque_white_pixels")
-        self.assertEqual(proof["model_calls"], 0)
+        self.assertEqual(result["parser"], "mineru")
+        self.assertFalse(result["quality"]["complete"])
+        self.assertEqual(result["remote_parse"]["state"], "planned")
 
     def test_only_same_origin_direct_attachments_are_fetched(self):
         fetched = []

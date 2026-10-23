@@ -476,6 +476,21 @@ def test_two_sources_execute_concurrently_and_failure_is_isolated(environment):
     assert collector.state["active_sources"] == []
 
 
+def test_known_pre_response_network_failure_releases_unused_byte_reservation(environment):
+    env = environment
+    collector = env.make()
+    origin = source()["url"]
+    env.responses[origin] = collection.DownloadError(
+        "抓取连接失败或超时，请检查来源后重试。", retryable=True, bytes_received=0
+    )
+
+    receipt = collector.fetch(source(), origin)
+
+    assert receipt["outcome"]["status"] == "network_error"
+    assert receipt["charged_bytes"] == 0
+    assert sum(row["charged_bytes"] for row in collector.requests.values()) == 0
+
+
 def test_per_host_slot_bound_is_enforced_for_concurrent_source_workers(environment):
     env = environment
     sources = [source(f"sg-{index}", path=f"/food-{index}") for index in range(4)]

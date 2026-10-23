@@ -395,6 +395,8 @@ class HTMLDocument(HTMLParser):
             self._line_offsets.extend(index + 1 for index, char in enumerate(source) if char == "\n")
 
     def _position(self):
+        if self.source is None:
+            return 0
         line, column = self.getpos()
         return self._line_offsets[line - 1] + column
 

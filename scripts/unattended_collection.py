@@ -412,6 +412,8 @@ class Collector:
                 }
             receipt.update(outcome=outcome, asset=asset, status="finished", finished_at=time.time())
         except DownloadError as error:
+            if error.bytes_received is not None:
+                receipt["charged_bytes"] = error.bytes_received
             status = re.search(r"HTTP (\d{3})(?!\d)", str(error))
             outcome = {
                 "status": "http_error" if status else "network_error",

@@ -1242,11 +1242,13 @@ class DownloadError(ValueError):
         retryable: bool = False,
         retry_after: float | None = None,
         response_host: str | None = None,
+        bytes_received: int | None = None,
     ):
         super().__init__(message)
         self.retryable = retryable
         self.retry_after = retry_after if retryable else None
         self.response_host = response_host
+        self.bytes_received = bytes_received
 
 
 def _validated_url(url: str) -> tuple[str, str]:
@@ -1747,7 +1749,14 @@ def _download(
                     "blob" if consume is not None else "content": payload,
                 }
             except (OSError, http.client.HTTPException) as exc:
-                raise DownloadError("抓取连接失败或超时，请检查来源后重试。", retryable=True) from exc
+                # If no response was received, no response-body bytes entered
+                # the bounded downloader. Keep interrupted/partial responses
+                # unmetered (None) so callers retain the full reservation.
+                raise DownloadError(
+                    "抓取连接失败或超时，请检查来源后重试。",
+                    retryable=True,
+                    bytes_received=0 if response is None else None,
+                ) from exc
             finally:
                 expiry.cancel()
                 try:

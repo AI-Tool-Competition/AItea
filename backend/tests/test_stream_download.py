@@ -96,6 +96,40 @@ def test_consumer_receives_chunks_before_later_network_reads(transport):
     assert all(connection.closed for connection in connections)
 
 
+def test_connect_failure_before_response_records_zero_body_bytes(transport, monkeypatch):
+    _, _, connections = transport
+
+    class FailedRequest:
+        sock = None
+
+        def __init__(self, host, address, timeout):
+            connections.append(self)
+
+        def request(self, method, path, *, headers, body=None):
+            raise TimeoutError("connect timeout")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", FailedRequest)
+    with pytest.raises(ingestion.DownloadError) as error:
+        download()
+    assert error.value.bytes_received == 0
+
+
+def test_partial_response_failure_keeps_quota_reservation_unknown(transport):
+    responses, _, _ = transport
+    responses.append(
+        Response(
+            [b"abc", TimeoutError("read timeout")],
+            headers={"Content-Length": "9", "Content-Type": "application/pdf"},
+        )
+    )
+    with pytest.raises(ingestion.DownloadError) as error:
+        download(consume=lambda chunks: list(chunks))
+    assert error.value.bytes_received is None
+
+
 def test_pinned_transport_falls_back_without_changing_tls_hostname(monkeypatch):
     attempts, closed, names = [], [], []
 

@@ -384,6 +384,67 @@ def test_explicit_retry_resets_only_failed_ocr_pages(service, monkeypatch):
     assert saved["quality"]["pending_pages"] == [2]
 
 
+@pytest.mark.parametrize("job_status", ["failed", "queued"])
+def test_operator_approved_retry_targets_only_saved_read_timeout_pages(service, job_status):
+    doc = store(service)
+    manifest = scanned()
+    for page in manifest["pages"]:
+        page["source_hash"] = doc["content_hash"]
+        page["status"] = "ocr_failed"
+        page["ocr"] = {"attempts": 1}
+    manifest["pages"][0]["ocr"].update(
+        request_outcome="unknown_transport_result",
+        source_hash=doc["content_hash"],
+        page=1,
+        error_response={
+            "request_outcome": "unknown_transport_result",
+            "error_code": "ReadTimeout",
+            "request_kind": "page",
+            "source_hash": doc["content_hash"],
+            "page": 1,
+        },
+    )
+    manifest["quality"] = {"complete": False, "failed_pages": [1, 2], "pending_pages": []}
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=?,status='failed' WHERE id=?", (json.dumps(manifest), doc["id"]))
+        conn.execute("UPDATE processing_jobs SET status=?,phase='parse' WHERE document_id=?", (job_status, doc["id"]))
+        service.collection.queue_processing(
+            conn, doc["id"], "owner", retry_unknown_ocr_pages=[1]
+        )
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0])
+        job = conn.execute("SELECT status,phase FROM processing_jobs WHERE document_id=?", (doc["id"],)).fetchone()
+    assert [page["status"] for page in saved["pages"]] == ["pending_ocr", "ocr_failed"]
+    history = saved["pages"][0]["ocr_attempt_history"][-1]
+    assert history["retry_authorization"] == "operator_approved_possible_duplicate_charge"
+    assert history["previous_page"]["ocr"]["error_response"]["error_code"] == "ReadTimeout"
+    assert job["status"] == "queued" and job["phase"] == "parse"
+
+
+def test_operator_approved_retry_rejects_non_timeout_unknown_result(service):
+    doc = store(service)
+    manifest = scanned()
+    page = manifest["pages"][0]
+    page.update(source_hash=doc["content_hash"], status="ocr_failed")
+    page["ocr"] = {
+        "attempts": 1,
+        "request_outcome": "unknown_transport_result",
+        "source_hash": doc["content_hash"],
+        "page": 1,
+        "error_response": {
+            "request_outcome": "unknown_transport_result",
+            "error_code": "ConnectTimeout",
+            "request_kind": "page",
+            "source_hash": doc["content_hash"],
+            "page": 1,
+        },
+    }
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (json.dumps(manifest), doc["id"]))
+        conn.execute("UPDATE processing_jobs SET status='failed' WHERE document_id=?", (doc["id"],))
+        with pytest.raises(ValueError, match="ReadTimeout"):
+            service.collection.queue_processing(conn, doc["id"], "owner", retry_unknown_ocr_pages=[1])
+
+
 def test_busy_ocr_capacity_defers_without_failing_or_immediate_reclaim(service, monkeypatch):
     import time
     from app import parsing, vision

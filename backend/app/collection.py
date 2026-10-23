@@ -22,6 +22,8 @@ from .system_library import BackgroundWorkerScope
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 MAX_ATTEMPTS = 3
+_ARCHIVE_PDF_PARSE_WINDOW_PAGES = 16
+_COLLECTION_OCR_BATCH_PAGES = 20
 _PROCESSING_SOURCE_FIELDS = (
     "owner_id",
     "role",
@@ -527,7 +529,14 @@ class CollectionService:
             self._update_source(conn, run_id)
             return self.run_dict(conn, self.own_run(conn, owner, run_id))
 
-    def queue_processing(self, conn, document_id, owner, *, retry_ocr=False):
+    def queue_processing(self, conn, document_id, owner, *, retry_ocr=False, retry_unknown_ocr_pages=()):
+        retry_unknown_ocr_pages = tuple(retry_unknown_ocr_pages)
+        if (
+            len(retry_unknown_ocr_pages) > 20
+            or any(type(page) is not int or page < 1 for page in retry_unknown_ocr_pages)
+            or len(set(retry_unknown_ocr_pages)) != len(retry_unknown_ocr_pages)
+        ):
+            raise ValueError("未知结果 OCR 重试必须限定 1–20 个不同物理页。")
         if conn.execute(
             """SELECT 1 FROM processing_jobs p JOIN collection_recovery_jobs r
             ON r.item_id=p.document_id AND r.owner_id=p.owner_id AND r.queue_kind='processing'
@@ -542,7 +551,7 @@ class CollectionService:
                 "embedding_outcome_review_required",
                 "向量请求结果尚未确认，请先核验已保存回执并指定补齐范围",
             )
-        if retry_ocr:
+        if retry_ocr or retry_unknown_ocr_pages:
             from .ingestion import pdf_quality
             from .native_asset_ocr import apply_asset_checkpoint, assets
             from .ocr_error_evidence import (
@@ -551,15 +560,48 @@ class CollectionService:
                 request_outcome_unknown,
             )
 
+            status_filter = "p.status IN ('failed','queued')" if retry_unknown_ocr_pages else "p.status='failed'"
             row = conn.execute(
-                "SELECT d.manifest FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND p.status='failed'",
+                "SELECT d.manifest,d.content_hash FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND "
+                + status_filter,
                 (document_id, owner),
             ).fetchone()
             manifest = json.loads(row["manifest"]) if row else {}
             pages = manifest.get("pages", [])
             changed = False
+            selected_unknown = set(retry_unknown_ocr_pages)
+            by_number = {page.get("page"): page for page in pages if isinstance(page, dict)}
+            for number in selected_unknown:
+                page = by_number.get(number)
+                metadata = page.get("ocr", {}) if page else {}
+                evidence = metadata.get("error_response", {}) if isinstance(metadata, dict) else {}
+                if (
+                    not page
+                    or page.get("status") != "ocr_failed"
+                    or metadata.get("request_outcome") != "unknown_transport_result"
+                    or metadata.get("source_hash") != page.get("source_hash")
+                    or metadata.get("page") != number
+                    or evidence.get("request_outcome") != "unknown_transport_result"
+                    or evidence.get("error_code") != "ReadTimeout"
+                    or evidence.get("source_hash") != row["content_hash"]
+                    or evidence.get("page") != number
+                    or evidence.get("request_kind") not in (None, "page")
+                ):
+                    raise ValueError("显式重试只允许匹配已保存 ReadTimeout 收据的 OCR 失败页。")
+                preserve_previous_page_attempt(page)
+                page["ocr_attempt_history"][-1]["retry_authorization"] = "operator_approved_possible_duplicate_charge"
+                page["status"] = "pending_ocr"
+                page["ocr"] = {"attempts": 0}
+                page.pop("error", None)
+                page.pop("deferred_reason", None)
+                changed = True
             for page in pages:
-                if page.get("status") == "ocr_failed" and not request_outcome_unknown(page.get("ocr", {})):
+                if (
+                    retry_ocr
+                    and page.get("page") not in selected_unknown
+                    and page.get("status") == "ocr_failed"
+                    and not request_outcome_unknown(page.get("ocr", {}))
+                ):
                     preserve_previous_page_attempt(page)
                     page["status"] = "pending_ocr"
                     page.setdefault("ocr", {})["attempts"] = 0
@@ -1400,6 +1442,7 @@ class CollectionService:
             on_region=store_region,
             on_reuse=reuse,
             on_response_error=store_response_error,
+            max_pages=_COLLECTION_OCR_BATCH_PAGES,
             archive_path=doc["storage_path"] if archive_mode else None,
             archive_size=doc["size"] if archive_mode else None,
         )
@@ -1475,6 +1518,7 @@ class CollectionService:
                         size=doc["size"],
                         filename=doc["filename"],
                         manifest=manifest if manifest.get("pages") else None,
+                        max_pages=_ARCHIVE_PDF_PARSE_WINDOW_PAGES,
                     )
                 elif (
                     archive_docx_mode
@@ -1516,6 +1560,7 @@ class CollectionService:
                             source_hash=doc["content_hash"],
                             size=doc["size"],
                             filename=doc["filename"],
+                            max_pages=_ARCHIVE_PDF_PARSE_WINDOW_PAGES,
                         )
                     if (
                         not manifest.get("elements")

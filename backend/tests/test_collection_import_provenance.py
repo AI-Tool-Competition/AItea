@@ -100,13 +100,15 @@ def pdf_manifest(doc, *, complete=False, archive=False):
 def test_fresh_and_archive_PDF_keep_origin_before_every_checkpoint_and_after_rebuild(
     pair, monkeypatch, archive, interrupt
 ):
-    from app import archive_parsing, parsing, vision
+    from app import archive_parsing, collection, parsing, vision
 
     initial = {"archive_pdf": {"version": 1}} if archive else None
     source, target, doc, origin = imported(pair, initial=initial)
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
 
     def parse(*_args, **kwargs):
+        if archive:
+            assert kwargs.get("max_pages") == collection._ARCHIVE_PDF_PARSE_WINDOW_PAGES
         if archive and kwargs.get("manifest"):
             kwargs["manifest"]["collection_import"]["guard"] = "parser-mutated-guard"
         return pdf_manifest(doc, archive=archive)
@@ -119,6 +121,7 @@ def test_fresh_and_archive_PDF_keep_origin_before_every_checkpoint_and_after_reb
     checkpoints = []
 
     def ocr(_filename, _content, _mime, manifest, *, on_image, on_page, **_kwargs):
+        assert _kwargs.get("max_pages") == collection._COLLECTION_OCR_BATCH_PAGES
         assert manifest["collection_import"] == origin
         reference = on_image(
             {

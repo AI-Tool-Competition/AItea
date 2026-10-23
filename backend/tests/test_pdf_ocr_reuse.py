@@ -412,18 +412,18 @@ def test_unverified_visibility_masks_native_hint_without_changing_source_evidenc
     assert "masked-unverified-native-hint-v1" in result["ocr"]["provider_profile"]["request_recipe"]
 
 
-def test_reuse_keeps_the_four_page_batch_bound(service, enabled, monkeypatch):
+def test_collection_reuse_processes_up_to_twenty_pages_per_batch(service, enabled, monkeypatch):
     requests = fake_provider(monkeypatch, payload(text=NATIVE))
     content = make_pdf([(NATIVE, True)] * 6)
     donor = register(service, content, key="six-pages-donor", country="ID")
     target = register(service, content, key="six-pages-target", country="SG")
     process(service, donor)
-    assert len(requests) == 4
+    assert len(requests) == 6
     after = process(service, target)
-    assert len(requests) == 4
-    assert after["manifest"]["quality"]["completed_pages"] == [1, 2, 3, 4]
-    assert after["manifest"]["quality"]["pending_pages"] == [5, 6]
-    assert not text_complete(after["manifest"])
+    assert len(requests) == 6
+    assert after["manifest"]["quality"]["completed_pages"] == [1, 2, 3, 4, 5, 6]
+    assert after["manifest"]["quality"]["pending_pages"] == []
+    assert text_complete(after["manifest"])
 
 
 def test_masked_hint_does_not_remove_blank_response_independent_doubt(enabled, monkeypatch):

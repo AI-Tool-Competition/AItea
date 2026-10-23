@@ -534,26 +534,13 @@ def test_country_attachments_inherit_parent_scope_in_details_and_lists(client):
     assert client.get(f"/api/tea/documents?parent_id={doc['id']}&country=SG").json()["total"] == 0
 
 
-def test_business_search_derives_country_and_rejects_overrides(client):
-    documents = {}
-    for country in ("ID", "SG"):
-        doc = client.post(
-            "/api/tea/documents", files={"file": (f"{country}.txt", b"tea country rule", "text/plain")}
-        ).json()
-        classified = client.patch(
-            f"/api/tea/documents/{doc['id']}/classification",
-            json={"collection": f"country:{country}", "level": "primary", "expected_revision": 0},
-        ).json()
-        reviewed = client.patch(
-            f"/api/tea/documents/{doc['id']}/metadata",
-            json={"expected_revision": classified["metadata_revision"], "review_status": "published"},
-        )
-        assert reviewed.status_code == 200, reviewed.text
-        documents[country] = doc["id"]
+def test_business_search_reports_unavailable_without_ragflow_and_rejects_overrides(client):
     case = client.get("/api/tea/bootstrap").json()["cases"][0]
     payload = {"case_id": case["id"], "query": "tea"}
-    found = client.post("/api/tea/search", json=payload).json()["items"]
-    assert {item["document_id"] for item in found} == {documents["ID"]}
+    response = client.post("/api/tea/search", json=payload)
+    assert response.status_code == 200
+    assert response.json()["mode"] == "unavailable"
+    assert response.json()["items"] == []
     for country in ("SG", "unassigned"):
         assert client.post("/api/tea/search", json=payload | {"country": country}).status_code == 422
         assert client.get(f"/api/tea/documents?case_id={case['id']}&country={country}").status_code == 422

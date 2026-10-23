@@ -84,6 +84,51 @@ def prepared(service, monkeypatch, *, count=1):
     return remote, document, claim
 
 
+def test_processing_queue_finishes_started_ragflow_index_before_new_uploads(workspace):
+    with workspace.db.transaction() as conn:
+        for identifier, order in (("new-upload", 1), ("started-index", 2)):
+            seed(conn, identifier, body(identifier), order=order)
+            workspace.collection.queue_processing(conn, identifier, "owner")
+            workspace.index.sync_document(conn, identifier)
+            conn.execute(
+                "UPDATE processing_jobs SET phase='embed',updated_at=? WHERE document_id=?",
+                (
+                    "2026-10-13T00:00:00.000001+00:00"
+                    if identifier == "new-upload"
+                    else "2026-10-13T00:00:00.000002+00:00",
+                    identifier,
+                ),
+            )
+        bound = workspace.ragflow.binding(
+            conn, "started-index", workspace.embedding_fingerprint(), include_chunks=False
+        )
+        row, _chunks, generation = bound
+        conn.execute(
+            """INSERT INTO ragflow_documents(
+                generation,document_id,owner_id,profile,source_hash,source_version,index_revision,
+                dataset_id,remote_id,name,state,chunk_count,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,'dataset-owner','remote-started','started-index.txt','indexing',?,?,?)""",
+            (
+                generation,
+                row["id"],
+                row["owner_id"],
+                workspace.embedding_fingerprint(),
+                row["content_hash"],
+                row["version"],
+                row["index_revision"],
+                row["chunk_count"],
+                now(),
+                now(),
+            ),
+        )
+
+    claim = workspace.collection.claim_processing(
+        owner_id="owner", document_ids=["new-upload", "started-index"]
+    )
+
+    assert claim and claim["document_id"] == "started-index"
+
+
 def test_index_uses_cloud_chunks_once_and_resumes(workspace, monkeypatch):
     remote, document, claim = prepared(workspace, monkeypatch, count=3)
     assert workspace.ragflow.step(document, claim) == 1

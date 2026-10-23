@@ -763,7 +763,12 @@ class CollectionService:
                     preferred = "embed"
                 elif active_phases == {"embed"}:
                     preferred = "parse"
-            order = "CASE WHEN phase=? THEN 0 ELSE 1 END," if preferred else ""
+            order = """CASE WHEN phase='embed' AND EXISTS (
+                SELECT 1 FROM ragflow_documents started
+                WHERE started.document_id=processing_jobs.document_id AND started.state='indexing'
+            ) THEN 0 ELSE 1 END,"""
+            if preferred:
+                order += "CASE WHEN phase=? THEN 0 ELSE 1 END,"
             # Keep embed admission durable and bounded independently of parser
             # capacity. Explicit transport tuning must also opt into more live
             # document leases; the default remains two.
@@ -1360,9 +1365,7 @@ class CollectionService:
                     # images to process. Queue another parse lease only when
                     # the recognizer is configured; otherwise keep the exact
                     # pending state visible instead of spinning forever.
-                    needs_parse = needs_parse or (
-                        vision_ocr_configured() and bool(pending_assets(manifest))
-                    )
+                    needs_parse = needs_parse or (vision_ocr_configured() and bool(pending_assets(manifest)))
                 deferred = needs_parse
                 index_delay = (
                     self.service.ragflow.retry_delay(conn, doc["id"], current_fingerprint)

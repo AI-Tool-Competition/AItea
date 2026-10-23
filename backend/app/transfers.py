@@ -26,7 +26,10 @@ class CollectionTransfers:
         self.collection, self.db = collection, collection.db
         self.blobs = collection.service.archive.blobs
         self.minimum_size = 1024 * 1024
-        self.part_size = 64 * 1024
+        # Slow official sources often spend seconds opening each connection.
+        # Larger bounded parts amortize that cost; existing transfers retain
+        # their recorded geometry and continue from already verified bytes.
+        self.part_size = 512 * 1024
         self.slow_after = 5.0
         self.minimum_rate = 32 * 1024
         with self.db.transaction() as conn:

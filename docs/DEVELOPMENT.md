@@ -10,7 +10,7 @@
 make dev
 ```
 
-前提是 Linux 环境已提供 uv、Python 3、Node.js 22+ 和 npm。Python 3 仅用于运行标准库开发管理脚本；后端和 Python 测试统一使用 uv 管理的 Python 3.12+ 环境。无需 `source activate`，也不使用全局 pip、Conda 或 Poetry。
+前提是 Linux 环境已提供 uv、Python 3、Node.js 22+ 和 npm。若系统 Node.js 较旧，可将官方 Node.js 22.23.0 Linux x64 二进制解压到当前工作树忽略目录 `.dev/toolchain/node-v22.23.0-linux-x64/`；Makefile 会优先使用该本地运行时，不需要 sudo 或全局安装。Python 3 仅用于运行标准库开发管理脚本；后端和 Python 测试统一使用 uv 管理的 Python 3.12+ 环境。无需 `source activate`，也不使用全局 pip、Conda 或 Poetry。
 
 启动器会检查端口、同步锁定依赖、启动后端热更新与 Next.js 开发服务，并等待 API 与页面就绪。安装期间会显示最新进度；暂无新日志时也会提示安装仍在进行及日志位置。健康检查完成后输出访问地址并返回终端。默认入口为 <http://127.0.0.1:3000/tea>，API 监听本机 8000 端口。
 

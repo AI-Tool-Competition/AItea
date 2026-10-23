@@ -1,6 +1,7 @@
 """Durable single-node collection queues. Network/model work never owns a DB write lock."""
 
 import hashlib
+import base64
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from copy import deepcopy
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Thread
 from urllib.parse import urlsplit
 
 from .db import dump, now, uid
@@ -22,8 +23,6 @@ from .system_library import BackgroundWorkerScope
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 MAX_ATTEMPTS = 3
-_ARCHIVE_PDF_PARSE_WINDOW_PAGES = 16
-_COLLECTION_OCR_BATCH_PAGES = 20
 _PROCESSING_SOURCE_FIELDS = (
     "owner_id",
     "role",
@@ -89,6 +88,9 @@ class CollectionService:
         from .collection_recovery import CollectionRecovery
 
         self.recovery = CollectionRecovery(self)
+        from .mineru import MinerUParser
+
+        self.parser = MinerUParser(self)
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -170,7 +172,7 @@ class CollectionService:
         )
 
     def enqueue_scheduled(self, owner, source_id):
-        """Managed catalogs keep their published discovery/selection boundary."""
+        """Poll a source while preserving its checklist and legal review gates."""
         from .service import AppError, fail
 
         with closing(self.db.connect()) as conn:
@@ -184,17 +186,51 @@ class CollectionService:
             binding = conn.execute(
                 "SELECT * FROM checklist_bindings WHERE source_id=? AND owner_id=?", (source_id, owner)
             ).fetchone()
+            if binding is not None:
+                previous = conn.execute(
+                    """SELECT json_extract(plan,'$.checklist.kind') FROM collection_runs
+                    WHERE source_id=? ORDER BY created_at DESC,id DESC LIMIT 1""",
+                    (source_id,),
+                ).fetchone()
+                previous_kind = previous[0] if previous else None
+                pending = conn.execute(
+                    "SELECT COUNT(*) FROM checklist_candidates WHERE binding_id=? AND status='pending'",
+                    (binding["id"],),
+                ).fetchone()[0]
+                candidate_ids = []
+                kind = "discovery"
+                if pending or previous_kind == "discovery":
+                    kind = "collection"
+                    states = ("pending",) if pending else ("stored",)
+                    marks = ",".join("?" for _ in states)
+                    candidate_ids = [
+                        row[0]
+                        for row in conn.execute(
+                            f"""SELECT c.id FROM checklist_candidates c
+                            LEFT JOIN (SELECT candidate_id,MAX(fetched_at) last_fetched
+                                FROM collection_items WHERE candidate_id IS NOT NULL GROUP BY candidate_id) f
+                                ON f.candidate_id=c.id
+                            WHERE c.binding_id=? AND c.status IN ({marks})
+                            ORDER BY COALESCE(julianday(f.last_fetched),julianday(c.created_at)),c.id LIMIT 200""",
+                            (binding["id"], *states),
+                        )
+                    ]
+                    if not candidate_ids:
+                        kind = "discovery"
         if not source["checklist"]:
             return self.enqueue(owner, source_id, {"client_request_id": "schedule-" + uid()}, scheduled=True)
         if binding is None:
             fail(409, "checklist_binding_missing", "清单来源缺少版本绑定，请核验配置")
+        payload = {"client_request_id": "schedule-" + uid(), "confirm_condition": False}
+        if kind == "collection":
+            payload.update(candidate_ids=candidate_ids, level="primary", primary_document_ids=[])
         try:
             return self.service.checklists.start(
                 owner,
                 binding["plan_id"],
                 binding["item_id"],
-                {"client_request_id": "schedule-" + uid(), "confirm_condition": False},
-                kind="discovery",
+                payload,
+                kind=kind,
                 version=binding["version"],
                 scheduled=True,
             )
@@ -207,6 +243,8 @@ class CollectionService:
                 "definition_changed",
                 "unknown_plan",
                 "not_found",
+                "candidate_unavailable",
+                "no_candidates",
             }:
                 raise
             # A bounded scheduled attempt does not grant condition approval or
@@ -520,7 +558,7 @@ class CollectionService:
                     AND document_id IN (SELECT document_id FROM collection_items WHERE run_id=?)""",
                     (owner, run_id),
                 ).fetchall():
-                    self.queue_processing(conn, job["document_id"], owner, retry_ocr=True)
+                    self.queue_processing(conn, job["document_id"], owner)
                 status = "queued"
             conn.execute(
                 "UPDATE collection_runs SET status=?,revision=revision+1,updated_at=? WHERE id=?",
@@ -529,14 +567,7 @@ class CollectionService:
             self._update_source(conn, run_id)
             return self.run_dict(conn, self.own_run(conn, owner, run_id))
 
-    def queue_processing(self, conn, document_id, owner, *, retry_ocr=False, retry_unknown_ocr_pages=()):
-        retry_unknown_ocr_pages = tuple(retry_unknown_ocr_pages)
-        if (
-            len(retry_unknown_ocr_pages) > 20
-            or any(type(page) is not int or page < 1 for page in retry_unknown_ocr_pages)
-            or len(set(retry_unknown_ocr_pages)) != len(retry_unknown_ocr_pages)
-        ):
-            raise ValueError("未知结果 OCR 重试必须限定 1–20 个不同物理页。")
+    def queue_processing(self, conn, document_id, owner):
         if conn.execute(
             """SELECT 1 FROM processing_jobs p JOIN collection_recovery_jobs r
             ON r.item_id=p.document_id AND r.owner_id=p.owner_id AND r.queue_kind='processing'
@@ -551,76 +582,6 @@ class CollectionService:
                 "embedding_outcome_review_required",
                 "向量请求结果尚未确认，请先核验已保存回执并指定补齐范围",
             )
-        if retry_ocr or retry_unknown_ocr_pages:
-            from .ingestion import pdf_quality
-            from .native_asset_ocr import apply_asset_checkpoint, assets
-            from .ocr_error_evidence import (
-                preserve_previous_asset_attempt,
-                preserve_previous_page_attempt,
-                request_outcome_unknown,
-            )
-
-            status_filter = "p.status IN ('failed','queued')" if retry_unknown_ocr_pages else "p.status='failed'"
-            row = conn.execute(
-                "SELECT d.manifest,d.content_hash FROM documents d JOIN processing_jobs p ON p.document_id=d.id WHERE d.id=? AND d.owner_id=? AND "
-                + status_filter,
-                (document_id, owner),
-            ).fetchone()
-            manifest = json.loads(row["manifest"]) if row else {}
-            pages = manifest.get("pages", [])
-            changed = False
-            selected_unknown = set(retry_unknown_ocr_pages)
-            by_number = {page.get("page"): page for page in pages if isinstance(page, dict)}
-            for number in selected_unknown:
-                page = by_number.get(number)
-                metadata = page.get("ocr", {}) if page else {}
-                evidence = metadata.get("error_response", {}) if isinstance(metadata, dict) else {}
-                if (
-                    not page
-                    or page.get("status") != "ocr_failed"
-                    or metadata.get("request_outcome") != "unknown_transport_result"
-                    or metadata.get("source_hash") != page.get("source_hash")
-                    or metadata.get("page") != number
-                    or evidence.get("request_outcome") != "unknown_transport_result"
-                    or evidence.get("error_code") != "ReadTimeout"
-                    or evidence.get("source_hash") != row["content_hash"]
-                    or evidence.get("page") != number
-                    or evidence.get("request_kind") not in (None, "page")
-                ):
-                    raise ValueError("显式重试只允许匹配已保存 ReadTimeout 收据的 OCR 失败页。")
-                preserve_previous_page_attempt(page)
-                page["ocr_attempt_history"][-1]["retry_authorization"] = "operator_approved_possible_duplicate_charge"
-                page["status"] = "pending_ocr"
-                page["ocr"] = {"attempts": 0}
-                page.pop("error", None)
-                page.pop("deferred_reason", None)
-                changed = True
-            for page in pages:
-                if (
-                    retry_ocr
-                    and page.get("page") not in selected_unknown
-                    and page.get("status") == "ocr_failed"
-                    and not request_outcome_unknown(page.get("ocr", {}))
-                ):
-                    preserve_previous_page_attempt(page)
-                    page["status"] = "pending_ocr"
-                    page.setdefault("ocr", {})["attempts"] = 0
-                    changed = True
-            if changed:
-                manifest["quality"] = pdf_quality(pages)
-            for asset in assets(manifest):
-                if asset["asset_status"] == "ocr_failed" and not request_outcome_unknown(
-                    asset.get("ocr", {})
-                ):
-                    preserve_previous_asset_attempt(asset)
-                    asset["asset_status"] = "pending_vision"
-                    asset.setdefault("ocr", {})["attempts"] = 0
-                    asset.pop("error", None)
-                    apply_asset_checkpoint(manifest, asset)
-                    changed = True
-            if changed:
-                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document_id))
-                conn.execute("UPDATE processing_jobs SET phase='parse' WHERE document_id=?", (document_id,))
         conn.execute(
             """INSERT INTO processing_jobs(document_id,owner_id,phase,status,updated_at) VALUES(?,?,'parse','queued',?)
             ON CONFLICT(document_id) DO UPDATE SET status='queued',attempts=0,available_at=0,error=NULL,updated_at=excluded.updated_at
@@ -711,13 +672,27 @@ class CollectionService:
                 AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
                 AND json_extract({metadata},'$.review_status')='draft'
                 AND json_extract({manifest},'$.parser')='html-basic'
-                AND json_extract({manifest},'$.parser_version')='3'
-                AND (json_extract({manifest},'$.pipeline_version')='html-source-mapping-v3'
-                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23)='html-source-mapping-v3+')
-                AND json_extract({manifest},'$.html_source.mapping_version')='html-source-mapping-v3'
+                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7')
+                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+'))
+                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7')
                 AND json_extract({manifest},'$.source_hash')=d.content_hash
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""
+
+    def _persist_ocr_image(self, claim, rendered):
+        """Persist bounded OCR pixels only while this draft still has authority."""
+        with closing(self.db.connect()) as conn:
+            if not self._valid_claim(conn, claim, True):
+                raise RuntimeError("图片识别授权或处理租约已变化，停止保存模型输入。")
+        raw = base64.b64decode(rendered["image_base64"], validate=True)
+        blob = self.service.archive.blobs.put_bytes(claim["owner_id"], raw)
+        return {
+            "content_hash": blob.digest,
+            "size": blob.size,
+            "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
+            "mime_type": "image/png",
+        }
 
     def claim_processing(
         self,
@@ -1229,236 +1204,13 @@ class CollectionService:
         except Exception as error:
             self._failure(claim, error, processing=False)
 
-    def _write_ocr_checkpoint(self, lock, validate, update):
-        # Only the guarded local transaction is retried: rendering, CAS and
-        # provider calls stay outside, so a paid response is not requested again.
-        with lock:
-            for attempt in range(3):
-                try:
-                    with self.db.transaction() as conn:
-                        validate(conn)
-                        return update(conn)
-                except sqlite3.OperationalError as error:
-                    if not _storage_busy(error) or attempt == 2:
-                        raise
-                    time.sleep(0.1 * (2**attempt))
-
-    def _persist_ocr_image(self, doc, rendered):
-        import base64
-
-        if rendered.get("source_hash") != doc["content_hash"]:
-            raise ValueError("识别图像与原件版本不一致")
-        image = base64.b64decode(rendered["image_base64"], validate=True)
-        if len(image) > 8 * 1024 * 1024:
-            raise ValueError("识别图像超过存储限制")
-        if hashlib.sha256(image).hexdigest() != rendered.get("image_sha256"):
-            raise ValueError("识别图像完整性校验失败")
-        if rendered.get("mime_type", "image/png") != "image/png":
-            raise ValueError("识别图像必须为受限转换的 PNG")
-        blob = self.service.archive.blobs.put_bytes(doc["owner_id"], image)
-        return {
-            "content_hash": blob.digest,
-            "size": blob.size,
-            "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
-            "mime_type": "image/png",
-        }
-
-    def _process_native_assets(self, doc, claim, manifest, content):
-        from .native_asset_ocr import apply_asset_checkpoint, ocr_native_assets_bounded
-        from .html_linked_asset_ocr import read_linked_images
-
-        checkpoint_lock = Lock()
-        with self.db.transaction() as conn:
-            if not self._valid_claim(conn, claim, True):
-                raise ValueError("处理任务已更新，请等待当前任务完成")
-            source_urls = [
-                row["final_url"]
-                for row in conn.execute(
-                    """SELECT final_url FROM collection_items
-                    WHERE owner_id=? AND document_id=? AND status='stored' AND final_url IS NOT NULL
-                    ORDER BY id LIMIT 50""",
-                    (doc["owner_id"], doc["id"]),
-                )
-            ]
-        image_contents = read_linked_images(
-            self.db.data_dir,
-            doc["owner_id"],
-            manifest,
-            source_url=doc["source_url"],
-            allowed_source_urls=source_urls,
-            pending_only=True,
-            max_assets=4,
-        )
-
-        def checkpoint(asset):
-            with checkpoint_lock, self.db.transaction() as conn:
-                if not self._valid_claim(conn, claim, True):
-                    raise ValueError("处理任务已更新，请等待当前任务完成")
-                apply_asset_checkpoint(manifest, asset)
-                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-
-        def store_image(rendered):
-            with closing(self.db.connect()) as conn:
-                if not self._valid_claim(conn, claim, True):
-                    raise ValueError("处理任务授权或资料已更新，请等待当前任务完成")
-            reference = self._persist_ocr_image(doc, rendered)
-            with checkpoint_lock, self.db.transaction() as conn:
-                if not self._valid_claim(conn, claim, True):
-                    raise ValueError("处理任务已更新，请等待当前任务完成")
-            # on_asset commits the exact mapping, sent pixels and attempt before
-            # invoking the provider; no physical PDF page identity is invented.
-            return reference
-
-        with closing(self.db.connect()) as conn:
-            if not self._valid_claim(conn, claim, True):
-                raise ValueError("处理任务授权或资料已更新，请等待当前任务完成")
-        return ocr_native_assets_bounded(
-            content,
-            manifest,
-            on_asset=checkpoint,
-            on_image=store_image,
-            archive_path=doc["storage_path"] if content is None else None,
-            archive_size=doc["size"] if content is None else None,
-            image_contents=image_contents,
-        )
-
-    def _process_pdf_ocr(self, doc, claim, manifest, content, archive_mode):
-        from .parsing import ocr_bounded
-        from .pdf_ocr_reuse import candidate_is_current, find_verified_reuse
-
-        checkpoint_lock = Lock()
-
-        def current_document(conn):
-            current = conn.execute(
-                "SELECT owner_id,role,version,content_hash,size,storage_path FROM documents WHERE id=?",
-                (doc["id"],),
-            ).fetchone()
-            if (
-                not self._valid_claim(conn, claim, True)
-                or current is None
-                or any(
-                    current[key] != doc[key]
-                    for key in ("owner_id", "role", "version", "content_hash", "size", "storage_path")
-                )
-            ):
-                raise ValueError("处理任务或原件版本已更新，请等待当前任务完成")
-
-        def store_image(rendered):
-            with closing(self.db.connect()) as conn:
-                current_document(conn)
-            reference = self._persist_ocr_image(doc, rendered)
-
-            def update(conn):
-                page = next(page for page in manifest["pages"] if page["page"] == rendered["page"])
-                page.setdefault("ocr", {})["image_blob"] = reference
-                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-
-            self._write_ocr_checkpoint(checkpoint_lock, current_document, update)
-            return reference
-
-        def store_region(rendered):
-            with closing(self.db.connect()) as conn:
-                current_document(conn)
-            reference = self._persist_ocr_image(doc, rendered)
-            with checkpoint_lock, self.db.transaction() as conn:
-                current_document(conn)
-            # The parser checkpoints the returned reference and the
-            # request attempt through on_page before any HTTP call.
-            return reference
-
-        def store_response_error(evidence):
-            from .ocr_error_evidence import persist_response_evidence, validate_response_binding
-
-            def current_request(conn):
-                current_document(conn)
-                saved = json.loads(
-                    conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
-                )
-                page = next((p for p in saved["pages"] if p["page"] == evidence.get("page")), None)
-                validate_response_binding(evidence, doc["content_hash"], page)
-                return page
-
-            with closing(self.db.connect()) as conn:
-                request_page = current_request(conn)
-            reference = persist_response_evidence(
-                self.service.archive.blobs,
-                doc["owner_id"],
-                evidence,
-                source_hash=doc["content_hash"],
-                request_page=request_page,
-            )
-
-            def update(conn):
-                page = next(p for p in manifest["pages"] if p["page"] == evidence["page"])
-                request = validate_response_binding(evidence, doc["content_hash"], page)
-                request["error_response"] = {
-                    **{key: value for key, value in evidence.items() if key != "response_base64"},
-                    "blob": reference,
-                }
-                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-
-            self._write_ocr_checkpoint(checkpoint_lock, current_request, update)
-            return reference
-
-        def checkpoint(page):
-            # Each completed physical page is durable before another batch.
-            # The lease check prevents a stale worker from replacing new work.
-            def update(conn):
-                manifest["pages"] = [
-                    page if previous["page"] == page["page"] else previous for previous in manifest["pages"]
-                ]
-                conn.execute(
-                    "UPDATE documents SET manifest=? WHERE id=?",
-                    (dump(manifest), doc["id"]),
-                )
-
-            self._write_ocr_checkpoint(checkpoint_lock, current_document, update)
-
-        def reuse(page, rendered):
-            with closing(self.db.connect()) as conn:
-                current_document(conn)
-            candidate = find_verified_reuse(self.service, doc, page, rendered)
-            if candidate is None:
-                return None
-            with checkpoint_lock, self.db.transaction() as conn:
-                current_document(conn)
-                if not candidate_is_current(conn, doc, candidate):
-                    return None
-                completed = candidate["page"]
-                manifest["pages"] = [
-                    completed if previous["page"] == completed["page"] else previous
-                    for previous in manifest["pages"]
-                ]
-                conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-            return completed
-
-        return ocr_bounded(
-            doc["filename"],
-            content,
-            doc["mime_type"],
-            manifest,
-            on_page=checkpoint,
-            on_image=store_image,
-            on_region=store_region,
-            on_reuse=reuse,
-            on_response_error=store_response_error,
-            max_pages=_COLLECTION_OCR_BATCH_PAGES,
-            archive_path=doc["storage_path"] if archive_mode else None,
-            archive_size=doc["size"] if archive_mode else None,
-        )
-
     def process_item(self, claim):
-        from .ingestion import embed_texts, embedding_claim_size
         from .parsing import parse_bounded
         from .ingestion_quality import (
-            OCR_VALIDATION_VERSION,
-            has_mapped_source_objects,
-            ocr_work_pending,
             quality_warning,
             text_complete,
         )
-        from .native_asset_ocr import assets, rebuild_native_asset_text_bounded
-        from .vision import vision_ocr_configured
+        from .mineru import supports
 
         if claim is None:
             return
@@ -1478,6 +1230,7 @@ class CollectionService:
                 "native_page_recovery",
             )
             stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
+            stored_html_source = deepcopy(manifest.get("html_source"))
 
             def preserve_import_origin(result):
                 # Keep stored source evidence and already mapped CAS paths when
@@ -1489,160 +1242,83 @@ class CollectionService:
                         result[key] = deepcopy(stored_provenance[key])
                     else:
                         result.pop(key, None)
+                previous_html = stored_html_source
+                if (
+                    isinstance(previous_html, dict)
+                    and previous_html.get("source_hash") == result.get("source_hash")
+                    and previous_html.get("linked_images")
+                    and isinstance(result.get("html_source"), dict)
+                    and not result["html_source"].get("linked_images")
+                ):
+                    # A fresh structural parse must not discard verified image
+                    # bindings or OCR checkpoints collected after the original
+                    # HTML was stored. Validate each binding against the new
+                    # source map before carrying it forward, then rebuild the
+                    # derived text from the preserved checkpoint.
+                    from .html_linked_asset_ocr import validate_binding
+
+                    linked_images = deepcopy(previous_html["linked_images"])
+                    for value in linked_images:
+                        validate_binding(result, value)
+                    result["html_source"]["linked_images"] = linked_images
+                    from .native_asset_ocr import rebuild_native_asset_text_bounded
+
+                    result = rebuild_native_asset_text_bounded(result)
                 return result
 
             fingerprint = self.service.embedding_fingerprint()
-            batch, vectors, reuse_plan = [], None, None
             if claim["phase"] == "parse":
-                content = None
-                is_pdf = (
-                    doc["mime_type"] == "application/pdf" or Path(doc["filename"]).suffix.lower() == ".pdf"
-                )
-                from .archive_parsing import needs_native
-
-                archive_mode = is_pdf and (
-                    doc["size"] > 20 * 1024 * 1024
-                    or manifest.get("archive_pdf")
-                    or len(manifest.get("pages", [])) > 300
-                    or any(needs_native(page) for page in manifest.get("pages", []))
-                )
-                archive_docx_mode = Path(doc["filename"]).suffix.lower() == ".docx" and (
-                    doc["size"] > 20 * 1024 * 1024 or manifest.get("archive_docx")
-                )
-                if archive_mode:
-                    from .archive_parsing import parse_archive_pdf_bounded
-
-                    manifest = parse_archive_pdf_bounded(
-                        doc["storage_path"],
-                        source_hash=doc["content_hash"],
-                        size=doc["size"],
-                        filename=doc["filename"],
-                        manifest=manifest if manifest.get("pages") else None,
-                        max_pages=_ARCHIVE_PDF_PARSE_WINDOW_PAGES,
-                    )
-                elif (
-                    archive_docx_mode
-                    and not manifest.get("elements")
-                    and not has_mapped_source_objects(manifest)
-                ):
-                    from .docx_archive_parsing import parse_archive_docx_bounded
-
-                    manifest = parse_archive_docx_bounded(
-                        doc["storage_path"],
-                        source_hash=doc["content_hash"],
-                        size=doc["size"],
-                        filename=doc["filename"],
-                    )
-                elif (
-                    not manifest.get("elements")
-                    and not manifest.get("pages")
-                    and not has_mapped_source_objects(manifest)
-                ):
+                if supports(doc["filename"], doc["mime_type"]):
+                    manifest = preserve_import_origin(self.parser.step(doc, claim, manifest))
+                else:
                     content = Path(doc["storage_path"]).read_bytes()
                     if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
                         raise ValueError("原件完整性校验失败")
-                    try:
-                        manifest = parse_bounded(
-                            doc["filename"],
-                            content,
-                            doc["mime_type"],
-                            parser=os.getenv("TEA_PARSER", "basic"),
-                        )
-                    except ValueError as exc:
-                        if not is_pdf or str(exc) != "PDF 不能超过 300 页。":
-                            raise
-                        from .archive_parsing import parse_archive_pdf_bounded
-
-                        content = None
-                        archive_mode = True
-                        manifest = parse_archive_pdf_bounded(
-                            doc["storage_path"],
-                            source_hash=doc["content_hash"],
-                            size=doc["size"],
-                            filename=doc["filename"],
-                            max_pages=_ARCHIVE_PDF_PARSE_WINDOW_PAGES,
-                        )
-                    if (
-                        not manifest.get("elements")
-                        and not manifest.get("pages")
-                        and not has_mapped_source_objects(manifest)
-                    ):
-                        raise ValueError("文件没有可提取的正文；扫描件需要 OCR")
-                manifest = preserve_import_origin(manifest)
-                restore_pages = any(
-                    page.get("status", "").startswith("ocr_")
-                    and (
-                        not text_complete(manifest)
-                        or page.get("ocr", {}).get("validation_version") != OCR_VALIDATION_VERSION
+                    manifest = preserve_import_origin(
+                        parse_bounded(doc["filename"], content, doc["mime_type"])
                     )
-                    for page in manifest.get("pages", [])
-                )
-                if not is_pdf and assets(manifest):
-                    # The last asset checkpoint can precede derived text when
-                    # a process stops. Rebuild without repeating its model call.
-                    manifest = preserve_import_origin(rebuild_native_asset_text_bounded(manifest))
-                if not manifest.get("quality", {}).get("pending_parse_pages") and (
-                    restore_pages or (ocr_work_pending(manifest) and vision_ocr_configured())
-                ):
-                    if content is None and not archive_mode and not archive_docx_mode:
-                        content = Path(doc["storage_path"]).read_bytes()
-                        if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
-                            raise ValueError("原件完整性校验失败")
-                    if not is_pdf:
-                        manifest = preserve_import_origin(
-                            self._process_native_assets(doc, claim, manifest, content)
+                    if manifest.get("parser") == "html-basic" and manifest.get("html_source", {}).get(
+                        "linked_images"
+                    ):
+                        from .html_linked_asset_ocr import read_linked_images
+                        from .native_asset_ocr import apply_asset_checkpoint, ocr_native_assets_bounded
+
+                        image_contents = read_linked_images(
+                            self.db.data_dir,
+                            claim["owner_id"],
+                            manifest,
+                            pending_only=True,
+                            max_assets=4,
                         )
-                    else:
-                        manifest = preserve_import_origin(
-                            self._process_pdf_ocr(doc, claim, manifest, content, archive_mode)
+
+                        def checkpoint_asset(value):
+                            with self.db.transaction() as conn:
+                                if not self._valid_claim(conn, claim, True):
+                                    raise RuntimeError("图片识别租约已失效，停止提交检查点。")
+                                current = json.loads(
+                                    conn.execute(
+                                        "SELECT manifest FROM documents WHERE id=?", (doc["id"],)
+                                    ).fetchone()[0]
+                                )
+                                apply_asset_checkpoint(current, value)
+                                conn.execute(
+                                    "UPDATE documents SET manifest=? WHERE id=?",
+                                    (dump(current), doc["id"]),
+                                )
+
+                        def store_rendered_image(rendered):
+                            return self._persist_ocr_image(claim, rendered)
+
+                        manifest = ocr_native_assets_bounded(
+                            content,
+                            manifest,
+                            on_asset=checkpoint_asset,
+                            on_image=store_rendered_image,
+                            max_assets=4,
+                            image_contents=image_contents,
                         )
             elif should_index and fingerprint and text_complete(manifest):
-                from .embedding_reuse import prepare_batch, verify_originals
-
-                with self.db.transaction() as conn:
-                    if not self._valid_claim(conn, claim, True):
-                        self._release_disallowed_policy_claim(conn, claim)
-                        return
-                    if conn.execute(
-                        "SELECT 1 FROM retrieval_dirty WHERE document_id=?", (doc["id"],)
-                    ).fetchone():
-                        self.service.index.sync_document(conn, doc["id"])
-                    current = self.service.own_document(conn, claim["owner_id"], doc["id"])
-                    if any(
-                        current[key] != doc[key]
-                        for key in (
-                            "owner_id",
-                            "role",
-                            "version",
-                            "content_hash",
-                            "source_url",
-                            "size",
-                            "storage_path",
-                        )
-                    ):
-                        raise ValueError("向量处理原件版本已变更")
-                    doc = current
-                    manifest = json.loads(doc["manifest"])
-                    batch = self.service.index.pending(
-                        conn, doc["id"], fingerprint, limit=embedding_claim_size()
-                    )
-                    if batch:
-                        reuse_plan = prepare_batch(self.service, conn, doc, fingerprint, batch)
-                if batch:
-                    # CAS hashes are streamed once outside the short write transaction.
-                    verify_originals(self.service, reuse_plan)
-                    with closing(self.db.connect()) as conn:
-                        if not self._valid_claim(conn, claim, True):
-                            with self.db.transaction() as write:
-                                self._release_disallowed_policy_claim(write, claim)
-                            return
-                    misses = reuse_plan["misses"]
-                    generated = embed_texts([batch[n]["retrieval_text"] for n in misses]) if misses else []
-                    if generated is None or len(generated) != len(misses):
-                        raise ValueError("向量配置已变更或返回数量无效，请重试处理")
-                    resolved = {n: hit["values"] for n, hit in reuse_plan["hits"].items()}
-                    resolved.update(zip(misses, generated, strict=True))
-                    vectors = [resolved[n] for n in range(len(batch))]
+                self.service.ragflow.step(doc, claim)
             manifest = preserve_import_origin(manifest)
             warning = "；".join(str(item) for item in manifest.get("warnings", []))[:500] or None
             warning = quality_warning(manifest) or warning
@@ -1653,10 +1329,6 @@ class CollectionService:
                 # Classification may change while parsing or calling the provider. Decide
                 # follow-up work from current state in the same transaction as completion.
                 current_fingerprint = self.service.embedding_fingerprint()
-                if reuse_plan is not None:
-                    from .embedding_reuse import assert_current
-
-                    assert_current(self.service, conn, reuse_plan)
                 if claim["phase"] == "parse":
                     conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
                     self.service.index.sync_document(conn, doc["id"], manifest)
@@ -1665,38 +1337,36 @@ class CollectionService:
                 ).fetchone():
                     self.service.index.sync_document(conn, doc["id"])
                 indexable = self.service.archive.can_index(conn, doc["id"])
-                if vectors is not None and fingerprint == current_fingerprint and indexable:
-                    self.service.index.store_vectors(conn, doc["id"], fingerprint, batch, vectors)
-                    if reuse_plan is not None:
-                        from .embedding_reuse import record_commit
-
-                        checkpoint = record_commit(conn, reuse_plan, manifest)
-                        manifest["embedding_reuse"] = checkpoint
-                        conn.execute(
-                            "UPDATE documents SET manifest=json_set(manifest,'$.embedding_reuse',json(?)) WHERE id=?",
-                            (dump(checkpoint), doc["id"]),
-                        )
-                        # Only derived provenance changed; source/text/index fences
-                        # were checked in this same transaction before vector commit.
-                        conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (doc["id"],))
                 needs_index = (
                     indexable
                     and current_fingerprint
                     and text_complete(manifest)
                     and self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
                 )
-                needs_parse = bool(manifest.get("quality", {}).get("pending_parse_pages"))
-                needs_ocr = bool(not needs_parse and ocr_work_pending(manifest) and vision_ocr_configured())
-                deferred = needs_ocr and (
-                    manifest.get("quality", {}).get("deferred_pages")
-                    or manifest.get("native_asset_ocr", {}).get("deferred_assets")
+                needs_parse = manifest.get("remote_parse", {}).get("state") in {"planned", "pending"}
+                if claim["phase"] == "parse":
+                    from .native_asset_ocr import pending_assets
+                    from .vision import vision_ocr_configured
+
+                    # A bounded native-image batch can leave more verified
+                    # images to process. Queue another parse lease only when
+                    # the recognizer is configured; otherwise keep the exact
+                    # pending state visible instead of spinning forever.
+                    needs_parse = needs_parse or (
+                        vision_ocr_configured() and bool(pending_assets(manifest))
+                    )
+                deferred = needs_parse
+                index_delay = (
+                    self.service.ragflow.retry_delay(conn, doc["id"], current_fingerprint)
+                    if needs_index
+                    else 0
                 )
-                next_phase = "parse" if needs_parse or needs_ocr else ("embed" if needs_index else None)
+                next_phase = "parse" if needs_parse else ("embed" if needs_index else None)
                 incomplete = not text_complete(manifest) and not next_phase
                 conn.execute(
                     "UPDATE documents SET status=?,error=? WHERE id=?",
                     (
-                        "processing" if needs_parse or needs_ocr else ("failed" if incomplete else "ready"),
+                        "processing" if needs_parse else ("failed" if incomplete else "ready"),
                         warning,
                         doc["id"],
                     ),
@@ -1716,9 +1386,11 @@ class CollectionService:
                         time.time()
                         + max(
                             manifest.get("quality", {}).get("retry_after_seconds", 5),
-                            manifest.get("native_asset_ocr", {}).get("retry_after_seconds", 5),
+                            manifest.get("remote_parse", {}).get("retry_after_seconds", 5),
                         )
                         if deferred
+                        else time.time() + index_delay
+                        if index_delay
                         else 0,
                         warning if incomplete else None,
                         now(),
@@ -1744,7 +1416,7 @@ class CollectionService:
         from .parsing import ProcessingDeferred
         from .transfers import TransferPending
         from .service import AppError
-        from .ingestion import EmbeddingProviderDeferred, EmbeddingServiceError
+        from .ragflow import RAGFlowError
 
         storage_wait = _storage_busy(error)
         # Unexpected exceptions/paths/provider response bodies never become public error text.
@@ -1756,12 +1428,12 @@ class CollectionService:
         retryable = getattr(error, "retryable", not isinstance(error, (ValueError, AppError)))
         # Model/network failures may be transient; deterministic parse failures are not.
         if processing and claim["phase"] == "embed" and not storage_wait:
-            retryable = error.retryable if isinstance(error, EmbeddingServiceError) else True
-            safe = "向量服务暂不可用，原件和正文已保留"
+            retryable = getattr(error, "retryable", True)
+            safe = str(error) if isinstance(error, RAGFlowError) else "向量服务暂不可用，原件和正文已保留"
         if storage_wait:
             safe = "本地资料存储繁忙，任务稍后继续处理"
         transfer_progress = not processing and isinstance(error, TransferPending)
-        provider_wait = processing and isinstance(error, EmbeddingProviderDeferred)
+        provider_wait = processing and isinstance(error, RAGFlowError) and error.retryable
         host_wait = not processing and isinstance(error, _HostCooldownDeferred)
         deferred = (
             (processing and isinstance(error, ProcessingDeferred))

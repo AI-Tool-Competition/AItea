@@ -243,6 +243,18 @@ def pdf_source_bindings_valid(manifest: dict) -> bool:
 def text_complete(manifest: dict) -> bool:
     from .native_asset_ocr import assets
 
+    if manifest.get("remote_parse"):
+        from .mineru import manifest_valid
+
+        return (
+            manifest_valid(manifest)
+            and manifest.get("quality", {}).get("complete") is True
+            and all(
+                page.get("status") == "ocr_complete" and page.get("ocr", {}).get("complete") is True
+                for page in manifest.get("pages", [])
+            )
+        )
+
     try:
         image_assets = assets(manifest)
         if not (manifest.get("elements") or manifest.get("chunks") or manifest.get("pages") or image_assets):
@@ -258,11 +270,13 @@ def text_complete(manifest: dict) -> bool:
         return False
     quality = manifest.get("quality")
     if manifest.get("parser") == "html-basic" and (
-        manifest.get("parser_version") != "3"
-        or str(manifest.get("pipeline_version", "")).split("+", 1)[0] != "html-source-mapping-v3"
+        manifest.get("parser_version") not in {"5", "6", "7"}
+        or str(manifest.get("pipeline_version", "")).split("+", 1)[0]
+        != f"html-source-mapping-v{manifest.get('parser_version')}"
         or not isinstance(quality, dict)
         or not isinstance(manifest.get("html_source"), dict)
-        or manifest.get("html_source", {}).get("mapping_version") != "html-source-mapping-v3"
+        or manifest.get("html_source", {}).get("mapping_version")
+        != f"html-source-mapping-v{manifest.get('parser_version')}"
     ):
         return False
     if manifest.get("parser") == "docx-basic" and (
@@ -297,7 +311,13 @@ def has_mapped_source_objects(manifest: dict) -> bool:
         assets(manifest)
         or (
             isinstance(html, dict)
-            and html.get("mapping_version") == "html-source-mapping-v3"
+            and html.get("mapping_version") in {
+                "html-source-mapping-v3",
+                "html-source-mapping-v4",
+                "html-source-mapping-v5",
+                "html-source-mapping-v6",
+                "html-source-mapping-v7",
+            }
             and isinstance(html.get("objects"), list)
             and html["objects"]
         )
@@ -319,6 +339,8 @@ def quality_warning(manifest: dict) -> str | None:
 
     if text_complete(manifest):
         return None
+    if manifest.get("remote_parse", {}).get("state") in {"planned", "pending"}:
+        return "MinerU 精准解析正在排队或处理中；原件及任务回执已保存。"
     quality = manifest.get("quality") or {}
     pending = len(ocr_pending(manifest))
     failed = len(quality.get("failed_pages", []))
@@ -330,6 +352,35 @@ def quality_warning(manifest: dict) -> str | None:
         image_assets = assets(manifest)
     except (ValueError, TypeError, KeyError):
         return "原生图片来源映射待核验；原件已保存，暂不进入检索。"
+    html_details = []
+    if manifest.get("parser") == "html-basic":
+        html_quality = manifest.get("quality") or {}
+        elements = manifest.get("elements")
+        reasons = set()
+        if isinstance(elements, list):
+            for element in elements:
+                locator = element.get("locator") if isinstance(element, dict) else None
+                table_reasons = locator.get("structure_reasons", []) if isinstance(locator, dict) else []
+                if element.get("kind") == "table" and isinstance(table_reasons, list):
+                    reasons.update(reason for reason in table_reasons if isinstance(reason, str))
+        if "rowspan_or_colspan_requires_grid_review" in reasons:
+            html_details.append("HTML 表格含跨行或跨列合并单元格，行列关系需核对")
+        if "uneven_source_row_widths" in reasons:
+            html_details.append("HTML 表格各行单元格数不一致，结构需核对")
+        if html_quality.get("source_mapping_complete") is False and not reasons:
+            html_details.append("HTML 原文边界或引用映射需核对")
+        pending_objects = html_quality.get("pending_objects")
+        if isinstance(pending_objects, list) and pending_objects:
+            pending_keys = {key for key in pending_objects if isinstance(key, str)}
+            bound_pending = {
+                asset.get("object_key")
+                for asset in image_assets
+                if isinstance(asset.get("object_key"), str) and asset.get("asset_status") != "ocr_complete"
+            }
+            if pending_keys - bound_pending:
+                html_details.append("HTML 正文图像或对象尚未视觉识别")
+        if html_quality.get("error_page_detected") is True:
+            html_details.append("来源返回错误或访问验证页")
     detail = "、".join(
         label
         for count, label in (
@@ -350,4 +401,5 @@ def quality_warning(manifest: dict) -> str | None:
         )
         if count
     )
+    detail = "、".join(part for part in (detail, *html_details) if part)
     return f"正文未完整处理{('：' + detail) if detail else ''}；原件已保存，暂不进入检索。"

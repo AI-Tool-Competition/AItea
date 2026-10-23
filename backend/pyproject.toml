@@ -15,6 +15,7 @@ dependencies = [
   "pillow>=12.3,<13",
   "numpy>=2,<3",
   "xlrd>=2.0.2,<3",
+  "selectolax>=1.0.2,<2",
 ]
 
 [dependency-groups]

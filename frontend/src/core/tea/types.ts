@@ -294,7 +294,7 @@ export type MessageStreamEvent =
   | { event: "step"; data: TraceStep };
 export interface Capabilities {
   assistant_mode: "demo" | "live";
-  retrieval_mode: "lexical" | "hybrid";
+  retrieval_mode: "lexical" | "hybrid" | "ragflow" | "unavailable";
   parser: string;
 }
 export interface SearchResult {

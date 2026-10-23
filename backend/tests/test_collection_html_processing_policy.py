@@ -230,6 +230,40 @@ def test_legal_queued_html_draft_resumes_and_secondary_legal_text_gets_no_vector
     assert len(calls) == 1
 
 
+def test_html_image_ocr_resumes_bounded_batches_until_all_images_are_processed(service, monkeypatch):
+    from app.native_asset_ocr import assets
+    from test_html_image_collection import image
+
+    html = "<main><p>Five linked legal exhibits.</p>" + "".join(
+        f'<img src="/body-{index}.png">' for index in range(5)
+    ) + "</main>"
+    doc = document(service, html=html)
+    downloader(service, monkeypatch, raw=image())
+    prepared = HtmlImageCollector(service).prepare(
+        "owner", doc["id"], deadline=time.monotonic() + 60, max_images=20
+    )
+    assert len(prepared["bound_images"]) == 5
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    calls = []
+    monkeypatch.setattr(vision, "transcribe_image", lambda image: (calls.append(image), transcript())[1])
+
+    for expected_batch in (4, 1):
+        with service.db.transaction() as conn:
+            conn.execute("UPDATE processing_jobs SET available_at=0 WHERE document_id=?", (doc["id"],))
+        claim = service.collection.claim_processing(
+            owner_id="owner", document_ids=[doc["id"]], processing_policy=POLICY
+        )
+        assert claim and claim["phase"] == "parse"
+        before = len(calls)
+        service.collection.process_item(claim)
+        assert len(calls) - before == expected_batch
+
+    with closing(service.db.connect()) as conn:
+        manifest = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0])
+    assert all(asset["asset_status"] == "ocr_complete" for asset in assets(manifest))
+    assert row(service, "processing_jobs", doc["id"])["status"] == "completed"
+
+
 def test_scoped_worker_without_downloads_never_claims_fetch_and_freezes_declared_ids(service, monkeypatch):
     doc = document(service, html="<main><p>Complete native regulatory text.</p></main>")
     queue(service, doc["id"])
@@ -299,6 +333,8 @@ def test_review_change_while_persisting_sent_pixels_is_checked_before_model(serv
 
 
 def test_review_change_when_selecting_embedding_batch_is_checked_before_model(service, monkeypatch):
+    from app import ragflow
+
     doc = document(service, html="<main><p>Complete primary native legal text.</p></main>")
     with service.db.transaction() as conn:
         service.index.sync_document(conn, doc["id"])
@@ -306,22 +342,26 @@ def test_review_change_when_selecting_embedding_batch_is_checked_before_model(se
             "UPDATE processing_jobs SET status='queued',phase='embed' WHERE document_id=?", (doc["id"],)
         )
     monkeypatch.setattr(service, "embedding_fingerprint", lambda: "test-only-model-selector")
-    pending = service.index.pending
+    monkeypatch.setattr(ragflow, "profile", lambda: "test-only-model-selector")
+    process = service.ragflow.step
 
-    def select(conn, *args, **kwargs):
-        batch = pending(conn, *args, **kwargs)
-        assert batch
-        payload = json.loads(
-            conn.execute(
-                "SELECT payload FROM document_metadata WHERE document_id=?", (doc["id"],)
-            ).fetchone()[0]
-        )
-        payload["review_status"] = "published"
-        conn.execute("UPDATE document_metadata SET payload=? WHERE document_id=?", (dump(payload), doc["id"]))
-        return batch
+    def select(document, claim):
+        with service.db.transaction() as conn:
+            payload = json.loads(
+                conn.execute(
+                    "SELECT payload FROM document_metadata WHERE document_id=?", (doc["id"],)
+                ).fetchone()[0]
+            )
+            payload["review_status"] = "published"
+            conn.execute("UPDATE document_metadata SET payload=? WHERE document_id=?", (dump(payload), doc["id"]))
+        return process(document, claim)
 
-    monkeypatch.setattr(service.index, "pending", select)
-    monkeypatch.setattr(ingestion, "embed_texts", lambda *_: pytest.fail("Review changed before embedding"))
+    monkeypatch.setattr(service.ragflow, "step", select)
+    monkeypatch.setattr(
+        ragflow.RAGFlowClient,
+        "call",
+        lambda *_args, **_kwargs: pytest.fail("Review changed before RAGFlow request"),
+    )
     claim = service.collection.claim_processing(
         owner_id="owner", document_ids=[doc["id"]], processing_policy=POLICY
     )

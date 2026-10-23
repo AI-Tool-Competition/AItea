@@ -1,9 +1,8 @@
 """Read-only progress summaries; a saved queue entry is not an active worker."""
 
 import math
+import os
 import time
-
-from .vision import vision_ocr_configured
 
 
 def processing_details(conn, document_ids):
@@ -43,7 +42,7 @@ def processing_details(conn, document_ids):
         document_ids,
     ).fetchall()
     timestamp = time.time()
-    ocr_enabled = vision_ocr_configured()
+    parser_enabled = bool(os.getenv("MINERU_API_TOKEN", "").strip())
     result = {}
     for row in rows:
         active = (
@@ -57,8 +56,8 @@ def processing_details(conn, document_ids):
             state = "needs_review"
         elif row["page_failed"] or row["asset_failed"]:
             state = "failed"
-        elif (row["page_pending"] or row["asset_pending"]) and not ocr_enabled:
-            state = "ocr_disabled"
+        elif (row["page_pending"] or row["asset_pending"]) and not parser_enabled:
+            state = "incomplete"
         elif row["status"] == "failed" or row["job_status"] == "failed":
             state = "failed"
         elif row["job_status"] in {"queued", "processing"} or row["status"] == "processing":

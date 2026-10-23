@@ -422,7 +422,7 @@ class _LegalRunner:
         if not jurisdictions:
             result = {
                 "items": [],
-                "mode": "lexical",
+                "mode": "unavailable",
                 "warning": "尚未明确允许检索的国家，未执行跨国检索。",
                 "failed": False,
             }
@@ -451,7 +451,7 @@ class _LegalRunner:
                     raise
                 result = {
                     "items": [],
-                    "mode": "lexical",
+                    "mode": "unavailable",
                     "warning": "本次检索失败，候选覆盖尚未完成。",
                     "failed": True,
                 }
@@ -500,7 +500,7 @@ class _LegalRunner:
             clean.append(source)
         answer = {
             "items": clean,
-            "mode": result.get("mode", "lexical"),
+            "mode": result.get("mode", "unavailable"),
             "warning": str(result.get("warning") or "")[:1000],
             "failed": bool(result.get("failed")),
         }

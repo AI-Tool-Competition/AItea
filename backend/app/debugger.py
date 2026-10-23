@@ -613,7 +613,7 @@ class WorkflowDebugger:
                 "citations": [],
                 "stage_id": stage["id"],
                 "assistant_mode": self.service.capabilities["assistant_mode"],
-                "retrieval_mode": "lexical",
+                "retrieval_mode": "unavailable",
             }
             if resume:
                 result.update(copy.deepcopy(resume["state"]["result"]))

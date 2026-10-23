@@ -120,6 +120,7 @@ class AdminStudio:
                 "base": os.getenv("LLM_BASE_URL"),
                 "embedding": self.service.embedding_fingerprint(),
                 "rerank": self.service.rerank_fingerprint(),
+                "ragflow_index": self.service.ragflow.cache_signature(conn, owner, case),
                 "runner_version": 3,
             }
         )
@@ -345,15 +346,15 @@ class AdminStudio:
         result = report["result"]
         outputs = [step.get("output_data") or {} for step in result.get("trace", [])]
         hybrid = any(
-            output.get("retrieval_mode") == "hybrid"
-            or any(item.get("mode") == "hybrid" for item in output.get("coverage", []))
+            output.get("retrieval_mode") == "ragflow"
+            or any(item.get("mode") == "ragflow" for item in output.get("coverage", []))
             for output in outputs
         )
         return {
             **result,
             "stage_id": stage_id,
             "checks": [],
-            "retrieval_mode": "hybrid" if hybrid else "lexical",
+            "retrieval_mode": "ragflow" if hybrid else "unavailable",
             "legal_analysis_id": report["id"],
             "legal_revision": report["revision"],
             "status": "failed" if report["status"] in ("failed", "cancelled") else "completed",

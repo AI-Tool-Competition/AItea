@@ -456,7 +456,7 @@ class Search(StrictModel):
 
 class SearchResult(StrictModel):
     items: list[dict[str, JsonValue]]
-    mode: Literal["lexical", "hybrid"]
+    mode: Literal["lexical", "hybrid", "ragflow", "unavailable"]
     reranked: bool = False
     warning: str | None = None
 

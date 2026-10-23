@@ -28,7 +28,6 @@ from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from email.message import EmailMessage
@@ -39,7 +38,6 @@ from .html_parsing import HTMLDocument as _HTMLDocument
 from .pdf_table_detection import VERSION as _TABLE_LAYOUT_VERSION
 from .public_search import EGazetteSearchRequest
 from .vendor.geo_parser.document_ingestion import (
-    DoclingDocumentParser,
     ParsedDocument,
     ParsedElement,
     _parse_native_text,
@@ -95,11 +93,43 @@ def _parse_html(content: bytes) -> ParsedDocument:
     source = _decode(content)
     if len(source) > MAX_TEXT:
         raise ValueError("HTML 文本超过处理限制。")
+    from importlib.metadata import version
+    from selectolax.lexbor import LexborHTMLParser
+
+    # Lexbor supplies a mature HTML5 tree for malformed-but-recoverable source.
+    # We still build legal-source structure from the original decoded bytes so
+    # citations retain exact source offsets instead of pointing into a rewrite.
+    tree = LexborHTMLParser(source, scripting=False)
+    nodes = tree.css("*")
+    if len(nodes) > 100_000:
+        raise ValueError("HTML 标签数量超过处理限制。")
+    max_depth = 0
+    for node in nodes:
+        depth, parent = 0, node.parent
+        while parent is not None:
+            depth += 1
+            if depth > 128:
+                raise ValueError("HTML 嵌套深度超过处理限制。")
+            parent = parent.parent
+        max_depth = max(max_depth, depth)
+    dom_validation = {
+        "engine": "selectolax.lexbor",
+        "engine_version": version("selectolax"),
+        "html5_tree_built": True,
+        "scripts_executed": False,
+        "node_count": len(nodes),
+        "max_depth": max_depth,
+        "main_count": sum(node.tag == "main" for node in nodes),
+        "article_count": sum(node.tag == "article" for node in nodes),
+        "table_count": sum(node.tag == "table" for node in nodes),
+        "heading_count": sum(node.tag in {f"h{i}" for i in range(1, 7)} for node in nodes),
+    }
     options = {
         "source": source,
         "source_hash": hashlib.sha256(content).hexdigest(),
         "exclude_navigation": True,
         "max_elements": MAX_ELEMENTS,
+        "dom_validation": dom_validation,
     }
     extractor = _HTMLDocument(main_only=True, **options)
     extractor.feed(source)
@@ -422,53 +452,19 @@ def parse_file(
         raise ValueError("secondary 文档仅保存原件，禁止解析或建立索引。")
     if not content or len(content) > MAX_BYTES:
         raise ValueError("文档不能为空且不能超过 20 MB。")
+    from .mineru import supports, pending_manifest
+
     extension = Path(filename).suffix.lower()
-    if not extension:
-        extension = _MIME_EXTENSIONS.get(mime_type.split(";")[0].strip().lower(), "")
-        filename += extension
-    if extension == ".xls" and parser == "basic":
-        from .xls_parsing import parse_xls
-
-        return parse_xls(content, filename=filename)
-    if extension == ".mdb" and parser == "basic":
-        from .mdb_parsing import parse_mdb
-
-        return parse_mdb(content, filename=filename)
-    if extension in {".doc", ".wpf", ".wpd"} and parser == "basic":
-        from .legacy_doc_parsing import parse_legacy_doc, parse_wpf
-
-        return (parse_legacy_doc if extension == ".doc" else parse_wpf)(content, filename=filename)
-    supported = {".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf"}
-    if extension not in supported:
-        raise ValueError("支持 PDF、DOCX、XLS、HTML、TXT 和 Markdown；MDB、DOC 和 WPF 需配置只读工具。")
-    if parser == "docling":
-        # Explicit opt-in prevents accidental model downloads on a basic installation.
-        if not os.environ.get("DOCLING_MODELS_PATH"):
-            raise ValueError("Docling 需要配置已安装模型目录 DOCLING_MODELS_PATH。")
-        try:
-            document = DoclingDocumentParser(document_timeout_seconds=90).parse(
-                filename=filename, mime_type=mime_type, content=content
-            )
-        except ImportError as exc:
-            raise ValueError("Docling 可选依赖尚未安装。") from exc
-        if document.assets:
-            document = replace(
-                document, assets=[], warnings=[*document.warnings, "图像尚未经过视觉核验，未用于检索或引用。"]
-            )
-    elif parser != "basic":
-        raise ValueError("未知解析器，仅支持 basic 或 docling。")
-    elif extension in {".txt", ".md", ".markdown"}:
-        if len(content) > MAX_TEXT:
-            raise ValueError("文本超过处理限制。")
-        document = _parse_native_text(filename=filename, content=content)
-    elif extension in {".html", ".htm"}:
+    if extension in {".html", ".htm"} or mime_type.split(";", 1)[0].strip().lower() == "text/html":
         document = _parse_html(content)
-    elif extension == ".docx":
-        from .docx_parsing import parse_docx
-
-        return parse_docx(content, filename=filename)
-    else:
-        document = _parse_pdf(content)
+        return _parsed_result(document, hashlib.sha256(content).hexdigest(), Path(filename).stem)
+    if supports(filename, mime_type):
+        return pending_manifest(filename, hashlib.sha256(content).hexdigest())
+    if extension not in {".txt", ".md", ".markdown"}:
+        raise ValueError("此文件格式未获 MinerU 精准解析支持，请提供 PDF、Office、图片或 HTML 原件。")
+    if len(content) > MAX_TEXT:
+        raise ValueError("文本超过处理限制。")
+    document = _parse_native_text(filename=filename, content=content)
     html_source = getattr(document, "html_source", {})
     if (not document.elements and not document.pages and not html_source.get("objects")) or sum(
         len(x.content_text) for x in document.elements

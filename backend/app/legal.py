@@ -280,7 +280,7 @@ class LegalService:
             warnings.append("本轮候选资料超过返回预算，仍需分项补检；不能据此认定依据齐全。")
         return {
             "items": list(found.values())[:80],
-            "mode": "hybrid" if "hybrid" in modes else "lexical",
+            "mode": "ragflow" if "ragflow" in modes else "unavailable",
             "warning": "；".join(dict.fromkeys(warnings)) or None,
         }
 
@@ -321,6 +321,7 @@ class LegalService:
             "provider": digest([os.getenv("LLM_MODEL"), os.getenv("LLM_BASE_URL"), os.getenv("LLM_API_KEY")]),
             "embedding": self.service.embedding_fingerprint(),
             "rerank": self.service.rerank_fingerprint(),
+            "ragflow_index": self.service.ragflow.cache_signature(conn, owner, case),
             "runner": 1,
             "task_evidence": [
                 (task["id"], task["evidence_ids"]) for stage in case["stages"] for task in stage["tasks"]

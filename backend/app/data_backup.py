@@ -25,7 +25,7 @@ from .db import now, uid
 from .system_corpus_migration import SystemCorpusMigrationError, _cas_reference
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 19
+SUPPORTED_SCHEMA_VERSION = 21
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -177,6 +177,24 @@ def _database_check(path, *, primary=False):
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("collection_recovery_schema_incomplete") from exc
+            if version >= 20:
+                try:
+                    conn.execute(
+                        "SELECT id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,part_blob,state,batch_id,private_data,result_blob,progress,attempts,next_at,error_code FROM document_parse_tasks LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("document_parse_schema_incomplete") from exc
+            if version >= 21:
+                try:
+                    conn.execute("SELECT owner_id,profile,name,remote_id FROM ragflow_datasets LIMIT 0")
+                    conn.execute(
+                        "SELECT generation,document_id,owner_id,source_hash,source_version,index_revision,state FROM ragflow_documents LIMIT 0"
+                    )
+                    conn.execute(
+                        "SELECT generation,local_id,input_hash,content_hash,remote_id,state FROM ragflow_chunks LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("ragflow_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")
@@ -277,6 +295,14 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
             owners.setdefault(match[1], {})[match[4]] = database.parent / Path(relative).relative_to(prefix)
     with closing(_readonly(database, immutable=True)) as conn:
         count = _storage_references(conn, source_root, files, prefix=prefix)
+        if "document_parse_tasks" in _tables(conn):
+            for task in conn.execute("SELECT owner_id,part_blob,result_blob FROM document_parse_tasks"):
+                for value in task[1:]:
+                    if value:
+                        try:
+                            _manifest_cas(json.loads(value), files, prefix=prefix, owner=task[0])
+                        except (ValueError, TypeError) as exc:
+                            raise DataBackupError("parse_task_artifact_invalid") from exc
         for row in conn.execute("SELECT manifest,owner_id,id,content_hash FROM documents"):
             _require(len(row[0].encode()) <= 40 * 1024 * 1024, "manifest_too_large")
             try:

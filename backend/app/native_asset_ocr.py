@@ -69,7 +69,7 @@ def assets(manifest: dict) -> list[dict]:
     """Return stable mapped assets without reading files or calling a model."""
     if manifest.get("parser") == "docx-basic" and manifest.get("parser_version") == "2":
         rows, prefix, source_format = manifest.get("assets_pending", []), "/assets_pending", "docx"
-    elif manifest.get("parser") == "html-basic" and manifest.get("parser_version") == "3":
+    elif manifest.get("parser") == "html-basic" and manifest.get("parser_version") in {"3", "4", "5", "6", "7"}:
         html = manifest.get("html_source") or {}
         if not isinstance(html, dict):
             raise ValueError("HTML 图片映射结构无效。")

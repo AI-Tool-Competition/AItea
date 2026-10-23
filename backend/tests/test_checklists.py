@@ -78,7 +78,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
         assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 29
         assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=7").fetchone()[0] == 1
         row = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
-        assert not row["enabled"]
+        assert row["enabled"]
         assert json.loads(row["plan"])["collection"] == "country:ID"
     # A bound source cannot bypass the checklist into generic directory parsing.
     assert (
@@ -98,6 +98,27 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     assert all(i["source_id"] is None for i in client.get(BASE).json()["items"])
     assert client.get(f"/api/tea/sources/{source_id}/runs").status_code == 404
     assert configure(client)["created"] == 29
+
+
+def test_configuration_schedules_only_unconditional_automated_sources(client):
+    configure(client)
+    singapore_plan = "singapore-demo-20261009"
+    client.post(
+        f"/api/tea/collection-plans/{singapore_plan}/configure",
+        json={"expected_version": client.get(f"/api/tea/collection-plans/{singapore_plan}").json()["plan"]["version"]},
+    ).raise_for_status()
+    service = client.app.state.service
+    with closing(service.db.connect()) as conn:
+        rows = conn.execute(
+            """SELECT b.plan_id,b.item_id,s.enabled FROM checklist_bindings b
+            JOIN sources s ON s.id=b.source_id"""
+        ).fetchall()
+    enabled = {(row["plan_id"], row["item_id"]): bool(row["enabled"]) for row in rows}
+    assert all(enabled[(PLAN, f"1.{index}")] for index in range(1, 11))
+    assert enabled[(singapore_plan, "3.1")]
+    assert not enabled[(singapore_plan, "2.1")]
+    assert not enabled[(singapore_plan, "4.1")]
+    assert not enabled[(singapore_plan, "4.2")]
 
 
 def fake_web(monkeypatch):
@@ -255,6 +276,87 @@ def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_pat
         assert conn.execute("SELECT COUNT(*) FROM checklist_pages").fetchone()[0] == 5
         assert conn.execute("SELECT COUNT(DISTINCT url) FROM checklist_pages").fetchone()[0] == 5
     assert client.get(BASE + "/items/1.3/candidates").json()["total"] == 2
+
+
+def test_scheduled_checklist_collects_pending_candidates_without_manual_request(client, tmp_path):
+    configure(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with service.db.transaction() as conn:
+        binding = conn.execute(
+            "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='1.3'",
+            (owner, PLAN),
+        ).fetchone()
+        conn.execute(
+            "UPDATE sources SET enabled=1,last_attempt_at='2020-01-01T00:00:00+00:00' WHERE id=?",
+            (binding["source_id"],),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,identity_key,discovered_from,status,created_at)
+            VALUES('scheduled-candidate',?,?,?,NULL,?,'pending','2026-01-01T00:00:00+00:00')""",
+            (
+                binding["id"],
+                "https://peraturan.bpk.go.id/Details/123/fixture",
+                "Fixture regulation",
+                "https://peraturan.bpk.go.id/Search?jenis=8",
+            ),
+        )
+
+    run = service.collection.enqueue_scheduled(owner, binding["source_id"])
+    assert run["kind"] == "collection"
+    assert run["total"] == 1
+    with closing(service.db.connect()) as conn:
+        queued = conn.execute(
+            "SELECT status FROM checklist_candidates WHERE id='scheduled-candidate'"
+        ).fetchone()[0]
+        kind = conn.execute(
+            "SELECT json_extract(plan,'$.checklist.kind') FROM collection_runs WHERE id=?", (run["id"],)
+        ).fetchone()[0]
+    assert queued == "queued" and kind == "collection"
+
+
+def test_scheduled_checklist_rechecks_stored_candidate_after_catalog_poll(client, tmp_path):
+    configure(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with service.db.connect() as conn:
+        binding = conn.execute(
+            "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='1.3'",
+            (owner, PLAN),
+        ).fetchone()
+    previous = service.checklists.start(
+        owner,
+        PLAN,
+        "1.3",
+        {"client_request_id": "scheduled-discovery-prior", "confirm_condition": False},
+        kind="discovery",
+    )
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE collection_runs SET status='completed' WHERE id=?", (previous["id"],))
+        conn.execute(
+            "UPDATE sources SET enabled=1,last_attempt_at='2020-01-01T00:00:00+00:00' WHERE id=?",
+            (binding["source_id"],),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,identity_key,discovered_from,status,created_at)
+            VALUES('stored-candidate',?,?,?,NULL,?,'stored','2026-01-01T00:00:00+00:00')""",
+            (
+                binding["id"],
+                "https://peraturan.bpk.go.id/Details/123/fixture",
+                "Fixture regulation",
+                "https://peraturan.bpk.go.id/Search?jenis=8",
+            ),
+        )
+
+    run = service.collection.enqueue_scheduled(owner, binding["source_id"])
+    assert run["kind"] == "collection" and run["total"] == 1
+    with closing(service.db.connect()) as conn:
+        candidate = conn.execute(
+            "SELECT status FROM checklist_candidates WHERE id='stored-candidate'"
+        ).fetchone()[0]
+    assert candidate == "queued"
 
 
 def test_cancel_and_retry_respects_candidate_exclusion(client, monkeypatch):

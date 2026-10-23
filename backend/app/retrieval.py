@@ -1,7 +1,7 @@
-"""SQLite text/float32 indexes; eligibility stays in the archive's single SQL gate.
+"""Local source/citation catalog and authorization gate for RAGFlow retrieval.
 
-Manifests are read only when their durable dirty marker changes. Dense retrieval
-streams fixed-size batches of eligible vectors, never Python lists of the corpus.
+Legacy vector tables are retained for historical backup compatibility. They are
+not queried by the current retrieval or ingestion pipeline.
 """
 
 from __future__ import annotations
@@ -9,10 +9,8 @@ from __future__ import annotations
 from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
-import heapq
 import json
 import math
-from threading import BoundedSemaphore
 
 from .db import dump, now
 from .ingestion import _terms
@@ -20,9 +18,7 @@ from .ingestion_quality import text_complete
 
 EMBEDDING_RECIPE = "context-float32-v1"
 CANDIDATES = 48
-VECTOR_BATCH = 256
 BACKFILL_BATCH = 20
-_DENSE_SLOTS = BoundedSemaphore(2)
 
 _SCHEMA = (
     """CREATE TABLE retrieval_documents(
@@ -238,7 +234,11 @@ class RetrievalIndex:
         if document is None:
             raise ValueError("资料不存在")
         manifest = manifest if manifest is not None else json.loads(document["manifest"])
-        complete = int(document["role"] == "primary" and text_complete(manifest))
+        complete = int(
+            document["role"] == "primary"
+            and text_complete(manifest)
+            and (not manifest.get("remote_parse") or manifest.get("source_hash") == document["content_hash"])
+        )
         chunks = manifest.get("chunks", []) if document["role"] == "primary" else []
         previous = conn.execute(
             "SELECT * FROM retrieval_documents WHERE document_id=?", (document_id,)
@@ -337,18 +337,7 @@ class RetrievalIndex:
         conn.execute("DELETE FROM retrieval_dirty WHERE document_id=?", (document_id,))
 
     def pending(self, conn, document_id, fingerprint, limit=64):
-        return [
-            dict(row)
-            for row in conn.execute(
-                """SELECT c.rowid,c.chunk_id,c.retrieval_text,c.input_hash FROM retrieval_chunks c
-            JOIN retrieval_documents d ON d.document_id=c.document_id
-            LEFT JOIN retrieval_vectors v ON v.chunk_rowid=c.rowid
-            WHERE c.document_id=? AND d.complete=1 AND
-                (v.chunk_rowid IS NULL OR v.fingerprint!=? OR v.input_hash!=c.input_hash)
-            ORDER BY c.ordinal,c.rowid LIMIT ?""",
-                (document_id, fingerprint, limit),
-            )
-        ]
+        return self.service.ragflow.pending(conn, document_id, fingerprint, limit)
 
     def store_vectors(self, conn, document_id, fingerprint, chunks, vectors, *, touch=True):
         if len(chunks) != len(vectors):
@@ -390,60 +379,6 @@ class RetrievalIndex:
             )
         return changed
 
-    def _lexical(self, conn, query):
-        tokens = sorted(set(_terms(query)))
-        if not tokens:
-            return []
-        match = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
-        return [
-            row[0]
-            for row in conn.execute(
-                """SELECT c.rowid FROM retrieval_fts JOIN retrieval_chunks c ON c.rowid=retrieval_fts.rowid
-            JOIN retrieval_eligible e ON e.id=c.document_id WHERE retrieval_fts MATCH ?
-            ORDER BY bm25(retrieval_fts),c.document_id,c.ordinal LIMIT ?""",
-                (match, CANDIDATES),
-            )
-        ]
-
-    def _dense(self, conn, fingerprint, query_vector):
-        import numpy as np
-
-        values = normalized_vector(query_vector)
-        dimension = len(values)
-        model = conn.execute(
-            "SELECT dimension FROM retrieval_models WHERE fingerprint=?", (fingerprint,)
-        ).fetchone()
-        if model and model[0] != dimension:
-            raise ValueError("查询与索引向量维度不一致")
-        if not _DENSE_SLOTS.acquire(timeout=5):
-            raise ValueError("向量检索繁忙")
-        try:
-            cursor = conn.execute(
-                """SELECT c.rowid,v.vector FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid
-                JOIN retrieval_eligible e ON e.id=c.document_id
-                WHERE v.fingerprint=? AND v.input_hash=c.input_hash AND v.dimension=?""",
-                (fingerprint, dimension),
-            )
-            top = []
-            while rows := cursor.fetchmany(VECTOR_BATCH):
-                matrix = np.frombuffer(b"".join(row["vector"] for row in rows), dtype="<f4").reshape(
-                    len(rows), dimension
-                )
-                scores = np.einsum("ij,j->i", matrix, values, optimize=False)
-                for row, score in zip(rows, scores, strict=True):
-                    if not math.isfinite(float(score)):
-                        raise ValueError("索引向量数值无效")
-                    if score < 0.3:
-                        continue
-                    item = (float(score), -row["rowid"])
-                    if len(top) < CANDIDATES:
-                        heapq.heappush(top, item)
-                    elif item > top[0]:
-                        heapq.heapreplace(top, item)
-            return [-rowid for _, rowid in sorted(top, reverse=True)]
-        finally:
-            _DENSE_SLOTS.release()
-
     def search(
         self,
         owner,
@@ -458,13 +393,15 @@ class RetrievalIndex:
         *,
         source_scope=None,
     ):
-        from .ingestion import embed_texts
-        from .reranking import rerank_texts
+        from .ragflow import RAGFlowError, configured
 
         if not isinstance(query, str) or len(query) > 4000 or not 1 <= limit <= 50:
             raise ValueError("检索问题或数量超过限制")
-        warnings, mode = [], "lexical"
-        backfill = self.ensure_current(
+        mode = "ragflow" if configured() else "unavailable"
+        result = {"items": [], "mode": mode, "reranked": False}
+        if not configured():
+            return result | {"warning": "RAGFlow 尚未配置，当前没有执行资料检索。"}
+        progress = self.ensure_current(
             owner,
             case_id=case_id,
             collection=collection,
@@ -474,13 +411,47 @@ class RetrievalIndex:
             document_ids=document_ids,
             source_scope=source_scope,
         )
-        if backfill["remaining"]:
-            warnings.append(
-                f"本次范围仍有 {backfill['remaining']} 份资料待索引，结果尚未覆盖全部资料，请继续检索或完成分批重建。"
-            )
         fingerprint = self.service.embedding_fingerprint()
         with closing(self.db.connect()) as conn:
             conn.execute("BEGIN")
+            if case_id:
+                self.service.own_case(conn, owner, case_id)
+            sql, parameters = self.service.archive.eligibility_sql(
+                conn,
+                owner,
+                case_id,
+                collection,
+                as_of,
+                historical,
+                country,
+                document_ids,
+                source_scope=source_scope,
+            )
+            # Remote datasets never decide authorization or applicable law.
+            conn.execute("CREATE TEMP TABLE retrieval_eligible AS " + sql, parameters)
+            candidates = [
+                dict(row)
+                for row in conn.execute(
+                    """SELECT r.*,e.metadata_revision,e.index_revision FROM ragflow_documents r
+                JOIN retrieval_eligible e ON e.id=r.document_id
+                WHERE r.state='ready' AND r.profile=? AND r.source_hash=e.content_hash
+                AND r.source_version=e.version AND r.index_revision=e.index_revision ORDER BY r.document_id,r.generation LIMIT 20001""",
+                    (fingerprint,),
+                )
+            ]
+        if not candidates:
+            return result | {"warning": "当前范围尚无已完成 RAGFlow 索引且通过资料审核的内容。"}
+        try:
+            remote = self.service.ragflow.retrieve(query, candidates, limit=limit)
+        except RAGFlowError:
+            return result | {"warning": "RAGFlow 检索暂不可用，请稍后重试。"}
+        generations = {row["generation"]: row for row in candidates}
+        wanted = [(str(hit.get("id", "")), str(hit.get("document_id", ""))) for hit in remote]
+        hits = []
+        with closing(self.db.connect()) as conn:
+            conn.execute("BEGIN")
+            if case_id:
+                self.service.own_case(conn, owner, case_id)
             sql, parameters = self.service.archive.eligibility_sql(
                 conn,
                 owner,
@@ -493,120 +464,37 @@ class RetrievalIndex:
                 source_scope=source_scope,
             )
             conn.execute("CREATE TEMP TABLE retrieval_eligible AS " + sql, parameters)
-            conn.execute("CREATE UNIQUE INDEX retrieval_eligible_id ON retrieval_eligible(id)")
-            lexical = self._lexical(conn, query)
-            semantic = []
-            if fingerprint:
-                has_vectors = conn.execute(
-                    """SELECT 1 FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid
-                    JOIN retrieval_eligible e ON e.id=c.document_id WHERE v.fingerprint=? AND v.input_hash=c.input_hash LIMIT 1""",
-                    (fingerprint,),
-                ).fetchone()
-                if has_vectors:
-                    if conn.execute(
-                        """SELECT 1 FROM retrieval_chunks c JOIN retrieval_eligible e ON e.id=c.document_id
-                        LEFT JOIN retrieval_vectors v ON v.chunk_rowid=c.rowid
-                        WHERE v.chunk_rowid IS NULL OR v.fingerprint!=? OR v.input_hash!=c.input_hash LIMIT 1""",
-                        (fingerprint,),
-                    ).fetchone():
-                        warnings.append("部分正文尚未完成当前模型的向量索引，这些片段仅参与关键词检索。")
-                    try:
-                        from .ingestion import embedding_priority
-
-                        with embedding_priority("query"):
-                            vector = embed_texts([query])
-                        if vector is None or len(vector) != 1:
-                            raise ValueError("查询向量不可用")
-                        semantic = self._dense(conn, fingerprint, vector[0])
-                        mode = "hybrid"
-                    except Exception:
-                        warnings.append("向量检索暂不可用，本次已回退到关键词检索。")
-                elif conn.execute("SELECT 1 FROM retrieval_eligible LIMIT 1").fetchone():
-                    warnings.append("当前材料尚未使用此向量模型建立索引，本次使用关键词检索。")
-            ranks = {}
-            for ranking in (lexical, semantic):
-                for rank, rowid in enumerate(ranking):
-                    ranks[rowid] = ranks.get(rowid, 0) + 1 / (61 + rank)
-            selected = sorted(ranks, key=lambda rowid: (-ranks[rowid], rowid))[:CANDIDATES]
-            hits = []
-            if selected:
-                rows = {
-                    row["rowid"]: dict(row)
-                    for row in conn.execute(
-                        """SELECT c.*,e.owner_id,e.title,e.source_url,e.version,e.metadata_payload,e.metadata_revision,e.index_revision
-                    FROM retrieval_chunks c JOIN retrieval_eligible e ON e.id=c.document_id WHERE c.rowid IN ("""
-                        + ",".join("?" for _ in selected)
-                        + ")",
-                        selected,
-                    )
-                }
-                hits = [rows[rowid] for rowid in selected]
-        reranked = False
-        if hits:
-            try:
-                candidates = [hit["text"][: min(20000, 240000 // len(hits))] for hit in hits]
-                ranking = rerank_texts(query, candidates, limit=min(limit, len(hits)))
-                if ranking is not None:
-                    hits = [hits[item["index"]] for item in ranking]
-                    reranked = True
-            except Exception:
-                warnings.append("重排服务暂不可用，本次保留原检索顺序。")
-        if hits:
-            # External calls release the snapshot. Revalidate the same scope and
-            # the exact current chunk before returning any evidence to a caller.
-            with closing(self.db.connect()) as conn:
-                conn.execute("BEGIN")
-                if case_id:
-                    self.service.own_case(conn, owner, case_id)
-                sql, parameters = self.service.archive.eligibility_sql(
-                    conn,
-                    owner,
-                    case_id,
-                    collection,
-                    as_of,
-                    historical,
-                    country,
-                    document_ids,
-                    source_scope=source_scope,
-                )
-                conn.execute("CREATE TEMP TABLE retrieval_eligible AS " + sql, parameters)
-                current = {
-                    row["rowid"]: dict(row)
-                    for row in conn.execute(
-                        """SELECT c.*,e.metadata_revision,e.index_revision FROM retrieval_chunks c
-                    JOIN retrieval_eligible e ON e.id=c.document_id WHERE c.rowid IN ("""
-                        + ",".join("?" for _ in hits)
-                        + ")",
-                        [hit["rowid"] for hit in hits],
-                    )
-                }
-                unchanged = [
-                    hit
-                    for hit in hits
-                    if hit["rowid"] in current
-                    and all(
-                        hit[key] == current[hit["rowid"]][key]
-                        for key in (
-                            "document_id",
-                            "chunk_id",
-                            "content_hash",
-                            "input_hash",
-                            "locator",
-                            "metadata_revision",
-                            "index_revision",
-                        )
-                    )
-                ]
-                if len(unchanged) != len(hits):
-                    warnings.append("检索期间资料或审核状态发生变更，已排除受影响引用，请重试。")
-                hits = unchanged
-        result = {
-            "items": [self.citation(hit, query) for hit in hits[:limit]],
-            "mode": mode,
-            "reranked": reranked,
-        }
-        if warnings:
-            result["warning"] = "；".join(warnings)
+            if wanted:
+                rows = conn.execute(
+                    """WITH wanted AS (
+                        SELECT json_extract(value,'$[0]') remote_chunk,
+                            json_extract(value,'$[1]') remote_document,key rank FROM json_each(?)
+                    ) SELECT c.*,e.owner_id,e.title,e.source_url,e.version,e.metadata_payload,
+                    e.metadata_revision,e.index_revision,r.generation FROM wanted w
+                    JOIN ragflow_chunks m ON m.remote_id=w.remote_chunk
+                    JOIN ragflow_documents r ON r.generation=m.generation AND r.remote_id=w.remote_document
+                    JOIN retrieval_chunks c ON c.document_id=r.document_id AND c.chunk_id=m.local_id
+                    JOIN retrieval_eligible e ON e.id=c.document_id
+                    WHERE r.profile=? AND r.state='ready' AND m.state='done'
+                    AND m.input_hash=c.input_hash AND m.content_hash=c.content_hash
+                    AND r.source_hash=e.content_hash AND r.source_version=e.version
+                    AND r.index_revision=e.index_revision ORDER BY w.rank""",
+                    (dump(wanted), fingerprint),
+                ).fetchall()
+                seen = set()
+                for row in rows:
+                    original = generations.get(row["generation"])
+                    identity = (row["document_id"], row["chunk_id"])
+                    if (
+                        identity not in seen
+                        and original
+                        and all(original[key] == row[key] for key in ("metadata_revision", "index_revision"))
+                    ):
+                        hits.append(dict(row))
+                        seen.add(identity)
+        result["items"] = [self.citation(hit, query) for hit in hits[:limit]]
+        if len(hits) < len(wanted) or progress["remaining"]:
+            result["warning"] = "部分资料仍在索引或检索期间状态发生变更，已排除未核实引用。"
         return result
 
     @staticmethod

@@ -603,7 +603,7 @@ class LegalArchive:
             parameters.extend(document_ids)
         index_gate = "AND text_complete=1 AND index_current=1" if require_current else ""
         query = f"""WITH versions AS (
-            SELECT d.id,d.owner_id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,dc.country,
+            SELECT d.id,d.owner_id,d.family_id,d.version,d.title,d.source_url,d.status,d.created_at,d.case_id,d.content_hash,dc.country,
                 COALESCE(m.payload,CASE WHEN d.source_url IS NULL THEN ? ELSE ? END) metadata_payload,
                 COALESCE(m.revision,0) metadata_revision,m.reviewed_at,m.reviewed_by,
                 COALESCE(rx.complete,0) text_complete,COALESCE(rx.revision,0) index_revision,

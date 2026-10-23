@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild candidate source metadata from verified saved official catalog evidence."""
+"""Rebuild candidate source metadata from verified saved official source pages."""
 
 import argparse
 import json

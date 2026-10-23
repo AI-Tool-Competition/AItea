@@ -70,6 +70,7 @@ const sourceProviderLabels: Record<string, string> = {
   ipos: "新加坡知识产权局",
   acra: "新加坡会计与企业管理局",
   wto: "世界贸易组织",
+  sg_official_html: "新加坡官方资料",
 };
 const sourceUnitLabels: Record<string, string> = {
   preamble: "序言",

@@ -11,6 +11,7 @@ import stat
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -234,13 +235,16 @@ class ChecklistService:
         return self.backfill_candidate_source_records(limit=limit, providers={"setneg"})
 
     def backfill_candidate_source_records(self, limit=500, *, providers=None):
-        """Recover supported provider metadata from saved hash-checked catalog/detail pages."""
+        """Recover supported provider metadata from saved hash-checked official pages."""
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("backfill limit must be between 1 and 1000")
         providers = (
-            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto"} if providers is None else set(providers)
+            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html"}
+            if providers is None
+            else set(providers)
         )
-        if not providers or not providers <= {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto"}:
+        allowed_providers = {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html"}
+        if not providers or not providers <= allowed_providers:
             raise ValueError("unsupported candidate source provider")
         from .blob_store import BlobIntegrityError
 
@@ -273,6 +277,13 @@ class ChecklistService:
                 "(p.final_url LIKE 'https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?%' "
                 "OR p.final_url LIKE 'https://www.wto.org/english/docs_e/legal_e/%' "
                 "OR p.final_url='https://www.wto.org/english/tratop_e/serv_e/telecom_e/telecom_commit_exempt_list_e.htm')"
+            )
+        if "sg_official_html" in providers:
+            source_filters.append(
+                "(p.final_url LIKE 'https://www.sfa.gov.sg/%' "
+                "OR p.final_url LIKE 'https://www.iras.gov.sg/%' "
+                "OR p.final_url LIKE 'https://www.customs.gov.sg/%' "
+                "OR p.final_url LIKE 'https://www.pdpc.gov.sg/%')"
             )
         candidates = []
         with closing(self.db.connect()) as conn:
@@ -310,6 +321,9 @@ class ChecklistService:
                     else "acra"
                     if row["final_url"].startswith("https://www.acra.gov.sg/")
                     else "wto"
+                    if row["final_url"].startswith("https://docs.wto.org/")
+                    or row["final_url"].startswith("https://www.wto.org/")
+                    else "sg_official_html"
                 )
                 expected_purpose = "detail" if provider == "setneg" else "catalog"
                 if (
@@ -317,7 +331,7 @@ class ChecklistService:
                     or plan["version"] != row["version"]
                     or item["id"] != row["item_id"]
                     or (
-                        provider not in {"ipos", "acra", "wto"}
+                        provider not in {"ipos", "acra", "wto", "sg_official_html"}
                         and (
                             row["country"] != "ID"
                             or row["plan_id"] != "indonesia-20261003"
@@ -341,6 +355,20 @@ class ChecklistService:
                             or row["plan_id"]
                             != ("indonesia-20261003" if row["country"] == "ID" else "singapore-demo-20261009")
                             or item["id"] != ("5.4" if row["country"] == "ID" else "5.2")
+                        )
+                    )
+                    or (
+                        provider == "sg_official_html"
+                        and (
+                            row["country"] != "SG"
+                            or row["plan_id"] != "singapore-demo-20261009"
+                            or item["id"]
+                            != {
+                                "www.sfa.gov.sg": "3.2",
+                                "www.iras.gov.sg": "3.3",
+                                "www.customs.gov.sg": "3.1",
+                                "www.pdpc.gov.sg": "3.6",
+                            }.get(urlsplit(row["final_url"]).hostname)
                         )
                     )
                 ):
@@ -376,7 +404,7 @@ class ChecklistService:
                     "application/xml"
                     if provider == "wto" and "/GetXMLResults.aspx?" in row["final_url"]
                     else "text/html"
-                    if provider in {"rcepsec", "ipos", "acra", "wto"}
+                    if provider in {"rcepsec", "ipos", "acra", "wto", "sg_official_html"}
                     else "application/json"
                 )
                 result = discover_page(row["final_url"], body, mime, recipe_for(item))
@@ -391,8 +419,8 @@ class ChecklistService:
                     None,
                 )
                 purpose_matches = (
-                    result.get("purpose") in {"catalog", "detail"}
-                    if provider in {"ipos", "acra", "wto"}
+                    result.get("purpose") in {"catalog", "detail", "document"}
+                    if provider in {"ipos", "acra", "wto", "sg_official_html"}
                     else result.get("purpose") == expected_purpose
                 )
                 if not result.get("matched") or not purpose_matches or not link:
@@ -979,7 +1007,15 @@ class ChecklistService:
                     if (
                         not isinstance(source_record, dict)
                         or source_record.get("provider")
-                        not in {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto"}
+                        not in {
+                            "setneg",
+                            "bkpm",
+                            "rcepsec",
+                            "ipos",
+                            "acra",
+                            "wto",
+                            "sg_official_html",
+                        }
                         or source_record.get("interpretation") != "unreviewed_source_values"
                         or not isinstance(source_record.get("fields"), dict)
                     ):

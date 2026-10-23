@@ -372,6 +372,26 @@ def test_acra_record_captures_list_version_issue_date_and_section():
     assert record["structure"]["parent_titles"] == ["Registrar's Interpretations"]
 
 
+def test_singapore_official_html_record_preserves_page_heading_and_link_context():
+    source = "https://www.sfa.gov.sg/food-retail/licence-permit/guidelines-for-licensed-food-retail-premises"
+    content = b"""<html><head><title>Food Retail Guidelines | SFA</title></head><body>
+    <h1>Food retail</h1><h2>Licence and permit guidelines</h2><ul><li>
+    <a href="https://www.sfa.gov.sg/docs/default-source/food/retail-guideline.pdf">Retail guidelines (PDF)</a>
+    </li></ul></body></html>"""
+    rules = recipe(
+        allowed_hosts=["www.sfa.gov.sg"],
+        catalog_patterns=[r"^/food-retail/licence-permit/guidelines-for-licensed-food-retail-premises$"],
+        document_patterns=[r"^/docs/default-source/food/retail-guideline\.pdf$"],
+    )
+    result = discover_page(source, content, "text/html", rules)
+    record = result["links"][0]["source_record"]
+    assert record["provider"] == "sg_official_html"
+    assert record["fields"]["source_page_title"] == "Food Retail Guidelines | SFA"
+    assert record["fields"]["list_context"].startswith("Retail guidelines")
+    assert record["structure"]["unit_type"] == "guideline"
+    assert record["structure"]["parent_titles"] == ["Food retail", "Licence and permit guidelines"]
+
+
 @pytest.mark.parametrize(
     "target",
     [

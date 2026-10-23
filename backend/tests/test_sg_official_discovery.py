@@ -72,6 +72,7 @@ def test_actual_public_next_records_discover_all_selected_pdfs_with_locator(labe
         link["source_locator"]["source_page_sha256"] == sha256(content).hexdigest() for link in originals
     )
     assert all(link["source_locator"]["record_id"] in {"24", "27"} for link in originals)
+    assert all(link["source_record"]["provider"] == "sg_official_html" for link in originals)
     assert result["scope"]["provider"] == "pdpc-next-flight-v1"
     assert {row["url"] for row in result["scope"]["link_records"] if row["purpose"] == "document"} == {
         link["url"] for link in originals

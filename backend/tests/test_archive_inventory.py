@@ -654,6 +654,45 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
                 AT,
             ),
         )
+        conn.execute(
+            """INSERT INTO checklist_candidates VALUES(
+            'candidate-sg-html','binding','https://www.sfa.gov.sg/docs/default-source/food/retail-guideline.pdf',
+            'Retail guidelines (PDF)',NULL,'https://www.sfa.gov.sg/food-retail/licence-permit/guidelines-for-licensed-food-retail-premises',
+            'pending',NULL,1,'',?)""",
+            (AT,),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate-sg-html',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "sg_official_html",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {
+                            "link_text": "Retail guidelines (PDF)",
+                            "source_page_title": "Food Retail Guidelines | SFA",
+                            "list_context": "Retail guidelines (PDF)",
+                        },
+                        "structure": {
+                            "unit_type": "guideline",
+                            "number": None,
+                            "parent_titles": ["Food retail", "Licence and permit guidelines"],
+                            "file_name": "retail-guideline.pdf",
+                            "anchor_class": "",
+                            "link_mechanism": "href",
+                        },
+                        "evidence": {
+                            "url": "https://www.sfa.gov.sg/food-retail/licence-permit/guidelines-for-licensed-food-retail-premises",
+                            "sha256": "1" * 64,
+                        },
+                    }
+                ),
+                "https://www.sfa.gov.sg/food-retail/licence-permit/guidelines-for-licensed-food-retail-premises",
+                "1" * 64,
+                AT,
+            ),
+        )
     report = export(archive)
     pages = records(report, filename="discovery-pages.jsonl")
     assert len(pages) == 1 and report["summary"]["discovery_pages"] == 1
@@ -661,13 +700,14 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
     assert pages[0]["plan_version"] == 2 and pages[0]["checklist_item_id"] == "1.3"
     assert pages[0]["purpose"] == "catalog" and pages[0]["collection_item_id"] == "page-item"
     source_records = records(report, filename="candidate-source-records.jsonl")
-    assert len(source_records) == 6
+    assert len(source_records) == 7
     setneg_record = next(row for row in source_records if row["candidate_id"] == "candidate")
     bkpm_record = next(row for row in source_records if row["candidate_id"] == "candidate-bkpm")
     rcep_record = next(row for row in source_records if row["candidate_id"] == "candidate-rcep")
     ipos_record = next(row for row in source_records if row["candidate_id"] == "candidate-ipos")
     acra_record = next(row for row in source_records if row["candidate_id"] == "candidate-acra")
     wto_record = next(row for row in source_records if row["candidate_id"] == "candidate-wto")
+    sg_record = next(row for row in source_records if row["candidate_id"] == "candidate-sg-html")
     assert setneg_record["source_record"]["fields"]["no_peraturan"] == "2"
     assert setneg_record["source_page_sha256"] == "a" * 64
     assert bkpm_record["source_record"]["provider"] == "bkpm"
@@ -682,7 +722,9 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
     assert wto_record["source_record"]["fields"]["symbol"] == "GATS/SC/43/Suppl.1"
     assert wto_record["source_record"]["structure"]["unit_type"] == "member_schedule"
     assert wto_record["anomalies"] == []
-    assert report["summary"]["candidate_source_records"] == 6
+    assert sg_record["source_record"]["provider"] == "sg_official_html"
+    assert sg_record["anomalies"] == []
+    assert report["summary"]["candidate_source_records"] == 7
     docs = records(report)
     assert len(docs) == 1 and docs[0]["review"]["review_status"] == "draft"
     assert docs[0]["checklist_refs"][0]["source_id"] == "source"

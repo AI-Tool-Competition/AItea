@@ -71,6 +71,12 @@ _BKPM_FILES_HOST = "jdih-storage.bkpm.go.id"
 _BKPM_API = "https://jdih.bkpm.go.id/api/document-search"
 _PDPC_HOST = "www.pdpc.gov.sg"
 _IPOS_HOST = "www.ipos.gov.sg"
+_SG_OFFICIAL_HOSTS = {
+    "www.sfa.gov.sg",
+    "www.iras.gov.sg",
+    "www.customs.gov.sg",
+    "www.pdpc.gov.sg",
+}
 _PDPC_GUIDANCE = "/organisations/regulations-decisions/regulatory-guidance"
 _PDPC_GUIDES = (
     "advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
@@ -644,6 +650,56 @@ def _wto_html_source_record(node, link_text: str, target: str, page_title: str, 
     }
 
 
+def _sg_official_source_record(node, link_text: str, target: str, page_title: str, headings: list[str]):
+    listing = row = node.parent
+    while listing is not None and listing.tag != "li":
+        listing = listing.parent
+    while row is not None and row.tag != "tr":
+        row = row.parent
+    list_text = _bounded_dom_text(listing, max_chars=2000, max_nodes=512)[0] if listing else ""
+    row_text = _bounded_dom_text(row, max_chars=3000, max_nodes=768)[0] if row else ""
+    publication_date = None
+    if row is not None:
+        cells = row.css("td")
+        if cells:
+            possible_date = _bounded_dom_text(cells[0], max_chars=100, max_nodes=64)[0]
+            if re.fullmatch(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}", possible_date):
+                publication_date = possible_date
+    context = " ".join([page_title, *headings, link_text]).casefold()
+    if any(term in context for term in ("form", "template", "declaration")):
+        unit_type = "form_or_template"
+    elif any(term in context for term in ("guideline", "guide", "requirements", "procedure")):
+        unit_type = "guideline"
+    elif any(term in context for term in ("regulation", "act", "order", "notice")):
+        unit_type = "regulatory_document"
+    else:
+        unit_type = "document_link"
+    filename = unquote(urlsplit(target).path.rsplit("/", 1)[-1])[:300]
+    fields = {
+        "link_text": link_text[:1000],
+        "source_page_title": page_title[:1000],
+        "document_heading": headings[-1][:1000] if headings else "",
+        "list_context": list_text[:2000],
+        "table_row_context": row_text[:3000],
+        "linked_url": target[:2000],
+    }
+    if publication_date:
+        fields["publication_date"] = publication_date
+    return {
+        "provider": "sg_official_html",
+        "interpretation": "unreviewed_source_values",
+        "fields": fields,
+        "structure": {
+            "unit_type": unit_type,
+            "number": None,
+            "parent_titles": [value[:500] for value in headings[-5:]],
+            "file_name": filename,
+            "anchor_class": (node.attributes.get("class") or "")[:200],
+            "link_mechanism": "href",
+        },
+    }
+
+
 class _FlightScripts(HTMLParser):
     """Collect literal Next Flight pushes without interpreting JavaScript."""
 
@@ -741,7 +797,7 @@ def _pdpc_next_links(decoded: str, source_hash: str) -> tuple[list[_Link], dict]
     records = []
 
     def append_fragment(fragment, locator):
-        page = _Page()
+        page = _Page(sg_official_source=True)
         page.feed(fragment)
         page.close()
         if page.challenge or _ERROR_HEADING.search(" ".join(page.headings[:3])):
@@ -861,6 +917,7 @@ class _Page:
         ipos_source=False,
         acra_source=False,
         wto_source=False,
+        sg_official_source=False,
     ):
         self.parts = []
         self.links: list[_Link] = []
@@ -875,6 +932,7 @@ class _Page:
         self.ipos_source = ipos_source
         self.acra_source = acra_source
         self.wto_source = wto_source
+        self.sg_official_source = sg_official_source
 
     def feed(self, content):
         self.parts.append(content)
@@ -1048,6 +1106,15 @@ class _Page:
             elif self.wto_source and tag == "a":
                 link_title = anchor_text if anchor_text else label or target.rsplit("/", 1)[-1]
                 link.source_record = _wto_html_source_record(
+                    node,
+                    link_title,
+                    target,
+                    self.title[0] if self.title else "",
+                    heading_context.get(node.mem_id, []),
+                )
+            elif self.sg_official_source and tag == "a":
+                link_title = anchor_text if anchor_text else label or target.rsplit("/", 1)[-1]
+                link.source_record = _sg_official_source_record(
                     node,
                     link_title,
                     target,
@@ -1493,6 +1560,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         ipos_source=urlsplit(current).hostname == _IPOS_HOST,
         acra_source=urlsplit(current).hostname == "www.acra.gov.sg",
         wto_source=rules.wto_public_catalog and urlsplit(current).hostname == "www.wto.org",
+        sg_official_source=urlsplit(current).hostname in _SG_OFFICIAL_HOSTS,
     )
     try:
         page.feed(_decode(content))

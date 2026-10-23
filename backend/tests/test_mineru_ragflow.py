@@ -58,11 +58,13 @@ class Remote:
                     return {"chunks": list(self.chunks.values())}
                 content = payload["content"]
                 identifier = hashlib.sha256(content.encode()).hexdigest()[:16]
-                self.chunks[identifier] = {"id": identifier, "content": content}
+                # The live RAGFlow chunks listing returns indexed text under
+                # content_with_weight rather than the create request's content.
+                self.chunks[identifier] = {"chunk_id": identifier, "content_with_weight": content}
                 if self.lose_response:
                     self.lose_response = False
                     raise RAGFlowError("ReadTimeout", unknown=True)
-                return {"chunk": self.chunks[identifier]}
+                return {"chunk": {"id": identifier}}
             raise AssertionError((method, path))
 
 

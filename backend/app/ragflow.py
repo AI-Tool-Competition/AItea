@@ -384,7 +384,12 @@ class RAGFlowIndex:
                 data = client.call("GET", path, params={"page": page, "page_size": 500})
                 items = data.get("chunks", [])
                 for item in items:
-                    existing[item.get("content")] = _identifier(item.get("id"))
+                    # RAGFlow's chunks endpoint exposes indexed text as
+                    # content_with_weight; accept content too for compatible
+                    # versions and test doubles that return the create shape.
+                    content = item.get("content_with_weight") or item.get("content")
+                    if content:
+                        existing[content] = _identifier(item.get("id") or item.get("chunk_id"))
                 if len(items) < 500:
                     break
             else:

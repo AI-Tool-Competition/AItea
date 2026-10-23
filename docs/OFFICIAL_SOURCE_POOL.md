@@ -38,6 +38,21 @@
 | `sg-pdpc-marketing` | [Personal Data Protection Commission](https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance/advisory-guidelines-on-the-do-not-call-provisions) | SG | 可达，社群、电话/短信营销的个人资料与 DNC 官方解释。 |
 | `sg-ipos-trademark-guides` | [Intellectual Property Office of Singapore](https://www.ipos.gov.sg/about-ip/trade-marks/tm-guides/) | SG | 可达，商标指南、审查手册及正式法规转介。 |
 
+## 法规来源覆盖差距（2026-10-24）
+
+根据 `data/tea.sqlite3` 中现有采集项按来源和结果状态汇总：BPK 返回 403 的条目涉及 TAP MPR（6 项）、UU／Perppu／PP／Perpres（各 2 项）、Perda（4 项）、中央部委和机构法规（2 项）及地方首长规章（2 项）。这些是采集项数量，不代表不同法规数量或目录覆盖率。
+
+UU、Perppu、PP 和 Perpres 已同时配置 Setneg 官方 JDIH 目录。当前采集记录分别有 78/68/78/78 项候选发现、40/34/37/46 项原件已存、4/0/0/0 项失败；同样是采集项累计状态，不能据此声称全国目录完整，也不能把原件已存等同于已解析、通过审核或已进入检索。BPK 仍作为独立核验来源保留。
+
+目前未形成可用全国替代的类别：
+
+- **TAP MPR**：MPR 官方 JDIH 提供按“Ketetapan MPR”过滤的列表、分页、详情与附件入口；搜索索引显示详情包含制定日期、发布机关和附件记录。[官方过滤目录](https://jdih.mpr.go.id/dokumen/index2?id=KETETAPAN+MPR&page=7&per-page=5)、[TAP MPR 详情示例](https://jdih.mpr.go.id/dokumen/view?id=215)。本次外部页面打开返回 403，本机 HTTPS 握手超时；尚未获得原始页面和 PDF 回执，因此只记为候选，不进入自动采集池。MPR 页面上的 316 条是混合“法规”目录总数，不是 TAP 数量。
+- **Perda**：Bandung JDIH 仅覆盖 Bandung；本次对应 2 个失败采集项，不能代表全国省、市、县法规覆盖。[全国 DITJEN PP 数据库](https://peraturan.go.id/)是官方候选，但本机 HTTPS 握手超时，现有来源回执亦为不可达。
+- **中央部委和机构法规**：当前 BPK 入口 2 项失败；来源池中的行业 JDIH 只能补对应机关和业务范围，不能代替全国中央机关清单。全国数据库候选仍受上述连接问题限制。
+- **地方首长规章**：BPK 有 2 项失败，Bandung 有 2 项失败；Bandung 是单一城市来源，尚无可验证的全国级 Pergub／Perbup／Perwali 替代目录。
+
+JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机关核对。其官方服务状态页采用前端动态查询，本次无法据静态页面确认 Search API 当前可用；因此不把 JDIHN 搜索索引、搜索引擎摘要或聚合元数据算作法规原件或完整目录。后续只有取得可重复的目录分页、详情、官方发布机关 PDF 和来源哈希回执后，才将候选升级为自动采集来源。
+
 ## 本次探测证据
 
 实际探测记录位于项目忽略目录 `.dev/unattended-collection-20261020/source-pool-audit/`。本次共 16 次 GET，最多 4 个并发，每个主机最多 1 个并发，每次 20 秒、2 MiB 上限，复用项目既有的 HTTPS、公网地址、重定向和体积限制。未使用模型、未写业务数据库、未绕过验证码或访问限制。

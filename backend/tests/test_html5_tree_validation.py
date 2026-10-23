@@ -36,9 +36,9 @@ def test_html_uses_source_mapped_structuring_instead_of_mineru_vlm():
     result = parse_file("official.html", b"<main><h1>Official title</h1><p>Preserve legal text.</p></main>")
 
     assert result["parser"] == "html-basic"
-    assert result["parser_version"] == "7"
+    assert result["parser_version"] == "8"
     assert result["html_source"]["dom_validation"]["engine"] == "selectolax.lexbor"
-    assert result["pipeline_version"].startswith("html-source-mapping-v7+")
+    assert result["pipeline_version"].startswith("html-source-mapping-v8+")
     assert "remote_parse" not in result
     assert any(chunk["text"] == "Preserve legal text." for chunk in result["chunks"])
 
@@ -53,7 +53,10 @@ def test_html_table_keeps_grid_rows_and_exact_original_source_range():
 
     assert table["content_text"] == "| Product | Rate |\n| --- | --- |\n| Tea | 20% |"
     locator = table["locator"]
-    assert raw[locator["char_start"] : locator["char_end"]] == raw[raw.index("<table>") : raw.index("</table>") + len("</table>")]
+    assert (
+        raw[locator["char_start"] : locator["char_end"]]
+        == raw[raw.index("<table>") : raw.index("</table>") + len("</table>")]
+    )
     assert locator["column_counts"] == [2, 2]
     assert locator["table_row_count"] == 2
     assert locator["structure_status"] == "complete"
@@ -61,17 +64,15 @@ def test_html_table_keeps_grid_rows_and_exact_original_source_range():
     assert locator["rows"][1]["cells"][1]["text"] == "20%"
     assert locator["rows"][1]["cells"][1]["source_boundary_complete"] is True
     first_row = locator["rows"][0]
-    assert raw[first_row["char_start"] : first_row["char_end"]] == (
-        "<tr><th>Product</th><th>Rate</th></tr>"
-    )
+    assert raw[first_row["char_start"] : first_row["char_end"]] == ("<tr><th>Product</th><th>Rate</th></tr>")
     assert result["quality"]["complete"] is True
 
 
-def test_table_spans_and_header_relationships_are_preserved_without_flattening():
+def test_table_spans_are_expanded_into_an_auditable_logical_grid():
     raw = (
         '<main><table><tr><th id="code" scope="row" rowspan="2">Code</th>'
         '<td headers="code" colspan="2">Duty</td></tr>'
-        '<tr><td>0902</td><td>Import</td></tr></table></main>'
+        "<tr><td>0902</td><td>Import</td></tr></table></main>"
     )
     result = parse_file("tariff.html", raw.encode(), "text/html")
     table = next(element for element in result["elements"] if element["kind"] == "table")
@@ -85,17 +86,47 @@ def test_table_spans_and_header_relationships_are_preserved_without_flattening()
     assert header["source_boundary_complete"] and duty["source_boundary_complete"]
     assert raw[header["char_start"] : header["char_end"]] == '<th id="code" scope="row" rowspan="2">Code</th>'
     assert raw[duty["char_start"] : duty["char_end"]] == '<td headers="code" colspan="2">Duty</td>'
+    assert table["locator"]["structure_status"] == "complete"
+    assert table["locator"]["column_counts"] == [3, 3]
+    assert table["locator"]["grid"][1][0]["source_cell_index"] == 1
+    assert table["locator"]["grid"][1][0]["is_origin"] is False
+    assert table["locator"]["grid_coordinate_basis"].startswith("zero-based")
+    assert "merged across 2 row(s) × 1 column(s)" in table["content_text"]
+    assert "merged across 1 row(s) × 2 column(s)" in table["content_text"]
+    assert result["quality"]["complete"] is True
+    assert quality_warning(result) is None
+
+
+def test_rowspan_cannot_cross_explicit_table_row_groups():
+    raw = (
+        "<main><table><tbody><tr><td rowspan='2'>Category</td></tr></tbody>"
+        "<tbody><tr><td>Item</td></tr></tbody></table></main>"
+    )
+    result = parse_file("invalid-span.html", raw.encode(), "text/html")
+    table = next(element for element in result["elements"] if element["kind"] == "table")
+
     assert table["locator"]["structure_status"] == "partial"
-    assert "rowspan_or_colspan_requires_grid_review" in table["locator"]["structure_reasons"]
+    assert "cell_span_crosses_row_group" in table["locator"]["structure_reasons"]
     assert result["quality"]["complete"] is False
-    warning = quality_warning(result)
-    assert "跨行或跨列合并单元格" in warning and "行列关系需核对" in warning
+
+
+def test_three_column_group_heading_is_preserved_as_a_single_merged_cell():
+    raw = (
+        "<main><table><tr><td colspan='3'>Temporary consignments</td></tr>"
+        "<tr><td>Event</td><td>TCS</td><td>Temporary import</td></tr></table></main>"
+    )
+    result = parse_file("merged-heading.html", raw.encode(), "text/html")
+    table = next(element for element in result["elements"] if element["kind"] == "table")
+
+    assert table["locator"]["column_counts"] == [3, 3]
+    assert table["locator"]["rows"][0]["source_cell_count"] == 1
+    assert table["locator"]["rows"][0]["logical_column_count"] == 3
+    assert "Temporary consignments [merged across 1 row(s) × 3 column(s)]" in table["content_text"]
+    assert result["quality"]["complete"] is True
 
 
 def test_html_ordered_and_nested_lists_keep_their_explicit_hierarchy():
-    raw = (
-        "<main><ol start='3'><li>Third</li><li value='7'>Seventh<ul><li>Detail</li></ul></li></ol></main>"
-    )
+    raw = "<main><ol start='3'><li>Third</li><li value='7'>Seventh<ul><li>Detail</li></ul></li></ol></main>"
     result = parse_file("list.html", raw.encode(), "text/html")
     items = [element for element in result["elements"] if element["kind"] == "list"]
 

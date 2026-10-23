@@ -249,8 +249,8 @@ def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypa
     service.collection.process_item(claim)
 
     updated = json.loads(row(service, "documents", doc["id"])["manifest"])
-    assert updated["parser_version"] == "7"
-    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v7"
+    assert updated["parser_version"] == "8"
+    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v8"
     assert updated["html_source"]["linked_images"][0]["asset_status"] == "ocr_complete"
     assert row(service, "processing_jobs", doc["id"])["status"] == "completed"
 
@@ -259,9 +259,11 @@ def test_html_image_ocr_resumes_bounded_batches_until_all_images_are_processed(s
     from app.native_asset_ocr import assets
     from test_html_image_collection import image
 
-    html = "<main><p>Five linked legal exhibits.</p>" + "".join(
-        f'<img src="/body-{index}.png">' for index in range(5)
-    ) + "</main>"
+    html = (
+        "<main><p>Five linked legal exhibits.</p>"
+        + "".join(f'<img src="/body-{index}.png">' for index in range(5))
+        + "</main>"
+    )
     doc = document(service, html=html)
     downloader(service, monkeypatch, raw=image())
     prepared = HtmlImageCollector(service).prepare(
@@ -284,7 +286,9 @@ def test_html_image_ocr_resumes_bounded_batches_until_all_images_are_processed(s
         assert len(calls) - before == expected_batch
 
     with closing(service.db.connect()) as conn:
-        manifest = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0])
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
     assert all(asset["asset_status"] == "ocr_complete" for asset in assets(manifest))
     assert row(service, "processing_jobs", doc["id"])["status"] == "completed"
 
@@ -378,7 +382,9 @@ def test_review_change_when_selecting_embedding_batch_is_checked_before_model(se
                 ).fetchone()[0]
             )
             payload["review_status"] = "published"
-            conn.execute("UPDATE document_metadata SET payload=? WHERE document_id=?", (dump(payload), doc["id"]))
+            conn.execute(
+                "UPDATE document_metadata SET payload=? WHERE document_id=?", (dump(payload), doc["id"])
+            )
         return process(document, claim)
 
     monkeypatch.setattr(service.ragflow, "step", select)

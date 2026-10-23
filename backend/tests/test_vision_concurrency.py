@@ -31,7 +31,7 @@ def slots(monkeypatch):
     return value
 
 
-@pytest.mark.parametrize("limit", [1, 2, 8, 16, 32, 64])
+@pytest.mark.parametrize("limit", [1, 2, 8, 16, 32, 64, 128])
 def test_explicit_capacity_and_default_preserve_bounded_permits(slots, monkeypatch, limit):
     assert vision.vision_ocr_worker_limit() == 2
     monkeypatch.setenv("VISION_OCR_WORKERS", str(limit))
@@ -43,12 +43,12 @@ def test_explicit_capacity_and_default_preserve_bounded_permits(slots, monkeypat
         slots.release()
 
 
-@pytest.mark.parametrize("value", ["0", "65", "128", "-1", "bad", "2.5", ""])
+@pytest.mark.parametrize("value", ["0", "129", "-1", "bad", "2.5", ""])
 def test_invalid_configuration_fails_before_render_or_request(enabled, slots, monkeypatch, value):
     monkeypatch.setenv("VISION_OCR_WORKERS", value)
     monkeypatch.setattr(parsing, "render_pdf_page_bounded", lambda *_: pytest.fail("render started"))
     monkeypatch.setattr(vision, "_invoke", lambda *_: pytest.fail("provider called"))
-    with pytest.raises(ValueError, match="VISION_OCR_WORKERS must be between 1 and 64"):
+    with pytest.raises(ValueError, match="VISION_OCR_WORKERS must be between 1 and 128"):
         parsing._ocr_one_page(b"source", {"page": 1, "status": "pending_ocr"})
 
 

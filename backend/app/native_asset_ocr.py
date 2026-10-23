@@ -400,7 +400,7 @@ def _one(
     content, manifest, value, on_asset, on_image, archive_path=None, archive_size=None, image_content=None
 ):
     from .parsing import ProcessingDeferred, _OCR_SLOTS, _run_bounded
-    from .vision import IMAGE_PROMPT_VERSION, OCRResponseError, transcribe_image
+    from .vision import IMAGE_PROMPT_VERSION, OCRCapacityDeferred, OCRResponseError, transcribe_image
 
     updated = deepcopy(value)
 
@@ -433,6 +433,10 @@ def _one(
         }
 
         def failure(exc):
+            if isinstance(exc, OCRCapacityDeferred):
+                metadata["attempts"] = attempts
+                updated.update(ocr=metadata)
+                return defer("ocr_capacity")
             retryable = isinstance(exc, OCRResponseError) and exc.retryable and metadata["attempts"] < 3
             metadata["finish_reason"] = getattr(exc, "finish_reason", None)
             updated.update(

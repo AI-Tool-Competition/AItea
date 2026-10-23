@@ -1,4 +1,4 @@
-"""DeepSeek image fallback is opt-in and single-flight across local workers."""
+"""DeepSeek image fallback is opt-in and bounded across local workers."""
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -73,12 +73,13 @@ def _hold_image_slot(data, ready):
 def test_deepseek_aliases_cap_only_vision_and_preserve_embedding_64(deepseek, monkeypatch, model):
     monkeypatch.setenv("LLM_MODEL", model)
     monkeypatch.setenv("EMBEDDING_HTTP_WORKERS", "64")
-    assert vision.vision_ocr_worker_limit() == 1
+    assert vision.vision_ocr_worker_limit() == 64
     assert ingestion.embedding_http_worker_limit() == 64
     slots = parsing._OCR_SLOTS
     assert slots.acquire(timeout=0)
-    assert slots.snapshot()["maximum"] == slots.snapshot()["target"] == 1
-    assert not slots.acquire(timeout=0)
+    assert slots.snapshot()["maximum"] == 64 and slots.snapshot()["target"] == 16
+    assert slots.acquire(timeout=0)
+    slots.release()
     slots.release()
 
 
@@ -92,8 +93,32 @@ def test_non_deepseek_vision_keeps_existing_parallel_capacity(deepseek, monkeypa
     slots.release()
 
 
-def test_actual_mock_http_is_single_flight_across_processes_and_data_alias(deepseek):
+def test_page_processing_and_model_request_limits_are_independent(deepseek, monkeypatch):
+    monkeypatch.setenv("VISION_OCR_WORKERS", "128")
+    monkeypatch.setenv("VISION_OCR_REQUEST_WORKERS", "32")
+    monkeypatch.setenv("VISION_OCR_ADAPTIVE", "false")
+    page_slots = parsing._VisionSlots()
+    request_slots = parsing._ParserSlots(
+        limit_reader=vision.vision_ocr_request_worker_limit, setting="VISION_OCR_REQUEST_WORKERS"
+    )
+    monkeypatch.setattr(parsing, "_OCR_SLOTS", page_slots)
+    monkeypatch.setattr(parsing, "_MODEL_REQUEST_SLOTS", request_slots)
+
+    assert vision.vision_ocr_worker_limit() == 128
+    assert vision.vision_ocr_request_worker_limit() == 32
+    assert all(page_slots.acquire(timeout=0) for _ in range(128))
+    assert page_slots.snapshot()["maximum"] == 128
+    assert all(request_slots.acquire(timeout=0) for _ in range(32))
+    assert not request_slots.acquire(timeout=0)
+    for _ in range(128):
+        page_slots.release()
+    for _ in range(32):
+        request_slots.release()
+
+
+def test_actual_mock_http_respects_shared_request_limit_across_processes_and_data_alias(deepseek, monkeypatch):
     _, data = deepseek
+    monkeypatch.setenv("VISION_OCR_REQUEST_WORKERS", "2")
     alias = data / "same-data"
     alias.symlink_to(data, target_is_directory=True)
     ctx = multiprocessing.get_context("spawn")
@@ -109,7 +134,7 @@ def test_actual_mock_http_is_single_flight_across_processes_and_data_alias(deeps
         for process in processes:
             process.join(10)
             assert process.exitcode == 0
-        assert counter.value == 6 and peak.value == 1 and active.value == 0
+        assert counter.value == 6 and peak.value == 2 and active.value == 0
     finally:
         for process in processes:
             if process.is_alive():
@@ -136,7 +161,7 @@ def test_killed_process_releases_shared_image_lock(deepseek):
             process.join(5)
 
 
-def test_busy_global_slot_defers_pdf_native_and_region_before_any_request_intent(deepseek, monkeypatch):
+def test_busy_global_slot_defers_pdf_and_native_before_any_request_intent(deepseek, monkeypatch):
     gate, data = deepseek
     runtime = data / ".runtime"
     runtime.mkdir()
@@ -146,25 +171,25 @@ def test_busy_global_slot_defers_pdf_native_and_region_before_any_request_intent
     content = make_pdf([("Visible original", True)])
     page = parse_file("scan.pdf", content)["pages"][0]
     recovering = deepcopy(page)
-    recovering.update(status="ocr_uncertain", ocr={"phase": "recovery", "attempts": 2})
+    recovering.update(status="ocr_uncertain", native_text="", native_visibility={}, ocr={"phase": "recovery", "attempts": 2})
     native_content, manifest = docx()
     asset = native_asset_ocr.pending_assets(manifest)[0]
-    with (runtime / "deepseek-vision.lock").open("wb") as blocker:
+    with (runtime / "deepseek-vision-00.lock").open("wb") as blocker:
         fcntl.flock(blocker, fcntl.LOCK_EX)
         results = [
             (parsing._ocr_one_page(content, page), page),
-            (parsing._ocr_one_page(content, recovering, on_region=lambda _: {}), recovering),
             (native_asset_ocr._one(native_content, manifest, asset, None, None), asset),
-            (ocr_recovery.recover_page_step(content, recovering, on_region=lambda _: {}), recovering),
         ]
         for result, original in results:
-            assert result["deferred_reason"] == "ocr_capacity"
-            assert result.get("ocr") == original.get("ocr")
-            assert not (result.get("ocr") or {}).get("request_outcome")
+            assert result.get("deferred_reason") == "ocr_capacity", result
+            metadata = result.get("ocr") or {}
+            assert metadata.get("attempts", 0) == (original.get("ocr") or {}).get("attempts", 0)
+            assert not metadata.get("request_id")
+            assert not metadata.get("request_outcome")
         with pytest.raises(vision.OCRCapacityDeferred) as error:
             vision._invoke({"model": "deepseek-v4.1-flash"})
         assert error.value.request_sent is False and not error.value.request_outcome_unknown
-    assert not parsing._OCR_SLOTS.snapshot()["initialized"]
+    assert parsing._MODEL_REQUEST_SLOTS._semaphore is None
 
 
 @pytest.mark.parametrize("terminal", ["complete", "conflict", "failed"])

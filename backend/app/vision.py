@@ -154,20 +154,25 @@ def deepseek_vision_model(model=None) -> bool:
 
 
 class _DeepSeekImageSlot:
-    """One image request per canonical data root, including other worker processes."""
+    """Bound image requests per canonical data root, including worker processes."""
 
     def __init__(self):
-        self._threads = threading.Lock()
+        self._threads = threading.BoundedSemaphore(64)
         self._owned = threading.local()
 
     def acquire(self, *, timeout):
         if getattr(self._owned, "depth", 0):
             self._owned.depth += 1
             return True
+        try:
+            limit = int(os.getenv("VISION_OCR_REQUEST_WORKERS", "1"))
+        except ValueError as exc:
+            raise ValueError("VISION_OCR_REQUEST_WORKERS must be between 1 and 64") from exc
+        if not 1 <= limit <= 64:
+            raise ValueError("VISION_OCR_REQUEST_WORKERS must be between 1 and 64")
         deadline = time.monotonic() + timeout
         if not self._threads.acquire(timeout=max(0, timeout)):
             return False
-        fd = None
         try:
             data = Path(os.getenv("TEA_DATA_DIR") or Path(__file__).resolve().parents[2] / "data").resolve(
                 strict=True
@@ -176,25 +181,24 @@ class _DeepSeekImageSlot:
             if runtime.is_symlink():
                 raise ValueError("图片识别运行目录不能使用符号链接。")
             runtime.mkdir(mode=0o700, exist_ok=True)
-            fd = os.open(runtime / "deepseek-vision.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-            if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1:
-                raise ValueError("图片识别单槽必须使用独立普通文件。")
             while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    self._owned.fd, self._owned.depth = fd, 1
-                    return True
-                except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                for index in range(limit):
+                    fd = os.open(runtime / f"deepseek-vision-{index:02d}.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                    if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1:
                         os.close(fd)
-                        fd = None
-                        self._threads.release()
-                        return False
-                    time.sleep(min(0.025, remaining))
+                        raise ValueError("图片识别并发槽必须使用独立普通文件。")
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        self._owned.fd, self._owned.depth = fd, 1
+                        return True
+                    except BlockingIOError:
+                        os.close(fd)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._threads.release()
+                    return False
+                time.sleep(min(0.025, remaining))
         except BaseException:
-            if fd is not None:
-                os.close(fd)
             self._threads.release()
             raise
 
@@ -223,14 +227,26 @@ class OCRCapacityDeferred(OCRResponseError):
 
 
 def vision_ocr_worker_limit() -> int:
-    """Explicit per-process capacity shared by page, image and recovery work."""
+    """Explicit per-process OCR page processing capacity."""
     try:
         value = int(os.getenv("VISION_OCR_WORKERS", "2"))
     except ValueError as exc:
-        raise ValueError("VISION_OCR_WORKERS must be between 1 and 64") from exc
+        raise ValueError("VISION_OCR_WORKERS must be between 1 and 128") from exc
+    if not 1 <= value <= 128:
+        raise ValueError("VISION_OCR_WORKERS must be between 1 and 128")
+    return value
+
+
+def vision_ocr_request_worker_limit() -> int:
+    """Bound model requests separately from local page rendering and processing."""
+    default = min(vision_ocr_worker_limit(), 64)
+    try:
+        value = int(os.getenv("VISION_OCR_REQUEST_WORKERS", str(default)))
+    except ValueError as exc:
+        raise ValueError("VISION_OCR_REQUEST_WORKERS must be between 1 and 64") from exc
     if not 1 <= value <= 64:
-        raise ValueError("VISION_OCR_WORKERS must be between 1 and 64")
-    return 1 if deepseek_vision_model() else value
+        raise ValueError("VISION_OCR_REQUEST_WORKERS must be between 1 and 64")
+    return value
 
 
 def vision_ocr_adaptive_enabled() -> bool:
@@ -283,14 +299,21 @@ def vision_ocr_configured() -> bool:
 
 
 def _invoke(body: dict) -> tuple[dict, str, str]:
-    if not deepseek_vision_model(body.get("model")):
-        return _invoke_provider(body)
-    if not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=5):
+    from .parsing import _MODEL_REQUEST_SLOTS
+
+    shared = deepseek_vision_model(body.get("model"))
+    if shared and not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=300):
         raise OCRCapacityDeferred()
     try:
-        return _invoke_provider(body)
+        if not _MODEL_REQUEST_SLOTS.acquire(timeout=300):
+            raise OCRCapacityDeferred()
+        try:
+            return _invoke_provider(body)
+        finally:
+            _MODEL_REQUEST_SLOTS.release()
     finally:
-        _DEEPSEEK_IMAGE_SLOT.release()
+        if shared:
+            _DEEPSEEK_IMAGE_SLOT.release()
 
 
 def _invoke_provider(body: dict) -> tuple[dict, str, str]:

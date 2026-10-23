@@ -64,8 +64,8 @@ def source(value=None, *, thumbnail=True, split=False, escaped=False):
 def test_detached_next_component_maps_actual_body_video_and_script_boundaries():
     raw = source()
     result = parse_file("law.html", raw)
-    assert result["parser_version"] == "3"
-    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v3"
+    assert result["parser_version"] == "7"
+    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v7"
     image, video = result["html_source"]["objects"]
     assert image["tag"] == "img" and video["tag"] == "rsc-video"
     assert video["vision_status"] == "audiovisual_transcription_pending"

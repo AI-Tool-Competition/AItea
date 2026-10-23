@@ -57,7 +57,13 @@ ACTIVE = (
 
 
 def supports(filename, mime_type=""):
-    return Path(filename).suffix.lower() in SUPPORTED or mime_type == "application/pdf"
+    extension = Path(filename).suffix.lower()
+    # MinerU's HTML API has a separate model/result schema. The project uses
+    # its source-mapped HTML5 pipeline for HTML instead of routing it through
+    # the PDF/Office VLM worker.
+    if extension in {".html", ".htm"} or mime_type.split(";", 1)[0].strip().lower() == "text/html":
+        return False
+    return extension in SUPPORTED or mime_type == "application/pdf"
 
 
 def pending_manifest(filename, content_hash):

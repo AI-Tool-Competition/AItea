@@ -264,12 +264,17 @@ class ChecklistService:
                 fail(409, "definition_changed", "清单定义已变化，请发布新版本后配置")
             return binding, False
         seeds = normalized_seeds_for(item)
+        scheduled = (
+            item["execution"] == "discovery"
+            and not item["conditional"]
+            and recipe_for(item)["adapter"] != "manual"
+        )
         source = self.service.save_source(
             owner,
             {
                 "name": f"{plan['country']} · {item['id']} {item['title']}"[:200],
                 "url": seeds[0]["url"] if seeds else item["entries"][0]["url"],
-                "enabled": False,
+                "enabled": scheduled,
                 "interval_hours": 24,
                 "tags": item["tags"],
                 "plan": {

@@ -1,6 +1,6 @@
 # MinerU 云端解析与本机 RAGFlow
 
-当前管线为：保存并校验原件 → MinerU 精准解析 API → 校验结构与页码 → 保存正文切片 → RAGFlow 云端 embedding → 受权限与法规效力约束的检索。本机不运行 MinerU、OCR、视觉模型或 embedding 模型。
+PDF、Office 与图片原件使用：保存并校验原件 → MinerU 精准解析 API → 校验结构与页码 → 保存正文切片。静态 HTML 使用锁定的 Selectolax/Lexbor HTML5 树校验，再由项目结构化提取器按原件定位标题、正文、表格与对象。两条路径都进入同一 RAGFlow 云端 embedding 和受权限、法规版本及效力约束的检索。本机不运行 MinerU、OCR、视觉模型或 embedding 模型。
 
 ## 解析与原文证据
 

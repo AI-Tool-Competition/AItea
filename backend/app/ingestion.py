@@ -93,11 +93,43 @@ def _parse_html(content: bytes) -> ParsedDocument:
     source = _decode(content)
     if len(source) > MAX_TEXT:
         raise ValueError("HTML 文本超过处理限制。")
+    from importlib.metadata import version
+    from selectolax.lexbor import LexborHTMLParser
+
+    # Lexbor supplies a mature HTML5 tree for malformed-but-recoverable source.
+    # We still build legal-source structure from the original decoded bytes so
+    # citations retain exact source offsets instead of pointing into a rewrite.
+    tree = LexborHTMLParser(source, scripting=False)
+    nodes = tree.css("*")
+    if len(nodes) > 100_000:
+        raise ValueError("HTML 标签数量超过处理限制。")
+    max_depth = 0
+    for node in nodes:
+        depth, parent = 0, node.parent
+        while parent is not None:
+            depth += 1
+            if depth > 128:
+                raise ValueError("HTML 嵌套深度超过处理限制。")
+            parent = parent.parent
+        max_depth = max(max_depth, depth)
+    dom_validation = {
+        "engine": "selectolax.lexbor",
+        "engine_version": version("selectolax"),
+        "html5_tree_built": True,
+        "scripts_executed": False,
+        "node_count": len(nodes),
+        "max_depth": max_depth,
+        "main_count": sum(node.tag == "main" for node in nodes),
+        "article_count": sum(node.tag == "article" for node in nodes),
+        "table_count": sum(node.tag == "table" for node in nodes),
+        "heading_count": sum(node.tag in {f"h{i}" for i in range(1, 7)} for node in nodes),
+    }
     options = {
         "source": source,
         "source_hash": hashlib.sha256(content).hexdigest(),
         "exclude_navigation": True,
         "max_elements": MAX_ELEMENTS,
+        "dom_validation": dom_validation,
     }
     extractor = _HTMLDocument(main_only=True, **options)
     extractor.feed(source)
@@ -422,9 +454,12 @@ def parse_file(
         raise ValueError("文档不能为空且不能超过 20 MB。")
     from .mineru import supports, pending_manifest
 
+    extension = Path(filename).suffix.lower()
+    if extension in {".html", ".htm"} or mime_type.split(";", 1)[0].strip().lower() == "text/html":
+        document = _parse_html(content)
+        return _parsed_result(document, hashlib.sha256(content).hexdigest(), Path(filename).stem)
     if supports(filename, mime_type):
         return pending_manifest(filename, hashlib.sha256(content).hexdigest())
-    extension = Path(filename).suffix.lower()
     if extension not in {".txt", ".md", ".markdown"}:
         raise ValueError("此文件格式未获 MinerU 精准解析支持，请提供 PDF、Office、图片或 HTML 原件。")
     if len(content) > MAX_TEXT:

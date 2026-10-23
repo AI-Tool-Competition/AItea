@@ -90,7 +90,7 @@ class HtmlImageCollector:
         manifest = json.loads(row["manifest"])
         if (
             manifest.get("parser") != "html-basic"
-            or manifest.get("parser_version") != "3"
+            or manifest.get("parser_version") not in {"3", "4", "5", "6", "7"}
             or not row["source_url"]
         ):
             raise ValueError("需要有实际来源网址的当前 HTML 原件映射。")

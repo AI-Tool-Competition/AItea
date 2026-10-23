@@ -1,6 +1,7 @@
 """Static HTML text and visual source mapping; no scripts or remote resources."""
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 import hashlib
 from html import unescape
 from html.parser import HTMLParser
@@ -9,7 +10,7 @@ from urllib.parse import urlsplit
 
 from .vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v3"
+VERSION = "html-source-mapping-v7"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -345,7 +346,14 @@ class HTMLDocument(HTMLParser):
     _hidden = {"script", "style", "noscript", "template", "head"}
 
     def __init__(
-        self, *, main_only=False, source=None, source_hash="", exclude_navigation=False, max_elements=20_000
+        self,
+        *,
+        main_only=False,
+        source=None,
+        source_hash="",
+        exclude_navigation=False,
+        max_elements=20_000,
+        dom_validation=None,
     ):
         super().__init__(convert_charrefs=True)
         self.main_only = main_only
@@ -354,13 +362,14 @@ class HTMLDocument(HTMLParser):
         self.source_hash = source_hash
         self.exclude_navigation = exclude_navigation
         self.max_elements = max_elements
+        self.dom_validation = dom_validation or {}
         self.elements = []
         self.headings = []
         self.buffer = []
         self.heading_level = 0
         self.start_line = 1
-        self.anchor = None
         self.links = []
+        self.link_records = []
         self.objects = []
         self._stack = []
         self._root_children = {}
@@ -369,6 +378,19 @@ class HTMLDocument(HTMLParser):
         self._visible_quoted_text = False
         self._scripts = []
         self._rsc_scan = None
+        self._table_row = None
+        self._table_cell = None
+        self._table_cell_record = None
+        self._table_row_start = 1
+        self._table_row_headers = False
+        self._table_rows = []
+        self._table_row_records = []
+        self._table_start_line = 1
+        self._table_start_char = 0
+        self._table_column_counts = []
+        self._table_depth = 0
+        self._table_uncertain = False
+        self._table_reasons = set()
         self._line_offsets = [0]
         if source is not None:
             self._line_offsets.extend(index + 1 for index, char in enumerate(source) if char == "\n")
@@ -389,10 +411,18 @@ class HTMLDocument(HTMLParser):
         if len(self.elements) >= self.max_elements:
             raise ValueError("HTML 元素数量超过限制。")
         kind = "paragraph"
+        list_frame = next((frame for frame in reversed(self._stack) if frame.get("list_item_context")), None)
+        if list_frame:
+            kind = "list"
         if self.heading_level:
             self.headings = self.headings[: self.heading_level - 1] + [text]
             kind = "heading"
         order = len(self.elements) + 1
+        context_frame = next(
+            (frame for frame in reversed(self._stack) if frame.get("block_context")),
+            None,
+        )
+        context = context_frame["block_context"] if context_frame else {}
         locator = {
             "kind": "html",
             "element_start": order,
@@ -401,11 +431,176 @@ class HTMLDocument(HTMLParser):
             "line_end": self.getpos()[0],
             "heading_path": list(self.headings),
         }
-        if self.anchor:
-            locator["anchor"] = self.anchor
+        if context.get("tag"):
+            locator["semantic_tag"] = context["tag"]
+            locator["dom_path"] = context["path"]
+            locator["start_tag_char_start"] = context["start_tag_char_start"]
+            locator["start_tag_char_end"] = context["start_tag_char_end"]
+            locator["start_tag_offset_basis"] = "decoded_html_unicode_characters"
+            locator["start_tag_sha256"] = context["start_tag_sha256"]
+        if context.get("classes"):
+            locator["class_tokens"] = list(context["classes"])
+        if context.get("class_attribute_sha256"):
+            locator["class_attribute_sha256"] = context["class_attribute_sha256"]
+            locator["class_attribute_length"] = context["class_attribute_length"]
+            locator["class_tokens_truncated"] = context["class_tokens_truncated"]
+        if context.get("title"):
+            locator["source_title"] = context["title"]
+        if context.get("title_sha256"):
+            locator["source_title_sha256"] = context["title_sha256"]
+            locator["source_title_length"] = context["title_length"]
+            locator["source_title_truncated"] = context["title_truncated"]
+        if list_frame and kind == "list":
+            locator["list_path"] = list(list_frame["list_item_context"])
+        if context.get("id"):
+            locator["anchor"] = context["id"]
         self.elements.append(
             ParsedElement(f"html-{order:06}", kind, order - 1, text, locator, list(self.headings))
         )
+
+    def _finish_table_cell(
+        self, *, end_char=None, boundary_kind="unobserved_boundary", boundary_complete=False
+    ):
+        if self._table_row is None or self._table_cell is None:
+            return
+        text = re.sub(r"\s+", " ", "".join(self._table_cell)).strip()
+        self._table_row["cells"].append(text)
+        record = self._table_cell_record
+        if record is not None:
+            record.update(
+                text=text,
+                char_end=end_char,
+                source_boundary_complete=boundary_complete,
+                end_tag_observed=boundary_kind == "observed_end_tag",
+                boundary_kind=boundary_kind,
+            )
+            self._table_row["cell_records"].append(record)
+        self._table_cell = None
+        self._table_cell_record = None
+
+    def _finish_table_row(
+        self,
+        *,
+        end_char=None,
+        boundary_kind="unobserved_boundary",
+        boundary_complete=False,
+        cell_end_char=None,
+        cell_boundary_kind=None,
+    ):
+        if self._table_row is None:
+            return
+        if self._table_cell is not None:
+            self._finish_table_cell(
+                end_char=cell_end_char if cell_end_char is not None else end_char,
+                boundary_kind=cell_boundary_kind or boundary_kind,
+                boundary_complete=boundary_complete,
+            )
+        cells = self._table_row["cells"]
+        row = self._table_row
+        row.update(
+            char_end=end_char,
+            source_boundary_complete=boundary_complete,
+            end_tag_observed=boundary_kind == "observed_end_tag",
+            boundary_kind=boundary_kind,
+        )
+        self._table_row = None
+        if self._table_column_counts and len(cells) != self._table_column_counts[0]:
+            self._uncertain = True
+            self._table_uncertain = True
+            self._table_reasons.add("uneven_source_row_widths")
+        self._table_column_counts.append(len(cells))
+        self._table_row_records.append(
+            {
+                "row_index": len(self._table_column_counts),
+                "char_start": row["char_start"],
+                "char_end": row["char_end"],
+                "start_tag_char_end": row["start_tag_char_end"],
+                "start_tag_sha256": row["start_tag_sha256"],
+                "offset_basis": "decoded_html_unicode_characters",
+                "source_boundary_complete": row["source_boundary_complete"],
+                "end_tag_observed": row["end_tag_observed"],
+                "boundary_kind": row["boundary_kind"],
+                "column_count": len(cells),
+                "header_row": self._table_row_headers,
+                "cells": row["cell_records"],
+            }
+        )
+        normalized = [cell.replace("|", "\\|") for cell in cells]
+        row = "| " + " | ".join(normalized) + " |"
+        if self._table_row_headers and not self._table_rows:
+            row = "\n".join(
+                [row, "| " + " | ".join("---" for _ in normalized) + " |"]
+            )
+        self._table_rows.append(row)
+
+    def _emit_table(self, *, closed=False, end_char=None):
+        if not self._table_rows:
+            return
+        if len(self.elements) >= self.max_elements:
+            raise ValueError("HTML 元素数量超过限制。")
+        order = len(self.elements) + 1
+        self.elements.append(
+            ParsedElement(
+                f"html-{order:06}",
+                "table",
+                order - 1,
+                "\n".join(self._table_rows),
+                {
+                    "kind": "html",
+                    "line_start": self._table_start_line,
+                    "line_end": self.getpos()[0],
+                    "heading_path": list(self.headings),
+                    "source_hash": self.source_hash,
+                    "char_start": self._table_start_char,
+                    "char_end": end_char if end_char is not None else len(self.source or ""),
+                    "offset_basis": "decoded_html_unicode_characters",
+                    "table_row_count": len(self._table_column_counts),
+                    "column_counts": list(self._table_column_counts),
+                    "rows": deepcopy(self._table_row_records),
+                    "structure_reasons": sorted(self._table_reasons),
+                    "structure_status": "complete" if closed and not self._table_uncertain else "partial",
+                },
+                list(self.headings),
+            )
+        )
+        self._table_rows = []
+        self._table_row_records = []
+        self._table_column_counts = []
+        self._table_uncertain = False
+        self._table_reasons = set()
+
+    def _start_table_row(self, start, token):
+        self._finish_table_row(
+            end_char=start,
+            boundary_kind="implied_end_before_next_row",
+            boundary_complete=True,
+            cell_end_char=start,
+            cell_boundary_kind="implied_end_before_next_row",
+        )
+        self._flush()
+        self._table_row_start = self.getpos()[0]
+        self._table_row = {
+            "cells": [],
+            "cell_records": [],
+            "char_start": start,
+            "start_tag_char_end": start + len(token),
+            "start_tag_sha256": _hash(token),
+        }
+        self._table_row_headers = False
+
+    @staticmethod
+    def _table_span(value):
+        if value is None:
+            return 1, None
+        if value == "":
+            return 1, ""
+        raw = str(value)
+        if not raw.isdecimal():
+            return None, raw
+        number = int(raw)
+        if number > 1000:
+            return None, raw
+        return number, raw
 
     def _attributes(self, token, start):
         result = []
@@ -460,6 +655,15 @@ class HTMLDocument(HTMLParser):
     def _close(self, index, end, *, observed=True):
         frames = self._stack[index:]
         for frame in reversed(frames):
+            if frame.get("link_index") is not None:
+                closed = observed and frame is frames[0]
+                self.link_records[frame["link_index"]]["locator"].update(
+                    char_end=end,
+                    source_boundary_complete=closed,
+                    end_tag_observed=closed,
+                )
+                if not closed:
+                    self._uncertain = True
             if frame.get("script_inline") and self.source is not None:
                 self._scripts.append(
                     {
@@ -484,6 +688,23 @@ class HTMLDocument(HTMLParser):
         self._nodes += 1
         if self._nodes > 100_000 or len(self._stack) >= 128:
             raise ValueError("HTML 标签数量或嵌套深度超过限制。")
+        if tag == "li":
+            list_parent = next(
+                (index for index in range(len(self._stack) - 1, -1, -1) if self._stack[index]["tag"] in {"ol", "ul"}),
+                -1,
+            )
+            previous = next(
+                (
+                    index
+                    for index in range(len(self._stack) - 1, list_parent, -1)
+                    if self._stack[index]["tag"] == "li"
+                ),
+                None,
+            )
+            if previous is not None:
+                self._flush()
+                self._close(previous, self._position(), observed=False)
+                self._uncertain = True
         # HTML keeps the first duplicated attribute. Preserve every URL literal
         # below and keep ambiguous visible source markup incomplete.
         values = {}
@@ -506,6 +727,50 @@ class HTMLDocument(HTMLParser):
         path = (parent["path"] + "/" if parent else "") + f"{tag}[{children[tag]}]"
         start = self._position() if self.source is not None else 0
         token = self.get_starttag_text() or ""
+        if tag == "table":
+            if self._table_depth == 0:
+                self._flush()
+                self._table_start_line = self.getpos()[0]
+                self._table_start_char = start
+                self._table_uncertain = False
+            else:
+                self._uncertain = True
+                self._table_uncertain = True
+                self._table_reasons.add("nested_table")
+            self._table_depth += 1
+        if tag == "tr":
+            self._start_table_row(start, token)
+        elif tag in {"td", "th"} and self._table_row is not None:
+            if self._table_cell is not None:
+                self._finish_table_cell(
+                    end_char=start,
+                    boundary_kind="implied_end_before_next_cell",
+                    boundary_complete=True,
+                )
+            rowspan, rowspan_value = self._table_span(values.get("rowspan"))
+            colspan, colspan_value = self._table_span(values.get("colspan"))
+            if rowspan != 1 or colspan != 1:
+                self._uncertain = True
+                self._table_uncertain = True
+                self._table_reasons.add("rowspan_or_colspan_requires_grid_review")
+            self._table_cell = []
+            self._table_cell_record = {
+                "cell_index": len(self._table_row["cell_records"]) + 1,
+                "tag": tag,
+                "header_cell": tag == "th",
+                "rowspan": rowspan,
+                "rowspan_attribute_value": rowspan_value,
+                "colspan": colspan,
+                "colspan_attribute_value": colspan_value,
+                "scope": values.get("scope"),
+                "headers": values.get("headers"),
+                "id": values.get("id"),
+                "char_start": start,
+                "start_tag_char_end": start + len(token),
+                "start_tag_sha256": _hash(token),
+                "offset_basis": "decoded_html_unicode_characters",
+            }
+            self._table_row_headers |= tag == "th"
         parent_object = next(
             (
                 self.objects[f["object_index"]]["object_key"]
@@ -530,12 +795,69 @@ class HTMLDocument(HTMLParser):
             "visual": inside_visual or visual,
             "self_closing": self_closing,
         }
+        if tag in {"ol", "ul"}:
+            frame["list_next"] = int(values.get("start", "1")) if str(values.get("start", "1")).lstrip("+-").isdigit() else 1
+            if tag == "ol" and "reversed" in values:
+                self._uncertain = True
+        elif tag == "li":
+            parent_list = next((value for value in reversed(self._stack) if value["tag"] in {"ol", "ul"}), None)
+            if parent_list:
+                item_index = None
+                if parent_list["tag"] == "ol":
+                    raw_value = values.get("value")
+                    if raw_value is not None and str(raw_value).lstrip("+-").isdigit():
+                        item_index = int(raw_value)
+                        parent_list["list_next"] = item_index + 1
+                    elif raw_value is not None:
+                        self._uncertain = True
+                    else:
+                        item_index = parent_list["list_next"]
+                        parent_list["list_next"] += 1
+                else:
+                    parent_list["list_next"] += 1
+                path = [
+                    *(
+                        item
+                        for ancestor in self._stack
+                        for item in ancestor.get("list_item_context", [])
+                    ),
+                    {"type": parent_list["tag"], "index": item_index},
+                ]
+                frame["list_item_context"] = path
         if tag == "script" and not values.get("src"):
             frame.update(script_inline=True, script_content_start=start + len(token))
         if self._visible() and (hidden or visual):
             self._flush()
         if visible and tag == "a" and values.get("href"):
             self.links.append(values["href"])
+            if self.source is not None:
+                if len(self.link_records) >= 10_000:
+                    raise ValueError("HTML 链接映射数量超过处理限制。")
+                reference = next(
+                    (value for value in self._attributes(token, start) if value["attribute"] == "href"),
+                    None,
+                )
+                if reference is not None:
+                    link_index = len(self.link_records)
+                    self.link_records.append(
+                        {
+                            "link_key": f"html-link-{link_index + 1:06}",
+                            "href": reference["decoded_value"],
+                            "raw_href": reference["raw_value"],
+                            "locator": {
+                                "kind": "html_source_link",
+                                "source_hash": self.source_hash,
+                                "dom_path": path,
+                                "dom_basis": "explicit_source_tags_no_script_execution",
+                                "line_start": self.getpos()[0],
+                                "column_start": self.getpos()[1],
+                                "char_start": start,
+                                "offset_basis": "decoded_html_unicode_characters",
+                            },
+                            "anchor_text": "",
+                        }
+                    )
+                    frame["link_index"] = link_index
         if visual and self.source is not None:
             if len(self.objects) >= 500:
                 raise ValueError("HTML 图像及对象数量超过限制。")
@@ -581,13 +903,91 @@ class HTMLDocument(HTMLParser):
             self._flush()
             self.heading_level = int(tag[1]) if re.fullmatch(r"h[1-6]", tag) else 0
             self.start_line = self.getpos()[0]
-            self.anchor = values.get("id")
+            raw_classes = str(values.get("class", ""))
+            class_truncated = len(raw_classes) > 256
+            block_title = values.get("title")
+            title_truncated = block_title is not None and len(str(block_title)) > 1024
+            if title_truncated:
+                block_title = str(block_title)[:1024]
+            frame["block_context"] = {
+                "tag": tag,
+                "path": path,
+                "classes": raw_classes[:256].split()[:32],
+                "class_attribute_sha256": _hash(raw_classes) if "class" in values else None,
+                "class_attribute_length": len(raw_classes) if "class" in values else None,
+                "class_tokens_truncated": class_truncated,
+                "title": block_title,
+                "title_sha256": _hash(str(values["title"])) if "title" in values else None,
+                "title_length": len(str(values["title"])) if "title" in values else None,
+                "title_truncated": title_truncated,
+                "id": values.get("id"),
+                "start_tag_char_start": start,
+                "start_tag_char_end": start + len(token),
+                "start_tag_sha256": _hash(token),
+            }
         if tag in _VOID or self_closing:
             self._finish_object(frame, start + len(token))
+            if frame.get("link_index") is not None:
+                self.link_records[frame["link_index"]]["locator"].update(
+                    char_end=start + len(token),
+                    source_boundary_complete=False,
+                    end_tag_observed=False,
+                )
+                self._uncertain = True
         else:
             self._stack.append(frame)
 
     def handle_endtag(self, tag):
+        start = self._position()
+        if tag in {"ol", "ul"}:
+            list_index = next(
+                (index for index in range(len(self._stack) - 1, -1, -1) if self._stack[index]["tag"] == tag),
+                None,
+            )
+            item = next(
+                (index for index in range(len(self._stack) - 1, -1, -1) if self._stack[index]["tag"] == "li"),
+                None,
+            )
+            if item is not None and list_index is not None and item > list_index:
+                self._flush()
+                self._close(item, self._position(), observed=False)
+                self._uncertain = True
+        if tag in {"td", "th"}:
+            close = re.match(r"</[^>]*>", self.source[start:]) if self.source else None
+            self._finish_table_cell(
+                end_char=start + (len(close.group()) if close else 0),
+                boundary_kind="observed_end_tag",
+                boundary_complete=close is not None,
+            )
+        elif tag == "tr":
+            close = re.match(r"</[^>]*>", self.source[start:]) if self.source else None
+            self._finish_table_row(
+                end_char=start + (len(close.group()) if close else 0),
+                boundary_kind="observed_end_tag",
+                boundary_complete=True,
+                cell_end_char=start,
+                cell_boundary_kind="implied_end_at_row_end",
+            )
+        elif tag == "table":
+            if self._table_row is not None or self._table_cell is not None:
+                self._uncertain = True
+                self._table_uncertain = True
+                self._table_reasons.add("implicit_cell_or_row_closure_at_table_end")
+            self._finish_table_row(
+                end_char=start,
+                boundary_kind="implied_end_at_table_end",
+                boundary_complete=True,
+                cell_end_char=start,
+                cell_boundary_kind="implied_end_at_table_end",
+            )
+            self._table_depth = max(0, self._table_depth - 1)
+            if self._table_depth == 0:
+                close = re.match(r"</[^>]*>", self.source[self._position() :]) if self.source else None
+                end_char = self._position() + (len(close.group()) if close else 0)
+                self._emit_table(
+                    closed=close is not None,
+                    end_char=end_char,
+                )
         if tag in _VOID:
             return
         index = next((i for i in range(len(self._stack) - 1, -1, -1) if self._stack[i]["tag"] == tag), None)
@@ -606,13 +1006,37 @@ class HTMLDocument(HTMLParser):
         self._close(index, end)
 
     def handle_data(self, data):
-        if self._visible() and not (self._stack and self._stack[-1]["visual"]):
+        if self._visible():
+            anchor = next((frame for frame in reversed(self._stack) if frame.get("link_index") is not None), None)
+            if anchor is not None:
+                record = self.link_records[anchor["link_index"]]
+                if len(record["anchor_text"]) + len(data) <= 32_768:
+                    record["anchor_text"] += data
+                else:
+                    self._uncertain = True
+        if self._visible() and self._table_row is not None:
+            if self._table_cell is None:
+                self._table_cell = []
+            self._table_cell.append(data)
+        elif self._visible() and not (self._stack and self._stack[-1]["visual"]):
             if data.strip() and any(frame["tag"] in {"blockquote", "q", "code"} for frame in self._stack):
                 self._visible_quoted_text = True
             self.buffer.append(data)
 
     def finish(self):
         self.close()
+        if self._table_depth:
+            self._uncertain = True
+        for frame in self._stack:
+            if frame.get("link_index") is not None:
+                self.link_records[frame["link_index"]]["locator"].update(
+                    char_end=len(self.source or ""),
+                    source_boundary_complete=False,
+                    end_tag_observed=False,
+                )
+                self._uncertain = True
+        self._finish_table_row()
+        self._emit_table(closed=False)
         self._flush()
         for frame in self._stack:
             if frame.get("script_inline") and self.source is not None:
@@ -643,10 +1067,12 @@ class HTMLDocument(HTMLParser):
         source_mapping = {
             "mapping_version": VERSION,
             "source_hash": self.source_hash,
+            "dom_validation": self.dom_validation,
             "decoded_source_sha256": _hash(self.source or ""),
             "offset_basis": "decoded_html_unicode_characters",
             "dom_basis": "explicit_source_tags_no_script_execution",
             "objects": self.objects,
+            "links": self.link_records,
             "main_container_found": self.has_main,
             "navigation_excluded": self.exclude_navigation,
             "external_resources_fetched": False,
@@ -692,7 +1118,7 @@ class HTMLDocument(HTMLParser):
         }
         return HTMLParsedDocument(
             "html-basic",
-            "3",
+            "7",
             VERSION,
             self.elements,
             [],

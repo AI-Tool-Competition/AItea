@@ -1,6 +1,7 @@
 """Durable single-node collection queues. Network/model work never owns a DB write lock."""
 
 import hashlib
+import base64
 import json
 import logging
 import os
@@ -171,7 +172,7 @@ class CollectionService:
         )
 
     def enqueue_scheduled(self, owner, source_id):
-        """Managed catalogs keep their published discovery/selection boundary."""
+        """Poll a source while preserving its checklist and legal review gates."""
         from .service import AppError, fail
 
         with closing(self.db.connect()) as conn:
@@ -185,17 +186,51 @@ class CollectionService:
             binding = conn.execute(
                 "SELECT * FROM checklist_bindings WHERE source_id=? AND owner_id=?", (source_id, owner)
             ).fetchone()
+            if binding is not None:
+                previous = conn.execute(
+                    """SELECT json_extract(plan,'$.checklist.kind') FROM collection_runs
+                    WHERE source_id=? ORDER BY created_at DESC,id DESC LIMIT 1""",
+                    (source_id,),
+                ).fetchone()
+                previous_kind = previous[0] if previous else None
+                pending = conn.execute(
+                    "SELECT COUNT(*) FROM checklist_candidates WHERE binding_id=? AND status='pending'",
+                    (binding["id"],),
+                ).fetchone()[0]
+                candidate_ids = []
+                kind = "discovery"
+                if pending or previous_kind == "discovery":
+                    kind = "collection"
+                    states = ("pending",) if pending else ("stored",)
+                    marks = ",".join("?" for _ in states)
+                    candidate_ids = [
+                        row[0]
+                        for row in conn.execute(
+                            f"""SELECT c.id FROM checklist_candidates c
+                            LEFT JOIN (SELECT candidate_id,MAX(fetched_at) last_fetched
+                                FROM collection_items WHERE candidate_id IS NOT NULL GROUP BY candidate_id) f
+                                ON f.candidate_id=c.id
+                            WHERE c.binding_id=? AND c.status IN ({marks})
+                            ORDER BY COALESCE(julianday(f.last_fetched),julianday(c.created_at)),c.id LIMIT 200""",
+                            (binding["id"], *states),
+                        )
+                    ]
+                    if not candidate_ids:
+                        kind = "discovery"
         if not source["checklist"]:
             return self.enqueue(owner, source_id, {"client_request_id": "schedule-" + uid()}, scheduled=True)
         if binding is None:
             fail(409, "checklist_binding_missing", "清单来源缺少版本绑定，请核验配置")
+        payload = {"client_request_id": "schedule-" + uid(), "confirm_condition": False}
+        if kind == "collection":
+            payload.update(candidate_ids=candidate_ids, level="primary", primary_document_ids=[])
         try:
             return self.service.checklists.start(
                 owner,
                 binding["plan_id"],
                 binding["item_id"],
-                {"client_request_id": "schedule-" + uid(), "confirm_condition": False},
-                kind="discovery",
+                payload,
+                kind=kind,
                 version=binding["version"],
                 scheduled=True,
             )
@@ -208,6 +243,8 @@ class CollectionService:
                 "definition_changed",
                 "unknown_plan",
                 "not_found",
+                "candidate_unavailable",
+                "no_candidates",
             }:
                 raise
             # A bounded scheduled attempt does not grant condition approval or
@@ -635,13 +672,27 @@ class CollectionService:
                 AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
                 AND json_extract({metadata},'$.review_status')='draft'
                 AND json_extract({manifest},'$.parser')='html-basic'
-                AND json_extract({manifest},'$.parser_version')='3'
-                AND (json_extract({manifest},'$.pipeline_version')='html-source-mapping-v3'
-                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23)='html-source-mapping-v3+')
-                AND json_extract({manifest},'$.html_source.mapping_version')='html-source-mapping-v3'
+                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7')
+                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+'))
+                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7')
                 AND json_extract({manifest},'$.source_hash')=d.content_hash
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""
+
+    def _persist_ocr_image(self, claim, rendered):
+        """Persist bounded OCR pixels only while this draft still has authority."""
+        with closing(self.db.connect()) as conn:
+            if not self._valid_claim(conn, claim, True):
+                raise RuntimeError("图片识别授权或处理租约已变化，停止保存模型输入。")
+        raw = base64.b64decode(rendered["image_base64"], validate=True)
+        blob = self.service.archive.blobs.put_bytes(claim["owner_id"], raw)
+        return {
+            "content_hash": blob.digest,
+            "size": blob.size,
+            "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
+            "mime_type": "image/png",
+        }
 
     def claim_processing(
         self,
@@ -1179,6 +1230,7 @@ class CollectionService:
                 "native_page_recovery",
             )
             stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
+            stored_html_source = deepcopy(manifest.get("html_source"))
 
             def preserve_import_origin(result):
                 # Keep stored source evidence and already mapped CAS paths when
@@ -1190,6 +1242,28 @@ class CollectionService:
                         result[key] = deepcopy(stored_provenance[key])
                     else:
                         result.pop(key, None)
+                previous_html = stored_html_source
+                if (
+                    isinstance(previous_html, dict)
+                    and previous_html.get("source_hash") == result.get("source_hash")
+                    and previous_html.get("linked_images")
+                    and isinstance(result.get("html_source"), dict)
+                    and not result["html_source"].get("linked_images")
+                ):
+                    # A fresh structural parse must not discard verified image
+                    # bindings or OCR checkpoints collected after the original
+                    # HTML was stored. Validate each binding against the new
+                    # source map before carrying it forward, then rebuild the
+                    # derived text from the preserved checkpoint.
+                    from .html_linked_asset_ocr import validate_binding
+
+                    linked_images = deepcopy(previous_html["linked_images"])
+                    for value in linked_images:
+                        validate_binding(result, value)
+                    result["html_source"]["linked_images"] = linked_images
+                    from .native_asset_ocr import rebuild_native_asset_text_bounded
+
+                    result = rebuild_native_asset_text_bounded(result)
                 return result
 
             fingerprint = self.service.embedding_fingerprint()
@@ -1203,6 +1277,46 @@ class CollectionService:
                     manifest = preserve_import_origin(
                         parse_bounded(doc["filename"], content, doc["mime_type"])
                     )
+                    if manifest.get("parser") == "html-basic" and manifest.get("html_source", {}).get(
+                        "linked_images"
+                    ):
+                        from .html_linked_asset_ocr import read_linked_images
+                        from .native_asset_ocr import apply_asset_checkpoint, ocr_native_assets_bounded
+
+                        image_contents = read_linked_images(
+                            self.db.data_dir,
+                            claim["owner_id"],
+                            manifest,
+                            pending_only=True,
+                            max_assets=4,
+                        )
+
+                        def checkpoint_asset(value):
+                            with self.db.transaction() as conn:
+                                if not self._valid_claim(conn, claim, True):
+                                    raise RuntimeError("图片识别租约已失效，停止提交检查点。")
+                                current = json.loads(
+                                    conn.execute(
+                                        "SELECT manifest FROM documents WHERE id=?", (doc["id"],)
+                                    ).fetchone()[0]
+                                )
+                                apply_asset_checkpoint(current, value)
+                                conn.execute(
+                                    "UPDATE documents SET manifest=? WHERE id=?",
+                                    (dump(current), doc["id"]),
+                                )
+
+                        def store_rendered_image(rendered):
+                            return self._persist_ocr_image(claim, rendered)
+
+                        manifest = ocr_native_assets_bounded(
+                            content,
+                            manifest,
+                            on_asset=checkpoint_asset,
+                            on_image=store_rendered_image,
+                            max_assets=4,
+                            image_contents=image_contents,
+                        )
             elif should_index and fingerprint and text_complete(manifest):
                 self.service.ragflow.step(doc, claim)
             manifest = preserve_import_origin(manifest)
@@ -1230,6 +1344,17 @@ class CollectionService:
                     and self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
                 )
                 needs_parse = manifest.get("remote_parse", {}).get("state") in {"planned", "pending"}
+                if claim["phase"] == "parse":
+                    from .native_asset_ocr import pending_assets
+                    from .vision import vision_ocr_configured
+
+                    # A bounded native-image batch can leave more verified
+                    # images to process. Queue another parse lease only when
+                    # the recognizer is configured; otherwise keep the exact
+                    # pending state visible instead of spinning forever.
+                    needs_parse = needs_parse or (
+                        vision_ocr_configured() and bool(pending_assets(manifest))
+                    )
                 deferred = needs_parse
                 index_delay = (
                     self.service.ragflow.retry_delay(conn, doc["id"], current_fingerprint)

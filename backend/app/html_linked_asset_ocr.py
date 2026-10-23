@@ -50,8 +50,8 @@ def _object(manifest, object_key):
     if (
         not isinstance(source, dict)
         or manifest.get("parser") != "html-basic"
-        or manifest.get("parser_version") != "3"
-        or source.get("mapping_version") != "html-source-mapping-v3"
+        or manifest.get("parser_version") not in {"3", "4", "5", "6", "7"}
+        or source.get("mapping_version") != f"html-source-mapping-v{manifest.get('parser_version')}"
         or source.get("source_hash") != manifest.get("source_hash")
     ):
         raise ValueError("HTML 图片需要当前版本的原文映射。")

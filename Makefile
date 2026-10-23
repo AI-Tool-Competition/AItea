@@ -12,6 +12,7 @@ PYTEST_BASETEMP ?= .dev/pytest
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/backend/.venv
 export UV_CACHE_DIR := $(CURDIR)/.dev/uv-cache
 export UV_PYTHON_INSTALL_DIR := $(CURDIR)/.dev/python
+export PATH := $(CURDIR)/.dev/toolchain/node-v22.23.0-linux-x64/bin:$(PATH)
 export npm_config_cache := $(CURDIR)/.dev/npm-cache
 export PNPM_STORE_DIR := $(CURDIR)/.dev/pnpm-store
 export NEXT_TELEMETRY_DISABLED := 1

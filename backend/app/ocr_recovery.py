@@ -20,7 +20,7 @@ from uuid import uuid4
 from .ingestion_quality import anchor_present, number_anchors, validate_ocr_page
 from .pdf_limits import ARCHIVE_MAX_PAGES
 
-RECOVERY_VERSION = "legal-region-recovery-v4"
+RECOVERY_VERSION = "legal-region-recovery-v5"
 MAX_TASKS = 24
 _MAX_LOCATOR_CHARS = 20_000
 _NON_LITERAL_UNCERTAINTIES = {
@@ -35,6 +35,7 @@ _NON_LITERAL_UNCERTAINTIES = {
     "recovery_baseline_changed",
     "recovery_span_conflict",
 }
+_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 
 
 def _digest(value) -> str:
@@ -76,6 +77,16 @@ def _literal_spans(text: str, literal: str) -> list[list[int]]:
             result.append([start, end])
         cursor = found + 1
     return result
+
+
+def _locator_literal_spans(text: str, literal: str) -> list[list[int]]:
+    """Match superscript digits as their physical-text layer digit glyphs.
+
+    Some PDFs expose a superscript glyph as a baseline ASCII digit. Both map
+    one code point to one code point, so the resulting span still indexes the
+    original character boxes. OCR transcript matching remains exact.
+    """
+    return _literal_spans(text.translate(_SUPERSCRIPT_DIGITS), literal.translate(_SUPERSCRIPT_DIGITS))
 
 
 def _box_for_range(textpage, indices, start, end, width, height) -> list[float] | None:
@@ -260,9 +271,10 @@ def _plan_regions_input(content, page: dict, page_limit: int) -> list[dict]:
                     if candidates:
                         tasks.append({"kind": "unresolved", "reason": "ambiguous_literal_alignment"})
                     continue
-                matches = _literal_spans(located_text, literal)
+                matches = _locator_literal_spans(located_text, literal)
                 if len(matches) != 1:
-                    tasks.append({"kind": "unresolved", "reason": "ambiguous_literal_location"})
+                    reason = "ambiguous_literal_location" if matches else "literal_location_unavailable"
+                    tasks.append({"kind": "unresolved", "reason": reason})
                     continue
                 box = _box_for_range(textpage, indices, *matches[0], width, height)
                 if (

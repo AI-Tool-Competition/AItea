@@ -635,12 +635,20 @@ def test_literal_locator_uses_unique_whitespace_insensitive_native_character_box
     assert tasks[0]["region_bbox"][2] < 300
 
 
+def test_literal_locator_matches_superscript_ocr_against_baseline_pdf_glyph():
+    data, page = literal_page(native="Net weight: 490g e6", text="Net weight: 490g e⁶", literal="490g e⁶")
+    tasks = parsing.plan_pdf_ocr_recovery_bounded(data, page)
+    assert len(tasks) == 1 and tasks[0]["kind"] == "literal"
+    assert tasks[0]["target"]["uncertainty_exact"] == "490g e⁶"
+    assert tasks[0]["target"]["native_locator_span"]
+
+
 @pytest.mark.parametrize(
     "native,text,reason",
     [
         ("Hucho hucho\nHuchohucho", "Huchohucho", "ambiguous_literal_location"),
         ("Hucho hucho", "Huchohucho and Huchohucho", "ambiguous_literal_alignment"),
-        ("prefixHuchohuchoSuffix", "Huchohucho", "ambiguous_literal_location"),
+        ("prefixHuchohuchoSuffix", "Huchohucho", "literal_location_unavailable"),
     ],
 )
 def test_literal_multiple_occurrences_or_inside_word_location_are_unresolved(native, text, reason):

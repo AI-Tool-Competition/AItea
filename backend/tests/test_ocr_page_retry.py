@@ -31,7 +31,7 @@ def legacy_manifest():
         complete=False,
         uncertain_spans=["model_reported_incomplete"],
         phase="recovery",
-        recovery={"version": "legal-region-recovery-v4", "status": "conflict", "tasks": []},
+        recovery={"version": "legal-region-recovery-v5", "status": "conflict", "tasks": []},
     )
     for page in manifest["pages"]:
         validate_ocr_page(page)

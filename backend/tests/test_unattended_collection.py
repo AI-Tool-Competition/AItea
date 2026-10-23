@@ -476,19 +476,24 @@ def test_two_sources_execute_concurrently_and_failure_is_isolated(environment):
     assert collector.state["active_sources"] == []
 
 
-def test_known_pre_response_network_failure_releases_unused_byte_reservation(environment):
+def test_repeated_pre_response_network_failures_do_not_exhaust_byte_budget(environment):
     env = environment
-    collector = env.make()
+    collector = env.make(limits={"daily_source_bytes": 4 * 1024**2})
     origin = source()["url"]
-    env.responses[origin] = collection.DownloadError(
+    env.responses[origin] = lambda *_: collection.DownloadError(
         "抓取连接失败或超时，请检查来源后重试。", retryable=True, bytes_received=0
     )
 
-    receipt = collector.fetch(source(), origin)
+    receipts = [collector.fetch(source(), origin) for _ in range(4)]
+    path, fifth = collector.reserve(source(), origin)
 
-    assert receipt["outcome"]["status"] == "network_error"
-    assert receipt["charged_bytes"] == 0
-    assert sum(row["charged_bytes"] for row in collector.requests.values()) == 0
+    assert all(receipt["outcome"]["status"] == "network_error" for receipt in receipts)
+    assert all(receipt["charged_bytes"] == 0 for receipt in receipts)
+    assert sum(row["charged_bytes"] for row in collector.requests.values()) == collector.limits[
+        "max_response_bytes"
+    ]
+    assert fifth["status"] == "issued"
+    assert path.exists()
 
 
 def test_per_host_slot_bound_is_enforced_for_concurrent_source_workers(environment):

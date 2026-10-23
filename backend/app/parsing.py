@@ -758,17 +758,25 @@ def ocr_bounded(
     if pending and vision_ocr_configured():
 
         def process_page(page):
-            completed = _ocr_one_page(
-                content,
-                page,
-                on_image,
-                on_region,
-                on_page,
-                archive_path,
-                archive_size,
-                on_reuse,
-                on_response_error,
-            )
+            from .ocr_error_evidence import PageAttemptHistoryLimit
+
+            try:
+                completed = _ocr_one_page(
+                    content,
+                    page,
+                    on_image,
+                    on_region,
+                    on_page,
+                    archive_path,
+                    archive_size,
+                    on_reuse,
+                    on_response_error,
+                )
+            except PageAttemptHistoryLimit as exc:
+                # A page whose bounded history is full cannot be safely retried.
+                # Preserve its exact prior OCR evidence and let sibling pages run.
+                completed = deepcopy(page)
+                completed.update(status="ocr_failed", error=str(exc))
             # A sibling may interrupt the batch while this page is in flight.
             # Persist its result before returning the future, including during
             # executor shutdown; callback failures still propagate to the job.

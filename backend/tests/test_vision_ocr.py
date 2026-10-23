@@ -1,4 +1,5 @@
 import base64
+from copy import deepcopy
 import hashlib
 import json
 
@@ -223,6 +224,31 @@ def test_ocr_retains_full_transcript_and_checkpoint_without_resending_success(en
         request["messages"][1]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
         for request in requests
     )
+
+
+def test_full_page_history_blocks_only_that_page_and_preserves_its_evidence(enabled, monkeypatch):
+    requests = fake_provider(monkeypatch, payload())
+    content = make_pdf([("first page", True), ("second page", True)])
+    manifest = parse_file("scan.pdf", content)
+    blocked = manifest["pages"][0]
+    blocked.update(status="pending_ocr", ocr={"attempts": 2, "request_id": "old-request"})
+    blocked["ocr_attempt_history"] = [{"prior": index} for index in range(3)]
+    before = deepcopy(blocked)
+    checkpoints = []
+
+    result = parsing.ocr_bounded(
+        "scan.pdf", content, "application/pdf", manifest, on_page=checkpoints.append, max_pages=2
+    )
+
+    first, second = result["pages"]
+    assert first["status"] == "ocr_failed"
+    assert first["error"] == "识别尝试历史已达到上限"
+    assert first["ocr"] == before["ocr"]
+    assert first["ocr_attempt_history"] == before["ocr_attempt_history"]
+    assert second["status"] == "ocr_complete"
+    assert len(requests) == 1
+    assert first in checkpoints
+    assert result["quality"]["pending_pages"] == []
 
 
 @pytest.mark.parametrize(

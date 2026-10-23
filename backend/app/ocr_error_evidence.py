@@ -9,6 +9,10 @@ from .db import dump
 from .vision import MAX_ERROR_RESPONSE_BYTES
 
 
+class PageAttemptHistoryLimit(ValueError):
+    """A page reached its bounded evidence-history limit before another request."""
+
+
 def request_outcome_unknown(metadata):
     """Inspect current requests only; prior resolved history is not a new hold."""
     if not isinstance(metadata, dict):
@@ -72,7 +76,7 @@ def preserve_previous_page_attempt(page):
     if history and history[-1].get("previous_page_sha256") == digest:
         return
     if len(history) >= 3:
-        raise ValueError("识别尝试历史已达到上限")
+        raise PageAttemptHistoryLimit("识别尝试历史已达到上限")
     page["ocr_attempt_history"] = [
         *deepcopy(history),
         {

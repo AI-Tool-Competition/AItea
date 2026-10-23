@@ -19,6 +19,9 @@ VERSION = "mineru-precise-v1"
 MAX_SOURCE_BYTES = 128 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_ASSEMBLED_TEXT_CHARACTERS = 8_000_000
+MAX_ASSEMBLED_ELEMENTS = 20_000
+MAX_ASSEMBLED_RESULT_BYTES = 40 * 1024 * 1024
 
 
 def reference(blob):
@@ -435,8 +438,14 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
             if text and kind not in {"discarded", "header", "footer", "page_number"}:
                 texts[local_page].append(text)
                 total_chars += len(text)
-            if total_chars > 4_000_000 or len(elements) > 20000:
-                raise ValueError("MinerU 正文超过资料库容量限制。")
+            if total_chars > MAX_ASSEMBLED_TEXT_CHARACTERS:
+                raise ValueError(
+                    f"MinerU 正文超过单份资料 {MAX_ASSEMBLED_TEXT_CHARACTERS:,} 字符的组装上限。"
+                )
+            if len(elements) > MAX_ASSEMBLED_ELEMENTS:
+                raise ValueError(
+                    f"MinerU 正文超过单份资料 {MAX_ASSEMBLED_ELEMENTS:,} 个内容块的组装上限。"
+                )
         for local_page, page_info in enumerate(layout):
             number = first + local_page
             text = "\n\n".join(texts[local_page])
@@ -517,7 +526,7 @@ def worker(connection, operation, arguments):
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         result = (_prepare if operation == "prepare" else _assemble)(*arguments)
         encoded = json.dumps({"result": result}, ensure_ascii=False, allow_nan=False).encode()
-        if len(encoded) > 40 * 1024 * 1024:
+        if len(encoded) > MAX_ASSEMBLED_RESULT_BYTES:
             raise ValueError("MinerU 结构化结果超过存储限额。")
         connection.send_bytes(encoded)
     except Exception as exc:

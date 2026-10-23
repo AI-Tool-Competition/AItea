@@ -346,6 +346,43 @@ def test_mineru_retains_artifacts_and_requires_page_source_proofs(tmp_path):
     assert not text_complete(manifest)
 
 
+def test_mineru_assembles_documents_over_four_million_characters_within_storage_bound(tmp_path):
+    from app.blob_store import BlobStore
+    from app.mineru_results import MAX_ASSEMBLED_RESULT_BYTES
+
+    store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
+    body = "x" * 4_100_000
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as result_zip:
+        result_zip.writestr("layout.json", json.dumps({"pdf_info": [{"page_idx": 0}]}))
+        result_zip.writestr(
+            "task_content_list.json",
+            json.dumps(
+                [{"type": "table", "page_idx": 0, "bbox": [10, 20, 900, 950],
+                  "table_body": f"<table><tr><td>{body}</td></tr></table>"}],
+                separators=(",", ":"),
+            ),
+        )
+    original = store.put_bytes("owner", b"source")
+    task = {
+        "id": "task-large",
+        "batch_id": "batch-large",
+        "state": "done",
+        "source_hash": original.digest,
+        "first_page": 1,
+        "last_page": 1,
+        "part_blob": reference(original),
+        "result_blob": reference(store.put_bytes("owner", archive.getvalue())),
+    }
+
+    result = _assemble([task], original.digest, "large-schedule.pdf", str(store.files_dir), "owner", None)
+    encoded = json.dumps({"result": result}, ensure_ascii=False, allow_nan=False).encode()
+    assert text_complete(result)
+    assert len(result["elements"]) == 1
+    assert len(result["pages"][0]["text"]) > 4_000_000
+    assert len(encoded) < MAX_ASSEMBLED_RESULT_BYTES
+
+
 def test_untrusted_mineru_zip_cannot_escape_storage(tmp_path):
     store, task = result_archive(tmp_path, unsafe=True)
     with pytest.raises(ValueError, match="不安全"):

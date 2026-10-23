@@ -644,10 +644,14 @@ def recover_page_step(
     archive_path=None,
     archive_size: int | None = None,
 ) -> dict:
-    """Take shared image capacity before even direct callers persist request intent."""
-    from .vision import _DEEPSEEK_IMAGE_SLOT, deepseek_vision_model
+    """Recover page evidence; model request capacity is enforced at the provider boundary."""
 
-    def recover():
+    current = (page.get("ocr") or {}).get("recovery")
+    if (
+        current
+        and current.get("version") == RECOVERY_VERSION
+        and current.get("status") in {"complete", "conflict", "failed"}
+    ):
         return _recover_page_step(
             content,
             page,
@@ -656,25 +660,16 @@ def recover_page_step(
             on_response_error=on_response_error,
             archive_path=archive_path,
             archive_size=archive_size,
-        )
-
-    current = (page.get("ocr") or {}).get("recovery")
-    if (
-        current
-        and current.get("version") == RECOVERY_VERSION
-        and current.get("status") in {"complete", "conflict", "failed"}
-    ):
-        return recover()  # Preserve cached terminal text while retaining source validation.
-    shared = deepseek_vision_model()
-    if shared and not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=5):
-        updated = deepcopy(page)
-        updated.update(status="pending_ocr", deferred_reason="ocr_capacity")
-        return updated
-    try:
-        return recover()
-    finally:
-        if shared:
-            _DEEPSEEK_IMAGE_SLOT.release()
+        )  # Preserve cached terminal text while retaining source validation.
+    return _recover_page_step(
+        content,
+        page,
+        on_region=on_region,
+        on_page=on_page,
+        on_response_error=on_response_error,
+        archive_path=archive_path,
+        archive_size=archive_size,
+    )
 
 
 def _recover_page_step(
@@ -689,7 +684,7 @@ def _recover_page_step(
 ) -> dict:
     """At most one blind region request per step; all attempts are checkpointable."""
     from .parsing import ProcessingDeferred, render_pdf_region_bounded
-    from .vision import OCRResponseError, REGION_PROMPT_VERSION, transcribe_region
+    from .vision import OCRCapacityDeferred, OCRResponseError, REGION_PROMPT_VERSION, transcribe_region
 
     if content is None:
         from .parsing import _archive_reference
@@ -820,6 +815,13 @@ def _recover_page_step(
                 }
             )
         except OCRResponseError as exc:
+            if isinstance(exc, OCRCapacityDeferred):
+                task["attempts"][pass_number] -= 1
+                record["attempts"] = task["attempts"][pass_number]
+                record.pop("request_id", None)
+                recovery.update(status="deferred", retry_after_seconds=exc.retry_after)
+                updated.update(status="pending_ocr", deferred_reason="ocr_capacity")
+                return updated
             record["error"] = str(exc)[:500]
             record["finish_reason"] = exc.finish_reason
             if exc.request_outcome_unknown:

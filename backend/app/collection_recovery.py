@@ -63,6 +63,52 @@ def _unknown(record):
     )
 
 
+def _legacy_mineru_chart_refresh(manifest):
+    """Recognize only pre-inventory MinerU manifests blocked solely on charts."""
+    remote = manifest.get("remote_parse")
+    if (
+        manifest.get("parser") != "mineru"
+        or manifest.get("mineru_chart_inventory_version")
+        or manifest.get("mineru_chart_assets")
+        or not isinstance(remote, dict)
+        or remote.get("provider") != "mineru"
+        or remote.get("state") != "done"
+    ):
+        return False
+    try:
+        from .mineru import manifest_valid
+
+        if not manifest_valid(manifest):
+            return False
+    except (KeyError, TypeError, ValueError):
+        return False
+    pages = manifest.get("pages")
+    if not isinstance(pages, list) or not pages:
+        return False
+    chart_pages = 0
+    for page in pages:
+        reasons = page.get("reasons")
+        proof = page.get("ocr")
+        if not isinstance(reasons, list) or not isinstance(proof, dict):
+            return False
+        if "chart_content_missing" in reasons:
+            chart_pages += 1
+            if (
+                set(reasons) != {"chart_content_missing"}
+                or page.get("status") != "ocr_uncertain"
+                or proof.get("provider") != "mineru"
+                or proof.get("complete") is not False
+                or proof.get("uncertain_spans") != ["chart_content_missing"]
+            ):
+                return False
+        elif reasons or page.get("status") != "ocr_complete" or proof.get("complete") is not True:
+            return False
+        text = page.get("text")
+        if not isinstance(text, str) or proof.get("text_sha256") != hashlib.sha256(text.encode()).hexdigest():
+            return False
+    return chart_pages > 0
+
+
 def classify_processing(manifest, *, phase, error=None, retryable=False, interrupted=False):
     """Use explicit outcome evidence, never an exception's localized message."""
     from .native_asset_ocr import assets
@@ -82,6 +128,8 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             return Decision("paid_result_unknown")
     except (ValueError, TypeError, AttributeError):
         return Decision("invalid_checkpoint")
+    if phase == "parse" and _legacy_mineru_chart_refresh(manifest):
+        return Decision("mineru_chart_refresh", True)
     if any(
         page.get("status") == "ocr_uncertain"
         or page.get("ocr", {}).get("phase") == "recovery"
@@ -533,10 +581,83 @@ class CollectionRecovery:
                 break
         return adopted
 
+    def _queue_legacy_chart_refreshes(self, *, limit, worker_scope):
+        """Upgrade old chart-only review holds once their full MinerU receipts verify."""
+        from .vision import vision_ocr_configured
+
+        if not vision_ocr_configured():
+            return 0
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
+                        AND r.reason='quality_review' AND j.phase='parse' AND j.status='failed'"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (*arguments, limit),
+                )
+            ]
+        promoted = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='quality_review'",
+                    (identifier,),
+                ).fetchone()
+                if row is None or not worker_scope.allows(row["owner_id"]):
+                    continue
+                binding = self._binding(conn, row["owner_id"], "processing", row["item_id"], "parse")
+                if binding is None or _digest(binding) != row["binding_sha256"]:
+                    continue
+                document = conn.execute(
+                    "SELECT manifest,content_hash FROM documents WHERE id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                if document is None or job is None or job["phase"] != "parse" or job["status"] != "failed":
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    not isinstance(manifest, dict)
+                    or manifest.get("source_hash") != document["content_hash"]
+                    or not _legacy_mineru_chart_refresh(manifest)
+                ):
+                    continue
+                part_hashes = [part["result_blob"]["content_hash"] for part in manifest["remote_parse"]["parts"]]
+                page_count = sum("chart_content_missing" in page["reasons"] for page in manifest["pages"])
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='waiting',reason='mineru_chart_refresh',
+                    available_at=0,retry_plan='[]',revision=revision+1,updated_at=? WHERE id=?""",
+                    (now(), identifier),
+                )
+                self._event(
+                    conn,
+                    identifier,
+                    "chart_transcription_upgrade_queued",
+                    {
+                        "source_hash": document["content_hash"],
+                        "result_hashes": part_hashes,
+                        "chart_review_pages": page_count,
+                        "remote_tasks_resubmitted": False,
+                    },
+                )
+                promoted += 1
+        return promoted
+
     def run_due(self, *, limit=10, worker_scope=BackgroundWorkerScope()):
         if type(limit) is not int or not 1 <= limit <= MAX_BATCH:
             raise ValueError("recovery batch must be between 1 and 32")
-        result = {"adopted": 0, "requeued": 0, "blocked": 0, "deferred": 0}
+        result = {"adopted": 0, "chart_refreshes": 0, "requeued": 0, "blocked": 0, "deferred": 0}
         scope, arguments = worker_scope.sql()
         # One target per write transaction: OCR checkpoint validation must not
         # hold a write lock across an entire scheduled batch of large documents.
@@ -546,6 +667,9 @@ class CollectionRecovery:
             result["adopted"] += adopted
             if not adopted:
                 break
+        result["chart_refreshes"] = self._queue_legacy_chart_refreshes(
+            limit=limit, worker_scope=worker_scope
+        )
         with closing(self.db.connect()) as conn:
             identifiers = [
                 row[0]

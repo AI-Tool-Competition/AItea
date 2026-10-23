@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from app.collection_recovery import BASE_RECOVERY_SECONDS, CollectionRecovery, classify_processing
+from app.collection_recovery import BASE_RECOVERY_SECONDS, CollectionRecovery, Decision, classify_processing
 from app.db import dump, now
 from app.ingestion import DownloadError, EmbeddingServiceError
 from app.scheduler import ScheduledCollector
@@ -181,6 +181,136 @@ def test_processing_unknown_paid_intents_remain_blocked(metadata):
 
 def test_embed_last_rejection_does_not_prove_entire_multibatch_call_was_unpaid():
     assert classify_processing({}, phase="embed", retryable=True).reason == "paid_result_unknown"
+
+
+def test_only_complete_legacy_mineru_receipts_blocked_on_chart_content_are_refreshable(monkeypatch):
+    from app import mineru
+
+    source_hash = hashlib.sha256(b"verified source").hexdigest()
+    text = "Section 1. Official text."
+    manifest = {
+        "parser": "mineru",
+        "source_hash": source_hash,
+        "pages": [
+            {
+                "page": 1,
+                "status": "ocr_complete",
+                "text": text,
+                "reasons": [],
+                "ocr": {
+                    "provider": "mineru",
+                    "complete": True,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                },
+            },
+            {
+                "page": 2,
+                "status": "ocr_uncertain",
+                "text": "",
+                "reasons": ["chart_content_missing"],
+                "ocr": {
+                    "provider": "mineru",
+                    "complete": False,
+                    "uncertain_spans": ["chart_content_missing"],
+                    "text_sha256": hashlib.sha256(b"").hexdigest(),
+                },
+            },
+        ],
+        "remote_parse": {
+            "provider": "mineru",
+            "state": "done",
+            "source_hash": source_hash,
+            "page_count": 2,
+            "parts": [
+                {
+                    "task_id": "completed-task",
+                    "source_hash": source_hash,
+                    "first_page": 1,
+                    "last_page": 2,
+                    "result_blob": {"content_hash": "a" * 64},
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(mineru, "manifest_valid", lambda _manifest: True)
+    decision = classify_processing(manifest, phase="parse")
+    assert decision == Decision("mineru_chart_refresh", True)
+
+    mixed = json.loads(json.dumps(manifest))
+    mixed["pages"][1]["reasons"].append("native_visibility_review")
+    assert classify_processing(mixed, phase="parse").reason == "quality_review"
+    upgraded = json.loads(json.dumps(manifest))
+    upgraded["mineru_chart_inventory_version"] = "mineru-chart-assets-v1"
+    assert classify_processing(upgraded, phase="parse").reason == "quality_review"
+
+
+def test_blocked_legacy_chart_review_requeues_once_with_audited_receipt(service, monkeypatch):
+    from app import mineru, vision
+
+    monkeypatch.setattr(mineru, "manifest_valid", lambda _manifest: True)
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    content = make_pdf([("Official source", False)])
+    doc = register(service, content, key="legacy-mineru-chart")
+    source_hash = doc["content_hash"]
+    text = "Section 1. Official text."
+    manifest = {
+        "parser": "mineru",
+        "source_hash": source_hash,
+        "pages": [
+            {
+                "page": 1,
+                "status": "ocr_uncertain",
+                "text": text,
+                "reasons": ["chart_content_missing"],
+                "ocr": {
+                    "provider": "mineru",
+                    "complete": False,
+                    "uncertain_spans": ["chart_content_missing"],
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                },
+            }
+        ],
+        "remote_parse": {
+            "provider": "mineru",
+            "state": "done",
+            "source_hash": source_hash,
+            "page_count": 1,
+            "parts": [
+                {
+                    "task_id": "completed-task",
+                    "source_hash": source_hash,
+                    "first_page": 1,
+                    "last_page": 1,
+                    "result_blob": {"content_hash": "b" * 64},
+                }
+            ],
+        },
+    }
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(manifest), doc["id"]))
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (doc["id"],),
+        )
+        claim = {"document_id": doc["id"], "owner_id": "owner", "phase": "parse", "attempts": 3}
+        service.collection.recovery.record_failure(
+            conn,
+            claim,
+            processing=True,
+            decision=Decision("quality_review"),
+            exhausted=True,
+            error_type="legacy_quality_review",
+        )
+    result = service.collection.recovery.run_due()
+    assert result["chart_refreshes"] == 1
+    assert result["requeued"] == 1
+    assert rows(service, "processing_jobs")[0]["status"] == "queued"
+    record = rows(service, "collection_recovery_jobs")[0]
+    assert record["status"] == "queued"
+    assert record["reason"] == "mineru_chart_refresh"
+    event = rows(service, "collection_recovery_events")[-1]
+    assert event["event"] == "requeued"
+    assert json.loads(event["detail"])["previous_queue_attempts"] == 3
 
 
 def test_native_processing_continues_multiple_bursts_without_losing_history(service, monkeypatch):

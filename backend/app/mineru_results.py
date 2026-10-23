@@ -16,6 +16,7 @@ import zipfile
 from .blob_store import BlobStore, _verify_existing
 
 VERSION = "mineru-precise-v1"
+CHART_ASSET_INVENTORY_VERSION = "mineru-chart-assets-v1"
 MAX_SOURCE_BYTES = 128 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
@@ -518,6 +519,7 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
         "source_incomplete_pages": [],
     }
     result["mineru_chart_assets"] = chart_assets
+    result["mineru_chart_inventory_version"] = CHART_ASSET_INVENTORY_VERSION
     result["remote_parse"] = {
         "provider": "mineru",
         "model_version": "vlm",

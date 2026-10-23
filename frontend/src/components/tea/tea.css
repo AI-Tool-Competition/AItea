@@ -3073,6 +3073,38 @@
   font-size: 11px;
   margin-top: 6px;
 }
+.ta-checklist-source-record {
+  margin-top: 8px;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.ta-checklist-source-record summary {
+  cursor: pointer;
+  color: var(--muted-foreground);
+}
+.ta-checklist-source-record dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 4px 12px;
+  margin: 8px 0;
+}
+.ta-checklist-source-record dl > div {
+  min-width: 0;
+}
+.ta-checklist-source-record dt {
+  color: var(--muted-foreground);
+}
+.ta-checklist-source-record dd {
+  margin: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.ta-checklist-source-record small {
+  display: block;
+  overflow-wrap: anywhere;
+}
 .ta-checklist-candidate-actions {
   display: flex;
   gap: 4px;

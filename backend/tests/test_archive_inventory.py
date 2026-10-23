@@ -214,7 +214,7 @@ def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_by
         for secret in ("PRIVATE_INDEX_TEXT", "PRIVATE_INDEX_CONTEXT", "PRIVATE_OTHER_MODEL")
     )
     assert '"vector"' not in content and '"retrieval_eligible":true' not in content
-    assert report["summary"]["format_version"] == 6
+    assert report["summary"]["format_version"] == 7
     assert (
         report["summary"]["retrieval_scope"]
         == "stored_index_and_input_hash_matching_vectors_not_rag_eligibility"
@@ -454,12 +454,150 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
             "INSERT INTO checklist_candidates VALUES('candidate','binding','https://official.example/law.pdf','Law',NULL,'https://official.example/list','stored','law',2,'',?)",
             (AT,),
         )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "setneg",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {"no_peraturan": "2", "tahun": "2026", "status": "Disahkan"},
+                        "evidence": {
+                            "url": "https://official.example/detail",
+                            "sha256": "a" * 64,
+                        },
+                    }
+                ),
+                "https://official.example/detail",
+                "a" * 64,
+                AT,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates VALUES(
+            'candidate-bkpm','binding','https://jdih-storage.bkpm.go.id/jdih/jdih/law.pdf',
+            'BKPM law','bkpm:2','https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=50&page=1',
+            'pending',NULL,1,'',?)""",
+            (AT,),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate-bkpm',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "bkpm",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {"id": 2, "regulation_number": "4"},
+                        "evidence": {
+                            "url": "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=50&page=1",
+                            "sha256": "b" * 64,
+                        },
+                    }
+                ),
+                "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=50&page=1",
+                "b" * 64,
+                AT,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates VALUES(
+            'candidate-rcep','binding','https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf',
+            'Annex 3A','rcep:annex-3a','https://rcepsec.org/rcep-agreements/',
+            'pending',NULL,1,'',?)""",
+            (AT,),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate-rcep',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "rcepsec",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {"link_text": "Annex 3A: Product-Specific Rules"},
+                        "structure": {
+                            "unit_type": "annex",
+                            "number": "3A",
+                            "parent_titles": ["Chapter 3: Rules of Origin"],
+                            "file_name": "Chapter-3-Annex-3A.pdf",
+                            "anchor_class": "rcep-link rcep-sub-link",
+                            "link_mechanism": "verified_literal_pdf_call",
+                        },
+                        "evidence": {
+                            "url": "https://rcepsec.org/rcep-agreements/",
+                            "sha256": "c" * 64,
+                        },
+                    }
+                ),
+                "https://rcepsec.org/rcep-agreements/",
+                "c" * 64,
+                AT,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates VALUES(
+            'candidate-ipos','binding','https://file.go.gov.sg/tm-circular-no-4-of-2026.pdf',
+            'Circular No. 4 of 2026',NULL,
+            'https://www.ipos.gov.sg/about-ip/trade-marks/circulars-and-practice-directions/',
+            'pending',NULL,1,'',?)""",
+            (AT,),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate-ipos',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "ipos",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {
+                            "link_text": "Circular No. 4 of 2026 [PDF, 300KB]",
+                            "publication_date": "25 September 2026",
+                            "row_description": "Nice Classification, Version 2027",
+                        },
+                        "structure": {
+                            "unit_type": "circular",
+                            "number": "4 of 2026",
+                            "parent_titles": ["Circulars"],
+                            "file_name": "tm-circular-no-4-of-2026.pdf",
+                            "anchor_class": "",
+                            "link_mechanism": "href",
+                        },
+                        "evidence": {
+                            "url": "https://www.ipos.gov.sg/about-ip/trade-marks/circulars-and-practice-directions/",
+                            "sha256": "d" * 64,
+                        },
+                    }
+                ),
+                "https://www.ipos.gov.sg/about-ip/trade-marks/circulars-and-practice-directions/",
+                "d" * 64,
+                AT,
+            ),
+        )
     report = export(archive)
     pages = records(report, filename="discovery-pages.jsonl")
     assert len(pages) == 1 and report["summary"]["discovery_pages"] == 1
     assert pages[0]["plan_id"] == "indonesia-20261003"
     assert pages[0]["plan_version"] == 2 and pages[0]["checklist_item_id"] == "1.3"
     assert pages[0]["purpose"] == "catalog" and pages[0]["collection_item_id"] == "page-item"
+    source_records = records(report, filename="candidate-source-records.jsonl")
+    assert len(source_records) == 4
+    setneg_record = next(row for row in source_records if row["candidate_id"] == "candidate")
+    bkpm_record = next(row for row in source_records if row["candidate_id"] == "candidate-bkpm")
+    rcep_record = next(row for row in source_records if row["candidate_id"] == "candidate-rcep")
+    ipos_record = next(row for row in source_records if row["candidate_id"] == "candidate-ipos")
+    assert setneg_record["source_record"]["fields"]["no_peraturan"] == "2"
+    assert setneg_record["source_page_sha256"] == "a" * 64
+    assert bkpm_record["source_record"]["provider"] == "bkpm"
+    assert bkpm_record["anomalies"] == []
+    assert rcep_record["source_record"]["structure"]["parent_titles"] == ["Chapter 3: Rules of Origin"]
+    assert rcep_record["anomalies"] == []
+    assert ipos_record["source_record"]["fields"]["publication_date"] == "25 September 2026"
+    assert ipos_record["source_record"]["structure"]["unit_type"] == "circular"
+    assert ipos_record["anomalies"] == []
+    assert report["summary"]["candidate_source_records"] == 4
     docs = records(report)
     assert len(docs) == 1 and docs[0]["review"]["review_status"] == "draft"
     assert docs[0]["checklist_refs"][0]["source_id"] == "source"
@@ -679,7 +817,7 @@ def test_large_treaty_page_exports_all_bounded_records_and_scalar_provenance_wit
         assert row["source_url"] == page_record["final_url"]
         assert row["source_original"] == page_record["original"]
         assert row["retrieval_eligible"] is False and row["export_status"] == "exported"
-    assert report["summary"]["format_version"] == 6
+    assert report["summary"]["format_version"] == 7
     assert report["summary"]["catalog_documents"] == 40
     assert report["summary"]["catalog_document_gaps"] == report["summary"]["anomalies"] == 0
     assert report["summary"]["countries"]["ID"]["catalog_documents"] == 40

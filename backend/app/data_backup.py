@@ -25,7 +25,7 @@ from .db import now, uid
 from .system_corpus_migration import SystemCorpusMigrationError, _cas_reference
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 21
+SUPPORTED_SCHEMA_VERSION = 22
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -195,6 +195,13 @@ def _database_check(path, *, primary=False):
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("ragflow_schema_incomplete") from exc
+            if version >= 22:
+                try:
+                    conn.execute(
+                        "SELECT candidate_id,source_record,source_page_url,source_page_sha256,created_at FROM checklist_candidate_source_records LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("candidate_source_record_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")

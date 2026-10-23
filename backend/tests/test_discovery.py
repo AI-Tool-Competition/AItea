@@ -28,6 +28,25 @@ def test_setneg_catalog_uses_verified_type_total_and_replayable_next_page():
     assert result["matched"] and result["purpose"] == "catalog"
     assert len(result["links"]) == 6
     assert all(link["purpose"] == "detail" for link in result["links"][:5])
+    record = result["links"][0]["source_record"]
+    assert record["provider"] == "setneg"
+    assert record["interpretation"] == "unreviewed_source_values"
+    assert record["fields"] == {
+        key: value
+        for key, value in json.loads((FIXTURES / "setneg-catalog.json").read_text())["data"][0].items()
+        if key
+        in {
+            "idperaturan",
+            "jns",
+            "nama_jenis",
+            "no_peraturan",
+            "tahun",
+            "tentang",
+            "tgl_di",
+            "diundangkan",
+            "status_hukum",
+        }
+    }
     assert result["links"][-1]["purpose"] == "catalog"
     assert parse_qs(urlsplit(result["links"][-1]["url"]).query) == {
         "jns": ["UU"],
@@ -106,6 +125,15 @@ def test_setneg_detail_discovers_originals_without_abstracts_or_fulltext_claims(
     assert len(result["links"]) == 1
     link = result["links"][0]
     assert link["purpose"] == "document" and link["identity_key"].startswith("setneg:P20560:")
+    assert link["source_record"]["provider"] == "setneg"
+    assert link["source_record"]["fields"]["teu"] == "Kementerian Sekretariat Negara"
+    assert link["source_record"]["fields"]["diundangkan"] == "2026-04-30T00:00:00.000Z"
+    assert link["source_record"]["fields"]["status"] == "Disahkan"
+    assert link["source_record"]["file"] == {
+        "realName": "Salinan UU Nomor 2 Tahun 2026.pdf",
+        "size": 1733281,
+        "ext": ".pdf",
+    }
     assert parse_qs(urlsplit(link["url"]).query) == {
         "f": ["Salinan UU Nomor 2 Tahun 2026.pdf"],
         "fl": ["P20560"],
@@ -228,6 +256,99 @@ def test_catalog_pagination_retains_filters_and_canonicalizes_duplicates():
         ("https://laws.example.org/laws/tea", "detail"),
     ]
     assert result["links"][1]["title"] == "Tea Act"
+
+
+def test_html5_tree_recovers_nested_labels_and_ignores_hidden_markup():
+    content = b"""<!doctype html><html><head><title>Official directory</title></head>
+    <body><main><a href="/laws/tea">Tea <span>Act</span>
+    <template><a href="/laws/hidden">Hidden Act</a></template>
+    <noscript><a href="/laws/fallback">Fallback Act</a></noscript>
+    <script>const sample = '<a href=\"/laws/script\">Script Act</a>';</script>
+    <p>Official directory for the current legislation and its published instruments.
+    </main></body></html>"""
+    result = discover_page("https://laws.example.org/catalog", content, "text/html", recipe())
+    assert result["matched"] and result["purpose"] == "catalog"
+    assert [link["url"] for link in result["links"]] == ["https://laws.example.org/laws/tea"]
+    assert result["links"][0]["title"] == "Tea Act"
+
+
+def test_duplicate_sensitive_html_attributes_are_rejected_before_link_discovery():
+    result = discover_page(
+        "https://laws.example.org/catalog",
+        html('<a href="/laws/tea" href="https://evil.example/">Tea Act</a>'),
+        "text/html",
+        recipe(),
+    )
+    assert result["matched"] and result["links"] == []
+
+
+def test_rcep_literal_pdf_links_keep_source_hierarchy_and_filename():
+    source = "https://rcepsec.org/rcep-agreements/"
+    content = b"""<html><title>RCEP Agreements</title><body>
+    <div class="rcep-sidebar"><ul class="rcep-list">
+      <li class="rcep-item"><a class="rcep-link" onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3.pdf')">Chapter 3: Rules of Origin</a>
+        <ul class="rcep-sub-list"><li><a class="rcep-link rcep-sub-link" onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf')">Annex 3A: Product-Specific Rules</a></li></ul>
+      </li>
+    </ul></div></body></html>"""
+    rules = recipe(
+        allowed_hosts=["rcepsec.org"],
+        catalog_patterns=[r"^/rcep-agreements/$"],
+        document_patterns=[r"^/wp-content/uploads/2026/06/.*\.pdf$"],
+    )
+    result = discover_page(source, content, "text/html", rules)
+    assert result["matched"] and result["purpose"] == "catalog"
+    annex = next(link for link in result["links"] if link["title"].startswith("Annex 3A"))
+    assert annex["source_record"]["provider"] == "rcepsec"
+    assert annex["source_record"]["fields"]["link_text"] == "Annex 3A: Product-Specific Rules"
+    assert annex["source_record"]["structure"] == {
+        "unit_type": "annex",
+        "number": "3A",
+        "parent_titles": ["Chapter 3: Rules of Origin"],
+        "file_name": "Chapter-3-Annex-3A.pdf",
+        "anchor_class": "rcep-link rcep-sub-link",
+        "link_mechanism": "verified_literal_pdf_call",
+    }
+
+
+def test_ipos_html_record_uses_table_date_description_and_section_heading():
+    source = "https://www.ipos.gov.sg/about-ip/trade-marks/circulars-and-practice-directions/"
+    content = b"""<html><title>IPOS Circulars</title><body><h2>Circulars</h2>
+    <h3>2026 Circulars</h3><table><tbody><tr>
+    <td>25 September 2026</td><td><a href="https://file.go.gov.sg/tm-circular-no-4-of-2026.pdf">Circular No. 4 of 2026 [PDF, 300KB] (opens in new tab)</a></td>
+    <td>International Classification of Goods and Services - Nice Classification, Version 2027.</td>
+    </tr></tbody></table></body></html>"""
+    rules = recipe(
+        allowed_hosts=["www.ipos.gov.sg", "file.go.gov.sg"],
+        catalog_patterns=[r"^/about-ip/trade-marks/circulars-and-practice-directions/$"],
+        document_patterns=[r"^/tm-circular-no-\d+-of-\d{4}\.pdf$"],
+    )
+    result = discover_page(source, content, "text/html", rules)
+    assert result["matched"] and result["purpose"] == "catalog"
+    candidate = result["links"][0]
+    record = candidate["source_record"]
+    assert record["provider"] == "ipos"
+    assert record["fields"]["publication_date"] == "25 September 2026"
+    assert record["fields"]["row_description"].startswith("International Classification")
+    assert record["structure"] == {
+        "unit_type": "circular",
+        "number": "4 of 2026",
+        "parent_titles": ["2026 Circulars"],
+        "file_name": "tm-circular-no-4-of-2026.pdf",
+        "anchor_class": "",
+        "link_mechanism": "href",
+    }
+
+
+def test_ipos_practice_direction_number_keeps_year_when_title_has_legacy_punctuation():
+    source = "https://www.ipos.gov.sg/about-ip/trade-marks/circulars-and-practice-directions/"
+    content = b"""<html><body><h2>Practice directions</h2><a href="https://file.go.gov.sg/tm-practice-direction-no-1-of-2007.pdf">Practice Direction No 1. of 2007 [PDF]</a></body></html>"""
+    rules = recipe(
+        allowed_hosts=["www.ipos.gov.sg", "file.go.gov.sg"],
+        catalog_patterns=[r"^/about-ip/trade-marks/circulars-and-practice-directions/$"],
+        document_patterns=[r"^/tm-practice-direction-no-1-of-2007\.pdf$"],
+    )
+    result = discover_page(source, content, "text/html", rules)
+    assert result["links"][0]["source_record"]["structure"]["number"] == "1 of 2007"
 
 
 @pytest.mark.parametrize(

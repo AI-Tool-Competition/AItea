@@ -23,6 +23,65 @@ const statusLabels = {
   stored: "已入库",
   excluded: "已排除",
 };
+const sourceFieldLabels: Record<string, string> = {
+  link_text: "来源链接原文标题",
+  publication_date: "来源公布日期",
+  row_description: "来源目录说明",
+  id: "来源文书 ID",
+  id_theme: "官方目录主题 ID",
+  document_type: "来源文种分类",
+  document_file_url: "来源原件链接",
+  verified_original_url: "校验后的原件链接",
+  regulation_number: "文号",
+  regulation_type: "文种",
+  establishment_date: "制定日期",
+  slug: "官方目录标识",
+  jns: "文种代码",
+  nama_jenis: "官方文种",
+  no_peraturan: "文号",
+  tahun: "年份",
+  tentang: "官方标题",
+  teu: "发布机关",
+  tgl_di: "制定日期",
+  diundangkan: "公布日期",
+  bahasa: "来源语言",
+  tempat: "地点",
+  lokasi: "来源位置",
+  subjek: "主题",
+  bidang_hukum: "法律领域",
+  status: "来源状态标签",
+  status_hukum: "来源法律状态标签",
+  ln: "国家公报号",
+  tln: "国家公报补编号",
+  terkait: "相关文件原始记录",
+  mengubah: "修改文件原始记录",
+  mencabut: "废止文件原始记录",
+  diubah: "被修改文件原始记录",
+  dicabut: "被废止文件原始记录",
+  diubah_sebagian: "部分修改记录",
+  dicabut_sebagian: "部分废止记录",
+};
+const sourceProviderLabels: Record<string, string> = {
+  setneg: "Setneg",
+  bkpm: "BKPM",
+  rcepsec: "RCEP 秘书处",
+  ipos: "新加坡知识产权局",
+};
+const sourceUnitLabels: Record<string, string> = {
+  preamble: "序言",
+  chapter: "章节",
+  annex: "附件",
+  appendix: "附录",
+  schedule: "成员减让表/附表",
+  protocol: "议定书",
+  document_part: "文书组成部分",
+  circular: "通告",
+  practice_direction: "实务指引",
+  guide: "指南",
+  manual_section: "工作手册章节",
+  form_or_template: "表格/模板",
+  document_link: "资料链接",
+};
 export function ChecklistCandidates({
   basePath,
   refreshKey,
@@ -261,6 +320,44 @@ export function ChecklistCandidates({
                         )}
                         {candidate.note && <span>{candidate.note}</span>}
                       </div>
+                      {candidate.source_record && (
+                        <details className="ta-checklist-source-record">
+                          <summary>
+                            {sourceProviderLabels[candidate.source_record.provider]} 来源字段（尚未审核）
+                          </summary>
+                          {candidate.source_record.structure && (
+                            <p>
+                              {sourceUnitLabels[
+                                candidate.source_record.structure.unit_type
+                              ] ?? candidate.source_record.structure.unit_type}
+                              {candidate.source_record.structure.number &&
+                                ` ${candidate.source_record.structure.number}`}
+                              {candidate.source_record.structure.parent_titles.length > 0 &&
+                                ` · ${candidate.source_record.structure.parent_titles.join(" › ")}`}
+                            </p>
+                          )}
+                          <dl>
+                            {Object.entries(candidate.source_record.fields)
+                              .filter(([key, value]) =>
+                                Boolean(sourceFieldLabels[key]) &&
+                                value !== null &&
+                                value !== "",
+                              )
+                              .map(([key, value]) => (
+                                <div key={key}>
+                                  <dt>{sourceFieldLabels[key]}</dt>
+                                  <dd>{String(value)}</dd>
+                                </div>
+                              ))}
+                          </dl>
+                          {candidate.source_record.file?.realName && (
+                            <p>原件文件名：{candidate.source_record.file.realName}</p>
+                          )}
+                          <small>
+                            来源页 SHA-256：{candidate.source_record.evidence.sha256}
+                          </small>
+                        </details>
+                      )}
                     </div>
                     <div className="ta-checklist-candidate-actions">
                       {candidate.status === "pending" && (

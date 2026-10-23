@@ -438,6 +438,22 @@ export interface ChecklistCandidate {
   revision: number;
   note: string;
   created_at: string;
+  source_record: {
+    provider: "setneg" | "bkpm" | "rcepsec" | "ipos";
+    interpretation: "unreviewed_source_values";
+    fields: Record<string, string | number | null>;
+    structure?: {
+      unit_type: string;
+      number: string | null;
+      parent_titles: string[];
+      file_name: string;
+      anchor_class: string;
+      link_mechanism: string;
+    };
+    file?: Record<string, string | number>;
+    warnings?: string[];
+    evidence: { url: string; sha256: string };
+  } | null;
 }
 export interface Classification {
   collection: string;

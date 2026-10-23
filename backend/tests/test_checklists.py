@@ -196,6 +196,226 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
     assert item["coverage"] != "completed"
 
 
+def test_setneg_source_fields_keep_page_hash_and_are_exposed_as_unreviewed(client):
+    from app.discovery import discover_page, recipe_for
+
+    configure(client)
+    run = discover(client, request="setneg-structured-source-record")
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with closing(service.db.connect()) as conn:
+        claim = conn.execute(
+            """SELECT i.*,r.plan FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND i.host='jdih.setneg.go.id' ORDER BY i.id LIMIT 1""",
+            (run["id"],),
+        ).fetchone()
+    assert claim
+    claim = dict(claim)
+    claim["plan"] = json.loads(claim["plan"])
+    body = (Path(__file__).parent / "fixtures/discovery/setneg-detail.json").read_bytes()
+    detail_url = "https://jdih.setneg.go.id/api/hukumproduk/detaildata?jns=UU&no=2&thn=2026"
+    result = discover_page(
+        detail_url,
+        body,
+        "application/json",
+        recipe_for(service.checklists.plans[PLAN]["items"][2]),
+    )
+    blob = service.archive.blobs.put_bytes(owner, body)
+    fetched = {
+        "url": detail_url,
+        "filename": "detaildata.json",
+        "mime_type": "application/json",
+        "blob": blob,
+        "request_evidence": {"method": "POST", "url": detail_url},
+    }
+    with service.db.transaction() as conn:
+        service.checklists.save_page(conn, claim, fetched, claim["plan"], result)
+
+    candidates = client.get(BASE + "/items/1.3/candidates").json()["items"]
+    candidate = next(item for item in candidates if "pdf?f=Salinan+UU+Nomor+2" in item["url"])
+    source = candidate["source_record"]
+    assert source["provider"] == "setneg"
+    assert source["interpretation"] == "unreviewed_source_values"
+    assert source["fields"]["nama_jenis"] == "Undang-Undang"
+    assert source["fields"]["diundangkan"] == "2026-04-30T00:00:00.000Z"
+    assert source["fields"]["status"] == "Disahkan"
+    assert source["evidence"] == {"url": detail_url, "sha256": blob.digest}
+    with service.db.transaction() as conn:
+        with pytest.raises(sqlite3.IntegrityError, match="candidate source records are immutable"):
+            conn.execute(
+                "UPDATE checklist_candidate_source_records SET source_record='{}' WHERE candidate_id=?",
+                (candidate["id"],),
+            )
+
+
+def test_candidate_source_record_migration_upgrades_an_existing_database(tmp_path):
+    service = Service(tmp_path)
+    with service.db.transaction() as conn:
+        conn.execute("DROP TRIGGER candidate_source_record_immutable_update")
+        conn.execute("DROP TRIGGER candidate_source_record_immutable_delete")
+        conn.execute("DROP TABLE checklist_candidate_source_records")
+        conn.execute("DELETE FROM schema_migrations WHERE version=22")
+
+    upgraded = Service(tmp_path)
+    with closing(upgraded.db.connect()) as conn:
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(checklist_candidate_source_records)")
+        }
+        assert columns == {
+            "candidate_id",
+            "source_record",
+            "source_page_url",
+            "source_page_sha256",
+            "created_at",
+        }
+        assert conn.execute("SELECT 1 FROM schema_migrations WHERE version=22").fetchone()
+
+
+def test_saved_setneg_detail_backfill_requires_matching_candidate_and_page_hash(client):
+    from app.discovery import discover_page, recipe_for
+
+    configure(client)
+    run = discover(client, request="setneg-source-record-backfill")
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with closing(service.db.connect()) as conn:
+        claim = conn.execute(
+            """SELECT i.*,r.plan FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND i.host='jdih.setneg.go.id' ORDER BY i.id LIMIT 1""",
+            (run["id"],),
+        ).fetchone()
+    assert claim
+    claim = dict(claim)
+    claim["plan"] = json.loads(claim["plan"])
+    body = (Path(__file__).parent / "fixtures/discovery/setneg-detail.json").read_bytes()
+    detail_url = "https://jdih.setneg.go.id/api/hukumproduk/detaildata?jns=UU&no=2&thn=2026"
+    result = discover_page(
+        detail_url,
+        body,
+        "application/json",
+        recipe_for(service.checklists.plans[PLAN]["items"][2]),
+    )
+    for link in result["links"]:
+        link.pop("source_record", None)
+    blob = service.archive.blobs.put_bytes(owner, body)
+    fetched = {
+        "url": detail_url,
+        "filename": "detaildata.json",
+        "mime_type": "application/json",
+        "blob": blob,
+        "request_evidence": {"method": "POST", "url": detail_url},
+    }
+    with service.db.transaction() as conn:
+        service.checklists.save_page(conn, claim, fetched, claim["plan"], result)
+
+    candidate = client.get(BASE + "/items/1.3/candidates").json()["items"][0]
+    assert candidate["source_record"] is None
+    recovered = service.checklists.backfill_setneg_candidate_source_records(limit=10)
+    assert recovered == {"scanned": 1, "verified": 1, "inserted": 1, "skipped": 0}
+    candidate = next(
+        item
+        for item in client.get(BASE + "/items/1.3/candidates").json()["items"]
+        if item["id"] == candidate["id"]
+    )
+    assert candidate["source_record"]["evidence"] == {"url": detail_url, "sha256": blob.digest}
+
+
+def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
+    from app.discovery import discover_page, recipe_for
+
+    configure(client)
+    run = discover(client, code="4.1", request="bkpm-source-record-backfill")
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with closing(service.db.connect()) as conn:
+        claim = conn.execute(
+            """SELECT i.*,r.plan FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND i.host='jdih.bkpm.go.id' ORDER BY i.id LIMIT 1""",
+            (run["id"],),
+        ).fetchone()
+    assert claim
+    claim = dict(claim)
+    claim["plan"] = json.loads(claim["plan"])
+    body = (Path(__file__).parent / "fixtures/discovery/bkpm-investment.json").read_bytes()
+    catalog_url = "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=2&page=1"
+    item = next(entry for entry in service.checklists.plans[PLAN]["items"] if entry["id"] == "4.1")
+    result = discover_page(catalog_url, body, "application/json", recipe_for(item))
+    for link in result["links"]:
+        link.pop("source_record", None)
+    blob = service.archive.blobs.put_bytes(owner, body)
+    fetched = {
+        "url": catalog_url,
+        "filename": "document-search.json",
+        "mime_type": "application/json",
+        "blob": blob,
+        "request_evidence": {"method": "POST", "url": catalog_url},
+    }
+    with service.db.transaction() as conn:
+        service.checklists.save_page(conn, claim, fetched, claim["plan"], result)
+
+    candidates = client.get(BASE + "/items/4.1/candidates").json()["items"]
+    candidate = next(item for item in candidates if "2026Kepdepinvesthil15.S-.pdf" in item["url"])
+    assert candidate["source_record"] is None
+    recovered = service.checklists.backfill_candidate_source_records(providers={"bkpm"})
+    assert recovered == {"scanned": 2, "verified": 2, "inserted": 2, "skipped": 0}
+    candidate = next(
+        item
+        for item in client.get(BASE + "/items/4.1/candidates").json()["items"]
+        if item["id"] == candidate["id"]
+    )
+    assert candidate["source_record"]["provider"] == "bkpm"
+    assert candidate["source_record"]["fields"]["regulation_number"] == "15.S"
+    assert candidate["source_record"]["evidence"] == {"url": catalog_url, "sha256": blob.digest}
+
+
+def test_saved_rcep_catalog_backfill_preserves_source_hierarchy(client):
+    from app.discovery import discover_page, recipe_for
+
+    configure(client)
+    run = discover(client, code="5.3", request="rcep-source-record-backfill")
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with closing(service.db.connect()) as conn:
+        claim = conn.execute(
+            """SELECT i.*,r.plan FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND i.host='rcepsec.org' ORDER BY i.id LIMIT 1""",
+            (run["id"],),
+        ).fetchone()
+    assert claim
+    claim = dict(claim)
+    claim["plan"] = json.loads(claim["plan"])
+    body = b"""<html><title>RCEP Agreements</title><body><ul class="rcep-list">
+    <li class="rcep-item"><a class="rcep-link" onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3.pdf')">Chapter 3: Rules of Origin</a>
+    <ul><li><a class="rcep-link rcep-sub-link" onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf')">Annex 3A: Product-Specific Rules</a></li></ul></li>
+    </ul></body></html>"""
+    page_url = "https://rcepsec.org/rcep-agreements/"
+    item = next(entry for entry in service.checklists.plans[PLAN]["items"] if entry["id"] == "5.3")
+    result = discover_page(page_url, body, "text/html", recipe_for(item))
+    for link in result["links"]:
+        link.pop("source_record", None)
+    blob = service.archive.blobs.put_bytes(owner, body)
+    fetched = {
+        "url": page_url,
+        "filename": "rcep-agreements.html",
+        "mime_type": "text/html",
+        "blob": blob,
+        "request_evidence": {"method": "GET", "url": page_url},
+    }
+    with service.db.transaction() as conn:
+        service.checklists.save_page(conn, claim, fetched, claim["plan"], result)
+
+    candidates = client.get(BASE + "/items/5.3/candidates").json()["items"]
+    candidate = next(item for item in candidates if "Chapter-3-Annex-3A.pdf" in item["url"])
+    assert candidate["source_record"] is None
+    recovered = service.checklists.backfill_candidate_source_records(providers={"rcepsec"})
+    assert recovered == {"scanned": 2, "verified": 2, "inserted": 2, "skipped": 0}
+    candidates = client.get(BASE + "/items/5.3/candidates").json()["items"]
+    candidate = next(item for item in candidates if "Chapter-3-Annex-3A.pdf" in item["url"])
+    assert candidate["source_record"]["provider"] == "rcepsec"
+    assert candidate["source_record"]["structure"]["parent_titles"] == ["Chapter 3: Rules of Origin"]
+    assert candidate["source_record"]["evidence"] == {"url": page_url, "sha256": blob.digest}
+
+
 def test_selected_candidates_retain_country_tier_and_immutable_run_snapshot(client, monkeypatch):
     fake_web(monkeypatch)
     discover(client)

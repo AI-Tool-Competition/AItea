@@ -147,6 +147,7 @@ class ChecklistService:
         self.plans = load_blueprints()
         self._migrate()
         self._migrate_page_evidence()
+        self._migrate_candidate_source_records()
 
     def _migrate(self):
         with self.db.transaction() as conn:
@@ -209,6 +210,189 @@ class ChecklistService:
                 BEFORE DELETE ON checklist_page_evidence
                 BEGIN SELECT RAISE(ABORT,'page evidence is immutable'); END""")
             conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (11, now()))
+
+    def _migrate_candidate_source_records(self):
+        with self.db.transaction() as conn:
+            if conn.execute("SELECT 1 FROM schema_migrations WHERE version=22").fetchone():
+                return
+            conn.execute("""CREATE TABLE IF NOT EXISTS checklist_candidate_source_records(
+                candidate_id TEXT PRIMARY KEY REFERENCES checklist_candidates(id),
+                source_record TEXT NOT NULL CHECK(json_valid(source_record)),
+                source_page_url TEXT NOT NULL,
+                source_page_sha256 TEXT NOT NULL CHECK(length(source_page_sha256)=64),
+                created_at TEXT NOT NULL)""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS candidate_source_record_immutable_update
+                BEFORE UPDATE ON checklist_candidate_source_records
+                BEGIN SELECT RAISE(ABORT,'candidate source records are immutable'); END""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS candidate_source_record_immutable_delete
+                BEFORE DELETE ON checklist_candidate_source_records
+                BEGIN SELECT RAISE(ABORT,'candidate source records are immutable'); END""")
+            conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (22, now()))
+
+    def backfill_setneg_candidate_source_records(self, limit=500):
+        """Recover Setneg metadata from saved, hash-checked detail pages."""
+        return self.backfill_candidate_source_records(limit=limit, providers={"setneg"})
+
+    def backfill_candidate_source_records(self, limit=500, *, providers=None):
+        """Recover supported provider metadata from saved hash-checked catalog/detail pages."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("backfill limit must be between 1 and 1000")
+        providers = {"setneg", "bkpm", "rcepsec", "ipos"} if providers is None else set(providers)
+        if not providers or not providers <= {"setneg", "bkpm", "rcepsec", "ipos"}:
+            raise ValueError("unsupported candidate source provider")
+        from .blob_store import BlobIntegrityError
+
+        source_filters = []
+        if "setneg" in providers:
+            source_filters.append(
+                "(b.country='ID' AND p.purpose='detail' AND p.final_url LIKE "
+                "'https://jdih.setneg.go.id/api/hukumproduk/detaildata?%')"
+            )
+        if "bkpm" in providers:
+            source_filters.append(
+                "(b.country='ID' AND p.purpose='catalog' AND p.final_url LIKE "
+                "'https://jdih.bkpm.go.id/api/document-search?%')"
+            )
+        if "rcepsec" in providers:
+            source_filters.append(
+                "(b.country='ID' AND p.purpose='catalog' AND "
+                "p.final_url='https://rcepsec.org/rcep-agreements/')"
+            )
+        if "ipos" in providers:
+            source_filters.append(
+                "(b.country='SG' AND p.final_url LIKE 'https://www.ipos.gov.sg/about-ip/trade-marks/%')"
+            )
+        candidates = []
+        with closing(self.db.connect()) as conn:
+            rows = conn.execute(
+                f"""WITH ranked AS (
+                    SELECT c.id candidate_id,c.binding_id,c.url candidate_url,c.discovered_from,
+                        b.owner_id,b.country,b.plan_id,b.version,b.item_id,b.snapshot,
+                        p.final_url,p.content_hash,p.storage_path,p.size,
+                        ROW_NUMBER() OVER(PARTITION BY c.id ORDER BY p.created_at DESC,p.item_id DESC) rn
+                    FROM checklist_candidates c
+                    JOIN checklist_bindings b ON b.id=c.binding_id
+                    JOIN checklist_pages p ON p.binding_id=b.id AND p.final_url=c.discovered_from
+                    JOIN collection_items i ON i.id=p.item_id AND i.owner_id=b.owner_id
+                    LEFT JOIN checklist_candidate_source_records r ON r.candidate_id=c.id
+                    WHERE r.candidate_id IS NULL
+                        AND ({" OR ".join(source_filters)})
+                        AND p.size<=?
+                ) SELECT * FROM ranked WHERE rn=1 ORDER BY candidate_id LIMIT ?""",
+                (MAX_HTML_BYTES, limit),
+            ).fetchall()
+        skipped = 0
+        for row in rows:
+            try:
+                snapshot = json.loads(row["snapshot"])
+                plan, item = snapshot["plan"], snapshot["item"]
+                provider = (
+                    "setneg"
+                    if row["final_url"].startswith("https://jdih.setneg.go.id/api/hukumproduk/detaildata?")
+                    else "bkpm"
+                    if row["final_url"].startswith("https://jdih.bkpm.go.id/api/document-search?")
+                    else "rcepsec"
+                    if row["final_url"] == "https://rcepsec.org/rcep-agreements/"
+                    else "ipos"
+                )
+                expected_purpose = "detail" if provider == "setneg" else "catalog"
+                if (
+                    plan["id"] != row["plan_id"]
+                    or plan["version"] != row["version"]
+                    or item["id"] != row["item_id"]
+                    or (
+                        provider != "ipos"
+                        and (
+                            row["country"] != "ID"
+                            or row["plan_id"] != "indonesia-20261003"
+                            or (provider == "setneg" and item["id"] not in {"1.3", "1.4", "1.5", "1.6"})
+                            or (provider == "bkpm" and item["id"] != "4.1")
+                            or (provider == "rcepsec" and item["id"] != "5.3")
+                        )
+                    )
+                    or (
+                        provider == "ipos"
+                        and (
+                            row["country"] != "SG"
+                            or row["plan_id"] != "singapore-demo-20261009"
+                            or item["id"] != "3.7"
+                        )
+                    )
+                ):
+                    raise ValueError("saved checklist binding mismatch")
+                digest = row["content_hash"]
+                if (
+                    not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                ):
+                    raise ValueError("saved detail page hash is invalid")
+                owner_hash = hashlib.sha256(row["owner_id"].encode("utf-8")).hexdigest()
+                expected = (
+                    self.service.archive.blobs.blobs_dir / owner_hash / digest[:2] / digest[2:4] / digest
+                )
+                if Path(row["storage_path"]) != expected:
+                    raise ValueError("saved detail page is outside the owner content store")
+                fd = os.open(expected, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as stream:
+                    before = os.fstat(stream.fileno())
+                    body = stream.read(MAX_HTML_BYTES + 1)
+                    after = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or before.st_size != row["size"]
+                    or before.st_size > MAX_HTML_BYTES
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or len(body) != row["size"]
+                    or hashlib.sha256(body).hexdigest() != digest
+                ):
+                    raise BlobIntegrityError("saved detail page hash or size mismatch")
+                mime = "text/html" if provider in {"rcepsec", "ipos"} else "application/json"
+                result = discover_page(row["final_url"], body, mime, recipe_for(item))
+                link = next(
+                    (
+                        entry
+                        for entry in result.get("links", [])
+                        if entry.get("purpose") == "document"
+                        and entry.get("url") == row["candidate_url"]
+                        and entry.get("source_record", {}).get("provider") == provider
+                    ),
+                    None,
+                )
+                purpose_matches = (
+                    result.get("purpose") in {"catalog", "detail"}
+                    if provider == "ipos"
+                    else result.get("purpose") == expected_purpose
+                )
+                if not result.get("matched") or not purpose_matches or not link:
+                    raise ValueError("saved source page does not support this candidate")
+                source_record = dict(link["source_record"]) | {
+                    "evidence": {"url": row["final_url"], "sha256": digest}
+                }
+                encoded = dump(source_record)
+                if len(encoded.encode("utf-8")) > 128 * 1024:
+                    raise ValueError("source record exceeds its storage limit")
+                candidates.append(
+                    (
+                        row["candidate_id"],
+                        encoded,
+                        row["final_url"],
+                        digest,
+                        now(),
+                    )
+                )
+            except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+                skipped += 1
+        inserted = 0
+        with self.db.transaction() as conn:
+            for candidate_id, record, page_url, digest, created_at in candidates:
+                inserted += conn.execute(
+                    """INSERT OR IGNORE INTO checklist_candidate_source_records
+                    (candidate_id,source_record,source_page_url,source_page_sha256,created_at)
+                    VALUES(?,?,?,?,?)""",
+                    (candidate_id, record, page_url, digest, created_at),
+                ).rowcount
+        return {"scanned": len(rows), "verified": len(candidates), "inserted": inserted, "skipped": skipped}
 
     def definition(self, plan_id, item_id=None, *, version=None):
         from .service import fail
@@ -604,14 +788,18 @@ class ChecklistService:
                 f"SELECT COUNT(*) FROM checklist_candidates WHERE binding_id=? AND {condition}", args
             ).fetchone()[0]
             rows = conn.execute(
-                f"SELECT * FROM checklist_candidates WHERE binding_id=? AND {condition} ORDER BY created_at,id LIMIT ? OFFSET ?",
+                f"""SELECT c.*,r.source_record source_record_json
+                FROM checklist_candidates c
+                LEFT JOIN checklist_candidate_source_records r ON r.candidate_id=c.id
+                WHERE c.binding_id=? AND {condition.replace("status", "c.status")}
+                ORDER BY c.created_at,c.id LIMIT ? OFFSET ?""",
                 (*args, limit, offset),
             ).fetchall()
             return {"items": [self._candidate(row) for row in rows], "total": total}
 
     @staticmethod
     def _candidate(row):
-        return {
+        result = {
             key: row[key]
             for key in (
                 "id",
@@ -625,13 +813,22 @@ class ChecklistService:
                 "created_at",
             )
         }
+        result["source_record"] = (
+            json.loads(row["source_record_json"])
+            if "source_record_json" in row.keys() and row["source_record_json"]
+            else None
+        )
+        return result
 
     def patch_candidate(self, owner, id, payload):
         from .service import fail
 
         with self.db.transaction() as conn:
             row = conn.execute(
-                "SELECT c.* FROM checklist_candidates c JOIN checklist_bindings b ON b.id=c.binding_id WHERE c.id=? AND b.owner_id=?",
+                """SELECT c.*,r.source_record source_record_json FROM checklist_candidates c
+                JOIN checklist_bindings b ON b.id=c.binding_id
+                LEFT JOIN checklist_candidate_source_records r ON r.candidate_id=c.id
+                WHERE c.id=? AND b.owner_id=?""",
                 (id, owner),
             ).fetchone()
             if not row:
@@ -646,7 +843,11 @@ class ChecklistService:
                 (payload["status"], payload.get("note", row["note"]), id),
             )
             return self._candidate(
-                conn.execute("SELECT * FROM checklist_candidates WHERE id=?", (id,)).fetchone()
+                conn.execute(
+                    """SELECT c.*,r.source_record source_record_json FROM checklist_candidates c
+                    LEFT JOIN checklist_candidate_source_records r ON r.candidate_id=c.id WHERE c.id=?""",
+                    (id,),
+                ).fetchone()
             )
 
     @staticmethod
@@ -742,6 +943,38 @@ class ChecklistService:
                     ),
                 )
                 candidate_count += cursor.rowcount
+                source_record = link.get("source_record")
+                if source_record is not None:
+                    if (
+                        not isinstance(source_record, dict)
+                        or source_record.get("provider") not in {"setneg", "bkpm", "rcepsec", "ipos"}
+                        or source_record.get("interpretation") != "unreviewed_source_values"
+                        or not isinstance(source_record.get("fields"), dict)
+                    ):
+                        raise ValueError("来源结构化记录不符合已验证来源格式。")
+                    record = dict(source_record) | {
+                        "evidence": {"url": fetched["url"], "sha256": blob.digest}
+                    }
+                    encoded = dump(record)
+                    if len(encoded.encode("utf-8")) > 128 * 1024:
+                        raise ValueError("来源结构化记录超过大小限制。")
+                    saved_candidate = conn.execute(
+                        "SELECT id FROM checklist_candidates WHERE binding_id=? AND url=?",
+                        (binding, link["url"]),
+                    ).fetchone()
+                    if saved_candidate:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO checklist_candidate_source_records
+                            (candidate_id,source_record,source_page_url,source_page_sha256,created_at)
+                            VALUES(?,?,?,?,?)""",
+                            (
+                                saved_candidate["id"],
+                                encoded,
+                                fetched["url"],
+                                blob.digest,
+                                now(),
+                            ),
+                        )
             elif page_count < FRONTIER_LIMIT and claim["depth"] < 30:
                 depth = (
                     claim["depth"]

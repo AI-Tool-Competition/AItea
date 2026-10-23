@@ -129,6 +129,47 @@ def populated(tmp_path):
 
 def test_complete_backup_restores_private_and_shared_without_reinterpreting_proofs(populated, tmp_path):
     source, docs, proof = populated
+    with source.db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO sources(id,owner_id,name,url,enabled,interval_hours,tags,status,created_at,updated_at)
+            VALUES('setneg-source-alice','alice','Setneg test source','https://jdih.setneg.go.id',0,24,'[]','idle',?,?)""",
+            (now(), now()),
+        )
+        conn.execute(
+            """INSERT INTO checklist_bindings
+            VALUES('setneg-binding-alice','alice','indonesia-20261003',7,'1.3','ID','setneg-source-alice','{}',?)""",
+            (now(),),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,discovered_from,status,created_at)
+            VALUES('setneg-candidate-alice','setneg-binding-alice',?,'UU 2/2026',?,'pending',?)""",
+            (
+                "https://jdih.setneg.go.id/api/hukumproduk/pdf?f=law.pdf",
+                "https://jdih.setneg.go.id/api/hukumproduk/detaildata?jns=UU&no=2&thn=2026",
+                now(),
+            ),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records VALUES(?,?,?,?,?)""",
+            (
+                "setneg-candidate-alice",
+                json.dumps(
+                    {
+                        "provider": "setneg",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {"no_peraturan": "2", "tahun": "2026"},
+                        "evidence": {
+                            "url": "https://jdih.setneg.go.id/api/hukumproduk/detaildata?jns=UU&no=2&thn=2026",
+                            "sha256": "b" * 64,
+                        },
+                    }
+                ),
+                "https://jdih.setneg.go.id/api/hukumproduk/detaildata?jns=UU&no=2&thn=2026",
+                "b" * 64,
+                now(),
+            ),
+        )
     before = {
         table: rows(source.db.path, table)
         for table in (
@@ -142,6 +183,7 @@ def test_complete_backup_restores_private_and_shared_without_reinterpreting_proo
             "legal_classification_history",
             "retrieval_vectors",
             "retrieval_chunks",
+            "checklist_candidate_source_records",
         )
     }
     manifests = {

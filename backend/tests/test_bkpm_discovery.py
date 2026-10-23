@@ -28,6 +28,24 @@ def test_public_catalog_keeps_original_identity_pagination_and_metadata():
     assert [link["purpose"] for link in result["links"]] == ["document", "document", "catalog"]
     assert result["links"][0]["identity_key"] == "bkpm:17386"
     assert all("jdih-storage.bkpm.go.id/jdih/jdih/" in link["url"] for link in result["links"][:2])
+    source_record = result["links"][0]["source_record"]
+    source_row = json.loads(FIXTURE.read_text())["allDocuments"][0]
+    assert source_record["provider"] == "bkpm"
+    assert source_record["interpretation"] == "unreviewed_source_values"
+    assert source_record["fields"] == {
+        "id": 17386,
+        "id_theme": 1,
+        "title": source_row["title"],
+        "document_type": "Peraturan",
+        "document_file_url": "https://jdih-storage.bkpm.go.id/jdih/jdih/2026Kepdepinvesthil15.S-.pdf",
+        "verified_original_url": "https://jdih-storage.bkpm.go.id/jdih/jdih/2026Kepdepinvesthil15.S-.pdf",
+        "regulation_number": "15.S",
+        "regulation_type": "Keputusan",
+        "establishment_date": "2026-07-24",
+        "publication_date": "2026-09-01",
+        "status": "Berlaku",
+        "slug": source_row["slug"],
+    }
     scope = result["scope"]
     assert (scope["theme_id"], scope["total"], scope["returned"], scope["offset"]) == (1, 88, 2, 0)
     assert scope["documents"][0]["detail_url"].startswith("https://jdih.bkpm.go.id/id/document/")

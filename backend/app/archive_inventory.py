@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–21 without opening originals.
+"""Export a private, read-only inventory of schema 7–22 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -27,10 +27,11 @@ from .ingestion_quality import text_complete
 from .native_mapping_inventory import MAX_MANIFEST_BYTES, MAX_RECORD_BYTES, mappings, validate_mapping
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
+    "candidate-source-records.jsonl",
     "catalog-documents.jsonl",
     "relations.jsonl",
     "ocr-pages.jsonl",
@@ -102,7 +103,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–21; use the matching application version"
+                "archive inventory requires schema 7–22; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -137,9 +138,13 @@ def _validate_schema(conn):
                 "SELECT id,owner_id,item_id,phase,status,reason,available_at,binding_sha256,retry_plan FROM collection_recovery_jobs LIMIT 0"
             )
             conn.execute("SELECT id,recovery_id,event,detail FROM collection_recovery_events LIMIT 0")
+        if version >= 22:
+            conn.execute(
+                "SELECT candidate_id,source_record,source_page_url,source_page_sha256,created_at FROM checklist_candidate_source_records LIMIT 0"
+            )
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–21 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–22 database") from exc
 
 
 class _Originals:
@@ -259,6 +264,7 @@ def _count(summary, kind, country, anomalies):
         {
             "documents": 0,
             "discovery_pages": 0,
+            "candidate_source_records": 0,
             "catalog_documents": 0,
             "catalog_document_gaps": 0,
             "relations": 0,
@@ -1723,6 +1729,71 @@ def _pages(conn, partitions, originals, summary, owner, country):
         _count(summary, "discovery_pages", row["country"], anomalies)
 
 
+def _candidate_source_records(conn, partitions, summary, owner, country):
+    where, params = _where(owner, country, owner_column="b.owner_id", country_column="b.country")
+    cursor = conn.execute(
+        f"""SELECT b.owner_id,b.country,b.plan_id,b.version plan_version,b.item_id checklist_item_id,
+        c.id candidate_id,c.url,c.title,c.discovered_from,c.status,c.document_id,c.created_at,
+        s.source_record,s.source_page_url,s.source_page_sha256,s.created_at source_record_created_at
+        FROM checklist_candidate_source_records s
+        JOIN checklist_candidates c ON c.id=s.candidate_id
+        JOIN checklist_bindings b ON b.id=c.binding_id
+        WHERE {where}
+        ORDER BY b.owner_id,b.country,b.plan_id,b.version,b.item_id,c.created_at,c.id""",
+        params,
+    )
+    for row in _rows(cursor):
+        anomalies = []
+        raw = row["source_record"]
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > 128 * 1024:
+            source_record = {}
+            anomalies.append("invalid_source_record_size")
+        else:
+            source_record = _json_value(raw, dict, {}, anomalies, "source_record")
+        evidence = source_record.get("evidence")
+        digest = row["source_page_sha256"]
+        if (
+            source_record.get("provider") not in {"setneg", "bkpm", "rcepsec", "ipos"}
+            or source_record.get("interpretation") != "unreviewed_source_values"
+            or not isinstance(source_record.get("fields"), dict)
+            or not isinstance(evidence, dict)
+            or evidence.get("url") != row["source_page_url"]
+            or evidence.get("sha256") != digest
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            anomalies.append("invalid_source_record_binding")
+        record = {
+            key: row[key]
+            for key in (
+                "country",
+                "plan_id",
+                "plan_version",
+                "checklist_item_id",
+                "candidate_id",
+                "url",
+                "title",
+                "discovered_from",
+                "status",
+                "document_id",
+                "created_at",
+            )
+        }
+        record.update(
+            owner_sha256=_owner_hash(row["owner_id"]),
+            source_record=source_record,
+            source_page_url=row["source_page_url"],
+            source_page_sha256=digest,
+            source_record_created_at=row["source_record_created_at"],
+            anomalies=anomalies,
+        )
+        _write_jsonl(
+            partitions.file(row["owner_id"], row["country"], "candidate-source-records.jsonl"),
+            record,
+        )
+        _count(summary, "candidate_source_records", row["country"], anomalies)
+
+
 def _relations(conn, partitions, summary, owner, country):
     where, params = _where(owner, country)
     cursor = conn.execute(
@@ -1936,7 +2007,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 6,
+                "format_version": 7,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -1944,6 +2015,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 "filters": {"country": country, "owner_sha256": _owner_hash(owner) if owner else None},
                 "documents": 0,
                 "discovery_pages": 0,
+                "candidate_source_records": 0,
                 "catalog_documents": 0,
                 "catalog_document_gaps": 0,
                 "relations": 0,
@@ -1988,6 +2060,8 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 _ocr_pages(conn, partitions, originals, summary, owner, country)
                 _ocr_regions(conn, partitions, originals, summary, owner, country)
                 _pages(conn, partitions, originals, summary, owner, country)
+                if schema_version >= 22:
+                    _candidate_source_records(conn, partitions, summary, owner, country)
                 _relations(conn, partitions, summary, owner, country)
                 if include_text:
                     _texts(conn, partitions, summary, owner, country)
@@ -2023,7 +2097,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–21)"
+        description="Export a read-only catalog of stored originals (schema 7–22)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")
@@ -2050,7 +2124,13 @@ def main(argv=None):
                 "path": str(report["path"]),
                 **{
                     key: report["summary"][key]
-                    for key in ("documents", "discovery_pages", "relations", "anomalies")
+                    for key in (
+                        "documents",
+                        "discovery_pages",
+                        "candidate_source_records",
+                        "relations",
+                        "anomalies",
+                    )
                 },
             },
             ensure_ascii=False,

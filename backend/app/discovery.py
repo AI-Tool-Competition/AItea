@@ -7,6 +7,7 @@ Regular expressions are repository-owned configuration, never model or API input
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -29,6 +30,38 @@ _ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "manual"}
 _SETNEG_HOST = "jdih.setneg.go.id"
 _SETNEG_API = "https://jdih.setneg.go.id/api/hukumproduk/"
 _SETNEG_TYPES = {"1.3": "UU", "1.4": "PERPU", "1.5": "PP", "1.6": "PERPRES"}
+_SETNEG_SOURCE_FIELDS = (
+    "idperaturan",
+    "jns",
+    "nama_jenis",
+    "no_peraturan",
+    "tahun",
+    "tentang",
+    "teu",
+    "tgl_di",
+    "diundangkan",
+    "ln",
+    "tln",
+    "bahasa",
+    "tempat",
+    "lokasi",
+    "subjek",
+    "bidang_hukum",
+    "status",
+    "status_hukum",
+    "keterangan",
+    "terkait",
+    "mengubah",
+    "mencabut",
+    "diubah",
+    "dicabut",
+    "diubah_sebagian",
+    "dicabut_sebagian",
+    "mngbh_s",
+    "mcbt_s",
+    "mencabutsebagian",
+    "mengubahsebagian",
+)
 _COURT_HOST = "kepaniteraan.mahkamahagung.go.id"
 _COURT_CATEGORIES = {"1.9": "16", "2.1": "10", "2.3": "57"}
 _LKPP_HOST = "jdih.lkpp.go.id"
@@ -37,6 +70,7 @@ _BKPM_HOST = "jdih.bkpm.go.id"
 _BKPM_FILES_HOST = "jdih-storage.bkpm.go.id"
 _BKPM_API = "https://jdih.bkpm.go.id/api/document-search"
 _PDPC_HOST = "www.pdpc.gov.sg"
+_IPOS_HOST = "www.ipos.gov.sg"
 _PDPC_GUIDANCE = "/organisations/regulations-decisions/regulatory-guidance"
 _PDPC_GUIDES = (
     "advisory-guidelines-on-key-concepts-in-the-personal-data-protection-act",
@@ -70,6 +104,19 @@ _WTO_SERVICE_FILES = {
     "SG": re.compile(r"Q:/SCHD/(?:GATS-SC/SC76|GATS-EL/EL76)(?:(?:S|R|C)[1-9]\d{0,2})*\.pdf", re.I),
 }
 _HIDDEN_TAGS = {"script", "style", "template", "noscript"}
+_HTML_NODE_LIMIT = 100_000
+_HTML_DEPTH_LIMIT = 128
+_SENSITIVE_HTML_ATTRIBUTES = {
+    "href",
+    "src",
+    "data",
+    "id",
+    "title",
+    "aria-label",
+    "onclick",
+    "data-file-base-url",
+    "data-initial-file",
+}
 _ERROR_HEADING = re.compile(
     r"(?:^|\b)(?:just a moment|access denied|403\s+forbidden|404\s+(?:error|not found)|"
     r"page not found|service unavailable|internal server error|checking your browser|"
@@ -148,6 +195,27 @@ def _pdf_basename(value) -> bool:
         if re.search(r"[/\\:\x00-\x1f\x7f]", decoded) or decoded in {".", ".."}:
             return False
     return not value.startswith(".")
+
+
+def _bounded_dom_text(node, *, max_chars=1000, max_nodes=2000):
+    """Read text-node order with explicit work and output bounds."""
+    parts, size, visited = [], 0, 0
+    for current in node.traverse(include_text=True):
+        visited += 1
+        if visited > max_nodes:
+            break
+        if current.tag != "-text":
+            continue
+        value = " ".join(current.text(deep=False).split())
+        if not value:
+            continue
+        remaining = max_chars - size
+        if remaining <= 0:
+            break
+        value = value[:remaining]
+        parts.append(value)
+        size += len(value) + 1
+    return " ".join(parts), min(visited, max_nodes)
 
 
 def _setneg_query(url: str, instrument: str) -> tuple[str, dict]:
@@ -291,6 +359,33 @@ def _setneg_json(url: str, content: bytes, mime: str, rules) -> dict:
             and len(row["tentang"]) <= 10_000
         )
 
+    def source_record(row, file=None):
+        fields, warnings = {}, []
+        for key in _SETNEG_SOURCE_FIELDS:
+            if key not in row:
+                continue
+            value = row[key]
+            if value is None or type(value) is int:
+                fields[key] = value
+            elif isinstance(value, str) and len(value) <= 10_000:
+                fields[key] = value
+            else:
+                warnings.append(f"source field {key} omitted: invalid type or over 10000 characters")
+        value = {
+            "provider": "setneg",
+            "fields": fields,
+            "interpretation": "unreviewed_source_values",
+        }
+        if file is not None:
+            value["file"] = {
+                key: file[key]
+                for key in ("realName", "ext", "size")
+                if key in file and (isinstance(file[key], str) or type(file[key]) is int)
+            }
+        if warnings:
+            value["warnings"] = warnings
+        return value
+
     links, warnings = [], []
     if purpose == "catalog":
         rows, total = data.get("data"), data.get("jml")
@@ -318,6 +413,7 @@ def _setneg_json(url: str, content: bytes, mime: str, rules) -> dict:
                     "purpose": "detail",
                     "title": f"{row['jns']} {row['no_peraturan']}/{row['tahun']} — {row['tentang']}"[:300],
                     "identity_key": "setneg:" + row["idperaturan"],
+                    "source_record": source_record(row),
                 }
             )
         if start + len(rows) < total:
@@ -370,6 +466,7 @@ def _setneg_json(url: str, content: bytes, mime: str, rules) -> dict:
                 "purpose": "document",
                 "title": name,
                 "identity_key": f"setneg:{row['idperaturan']}:{sha256(name.encode()).hexdigest()[:16]}",
+                "source_record": source_record(row, file),
             }
         )
     if len(links) > rules.max_links:
@@ -387,6 +484,113 @@ class _Link:
     text: list[str] = field(default_factory=list)
     title: str = ""
     source_locator: dict | None = None
+    source_record: dict | None = None
+
+
+def _rcep_structure(node, title: str, target: str) -> dict:
+    normalized = " ".join(title.split())[:500]
+    kinds = (
+        (r"^preamble\b", "preamble"),
+        (r"^chapter\s+\d+\b", "chapter"),
+        (r"^annex\s+[\w.-]+\b", "annex"),
+        (r"^appendix\b", "appendix"),
+        (r"\bschedule\b", "schedule"),
+        (r"^protocol\b", "protocol"),
+    )
+    unit_type = next(
+        (kind for pattern, kind in kinds if re.search(pattern, normalized, re.I)), "document_part"
+    )
+    number_match = re.search(
+        r"^(?:Chapter\s+(\d+)|Annex\s+([\w.-]+)|Appendix\s+([\w.-]+))\b", normalized, re.I
+    )
+    number = next((value for value in number_match.groups() if value), None) if number_match else None
+    parents, parent = [], node.parent
+    while parent is not None:
+        if parent.tag == "li" and "rcep-item" in (parent.attributes.get("class") or "").split():
+            child = parent.child
+            while child is not None:
+                classes = (child.attributes.get("class") or "").split()
+                if child.tag == "a" and "rcep-link" in classes:
+                    parent_title, _ = _bounded_dom_text(child, max_chars=500, max_nodes=256)
+                    if parent_title and parent_title != normalized:
+                        parents.append(parent_title)
+                    break
+                child = child.next
+        parent = parent.parent
+    parents.reverse()
+    path_name = unquote(urlsplit(target).path.rsplit("/", 1)[-1])[:300]
+    classes = (node.attributes.get("class") or "")[:200]
+    return {
+        "unit_type": unit_type,
+        "number": number,
+        "parent_titles": parents,
+        "file_name": path_name,
+        "anchor_class": classes,
+        "link_mechanism": "verified_literal_pdf_call",
+    }
+
+
+def _ipos_source_record(node, link_text: str, target: str, section_title: str | None) -> dict:
+    fields = {"link_text": link_text[:1000]}
+    row = node.parent
+    while row is not None and row.tag != "tr":
+        row = row.parent
+    date_value = summary = None
+    if row is not None:
+        cells = row.css("td")
+        anchor_cell = node.parent
+        while anchor_cell is not None and anchor_cell.tag != "td":
+            anchor_cell = anchor_cell.parent
+        anchor_cell_id = anchor_cell.mem_id if anchor_cell else None
+        cell_texts = [_bounded_dom_text(cell, max_chars=2000, max_nodes=1024)[0] for cell in cells]
+        if cells:
+            possible_date = cell_texts[0]
+            if re.fullmatch(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}", possible_date):
+                date_value = possible_date
+        for cell in cells:
+            if cell.mem_id == anchor_cell_id or cell is cells[0]:
+                continue
+            text_value = _bounded_dom_text(cell, max_chars=4000, max_nodes=2048)[0]
+            if text_value:
+                summary = text_value[:4000]
+        if date_value:
+            fields["publication_date"] = date_value
+        if summary:
+            fields["row_description"] = summary
+    context = " ".join([section_title or "", link_text]).casefold()
+    if "practice direction" in context:
+        unit_type = "practice_direction"
+    elif "circular" in context:
+        unit_type = "circular"
+    elif "work manual" in context or "manual" in context:
+        unit_type = "manual_section"
+    elif "guide" in context or "infopack" in context:
+        unit_type = "guide"
+    elif "form" in context or "statutory declaration" in context:
+        unit_type = "form_or_template"
+    else:
+        unit_type = "document_link"
+    number_match = re.search(
+        r"\b(?:circular|practice direction)\s+(?:no\.?\s*)?"
+        r"(\d+[A-Za-z]?(?:\.?\s+of\s+\d{4})?)",
+        link_text,
+        re.I,
+    )
+    number = re.sub(r"\.(?=\s+of\b)", "", number_match[1], flags=re.I) if number_match else None
+    parents = [section_title[:300]] if section_title else []
+    return {
+        "provider": "ipos",
+        "interpretation": "unreviewed_source_values",
+        "fields": fields,
+        "structure": {
+            "unit_type": unit_type,
+            "number": number,
+            "parent_titles": parents,
+            "file_name": unquote(urlsplit(target).path.rsplit("/", 1)[-1])[:300],
+            "anchor_class": (node.attributes.get("class") or "")[:200],
+            "link_mechanism": "href",
+        },
+    }
 
 
 class _FlightScripts(HTMLParser):
@@ -595,103 +799,195 @@ def _pdpc_next_links(decoded: str, source_hash: str) -> tuple[list[_Link], dict]
     }
 
 
-class _Page(HTMLParser):
-    def __init__(self, *, literal_pdf_calls=False, lkpp_pdf_files=False):
-        super().__init__(convert_charrefs=True)
+class _Page:
+    """Extract bounded visible structure from an HTML5 tree without executing scripts."""
+
+    def __init__(self, *, literal_pdf_calls=False, lkpp_pdf_files=False, ipos_source=False):
+        self.parts = []
         self.links: list[_Link] = []
-        self.active: _Link | None = None
-        self.hidden: list[str] = []
         self.title: list[str] = []
         self.headings: list[str] = []
         self.text: list[str] = []
-        self.in_title = False
-        self.in_heading = False
         self.challenge = False
+        self.invalid_markup = False
         self.truncated = False
         self.literal_pdf_calls = literal_pdf_calls
         self.lkpp_pdf_files = lkpp_pdf_files
+        self.ipos_source = ipos_source
 
-    def handle_starttag(self, tag, attrs):
-        values = dict(attrs)
-        if tag in _HIDDEN_TAGS:
-            self.hidden.append(tag)
-        if tag == "script":
-            source = values.get("src") or ""
-            source_host = urlsplit(source).hostname or ""
-            if "/cdn-cgi/challenge-platform/" in source or (
-                source_host.endswith(".token.awswaf.com") and urlsplit(source).path.endswith("/challenge.js")
-            ):
-                self.challenge = True
-        if self.hidden:
-            return
-        if (values.get("id") or "").casefold() in {
-            "challenge-running",
-            "cf-challenge-running",
-            "cf-error-details",
-        }:
+    def feed(self, content):
+        self.parts.append(content)
+
+    def close(self):
+        from selectolax.lexbor import LexborHTMLParser
+
+        source = "".join(self.parts)
+
+        class AttributeAudit(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.duplicates = {}
+                self.tag_counts = Counter()
+
+            def handle_starttag(self, tag, attrs):
+                tag_index = self.tag_counts[tag]
+                self.tag_counts[tag] += 1
+                counts = Counter(name.casefold() for name, _ in attrs if name)
+                duplicates = {
+                    name for name, count in counts.items() if name in _SENSITIVE_HTML_ATTRIBUTES and count > 1
+                }
+                if duplicates:
+                    self.duplicates[(tag, tag_index)] = duplicates
+
+        audit = AttributeAudit()
+        audit.feed(source)
+        audit.close()
+        if any(tag == "script" and "src" in names for (tag, _), names in audit.duplicates.items()):
             self.challenge = True
-        self.in_title = self.in_title or tag == "title"
-        self.in_heading = self.in_heading or tag in {"h1", "h2", "h3"}
-        if tag not in {"a", "iframe", "embed", "object"}:
-            return
-        target = values.get("href" if tag == "a" else "data" if tag == "object" else "src")
-        if tag == "iframe" and self.lkpp_pdf_files and values.get("id") == "file-frame":
-            # LKPP publishes its original as literal PDF-viewer attributes.
-            # Require the verified public file directory and one plain basename;
-            # do not execute the viewer or infer a path from arbitrary JS/data.
-            name = values.get("data-initial-file")
-            fields = ("id", "data-file-base-url", "data-initial-file")
-            if (
-                values.get("data-file-base-url") == _LKPP_FILES
-                and all(sum(key == field for key, _ in attrs) == 1 for field in fields)
-                and _pdf_basename(name)
-                and not re.search(r"[%?#]", name)
-            ):
-                target = _LKPP_FILES + "/" + quote(name, safe="")
-        if not target and tag == "a" and self.literal_pdf_calls:
-            # The verified RCEP Secretariat viewer publishes PDF URLs as fixed
-            # literal button arguments. Read only that grammar; never execute JS.
-            call = _PDF_BUTTON.fullmatch(values.get("onclick") or "")
-            target = call[2] if call else None
-        if not target:
-            return
-        if len(self.links) >= MAX_PAGE_LINKS:
-            self.truncated = True
-            return
-        link = _Link(
-            target.strip(" "), tag, title=(values.get("title") or values.get("aria-label") or "")[:300]
-        )
-        self.links.append(link)
-        if tag == "a":
-            self.active = link
 
-    def handle_endtag(self, tag):
-        if self.hidden:
-            if tag == self.hidden[-1]:
-                self.hidden.pop()
-            return
-        if tag == "a":
-            self.active = None
-        elif tag == "title":
-            self.in_title = False
-        elif tag in {"h1", "h2", "h3"}:
-            self.in_heading = False
+        tree = LexborHTMLParser(source, scripting=False)
+        nodes = tree.css("*")
+        if len(nodes) > _HTML_NODE_LIMIT:
+            raise ValueError("HTML 标签数量超过目录解析上限。")
+        for node in nodes:
+            depth, parent = 0, node.parent
+            while parent is not None:
+                depth += 1
+                if depth > _HTML_DEPTH_LIMIT:
+                    raise ValueError("HTML 嵌套深度超过目录解析上限。")
+                parent = parent.parent
 
-    def handle_data(self, data):
-        if self.hidden:
-            return
-        value = " ".join(data.split())
-        if not value:
-            return
-        self.text.append(value)
-        if self.in_title:
-            self.title.append(value)
-        if self.in_heading:
-            self.headings.append(value)
-        if self.active:
-            # Extremely large anchor text must not be copied into every record.
-            if sum(map(len, self.active.text)) < 500:
-                self.active.text.append(value[:500])
+        label_work_remaining = 200_000
+        heading_context = {}
+        active_headings = {}
+        for node in nodes:
+            if node.tag in {f"h{level}" for level in range(1, 7)} and not self._has_hidden_parent(node):
+                level = int(node.tag[1])
+                value, used = _bounded_dom_text(
+                    node, max_chars=500, max_nodes=min(1000, label_work_remaining)
+                )
+                label_work_remaining -= used
+                if value:
+                    active_headings = {key: text for key, text in active_headings.items() if key < level}
+                    active_headings[level] = value
+            elif node.tag == "a":
+                heading_context[node.mem_id] = [active_headings[key] for key in sorted(active_headings)]
+        title = tree.css_first("title")
+        if title:
+            value, used = _bounded_dom_text(title, max_chars=1000, max_nodes=min(2000, label_work_remaining))
+            label_work_remaining -= used
+            if value:
+                self.title.append(value[:1000])
+                self.text.append(value[:1000])
+        for node in nodes:
+            attrs = node.attributes
+            if node.tag == "script":
+                script_url = attrs.get("src") or ""
+                script_host = urlsplit(script_url).hostname or ""
+                if "/cdn-cgi/challenge-platform/" in script_url or (
+                    script_host.endswith(".token.awswaf.com")
+                    and urlsplit(script_url).path.endswith("/challenge.js")
+                ):
+                    self.challenge = True
+            if (attrs.get("id") or "").casefold() in {
+                "challenge-running",
+                "cf-challenge-running",
+                "cf-error-details",
+            }:
+                self.challenge = True
+            if node.tag in {"h1", "h2", "h3"} and not self._has_hidden_parent(node):
+                value, used = _bounded_dom_text(
+                    node, max_chars=1000, max_nodes=min(2000, label_work_remaining)
+                )
+                label_work_remaining -= used
+                if value:
+                    self.headings.append(value[:1000])
+
+        link_nodes = []
+        tag_indexes = Counter()
+        for node in tree.css("a,iframe,embed,object"):
+            tag_index = tag_indexes[node.tag]
+            tag_indexes[node.tag] += 1
+            if not self._has_hidden_parent(node):
+                link_nodes.append((node, audit.duplicates.get((node.tag, tag_index), set())))
+
+        # Hidden and executable content must not influence link discovery or the
+        # short-page/error-page classifier.
+        for node in list(tree.css("script,style,template,noscript")):
+            node.decompose()
+        body = tree.body
+        if body:
+            visible = " ".join(body.text(deep=True, separator=" ", strip=True).split())
+            if visible:
+                self.text.append(visible[:MAX_HTML_BYTES])
+
+        for node, duplicates in link_nodes:
+            tag, attrs = node.tag, node.attributes
+            target_attribute = "href" if tag == "a" else "data" if tag == "object" else "src"
+            if target_attribute in duplicates:
+                continue
+            target = attrs.get(target_attribute)
+            if tag == "iframe" and self.lkpp_pdf_files and attrs.get("id") == "file-frame":
+                # LKPP publishes its original as literal PDF-viewer attributes.
+                # Ambiguous viewer attributes cannot form a candidate.
+                name = attrs.get("data-initial-file")
+                if (
+                    not any(
+                        attribute in duplicates
+                        for attribute in ("id", "data-file-base-url", "data-initial-file")
+                    )
+                    and attrs.get("data-file-base-url") == _LKPP_FILES
+                    and _pdf_basename(name)
+                    and not re.search(r"[%?#]", name)
+                ):
+                    target = _LKPP_FILES + "/" + quote(name, safe="")
+            literal_pdf_call = False
+            if not target and tag == "a" and self.literal_pdf_calls:
+                # Read only the verified fixed viewer grammar; never execute JS.
+                call = None if "onclick" in duplicates else _PDF_BUTTON.fullmatch(attrs.get("onclick") or "")
+                target = call[2] if call else None
+                literal_pdf_call = call is not None
+            if not target:
+                continue
+            if len(self.links) >= MAX_PAGE_LINKS:
+                self.truncated = True
+                break
+            label = ""
+            if "title" not in duplicates:
+                label = attrs.get("title") or ""
+            if not label and "aria-label" not in duplicates:
+                label = attrs.get("aria-label") or ""
+            link = _Link(target.strip(" "), tag, title=label[:300])
+            if tag == "a":
+                anchor_text, used = _bounded_dom_text(
+                    node, max_chars=500, max_nodes=min(512, label_work_remaining)
+                )
+                label_work_remaining -= used
+                if anchor_text:
+                    link.text.append(anchor_text)
+            if literal_pdf_call:
+                link_title = anchor_text if tag == "a" and anchor_text else label or target.rsplit("/", 1)[-1]
+                link.source_record = {
+                    "provider": "rcepsec",
+                    "interpretation": "unreviewed_source_values",
+                    "fields": {"link_text": link_title[:500]},
+                    "structure": _rcep_structure(node, link_title, target),
+                }
+            elif self.ipos_source and tag == "a":
+                link_title = anchor_text if anchor_text else label or target.rsplit("/", 1)[-1]
+                headings = heading_context.get(node.mem_id, [])
+                section_title = headings[-1] if headings else None
+                link.source_record = _ipos_source_record(node, link_title, target, section_title)
+            self.links.append(link)
+
+    @staticmethod
+    def _has_hidden_parent(node):
+        parent = node.parent
+        while parent is not None:
+            if parent.tag in _HIDDEN_TAGS:
+                return True
+            parent = parent.parent
+        return False
 
 
 class _Recipe:
@@ -1005,8 +1301,26 @@ def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
             warnings.append(f"BKPM 文书 {row['id']} 未提供受信法规原件，保留缺口。")
             continue
         identity = f"bkpm:{row['id']}"
+        source_fields = {
+            "id": row["id"],
+            "id_theme": row["id_theme"],
+            "title": row["title"],
+            "document_type": row["document_type"],
+            "document_file_url": row["document_file_url"],
+            "verified_original_url": target,
+        }
         links.append(
-            {"url": target, "purpose": "document", "title": row["title"][:300], "identity_key": identity}
+            {
+                "url": target,
+                "purpose": "document",
+                "title": row["title"][:300],
+                "identity_key": identity,
+                "source_record": {
+                    "provider": "bkpm",
+                    "interpretation": "unreviewed_source_values",
+                    "fields": source_fields,
+                },
+            }
         )
         metadata = {"identity_key": identity, "original_url": target, "title": row["title"][:1000]}
         slug = row.get("slug")
@@ -1022,6 +1336,11 @@ def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
             value = row.get(name)
             if isinstance(value, str) and len(value) <= 200:
                 metadata[name] = value
+                source_fields[name] = value
+        slug = row.get("slug")
+        if isinstance(slug, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) and len(slug) <= 500:
+            source_fields["slug"] = slug
+        links[-1]["source_record"]["fields"] = source_fields
         documents.append(metadata)
     if offset + len(rows) < total:
         links.append(
@@ -1095,6 +1414,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
     page = _Page(
         literal_pdf_calls=urlsplit(current).hostname == "rcepsec.org",
         lkpp_pdf_files=urlsplit(current).hostname == _LKPP_HOST,
+        ipos_source=urlsplit(current).hostname == _IPOS_HOST,
     )
     try:
         page.feed(_decode(content))
@@ -1231,6 +1551,8 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         entry = {"url": candidate, "purpose": candidate_purpose, "title": label}
         if link.source_locator:
             entry["source_locator"] = link.source_locator
+        if link.source_record:
+            entry["source_record"] = link.source_record
         identity = _identity(candidate)
         if identity:
             entry["identity_key"] = identity

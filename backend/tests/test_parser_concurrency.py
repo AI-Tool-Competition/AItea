@@ -97,14 +97,14 @@ def parser_slots(monkeypatch):
 
 def test_default_capacity_remains_two_and_setup_can_precede_first_use(parser_slots, monkeypatch):
     assert parsing.parse_worker_limit() == 2
-    monkeypatch.setenv("TEA_PARSE_WORKERS", "32")
-    assert all(parser_slots.acquire(timeout=0) for _ in range(32))
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "128")
+    assert all(parser_slots.acquire(timeout=0) for _ in range(128))
     assert not parser_slots.acquire(timeout=0)
-    for _ in range(32):
+    for _ in range(128):
         parser_slots.release()
 
 
-@pytest.mark.parametrize("limit", range(1, 33))
+@pytest.mark.parametrize("limit", range(1, 129))
 def test_explicit_parse_capacities_are_bounded(parser_slots, monkeypatch, limit):
     monkeypatch.setenv("TEA_PARSE_WORKERS", str(limit))
     assert all(parser_slots.acquire(timeout=0) for _ in range(limit))
@@ -113,11 +113,11 @@ def test_explicit_parse_capacities_are_bounded(parser_slots, monkeypatch, limit)
         parser_slots.release()
 
 
-@pytest.mark.parametrize("value", ["0", "33", "64", "-1", "bad", "2.5", ""])
+@pytest.mark.parametrize("value", ["0", "129", "256", "-1", "bad", "2.5", ""])
 def test_invalid_capacity_fails_before_any_child_starts(parser_slots, monkeypatch, value):
     monkeypatch.setenv("TEA_PARSE_WORKERS", value)
     monkeypatch.setattr(multiprocessing, "get_context", lambda *_: pytest.fail("child started"))
-    with pytest.raises(ValueError, match="TEA_PARSE_WORKERS must be between 1 and 32"):
+    with pytest.raises(ValueError, match="TEA_PARSE_WORKERS must be between 1 and 128"):
         parsing.parse_bounded("law.txt", b"Original text", "text/plain")
 
 
@@ -483,16 +483,25 @@ def test_job_configuration_keeps_independent_secondary_zero_vectors(concurrent_j
         assert row["content_hash"] == hashlib.sha256(b"Tea import original 1.").hexdigest()
 
 
-@pytest.mark.parametrize("value", ["0", "33", "64", "-1"])
+@pytest.mark.parametrize("value", ["0", "129", "256", "-1"])
 def test_invalid_process_capacity_is_rejected(tmp_path, monkeypatch, value):
     monkeypatch.setenv("TEA_PROCESS_WORKERS", value)
-    with pytest.raises(ValueError, match="TEA_PROCESS_WORKERS must be between 1 and 32"):
+    with pytest.raises(ValueError, match="TEA_PROCESS_WORKERS must be between 1 and 128"):
         Service(tmp_path / "owned")
 
 
 def test_default_process_capacity_remains_two(tmp_path, monkeypatch):
     monkeypatch.delenv("TEA_PROCESS_WORKERS", raising=False)
     assert Service(tmp_path / "owned").collection.processing_workers == 2
+
+
+def test_processing_capacity_128_keeps_embedding_limit_independent(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", "128")
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "128")
+    monkeypatch.setenv("TEA_EMBED_WORKERS", "32")
+    collection = Service(tmp_path / "owned").collection
+    assert collection.processing_workers == 128
+    assert collection.embedding_workers == 32
 
 
 def test_processing_32_with_parse_two_defers_without_consuming_attempts(tmp_path, monkeypatch, parser_slots):

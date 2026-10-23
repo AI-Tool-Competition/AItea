@@ -6,11 +6,14 @@
 
 | 参数 | 默认 | 范围与作用 |
 | --- | --- | --- |
-| `TEA_PROCESS_WORKERS` | 2 | 1–32；同库解析与向量任务的总领取额度 |
+| `TEA_PROCESS_WORKERS` | 2 | 1–128；同库解析与向量任务的总领取额度 |
 | `TEA_EMBED_WORKERS` | 2 | 1–32；向量文档任务额度，不超过总领取额度 |
+
 | `EMBEDDING_HTTP_WORKERS` | 2 | 1–64；同机同模型共享 HTTP 上限，API 与运行脚本必须配置相同值 |
 | `EMBEDDING_ADMISSION_PATH` | 项目 `.dev/embedding-admission.sqlite3` | API 与后台共用的运行态额度库；可以显式指定独立磁盘路径 |
 | `EMBEDDING_REQUEST_CONCURRENCY` | 1 | 1 或 2；同文档一次处理中的请求并行数 |
+
+`TEA_PARSE_WORKERS` independently bounds parser work per process and supports 1–128. Raise it only to feed a higher MinerU API concurrency stage; keep embedding request concurrency under its separate admission and provider limits.
 | `EMBEDDING_BATCH_SIZE` | 64 | 1–64；每次请求的文本段数 |
 | `EMBEDDING_HTTP_TIMEOUT_SECONDS` | 30 | 1–60 秒；HTTP 超时，整次调用另有 300 秒总边界 |
 | `EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS` | true | 正式续跑脚本固定 false；响应不明时先留证，不自动重发 |

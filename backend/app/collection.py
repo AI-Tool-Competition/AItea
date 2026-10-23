@@ -66,7 +66,7 @@ class CollectionService:
         self.service, self.db = service, service.db
         self.download_workers = _setting("TEA_COLLECT_WORKERS", 8, 16)
         self.host_workers = min(_setting("TEA_COLLECT_PER_HOST", 2, 4), self.download_workers)
-        self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 32)
+        self.processing_workers = _setting("TEA_PROCESS_WORKERS", 2, 128)
         self.embedding_workers = min(_setting("TEA_EMBED_WORKERS", 2, 32), self.processing_workers)
         parse_worker_limit()  # Reject invalid parser capacity before claiming work.
         self.worker_health = {

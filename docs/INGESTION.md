@@ -206,8 +206,8 @@ DeepSeek 图片识别仅作为必要的补读，默认不开启，不对完整�
 | `TEA_SHARED_LIBRARY_WORKERS` | 默认 `internal`，主站处理全部账号；`external` 将系统共享库后台处理交给独立 worker，主站仅处理其他账号 |
 | `TEA_COLLECT_WORKERS` | 8 个下载任务，范围 1–16 |
 | `TEA_COLLECT_PER_HOST` | 每域 2 个真实连接，范围 1–4，且不超过下载数 |
-| `TEA_PROCESS_WORKERS` | 2 个处理任务，范围 1–32；默认同库有效处理租约共同占用此额度；`external` 主站按非系统账号计数 |
-| `TEA_PARSE_WORKERS` | 每个服务进程 2 个受限解析子进程，范围 1–32；正文解析、归档 PDF 窗口、渲染、校验和重组装共同限流 |
+| `TEA_PROCESS_WORKERS` | 2 个处理任务，范围 1–128；默认同库有效处理租约共同占用此额度；`external` 主站按非系统账号计数 |
+| `TEA_PARSE_WORKERS` | 每个服务进程 2 个受限解析子进程，范围 1–128；正文解析、归档 PDF 窗口、渲染、校验和重组装共同限流 |
 | `VISION_OCR_WORKERS` | 每进程页面处理额度，默认 2、范围 1–128；每个采集 PDF 单批最多处理 20 页 |
 | `VISION_OCR_REQUEST_WORKERS` | 模型请求额度，默认 `min(VISION_OCR_WORKERS,64)`、范围 1–64；DeepSeek 同一数据根跨进程共享该上限 |
 | `VISION_OCR_ADAPTIVE` | 默认 `false` 固定额度；显式 `true` 开启共享目标的健康升降，最大值仍为 `VISION_OCR_WORKERS` |
@@ -224,7 +224,7 @@ SQLite `BEGIN IMMEDIATE` 保护领取和状态转移；下载/解析/模型调�
 
 主站与独立向量 runner 必须使用相同的 `EMBEDDING_ADMISSION_PATH`、模型配置及 `EMBEDDING_HTTP_WORKERS`，共享请求额度保持全局，不因私有后台范围增加。下载同域物理连接和冷却、手工提交/附件发现的全库磁盘队列上限也保持原规则；私有文件上传不受系统正文待处理数量阻塞。外部模式只选择工作归属，不授予未知请求重发权限，也不把独立 runner 的缓存接入通用处理器。切换模式应先排空原主站 worker 后重启；同时保留其他 `internal` 全库 worker 仍会竞争系统任务。
 
-本机资源充足时，可在启动所属 worker 前明确设置 `TEA_PROCESS_WORKERS=32 TEA_PARSE_WORKERS=32`；应以实际工作负载测量选择并发数，最高配置不保证最快。解析额度在本服务进程首次使用后固定，运行中改变配置会拒绝新解析，需重启所属 worker。普通解析保持默认 45 秒截止，归档 PDF 保持固定 45 秒截止；各自的单次内存、CPU 和 40 MB 结果限制不变，Docling 保持其原有 4 GiB/110 秒 CPU 边界；并发增加会累加资源占用。32 个普通解析子进程的地址空间限额合计最高 24 GiB，Docling 合计最高 128 GiB，另有父进程及结果缓冲开销，这些限额不是实测 RSS。两个配置各自限制持久任务与本进程物理解析，多个服务 PID 的解析额度分别计算，不能称为跨进程全局解析上限；默认全库模式的多个 worker 应采用一致的处理任务配置；外部托管模式的主站只按私有范围计算任务额度，独立 runner 继续遵循自己的显式范围与额度。同账号、来源 URL、原件 SHA 与版本相同的有效 parse 租约继续串行，避免同原件两国副本同时识别；另一阶段待处理时继续优先填补阶段，OCR 和 embedding 请求仍有独立的原有名额，增加本机解析并发不增加这些外部请求上限。
+本机资源充足时，可逐步提高这两项配置，最高 128；应以实际工作负载测量选择并发数，最高配置不保证最快。解析额度在本服务进程首次使用后固定，运行中改变配置会拒绝新解析，需重启所属 worker。普通解析保持默认 45 秒截止，归档 PDF 保持固定 45 秒截止；各自的单次内存、CPU 和 40 MB 结果限制不变，Docling 保持其原有 4 GiB/110 秒 CPU 边界；并发增加会累加资源占用。每个普通解析子进程的地址空间限额最高 768 MiB，Docling 最高 4 GiB；按 128 并发计算，地址空间限额合计分别最高 96 GiB 和 512 GiB，另有父进程及结果缓冲开销，这些限额不是实测 RSS。两个配置各自限制持久任务与本进程物理解析，多个服务 PID 的解析额度分别计算，不能称为跨进程全局解析上限；默认全库模式的多个 worker 应采用一致的处理任务配置；外部托管模式的主站只按私有范围计算任务额度，独立 runner 继续遵循自己的显式范围与额度。同账号、来源 URL、原件 SHA 与版本相同的有效 parse 租约继续串行，避免同原件两国副本同时识别；另一阶段待处理时继续优先填补阶段，OCR 和 embedding 请求仍有独立的原有名额，增加本机解析并发不增加这些外部请求上限。
 
 原生解析共享槽使用线程安全的 [BoundedSemaphore](https://docs.python.org/3/library/threading.html#threading.BoundedSemaphore)，实际解析继续使用独立的 [spawn 子进程](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods)。本管线全部受限子进程的启动与回收共用生命周期锁，避免当前 [CPython 的 waitpid 轮询](https://github.com/python/cpython/blob/v3.14.7/Lib/multiprocessing/popen_fork.py)在多线程 start/cleanup 与 join/close 之间竞争；正文计算和管道等待位于锁外。该锁不保证第三方另行创建的子进程封装或 `multiprocessing.active_children()` 线程安全。超时或进程中断只清理本次创建的子进程，确认回收后才归还槽；无法确认退出时保留所占额度，防止超发。暂时满额沿用 `ProcessingDeferred` 与 5 秒后重试。
 

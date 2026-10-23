@@ -576,6 +576,42 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
                 AT,
             ),
         )
+        conn.execute(
+            """INSERT INTO checklist_candidates VALUES(
+            'candidate-acra','binding','https://isomer-user-content.by.gov.sg/277/practice-direction.pdf',
+            'Practice Direction No. 1 of 2026',NULL,
+            'https://www.acra.gov.sg/regulations/practice-directions-registrars-interpretations-guidance/practice-directions/',
+            'pending',NULL,1,'',?)""",
+            (AT,),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            VALUES('candidate-acra',?,?,?,?)""",
+            (
+                json.dumps(
+                    {
+                        "provider": "acra",
+                        "interpretation": "unreviewed_source_values",
+                        "fields": {"link_text": "Practice Direction No. 1 of 2026"},
+                        "structure": {
+                            "unit_type": "practice_direction",
+                            "number": "1 of 2026",
+                            "parent_titles": ["Practice Directions 2026"],
+                            "file_name": "practice-direction.pdf",
+                            "anchor_class": "",
+                            "link_mechanism": "href",
+                        },
+                        "evidence": {
+                            "url": "https://www.acra.gov.sg/regulations/practice-directions-registrars-interpretations-guidance/practice-directions/",
+                            "sha256": "e" * 64,
+                        },
+                    }
+                ),
+                "https://www.acra.gov.sg/regulations/practice-directions-registrars-interpretations-guidance/practice-directions/",
+                "e" * 64,
+                AT,
+            ),
+        )
     report = export(archive)
     pages = records(report, filename="discovery-pages.jsonl")
     assert len(pages) == 1 and report["summary"]["discovery_pages"] == 1
@@ -583,11 +619,12 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
     assert pages[0]["plan_version"] == 2 and pages[0]["checklist_item_id"] == "1.3"
     assert pages[0]["purpose"] == "catalog" and pages[0]["collection_item_id"] == "page-item"
     source_records = records(report, filename="candidate-source-records.jsonl")
-    assert len(source_records) == 4
+    assert len(source_records) == 5
     setneg_record = next(row for row in source_records if row["candidate_id"] == "candidate")
     bkpm_record = next(row for row in source_records if row["candidate_id"] == "candidate-bkpm")
     rcep_record = next(row for row in source_records if row["candidate_id"] == "candidate-rcep")
     ipos_record = next(row for row in source_records if row["candidate_id"] == "candidate-ipos")
+    acra_record = next(row for row in source_records if row["candidate_id"] == "candidate-acra")
     assert setneg_record["source_record"]["fields"]["no_peraturan"] == "2"
     assert setneg_record["source_page_sha256"] == "a" * 64
     assert bkpm_record["source_record"]["provider"] == "bkpm"
@@ -597,7 +634,9 @@ def test_catalog_pages_remain_separate_and_do_not_export_body_or_secrets(archive
     assert ipos_record["source_record"]["fields"]["publication_date"] == "25 September 2026"
     assert ipos_record["source_record"]["structure"]["unit_type"] == "circular"
     assert ipos_record["anomalies"] == []
-    assert report["summary"]["candidate_source_records"] == 4
+    assert acra_record["source_record"]["structure"]["unit_type"] == "practice_direction"
+    assert acra_record["anomalies"] == []
+    assert report["summary"]["candidate_source_records"] == 5
     docs = records(report)
     assert len(docs) == 1 and docs[0]["review"]["review_status"] == "draft"
     assert docs[0]["checklist_refs"][0]["source_id"] == "source"

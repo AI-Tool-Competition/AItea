@@ -237,8 +237,8 @@ class ChecklistService:
         """Recover supported provider metadata from saved hash-checked catalog/detail pages."""
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("backfill limit must be between 1 and 1000")
-        providers = {"setneg", "bkpm", "rcepsec", "ipos"} if providers is None else set(providers)
-        if not providers or not providers <= {"setneg", "bkpm", "rcepsec", "ipos"}:
+        providers = {"setneg", "bkpm", "rcepsec", "ipos", "acra"} if providers is None else set(providers)
+        if not providers or not providers <= {"setneg", "bkpm", "rcepsec", "ipos", "acra"}:
             raise ValueError("unsupported candidate source provider")
         from .blob_store import BlobIntegrityError
 
@@ -261,6 +261,10 @@ class ChecklistService:
         if "ipos" in providers:
             source_filters.append(
                 "(b.country='SG' AND p.final_url LIKE 'https://www.ipos.gov.sg/about-ip/trade-marks/%')"
+            )
+        if "acra" in providers:
+            source_filters.append(
+                "(b.country='SG' AND p.final_url LIKE 'https://www.acra.gov.sg/regulations/%')"
             )
         candidates = []
         with closing(self.db.connect()) as conn:
@@ -294,6 +298,8 @@ class ChecklistService:
                     else "rcepsec"
                     if row["final_url"] == "https://rcepsec.org/rcep-agreements/"
                     else "ipos"
+                    if row["final_url"].startswith("https://www.ipos.gov.sg/")
+                    else "acra"
                 )
                 expected_purpose = "detail" if provider == "setneg" else "catalog"
                 if (
@@ -301,7 +307,7 @@ class ChecklistService:
                     or plan["version"] != row["version"]
                     or item["id"] != row["item_id"]
                     or (
-                        provider != "ipos"
+                        provider not in {"ipos", "acra"}
                         and (
                             row["country"] != "ID"
                             or row["plan_id"] != "indonesia-20261003"
@@ -311,11 +317,11 @@ class ChecklistService:
                         )
                     )
                     or (
-                        provider == "ipos"
+                        provider in {"ipos", "acra"}
                         and (
                             row["country"] != "SG"
                             or row["plan_id"] != "singapore-demo-20261009"
-                            or item["id"] != "3.7"
+                            or item["id"] != ("3.7" if provider == "ipos" else "3.4")
                         )
                     )
                 ):
@@ -347,7 +353,7 @@ class ChecklistService:
                     or hashlib.sha256(body).hexdigest() != digest
                 ):
                     raise BlobIntegrityError("saved detail page hash or size mismatch")
-                mime = "text/html" if provider in {"rcepsec", "ipos"} else "application/json"
+                mime = "text/html" if provider in {"rcepsec", "ipos", "acra"} else "application/json"
                 result = discover_page(row["final_url"], body, mime, recipe_for(item))
                 link = next(
                     (
@@ -361,7 +367,7 @@ class ChecklistService:
                 )
                 purpose_matches = (
                     result.get("purpose") in {"catalog", "detail"}
-                    if provider == "ipos"
+                    if provider in {"ipos", "acra"}
                     else result.get("purpose") == expected_purpose
                 )
                 if not result.get("matched") or not purpose_matches or not link:

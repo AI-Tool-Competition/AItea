@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild candidate source metadata from verified saved Setneg/BKPM/RCEP/IPOS evidence."""
+"""Rebuild candidate source metadata from verified saved official catalog evidence."""
 
 import argparse
 import json
@@ -18,9 +18,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
-    parser.add_argument(
-        "--limit", type=int, default=500, help="maximum candidates to inspect (1–1000)"
-    )
+    parser.add_argument("--limit", type=int, default=500, help="maximum candidates to inspect (1–1000)")
     args = parser.parse_args(argv)
     if not 1 <= args.limit <= 1000 or args.data_dir.is_symlink():
         parser.error("limit must be 1–1000 and data-dir must not be a symbolic link")
@@ -31,9 +29,7 @@ def main(argv=None):
     db = Database(data_dir)
     service = SimpleNamespace(
         db=db,
-        archive=SimpleNamespace(
-            blobs=BlobStore(db.files_dir, max_bytes=128 * 1024 * 1024)
-        ),
+        archive=SimpleNamespace(blobs=BlobStore(db.files_dir, max_bytes=128 * 1024 * 1024)),
     )
     checklist = ChecklistService(service)
     print(

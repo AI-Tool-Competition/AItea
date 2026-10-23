@@ -25,6 +25,8 @@ const statusLabels = {
 };
 const sourceFieldLabels: Record<string, string> = {
   link_text: "来源链接原文标题",
+  listed_version: "目录列出版本",
+  listed_issue_date: "目录列出发布日期",
   publication_date: "来源公布日期",
   row_description: "来源目录说明",
   id: "来源文书 ID",
@@ -66,6 +68,7 @@ const sourceProviderLabels: Record<string, string> = {
   bkpm: "BKPM",
   rcepsec: "RCEP 秘书处",
   ipos: "新加坡知识产权局",
+  acra: "新加坡会计与企业管理局",
 };
 const sourceUnitLabels: Record<string, string> = {
   preamble: "序言",
@@ -77,6 +80,7 @@ const sourceUnitLabels: Record<string, string> = {
   document_part: "文书组成部分",
   circular: "通告",
   practice_direction: "实务指引",
+  registrar_interpretation: "注册局解释",
   guide: "指南",
   manual_section: "工作手册章节",
   form_or_template: "表格/模板",

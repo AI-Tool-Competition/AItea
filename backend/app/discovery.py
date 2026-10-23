@@ -530,7 +530,9 @@ def _rcep_structure(node, title: str, target: str) -> dict:
     }
 
 
-def _ipos_source_record(node, link_text: str, target: str, section_title: str | None) -> dict:
+def _ipos_source_record(
+    node, link_text: str, target: str, section_title: str | None, *, provider="ipos"
+) -> dict:
     fields = {"link_text": link_text[:1000]}
     row = node.parent
     while row is not None and row.tag != "tr":
@@ -557,14 +559,27 @@ def _ipos_source_record(node, link_text: str, target: str, section_title: str | 
             fields["publication_date"] = date_value
         if summary:
             fields["row_description"] = summary
+    listing = node.parent
+    while listing is not None and listing.tag != "li":
+        listing = listing.parent
+    if provider == "acra" and listing is not None:
+        listing_text = _bounded_dom_text(listing, max_chars=4000, max_nodes=2048)[0]
+        version_match = re.search(r"\bversion\s+([\w.-]+)", listing_text, re.I)
+        issue_date_match = re.search(r"\bissued\s+on\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})", listing_text, re.I)
+        if version_match:
+            fields["listed_version"] = version_match[1]
+        if issue_date_match:
+            fields["listed_issue_date"] = issue_date_match[1]
     context = " ".join([section_title or "", link_text]).casefold()
-    if "practice direction" in context:
+    if "registrar" in context and "interpret" in context:
+        unit_type = "registrar_interpretation"
+    elif "practice direction" in context:
         unit_type = "practice_direction"
     elif "circular" in context:
         unit_type = "circular"
     elif "work manual" in context or "manual" in context:
         unit_type = "manual_section"
-    elif "guide" in context or "infopack" in context:
+    elif "guide" in context or "infopack" in context or "guidance" in context:
         unit_type = "guide"
     elif "form" in context or "statutory declaration" in context:
         unit_type = "form_or_template"
@@ -579,7 +594,7 @@ def _ipos_source_record(node, link_text: str, target: str, section_title: str | 
     number = re.sub(r"\.(?=\s+of\b)", "", number_match[1], flags=re.I) if number_match else None
     parents = [section_title[:300]] if section_title else []
     return {
-        "provider": "ipos",
+        "provider": provider,
         "interpretation": "unreviewed_source_values",
         "fields": fields,
         "structure": {
@@ -802,7 +817,9 @@ def _pdpc_next_links(decoded: str, source_hash: str) -> tuple[list[_Link], dict]
 class _Page:
     """Extract bounded visible structure from an HTML5 tree without executing scripts."""
 
-    def __init__(self, *, literal_pdf_calls=False, lkpp_pdf_files=False, ipos_source=False):
+    def __init__(
+        self, *, literal_pdf_calls=False, lkpp_pdf_files=False, ipos_source=False, acra_source=False
+    ):
         self.parts = []
         self.links: list[_Link] = []
         self.title: list[str] = []
@@ -814,6 +831,7 @@ class _Page:
         self.literal_pdf_calls = literal_pdf_calls
         self.lkpp_pdf_files = lkpp_pdf_files
         self.ipos_source = ipos_source
+        self.acra_source = acra_source
 
     def feed(self, content):
         self.parts.append(content)
@@ -973,11 +991,17 @@ class _Page:
                     "fields": {"link_text": link_title[:500]},
                     "structure": _rcep_structure(node, link_title, target),
                 }
-            elif self.ipos_source and tag == "a":
+            elif (self.ipos_source or self.acra_source) and tag == "a":
                 link_title = anchor_text if anchor_text else label or target.rsplit("/", 1)[-1]
                 headings = heading_context.get(node.mem_id, [])
                 section_title = headings[-1] if headings else None
-                link.source_record = _ipos_source_record(node, link_title, target, section_title)
+                link.source_record = _ipos_source_record(
+                    node,
+                    link_title,
+                    target,
+                    section_title,
+                    provider="acra" if self.acra_source else "ipos",
+                )
             self.links.append(link)
 
     @staticmethod
@@ -1415,6 +1439,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         literal_pdf_calls=urlsplit(current).hostname == "rcepsec.org",
         lkpp_pdf_files=urlsplit(current).hostname == _LKPP_HOST,
         ipos_source=urlsplit(current).hostname == _IPOS_HOST,
+        acra_source=urlsplit(current).hostname == "www.acra.gov.sg",
     )
     try:
         page.feed(_decode(content))

@@ -439,7 +439,7 @@ export interface ChecklistCandidate {
   note: string;
   created_at: string;
   source_record: {
-    provider: "setneg" | "bkpm" | "rcepsec" | "ipos";
+    provider: "setneg" | "bkpm" | "rcepsec" | "ipos" | "acra";
     interpretation: "unreviewed_source_values";
     fields: Record<string, string | number | null>;
     structure?: {

@@ -351,6 +351,27 @@ def test_ipos_practice_direction_number_keeps_year_when_title_has_legacy_punctua
     assert result["links"][0]["source_record"]["structure"]["number"] == "1 of 2007"
 
 
+def test_acra_record_captures_list_version_issue_date_and_section():
+    source = "https://www.acra.gov.sg/regulations/practice-directions-registrars-interpretations-guidance/registrars-interpretations/"
+    content = b"""<html><body><h2>Registrar's Interpretations</h2><ul><li>
+    <a href="https://isomer-user-content.by.gov.sg/277/registrar-interpretation.pdf">Registrar's Interpretation No. 1</a>
+    <span>version 2 (issued on 16 Jun 2025)</span></li></ul></body></html>"""
+    rules = recipe(
+        allowed_hosts=["www.acra.gov.sg", "isomer-user-content.by.gov.sg"],
+        catalog_patterns=[
+            r"^/regulations/practice-directions-registrars-interpretations-guidance/registrars-interpretations/$"
+        ],
+        document_patterns=[r"^/277/registrar-interpretation\.pdf$"],
+    )
+    result = discover_page(source, content, "text/html", rules)
+    record = result["links"][0]["source_record"]
+    assert record["provider"] == "acra"
+    assert record["fields"]["listed_version"] == "2"
+    assert record["fields"]["listed_issue_date"] == "16 Jun 2025"
+    assert record["structure"]["unit_type"] == "registrar_interpretation"
+    assert record["structure"]["parent_titles"] == ["Registrar's Interpretations"]
+
+
 @pytest.mark.parametrize(
     "target",
     [

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from .vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v7"
+VERSION = "html-source-mapping-v8"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -383,11 +383,10 @@ class HTMLDocument(HTMLParser):
         self._table_cell_record = None
         self._table_row_start = 1
         self._table_row_headers = False
-        self._table_rows = []
         self._table_row_records = []
         self._table_start_line = 1
         self._table_start_char = 0
-        self._table_column_counts = []
+        self._table_group_id = 0
         self._table_depth = 0
         self._table_uncertain = False
         self._table_reasons = set()
@@ -504,14 +503,11 @@ class HTMLDocument(HTMLParser):
             boundary_kind=boundary_kind,
         )
         self._table_row = None
-        if self._table_column_counts and len(cells) != self._table_column_counts[0]:
-            self._uncertain = True
-            self._table_uncertain = True
-            self._table_reasons.add("uneven_source_row_widths")
-        self._table_column_counts.append(len(cells))
+        # Physical source-cell counts can differ when a table uses rowspan or
+        # colspan. Validate the logical grid once all rows are available.
         self._table_row_records.append(
             {
-                "row_index": len(self._table_column_counts),
+                "row_index": len(self._table_row_records) + 1,
                 "char_start": row["char_start"],
                 "char_end": row["char_end"],
                 "start_tag_char_end": row["start_tag_char_end"],
@@ -520,22 +516,118 @@ class HTMLDocument(HTMLParser):
                 "source_boundary_complete": row["source_boundary_complete"],
                 "end_tag_observed": row["end_tag_observed"],
                 "boundary_kind": row["boundary_kind"],
-                "column_count": len(cells),
+                "column_count": 0,
+                "source_cell_count": len(cells),
                 "header_row": self._table_row_headers,
+                "row_group": row["row_group"],
                 "cells": row["cell_records"],
             }
         )
-        normalized = [cell.replace("|", "\\|") for cell in cells]
-        row = "| " + " | ".join(normalized) + " |"
-        if self._table_row_headers and not self._table_rows:
-            row = "\n".join(
-                [row, "| " + " | ".join("---" for _ in normalized) + " |"]
-            )
-        self._table_rows.append(row)
+
+    def _table_grid(self):
+        """Expand supported table spans into an auditable logical grid.
+
+        Grid slots retain the originating source-cell index. Merged cells are
+        rendered once in Markdown and explicitly annotated; continuation slots
+        stay empty so retrieval cannot mistake a duplicated value for source
+        text.
+        """
+        row_count = len(self._table_row_records)
+        grid = [{} for _ in range(row_count)]
+        width = 0
+        valid = True
+        for row_index, row in enumerate(self._table_row_records):
+            for cell in row["cells"]:
+                rowspan, colspan = cell.get("rowspan"), cell.get("colspan")
+                if (
+                    type(rowspan) is not int
+                    or type(colspan) is not int
+                    or rowspan < 1
+                    or colspan < 1
+                    or colspan > 256
+                    or row_index + rowspan > row_count
+                ):
+                    valid = False
+                    self._table_reasons.add("unsupported_or_out_of_bounds_cell_span")
+                    continue
+                row_group = row.get("row_group")
+                if any(
+                    self._table_row_records[target_row].get("row_group") != row_group
+                    for target_row in range(row_index, row_index + rowspan)
+                ):
+                    valid = False
+                    self._table_reasons.add("cell_span_crosses_row_group")
+                    continue
+                col = 0
+                while col < 256:
+                    if all(
+                        target_col not in grid[target_row]
+                        for target_row in range(row_index, row_index + rowspan)
+                        for target_col in range(col, col + colspan)
+                    ):
+                        break
+                    col += 1
+                if col + colspan > 256:
+                    valid = False
+                    self._table_reasons.add("table_grid_column_limit")
+                    continue
+                cell["grid_row"] = row_index + 1
+                cell["grid_column"] = col + 1
+                cell["grid_row_end"] = row_index + rowspan
+                cell["grid_column_end"] = col + colspan
+                cell["grid_offset_basis"] = "one_based_logical_table_grid"
+                for target_row in range(row_index, row_index + rowspan):
+                    for target_col in range(col, col + colspan):
+                        grid[target_row][target_col] = {
+                            "source_cell_index": cell["cell_index"],
+                            "origin_row": row_index + 1,
+                            "origin_column": col + 1,
+                            "is_origin": target_row == row_index and target_col == col,
+                        }
+                width = max(width, col + colspan)
+
+        counts = []
+        rendered = []
+        for row_index, (slots, row) in enumerate(zip(grid, self._table_row_records, strict=True)):
+            columns = max(slots, default=-1) + 1
+            counts.append(columns)
+            row["column_count"] = columns
+            row["logical_column_count"] = columns
+            if any(column not in slots for column in range(columns)):
+                valid = False
+                self._table_reasons.add("uneven_logical_grid_rows")
+            source_cells = {cell["cell_index"]: cell for cell in row["cells"]}
+            values = []
+            for column in range(width):
+                slot = slots.get(column)
+                if not slot or not slot["is_origin"]:
+                    values.append("")
+                    continue
+                cell = source_cells[slot["source_cell_index"]]
+                text = cell["text"]
+                rowspan = cell["rowspan"]
+                colspan = cell["colspan"]
+                if rowspan > 1 or colspan > 1:
+                    text += f" [merged across {rowspan} row(s) × {colspan} column(s)]"
+                values.append(text.replace("|", "\\|").replace("\n", " "))
+            rendered.append("| " + " | ".join(values) + " |")
+            if row["header_row"] and row_index == 0:
+                rendered.append("| " + " | ".join("---" for _ in range(width)) + " |")
+        if width > 256:
+            valid = False
+            self._table_reasons.add("table_grid_column_limit")
+        if len(set(counts)) > 1 or (counts and counts[0] != width):
+            valid = False
+            self._table_reasons.add("uneven_logical_grid_rows")
+        return grid, counts, rendered, valid
 
     def _emit_table(self, *, closed=False, end_char=None):
-        if not self._table_rows:
+        if not self._table_row_records:
             return
+        grid, column_counts, rendered_rows, grid_valid = self._table_grid()
+        if not grid_valid:
+            self._uncertain = True
+            self._table_uncertain = True
         if len(self.elements) >= self.max_elements:
             raise ValueError("HTML 元素数量超过限制。")
         order = len(self.elements) + 1
@@ -544,7 +636,7 @@ class HTMLDocument(HTMLParser):
                 f"html-{order:06}",
                 "table",
                 order - 1,
-                "\n".join(self._table_rows),
+                "\n".join(rendered_rows),
                 {
                     "kind": "html",
                     "line_start": self._table_start_line,
@@ -554,8 +646,10 @@ class HTMLDocument(HTMLParser):
                     "char_start": self._table_start_char,
                     "char_end": end_char if end_char is not None else len(self.source or ""),
                     "offset_basis": "decoded_html_unicode_characters",
-                    "table_row_count": len(self._table_column_counts),
-                    "column_counts": list(self._table_column_counts),
+                    "table_row_count": len(self._table_row_records),
+                    "column_counts": column_counts,
+                    "grid": grid,
+                    "grid_coordinate_basis": "zero-based rows and columns; source cell indices are one-based",
                     "rows": deepcopy(self._table_row_records),
                     "structure_reasons": sorted(self._table_reasons),
                     "structure_status": "complete" if closed and not self._table_uncertain else "partial",
@@ -563,9 +657,7 @@ class HTMLDocument(HTMLParser):
                 list(self.headings),
             )
         )
-        self._table_rows = []
         self._table_row_records = []
-        self._table_column_counts = []
         self._table_uncertain = False
         self._table_reasons = set()
 
@@ -585,6 +677,14 @@ class HTMLDocument(HTMLParser):
             "char_start": start,
             "start_tag_char_end": start + len(token),
             "start_tag_sha256": _hash(token),
+            "row_group": next(
+                (
+                    (frame["tag"], frame["start"])
+                    for frame in reversed(self._stack)
+                    if frame["tag"] in {"thead", "tbody", "tfoot"}
+                ),
+                ("implicit", self._table_group_id),
+            ),
         }
         self._table_row_headers = False
 
@@ -690,7 +790,11 @@ class HTMLDocument(HTMLParser):
             raise ValueError("HTML 标签数量或嵌套深度超过限制。")
         if tag == "li":
             list_parent = next(
-                (index for index in range(len(self._stack) - 1, -1, -1) if self._stack[index]["tag"] in {"ol", "ul"}),
+                (
+                    index
+                    for index in range(len(self._stack) - 1, -1, -1)
+                    if self._stack[index]["tag"] in {"ol", "ul"}
+                ),
                 -1,
             )
             previous = next(
@@ -733,6 +837,7 @@ class HTMLDocument(HTMLParser):
                 self._table_start_line = self.getpos()[0]
                 self._table_start_char = start
                 self._table_uncertain = False
+                self._table_group_id += 1
             else:
                 self._uncertain = True
                 self._table_uncertain = True
@@ -749,10 +854,6 @@ class HTMLDocument(HTMLParser):
                 )
             rowspan, rowspan_value = self._table_span(values.get("rowspan"))
             colspan, colspan_value = self._table_span(values.get("colspan"))
-            if rowspan != 1 or colspan != 1:
-                self._uncertain = True
-                self._table_uncertain = True
-                self._table_reasons.add("rowspan_or_colspan_requires_grid_review")
             self._table_cell = []
             self._table_cell_record = {
                 "cell_index": len(self._table_row["cell_records"]) + 1,
@@ -796,11 +897,15 @@ class HTMLDocument(HTMLParser):
             "self_closing": self_closing,
         }
         if tag in {"ol", "ul"}:
-            frame["list_next"] = int(values.get("start", "1")) if str(values.get("start", "1")).lstrip("+-").isdigit() else 1
+            frame["list_next"] = (
+                int(values.get("start", "1")) if str(values.get("start", "1")).lstrip("+-").isdigit() else 1
+            )
             if tag == "ol" and "reversed" in values:
                 self._uncertain = True
         elif tag == "li":
-            parent_list = next((value for value in reversed(self._stack) if value["tag"] in {"ol", "ul"}), None)
+            parent_list = next(
+                (value for value in reversed(self._stack) if value["tag"] in {"ol", "ul"}), None
+            )
             if parent_list:
                 item_index = None
                 if parent_list["tag"] == "ol":
@@ -816,11 +921,7 @@ class HTMLDocument(HTMLParser):
                 else:
                     parent_list["list_next"] += 1
                 path = [
-                    *(
-                        item
-                        for ancestor in self._stack
-                        for item in ancestor.get("list_item_context", [])
-                    ),
+                    *(item for ancestor in self._stack for item in ancestor.get("list_item_context", [])),
                     {"type": parent_list["tag"], "index": item_index},
                 ]
                 frame["list_item_context"] = path
@@ -1007,7 +1108,9 @@ class HTMLDocument(HTMLParser):
 
     def handle_data(self, data):
         if self._visible():
-            anchor = next((frame for frame in reversed(self._stack) if frame.get("link_index") is not None), None)
+            anchor = next(
+                (frame for frame in reversed(self._stack) if frame.get("link_index") is not None), None
+            )
             if anchor is not None:
                 record = self.link_records[anchor["link_index"]]
                 if len(record["anchor_text"]) + len(data) <= 32_768:
@@ -1118,7 +1221,7 @@ class HTMLDocument(HTMLParser):
         }
         return HTMLParsedDocument(
             "html-basic",
-            "7",
+            "8",
             VERSION,
             self.elements,
             [],

@@ -654,10 +654,240 @@ class CollectionRecovery:
                 promoted += 1
         return promoted
 
+    def _reconcile_unknown_ragflow(self, *, limit, worker_scope):
+        """Reconcile paid-unknown chunk intents by exact, read-only remote receipts."""
+        from .ragflow import configured, profile
+
+        result = {"reconciled": 0, "partially_reconciled": 0, "receipt_audit_errors": 0}
+        if not configured():
+            return result
+        fingerprint = profile()
+        if not fingerprint:
+            return result
+        scope, arguments = worker_scope.sql("j.owner_id")
+        queue_scope, queue_arguments = worker_scope.sql()
+        timestamp = time.time()
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='embed' AND r.status='blocked'
+                    AND r.reason='paid_result_unknown' AND r.available_at<=?
+                    AND j.phase='embed' AND j.status='failed'
+                    AND EXISTS(SELECT 1 FROM ragflow_documents d WHERE d.document_id=r.item_id
+                        AND d.owner_id=r.owner_id AND d.profile=? AND d.dataset_id IS NOT NULL
+                        AND d.remote_id IS NOT NULL)"""
+                    + scope
+                    + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
+                    (timestamp, *arguments, fingerprint, min(limit, 2)),
+                )
+            ]
+        for identifier in identifiers:
+            with closing(self.db.connect()) as conn:
+                recovery = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=?", (identifier,)
+                ).fetchone()
+                if recovery is None or not worker_scope.allows(recovery["owner_id"]):
+                    continue
+                owner, document_id = recovery["owner_id"], recovery["item_id"]
+                revision, binding_hash = recovery["revision"], recovery["binding_sha256"]
+            try:
+                audit = self.service.ragflow.reconcile_pending_intents(document_id, owner)
+            except Exception as error:
+                code = getattr(error, "code", type(error).__name__)
+                wait = min(
+                    MAX_RECOVERY_SECONDS,
+                    max(
+                        BASE_RECOVERY_SECONDS * 2 ** min(recovery["failure_count"], 7),
+                        getattr(error, "retry_after", None) or 0,
+                    ),
+                )
+                with self.db.transaction() as conn:
+                    current = conn.execute(
+                        """SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked'
+                        AND reason='paid_result_unknown' AND revision=?""",
+                        (identifier, revision),
+                    ).fetchone()
+                    if current is not None:
+                        available = time.time() + wait
+                        conn.execute(
+                            "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                            (available, now(), identifier),
+                        )
+                        self._event(
+                            conn,
+                            identifier,
+                            "remote_receipt_audit_deferred",
+                            {"error_code": str(code)[:80], "retry_after_seconds": wait},
+                        )
+                result["receipt_audit_errors"] += 1
+                continue
+            if audit is None:
+                with self.db.transaction() as conn:
+                    current = conn.execute(
+                        """SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked'
+                        AND reason='paid_result_unknown' AND revision=?""",
+                        (identifier, revision),
+                    ).fetchone()
+                    if current is not None:
+                        binding = self._binding(conn, owner, "processing", document_id, "embed")
+                        if binding is None or _digest(binding) != binding_hash:
+                            self._block(conn, current, "source_changed")
+                        else:
+                            wait = MAX_RECOVERY_SECONDS
+                            conn.execute(
+                                "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                                (time.time() + wait, now(), identifier),
+                            )
+                            self._event(
+                                conn,
+                                identifier,
+                                "remote_receipt_audit_skipped",
+                                {"reason": "current_generation_unavailable", "retry_after_seconds": wait},
+                            )
+                continue
+            with self.db.transaction() as conn:
+                current = conn.execute(
+                    """SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked'
+                    AND reason='paid_result_unknown' AND revision=?""",
+                    (identifier, revision),
+                ).fetchone()
+                if current is None or not worker_scope.allows(owner):
+                    continue
+                binding = self._binding(conn, owner, "processing", document_id, "embed")
+                if binding is None or _digest(binding) != binding_hash:
+                    self._block(conn, current, "source_changed")
+                    continue
+                job = conn.execute(
+                    "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (document_id, owner),
+                ).fetchone()
+                current_bound = self.service.ragflow.binding(
+                    conn, document_id, self.service.embedding_fingerprint(), include_chunks=False
+                )
+                if (
+                    job is None
+                    or job["phase"] != "embed"
+                    or job["status"] != "failed"
+                    or current_bound is None
+                    or current_bound[2] != audit.get("generation")
+                ):
+                    self._block(conn, current, "source_changed")
+                    continue
+                remote = conn.execute(
+                    "SELECT dataset_id,remote_id FROM ragflow_documents WHERE generation=? AND owner_id=? AND profile=?",
+                    (audit["generation"], owner, fingerprint),
+                ).fetchone()
+                if (
+                    remote is None
+                    or remote["dataset_id"] != audit.get("dataset_id")
+                    or remote["remote_id"] != audit.get("remote_id")
+                ):
+                    self._block(conn, current, "source_changed")
+                    continue
+                matched = 0
+                for local_id, receipt in audit.get("matches", {}).items():
+                    intent = conn.execute(
+                        """SELECT content_hash,state FROM ragflow_chunks
+                        WHERE generation=? AND local_id=?""",
+                        (audit["generation"], local_id),
+                    ).fetchone()
+                    if (
+                        intent is None
+                        or intent["state"] != "intent"
+                        or intent["content_hash"] != receipt.get("content_hash")
+                    ):
+                        continue
+                    conn.execute(
+                        """UPDATE ragflow_chunks SET remote_id=?,state='done',error_code=NULL,next_at=0
+                        WHERE generation=? AND local_id=? AND state='intent' AND content_hash=?""",
+                        (
+                            receipt["remote_id"],
+                            audit["generation"],
+                            local_id,
+                            receipt["content_hash"],
+                        ),
+                    )
+                    matched += 1
+                remaining = conn.execute(
+                    "SELECT count(*) FROM ragflow_chunks WHERE generation=? AND state='intent'",
+                    (audit["generation"],),
+                ).fetchone()[0]
+                detail = {
+                    "source_hash": audit.get("source_hash"),
+                    "generation": audit.get("generation"),
+                    "remote_chunks_scanned": audit.get("remote_chunk_count", 0),
+                    "remote_pages_scanned": audit.get("pages", 0),
+                    "exact_receipts_reconciled": matched,
+                    "unresolved_intents": remaining,
+                }
+                if remaining:
+                    wait = min(
+                        MAX_RECOVERY_SECONDS,
+                        BASE_RECOVERY_SECONDS * 2 ** min(current["failure_count"], 7),
+                    )
+                    conn.execute(
+                        "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                        (time.time() + wait, now(), identifier),
+                    )
+                    self._event(conn, identifier, "remote_receipts_reconciled", detail)
+                    result["partially_reconciled"] += int(matched > 0)
+                    continue
+                if (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+                        + queue_scope,
+                        queue_arguments,
+                    ).fetchone()[0]
+                    >= 200
+                ):
+                    wait = 60
+                    conn.execute(
+                        "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                        (time.time() + wait, now(), identifier),
+                    )
+                    self._event(
+                        conn,
+                        identifier,
+                        "remote_receipts_confirmed_queue_deferred",
+                        {**detail, "retry_after_seconds": wait},
+                    )
+                    continue
+                conn.execute(
+                    """UPDATE processing_jobs SET status='queued',attempts=0,available_at=0,
+                    lease_token=NULL,lease_until=NULL,error=NULL,updated_at=?
+                    WHERE document_id=? AND owner_id=? AND phase='embed' AND status='failed'""",
+                    (now(), document_id, owner),
+                )
+                conn.execute(
+                    "UPDATE documents SET status='processing',error=NULL WHERE id=? AND owner_id=?",
+                    (document_id, owner),
+                )
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='queued',reason='remote_receipts_reconciled',
+                    available_at=0,recovery_count=recovery_count+1,revision=revision+1,updated_at=? WHERE id=?""",
+                    (now(), identifier),
+                )
+                self._event(conn, identifier, "remote_receipts_reconciled_and_resumed", detail)
+                self.collection._refresh_document(conn, document_id)
+                result["reconciled"] += 1
+        return result
+
     def run_due(self, *, limit=10, worker_scope=BackgroundWorkerScope()):
         if type(limit) is not int or not 1 <= limit <= MAX_BATCH:
             raise ValueError("recovery batch must be between 1 and 32")
-        result = {"adopted": 0, "chart_refreshes": 0, "requeued": 0, "blocked": 0, "deferred": 0}
+        result = {
+            "adopted": 0,
+            "chart_refreshes": 0,
+            "reconciled": 0,
+            "partially_reconciled": 0,
+            "receipt_audit_errors": 0,
+            "requeued": 0,
+            "blocked": 0,
+            "deferred": 0,
+        }
         scope, arguments = worker_scope.sql()
         # One target per write transaction: OCR checkpoint validation must not
         # hold a write lock across an entire scheduled batch of large documents.
@@ -670,6 +900,8 @@ class CollectionRecovery:
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(
             limit=limit, worker_scope=worker_scope
         )
+        for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
+            result[key] += value
         with closing(self.db.connect()) as conn:
             identifiers = [
                 row[0]

@@ -830,6 +830,28 @@ def inspect(url: str, content: bytes, mime: str, rules) -> dict | None:
                 "text_complete_verified": False,
                 "legal_status_inferred": False,
             }
+            filename = parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=10)
+            filename = dict(filename).get("filename", "").rsplit("/", 1)[-1]
+            result["source_record"] = {
+                "provider": "wto",
+                "interpretation": "unreviewed_source_values",
+                "fields": {
+                    "official_file_url": url,
+                    "member": member,
+                    "source_format": extension.removeprefix("."),
+                    "header_signature": "verified_pdf_header",
+                    "text_completeness": "not_verified",
+                    "legal_status": "not_inferred",
+                },
+                "structure": {
+                    "unit_type": "verified_member_original",
+                    "number": None,
+                    "parent_titles": [],
+                    "file_name": filename[:300],
+                    "anchor_class": "",
+                    "link_mechanism": "verified_pdf_response",
+                },
+            }
             return result
         if len(content) > MAX_BYTES:
             raise ValueError("WTO 目录超过 4 MiB 上限。")

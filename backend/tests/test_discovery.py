@@ -392,6 +392,37 @@ def test_singapore_official_html_record_preserves_page_heading_and_link_context(
     assert record["structure"]["parent_titles"] == ["Food retail", "Licence and permit guidelines"]
 
 
+def test_singapore_official_self_page_records_only_observed_page_metadata():
+    source = "https://www.customs.gov.sg/doing-business/import-operations/import-operations-overview/"
+    content = b"<html><head><title>Import operations | Customs</title></head><body><h1>Import operations</h1></body></html>"
+    rules = recipe(
+        allowed_hosts=["www.customs.gov.sg"],
+        html_document_patterns=[r"^/doing-business/import-operations/import-operations-overview/$"],
+    )
+    result = discover_page(source, content, "text/html", rules)
+    record = result["source_record"]
+    assert result["matched"] and result["purpose"] == "document"
+    assert record["provider"] == "sg_official_html"
+    assert record["fields"]["linked_url"] == source
+    assert record["structure"]["link_mechanism"] == "page_url_self_reference"
+    assert record["structure"]["unit_type"] == "official_html_page"
+
+
+def test_mkri_self_original_record_requires_verified_pdf_signature():
+    source = "https://s.mkri.id/public/content/infoumum/regulation/pdf/UUD%20NRI%2045%20.pdf"
+    rules = recipe(
+        allowed_hosts=["s.mkri.id"],
+        document_patterns=[r"^/public/content/infoumum/regulation/pdf/[^/]+\.pdf$"],
+    )
+    pdf = discover_page(source, b"%PDF-1.4\nsource", "application/pdf", rules)
+    assert pdf["matched"] and pdf["purpose"] == "document"
+    assert pdf["source_record"]["provider"] == "mkri"
+    assert pdf["source_record"]["fields"]["content_signature"] == "verified_pdf_header"
+    assert pdf["source_record"]["structure"]["link_mechanism"] == "verified_pdf_response"
+    html = discover_page(source, b"<html>blocked</html>", "text/html", rules)
+    assert not html["matched"]
+
+
 @pytest.mark.parametrize(
     "target",
     [

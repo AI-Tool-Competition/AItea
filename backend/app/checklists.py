@@ -239,11 +239,13 @@ class ChecklistService:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("backfill limit must be between 1 and 1000")
         providers = (
-            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html"}
+            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html", "mkri"}
             if providers is None
             else set(providers)
         )
-        allowed_providers = {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html"}
+        allowed_providers = {
+            "setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html", "mkri"
+        }
         if not providers or not providers <= allowed_providers:
             raise ValueError("unsupported candidate source provider")
         from .blob_store import BlobIntegrityError
@@ -276,6 +278,7 @@ class ChecklistService:
             source_filters.append(
                 "(p.final_url LIKE 'https://docs.wto.org/dol2fe/Pages/SS/GetXMLResults.aspx?%' "
                 "OR p.final_url LIKE 'https://www.wto.org/english/docs_e/legal_e/%' "
+                "OR p.final_url LIKE 'https://docs.wto.org/dol2fe/Pages/SS/directdoc2.aspx?%' "
                 "OR p.final_url='https://www.wto.org/english/tratop_e/serv_e/telecom_e/telecom_commit_exempt_list_e.htm')"
             )
         if "sg_official_html" in providers:
@@ -285,13 +288,18 @@ class ChecklistService:
                 "OR p.final_url LIKE 'https://www.customs.gov.sg/%' "
                 "OR p.final_url LIKE 'https://www.pdpc.gov.sg/%')"
             )
+        if "mkri" in providers:
+            source_filters.append(
+                "(b.country='ID' AND p.final_url LIKE "
+                "'https://s.mkri.id/public/content/infoumum/regulation/pdf/%')"
+            )
         candidates = []
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
                 f"""WITH ranked AS (
                     SELECT c.id candidate_id,c.binding_id,c.url candidate_url,c.discovered_from,
                         b.owner_id,b.country,b.plan_id,b.version,b.item_id,b.snapshot,
-                        p.final_url,p.content_hash,p.storage_path,p.size,
+                        p.final_url,p.purpose page_purpose,p.content_hash,p.storage_path,p.size,
                         ROW_NUMBER() OVER(PARTITION BY c.id ORDER BY p.created_at DESC,p.item_id DESC) rn
                     FROM checklist_candidates c
                     JOIN checklist_bindings b ON b.id=c.binding_id
@@ -320,6 +328,10 @@ class ChecklistService:
                     if row["final_url"].startswith("https://www.ipos.gov.sg/")
                     else "acra"
                     if row["final_url"].startswith("https://www.acra.gov.sg/")
+                    else "mkri"
+                    if row["final_url"].startswith(
+                        "https://s.mkri.id/public/content/infoumum/regulation/pdf/"
+                    )
                     else "wto"
                     if row["final_url"].startswith("https://docs.wto.org/")
                     or row["final_url"].startswith("https://www.wto.org/")
@@ -331,7 +343,7 @@ class ChecklistService:
                     or plan["version"] != row["version"]
                     or item["id"] != row["item_id"]
                     or (
-                        provider not in {"ipos", "acra", "wto", "sg_official_html"}
+                        provider not in {"ipos", "acra", "wto", "sg_official_html", "mkri"}
                         and (
                             row["country"] != "ID"
                             or row["plan_id"] != "indonesia-20261003"
@@ -371,6 +383,14 @@ class ChecklistService:
                             }.get(urlsplit(row["final_url"]).hostname)
                         )
                     )
+                    or (
+                        provider == "mkri"
+                        and (
+                            row["country"] != "ID"
+                            or row["plan_id"] != "indonesia-20261003"
+                            or item["id"] != "1.1"
+                        )
+                    )
                 ):
                     raise ValueError("saved checklist binding mismatch")
                 digest = row["content_hash"]
@@ -401,7 +421,9 @@ class ChecklistService:
                 ):
                     raise BlobIntegrityError("saved detail page hash or size mismatch")
                 mime = (
-                    "application/xml"
+                    "application/pdf"
+                    if provider in {"wto", "mkri"} and row["page_purpose"] == "document"
+                    else "application/xml"
                     if provider == "wto" and "/GetXMLResults.aspx?" in row["final_url"]
                     else "text/html"
                     if provider in {"rcepsec", "ipos", "acra", "wto", "sg_official_html"}
@@ -420,12 +442,18 @@ class ChecklistService:
                 )
                 purpose_matches = (
                     result.get("purpose") in {"catalog", "detail", "document"}
-                    if provider in {"ipos", "acra", "wto", "sg_official_html"}
+                    if provider in {"ipos", "acra", "wto", "sg_official_html", "mkri"}
                     else result.get("purpose") == expected_purpose
                 )
-                if not result.get("matched") or not purpose_matches or not link:
+                if not result.get("matched") or not purpose_matches:
                     raise ValueError("saved source page does not support this candidate")
-                source_record = dict(link["source_record"]) | {
+                source_value = link.get("source_record") if link else None
+                if source_value is None and row["candidate_url"] == row["final_url"]:
+                    if result.get("source_record", {}).get("provider") == provider:
+                        source_value = result["source_record"]
+                if not isinstance(source_value, dict) or source_value.get("provider") != provider:
+                    raise ValueError("saved source page does not support this candidate")
+                source_record = dict(source_value) | {
                     "evidence": {"url": row["final_url"], "sha256": digest}
                 }
                 encoded = dump(source_record)
@@ -974,6 +1002,7 @@ class ChecklistService:
                     "purpose": "document",
                     "title": result.get("title", fetched["filename"]),
                     "identity_key": claim["identity_key"],
+                    "source_record": result.get("source_record"),
                 },
             )
         page_count = conn.execute(
@@ -1015,6 +1044,7 @@ class ChecklistService:
                             "acra",
                             "wto",
                             "sg_official_html",
+                            "mkri",
                         }
                         or source_record.get("interpretation") != "unreviewed_source_values"
                         or not isinstance(source_record.get("fields"), dict)

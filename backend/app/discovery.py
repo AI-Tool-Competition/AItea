@@ -700,6 +700,28 @@ def _sg_official_source_record(node, link_text: str, target: str, page_title: st
     }
 
 
+def _sg_official_page_record(url: str, page_title: str, headings: list[str]) -> dict:
+    path = unquote(urlsplit(url).path)
+    return {
+        "provider": "sg_official_html",
+        "interpretation": "unreviewed_source_values",
+        "fields": {
+            "link_text": page_title[:1000],
+            "source_page_title": page_title[:1000],
+            "document_heading": headings[0][:1000] if headings else "",
+            "linked_url": url[:2000],
+        },
+        "structure": {
+            "unit_type": "official_html_page",
+            "number": None,
+            "parent_titles": [value[:500] for value in headings[:5]],
+            "file_name": path.rsplit("/", 1)[-1][:300],
+            "anchor_class": "",
+            "link_mechanism": "page_url_self_reference",
+        },
+    }
+
+
 class _FlightScripts(HTMLParser):
     """Collect literal Next Flight pushes without interpreting JavaScript."""
 
@@ -1531,7 +1553,27 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
             return inspected
     if mime == "application/pdf" or content.startswith(b"%PDF-"):
         if purpose == "document" and content.startswith(b"%PDF-"):
-            return _result(matched=True, purpose=purpose)
+            result = _result(matched=True, purpose=purpose)
+            if urlsplit(current).hostname == "s.mkri.id":
+                file_name = unquote(urlsplit(current).path.rsplit("/", 1)[-1])
+                result["source_record"] = {
+                    "provider": "mkri",
+                    "interpretation": "unreviewed_source_values",
+                    "fields": {
+                        "official_file_url": current,
+                        "file_format": "pdf",
+                        "content_signature": "verified_pdf_header",
+                    },
+                    "structure": {
+                        "unit_type": "verified_official_original",
+                        "number": None,
+                        "parent_titles": [],
+                        "file_name": file_name[:300],
+                        "anchor_class": "",
+                        "link_mechanism": "verified_pdf_response",
+                    },
+                }
+            return result
         return _result(reason="PDF 地址、响应类型或文件签名不匹配。")
     if (
         rules.treaty_room
@@ -1721,6 +1763,8 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
     if not candidates and purpose != "document":
         warnings.append("未发现配置范围内的子页面或原件；请核对空目录、动态分页及访问限制。")
     result = _result(matched=True, purpose=purpose, links=candidates, warnings=warnings)
+    if purpose == "document" and urlsplit(current).hostname in _SG_OFFICIAL_HOSTS:
+        result["source_record"] = _sg_official_page_record(current, title, page.headings)
     if scope is not None:
         # Persist only locators for the bounded selected links. Body strings and
         # unrelated navigation/module records are not legal catalog evidence.

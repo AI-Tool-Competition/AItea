@@ -71,6 +71,7 @@ const sourceProviderLabels: Record<string, string> = {
   acra: "新加坡会计与企业管理局",
   wto: "世界贸易组织",
   sg_official_html: "新加坡官方资料",
+  mkri: "印尼宪法法院原件",
 };
 const sourceUnitLabels: Record<string, string> = {
   preamble: "序言",
@@ -85,6 +86,9 @@ const sourceUnitLabels: Record<string, string> = {
   registrar_interpretation: "注册局解释",
   member_schedule: "成员服务承诺表",
   wto_instrument: "WTO 文书",
+  verified_official_original: "签名核验官方原件",
+  verified_member_original: "签名核验成员原件",
+  official_html_page: "官方 HTML 页面",
   guide: "指南",
   manual_section: "工作手册章节",
   form_or_template: "表格/模板",

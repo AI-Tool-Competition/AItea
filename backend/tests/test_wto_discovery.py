@@ -174,6 +174,10 @@ def test_service_api_requires_actual_symbol_country_and_public_file(member):
     assert result["scope"]["source_sha256"] == sha256(body).hexdigest()
     assert result["scope"]["language"] == "English"
     assert not result["scope"]["legal_status_inferred"]
+    original = inspect(result["links"][0]["url"], b"%PDF-1.7\noriginal", member, "application/pdf")
+    assert original["matched"] and original["source_record"]["provider"] == "wto"
+    assert original["source_record"]["fields"]["header_signature"] == "verified_pdf_header"
+    assert original["source_record"]["fields"]["legal_status"] == "not_inferred"
     wrong = "Singapore" if member == "ID" else "Indonesia"
     assert not inspect(url, xml_catalog(member, country=wrong), member, "text/xml")["matched"]
     mismatch = inspect(

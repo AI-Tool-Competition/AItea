@@ -1,109 +1,101 @@
-# 茶渡 · 茶叶出口工作台
+# AItea · 茶渡
 
-面向六堡茶出口印度尼西亚、新加坡的配置驱动工作台，提供线上、线下四条流程。商家在对话中办理业务，右侧查看阶段和任务；法务人员维护任务、核验要求、助手步骤与资料来源。
+面向六堡茶出口印度尼西亚、新加坡的资料与办理工作台。把办理流程、官方资料采集、结构化解析、法律检索和文稿版本放在同一个工作区，帮助商家准备材料，让法务人员维护规则并核验依据。
 
-前端基于用户提供的 **DeerFlow 完整前端源码**，新增茶业务工作区 `/tea`，实际复用它的 UI 和会话组件。原文解析器由 GEO-System / Admin-System 提取。参考项目保留在 `tmp/`，不参与运行。
+[文档中心](docs/README.md) · [开发环境](docs/DEVELOPMENT.md) · [工程规范](AGENTS.md) · [CI 检查](https://github.com/AI-Tool-Competition/AItea/actions/workflows/check.yml)
 
-## 本地运行
+## 主要能力
 
-开发启动器支持 Linux，需要 Node.js 22+、npm、Python 3 和 uv。后端 Python 3.12+ 环境由 **uv** 在 `backend/.venv` 中管理；不需要手动激活环境或使用全局 pip。在本项目目录运行：
+- **办理流程**：提供印尼／新加坡、线上／线下四条路线；按阶段组织任务、对话、事实和材料，保留业务创建时的配置快照。
+- **资料库**：区分共享法规与账号私有资料，保存原件、不可变版本、法规关系、审核状态及适用日期。
+- **持续采集**：从统一来源清单发现与下载资料，支持代理、周期检查、断点续跑和内容去重，来源变化保留历史证据。
+- **解析与检索**：使用 MinerU 云端精准解析，保留页码、表格、图片与原文定位；HTML 使用结构化解析；RAGFlow 负责索引与检索。
+- **分析与文稿**：围绕已确认事实和合格资料生成建议，保留引用及人工编辑；资料变化触发复核，过期编辑不会覆盖新版本。
+
+模型建议不会直接完成办理任务。法规是否能作为依据，仍须通过账号、国家、版本、审核和适用期检查。
+
+## 技术组成
+
+| 部分   | 实现                                                     |
+| ------ | -------------------------------------------------------- |
+| 前端   | Next.js、React、TypeScript，复用 DeerFlow 界面与会话组件 |
+| 后端   | FastAPI、Pydantic，按业务上下文组织的 DDD 分层单体       |
+| 持久化 | SQLite WAL、显式事务、内容寻址原件与版本化结构           |
+| 解析   | MinerU 精准解析 API；HTML DOM 校验与结构化提取           |
+| 检索   | 本机 RAGFlow，调用外部 embedding 服务                    |
+| 工具链 | uv、锁定版本的 pnpm、根目录 Makefile                     |
+
+模块职责见 [后端目录](backend/README.md)，系统协作与权限边界见 [架构说明](docs/ARCHITECTURE.md)。
+
+## 快速开始
+
+当前开发启动器支持 **Linux**。准备 Git、Make、Python 3、uv、Node.js 22+ 和 npm；后端 Python 3.12+ 环境及依赖由 uv 管理，前端使用 pnpm 10.26.2，无需全局安装 pnpm 或手动激活虚拟环境。
 
 ```bash
+git clone https://github.com/AI-Tool-Competition/AItea.git
+cd AItea
 make dev
 ```
 
-打开 <http://127.0.0.1:3000/tea>，选择“进入演示工作台”，或申请独立账户。演示入口也有服务端会话与持久化业务记录，不会把不同访客放进同一个共享账号；新注册账号需管理员开放登录后才能使用。
+首次运行会按锁文件下载依赖，创建本工作树的环境和数据目录，并等待前后端就绪；后续启动按依赖指纹复用环境。代码修改支持热更新。
 
-`make dev` 自动同步锁定依赖、后台启动前后端并等待健康检查，成功后返回终端。前后端代码修改均支持热更新。首次安装需要下载 DeerFlow 的完整依赖，后续根据依赖指纹跳过重复安装。
+| 入口         | 默认地址                               |
+| ------------ | -------------------------------------- |
+| 茶业务工作台 | <http://127.0.0.1:3000/tea>            |
+| 管理后台     | <http://127.0.0.1:3000/tea/admin>      |
+| API 健康检查 | <http://127.0.0.1:8000/api/tea/health> |
 
-开发前端默认每 1000 毫秒轮询文件变化，避免服务器的系统文件监听额度不足导致反复重启；后端与生产预览不受此默认值影响。已有 `WATCHPACK_POLLING` 设置会被保留，也可用 `WATCHPACK_POLLING=500 make dev` 调整间隔。只有后端健康检查、`/tea` 页面和经前端转发的 API 健康检查均成功，启动命令才会报告就绪；这也会预热首次页面请求使用的 API 转发。失败时会显示各自状态及有限日志摘要。检测到文件监听 `ENOSPC` 错误会立即结束本次启动并回收所属进程。
+可从“进入演示工作台”开始体验；每位访客都有独立会话与业务记录。新注册账号需管理员开放登录。初始管理员、权限管理和操作步骤见 [配置后台](docs/ADMIN_STUDIO.md)；体验材料见 [演示指南](docs/DEMO_GUIDE.md)。
 
-开发前端按启动时系统可用内存设置堆容量（包含容器约束），取消 Node 默认约 4GB 的堆上限，不另设固定容量限制；通过 `NEXT_DISABLE_MEM_OVERRIDE=1` 禁止 Next.js 再追加堆限制。Next.js 的内存阈值自动重启也已关闭，避免页面加载期间重启并重复编译。已有 `NODE_OPTIONS` 参数原样保留；显式指定堆容量时沿用该设置。开发时默认关闭 Node 服务端源码映射，浏览器调试映射和热更新仍保留；如需服务端源码映射，可执行 `NODE_OPTIONS="--enable-source-maps" make dev`。这些设置不影响后端、生产预览或构建。
+未配置生成接口时显示演示助手，未配置 RAGFlow 时显示检索未就绪。体验界面不代表真实法规已采集、审核或入索引。
 
-```bash
-make dev-status       # 当前工作树状态
-make dev-list         # 本仓库所有工作树状态
-make dev-stop         # 取消安装/启动或停止服务，保留业务数据
-make dev-foreground   # 需要前台运行时使用，Ctrl+C 停止
+## 配置真实服务
+
+新实例将 [.env.example](.env.example) 复制为 `data/config/application.env`，目录权限设为 `700`、文件权限设为 `600`。已有实例先按 [实例管理](docs/INSTANCE_MANAGEMENT.md) 归集旧配置，保留原凭据和资料。修改环境参数后重启所属服务。
+
+| 配置                                                             | 用途                                        |
+| ---------------------------------------------------------------- | ------------------------------------------- |
+| `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`                       | 后端生成接口                                |
+| `MINERU_API_TOKEN`                                               | MinerU 云端精准解析，本机不部署 MinerU 模型 |
+| `EMBEDDING_BASE_URL`、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`     | 由 RAGFlow 调用的云端向量接口               |
+| `RAGFLOW_BASE_URL`、`RAGFLOW_API_KEY`、`RAGFLOW_EMBEDDING_MODEL` | 项目与 RAGFlow 的接线，由配置引导命令填写   |
+
+RAGFlow 的普通用户部署、模型注册和并发规则见 [MinerU 与 RAGFlow](docs/MINERU_RAGFLOW.md)。密钥仅进入后端私有配置，不放入 `NEXT_PUBLIC_*` 或 Git。
+
+来源和流程默认配置位于 [`config/`](config/README.md)。运行 `make instance-paths` 查看实际生效目录；恢复实例会携带原配置快照。数据库、原件、私有配置、采集状态和 RAGFlow 数据由同一实例目录管理，可以成套备份和恢复。
+
+## 常用命令
+
+| 命令                                | 用途                                         |
+| ----------------------------------- | -------------------------------------------- |
+| `make dev`                          | 同步依赖并启动热更新开发环境                 |
+| `make dev-status` / `make dev-stop` | 查看／停止当前工作树的服务，保留业务数据     |
+| `make check`                        | 后端测试和静态检查、前端类型及茶业务交互检查 |
+| `make build` / `make start`         | 构建／启动生产预览，先停止当前开发服务       |
+| `make instance-paths`               | 查看数据库、私有配置与来源清单的位置         |
+| `make collection-status`            | 查看已配置的官方采集服务状态                 |
+
+端口占用时可用 `make dev WEB_PORT=3001 API_PORT=8001` 启动。日志位于 `.dev/`。完整开发命令、独立工作树及排错方法见 [开发环境](docs/DEVELOPMENT.md)；实例备份必须遵循 [停服和校验步骤](docs/INSTANCE_MANAGEMENT.md)。
+
+## 仓库结构
+
+```text
+backend/       后端服务、业务上下文与测试
+frontend/      DeerFlow 前端及 /tea 工作区
+config/        可版本化的流程、来源与采集配置
+scripts/       开发管理、采集和运维入口
+deploy/        部署配方
+docs/          使用、设计、运维与历史验证文档
+samples/       体验材料
+data/          当前实例的持久数据与私有配置（不提交）
+.dev/          当前工作树的运行状态、日志和工具缓存（不提交）
 ```
 
-日志保存在 `.dev/api.log`、`.dev/web.log` 和 `.dev/supervisor.log`。端口已占用时不会终止其他项目，可显式指定：
+## 进一步阅读
 
-```bash
-make dev WEB_PORT=3001 API_PORT=8001
-```
+- **使用工作台**：[六堡茶流程](docs/LIUBAO_WORKFLOWS.md)、[配置后台](docs/ADMIN_STUDIO.md)、[法律分析](docs/LEGAL_AGENT.md)。
+- **维护资料库**：[持续采集](docs/UNATTENDED_COLLECTION.md)、[解析与检索](docs/MINERU_RAGFLOW.md)、[资料目录](docs/COLLECTION_MATERIALS.md)。
+- **部署和搬迁**：[部署说明](docs/DEPLOYMENT.md)、[实例管理](docs/INSTANCE_MANAGEMENT.md)、[备份协议](docs/DATA_BACKUP.md)。
+- **参与开发**：[工程规范](AGENTS.md)、[接口契约](docs/API_CONTRACT.md)、[测试范围](docs/TESTING.md)。
 
-业务数据库和原始文件位于 `data/`，不要提交到 Git。刷新、重启及 `make dev-clean` 都会保留业务数据。完整命令、工作树隔离和排错方式见 [开发环境说明](docs/DEVELOPMENT.md)；工程约定见 [AGENTS.md](AGENTS.md)。
-
-## 配置后台
-
-管理后台只向管理员开放，直接访问 `/tea/admin` 登录；茶业务工作台不提供后台入口。部署会创建初始账号 `admin`，密码为 `admin123`（已有该账号时不会重置密码）。后台“账号权限”页用于开放/关闭账号登录和设置管理员，至少保留一名可登录管理员。办理流程使用多级列表和侧栏编辑，节点分析使用工作流画布和侧栏编辑；调试按需打开。资料库支持主法规、引用法规、普通附件、版本历史与结构化正文。操作说明见 [配置后台](docs/ADMIN_STUDIO.md)。
-
-资料库的采集清单按文档章节组织，当前提供印尼 5 章 29 项；条目详情可展开完整原始要求。先发现目录候选，再选择正文并指定一级／二级，二级关联同国主法规。目录记录、已取得原件、已解析和已审核分别显示；403、动态页面及缺件会保留待补记录。配置完成不代表 29 项已全部抓取。
-
-资料页分为所有登录用户可读的“法规总库”和账号隔离的“我的资料”，业务内可查看本业务上传及对应国家法规。上传只归当前账号所有。资料统一保存在实例的 `data/`，可用 `make archive-inventory COUNTRY=ID` 导出按账号、国家和版本整理的原件目录。权限及数据分层见 [数据体系](docs/DATA_PLATFORM.md)，完整实例备份与异地路径恢复见 [备份操作](docs/DATA_BACKUP.md)。
-
-## 实例存储与迁移
-
-数据库、原件、采集状态、RAGFlow 数据和私有配置统一纳入 `data/`。运行 `make instance-paths` 查看实际位置；使用 `make instance-backup`、`make instance-verify`、`make instance-restore` 成套备份和恢复，保留历史版本与来源证据。命令、停服步骤及配置优先级见 [实例管理](docs/INSTANCE_MANAGEMENT.md)。后端模块职责见 [后端目录说明](backend/README.md)。
-
-## 连接模型与真实资料
-
-创建私有目录 `data/config/`，将 `.env.example` 复制为 `data/config/application.env`（目录权限 700、文件权限 600），设置后端模型接口、密钥和模型名称，然后重启。已有实例停服后运行 `make instance-adopt` 归集旧配置。所有模型凭据只在后端使用，不能放进 `NEXT_PUBLIC_*`。
-
-- `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`：OpenAI-compatible 生成接口；示例默认使用 Aerisun 的 `deepseek-v4.1-flash`，需填写该网关密钥。聊天将稳定案情放在提示前缀供网关自动缓存，并记录供应商返回的缓存命中/未命中 token 数。
-- `MINERU_API_TOKEN`：MinerU 云端精准解析；本机不运行 OCR 或 MinerU 模型。
-- `EMBEDDING_BASE_URL`、`EMBEDDING_API_KEY`、`EMBEDDING_MODEL`：原有云端向量接口，由本机 RAGFlow 调用。先运行 `make ragflow-up`，再运行 `make ragflow-bootstrap` 注册模型并生成集成配置。
-- `RAGFLOW_RERANK_MODEL`：可选的 RAGFlow 重排模型 ID。
-- 未配置生成接口时，页面标为演示助手；未配置 RAGFlow 时明确显示检索未就绪。
-- 普通用户部署、原文证据、断点续跑及自动并发探测见 [MinerU 与 RAGFlow](docs/MINERU_RAGFLOW.md)。
-- 在资料库上传文件，或在资料来源页面配置经过确认的官方 HTTPS 来源。
-- 采集资料默认待审核；在资料预览中设置类别、法域、生效日期并审核后，才作为回答依据。用户业务材料与法规资料明确区分。
-- 当前提供六堡茶赴印尼／新加坡的线上、线下四条路线；手册中的监管适用和办理证据仍须人工复核。
-
-## 核心行为
-
-- 一次业务对应一个文件夹，各阶段有独立对话与共享业务事实。
-- 阶段默认串行、任务并行；展品核销等收尾任务可以与后续阶段同时办理，结案前仍须满足全部必需条件及当前版本证据。
-- 配置发布保留历史版本，已有业务继续使用创建时的快照。
-- 材料更改、信息冲突、版本过期会触发补充或复核，不自动覆盖历史判断。
-- 文稿有独立版本、编辑与确认；过期编辑请求会被拒绝，防止覆盖新内容。
-- 一级与二级法规都解析正文，一级资料进入 RAG；普通附件只保存原件。法规关系固定到版本，支持多对多关联与采集组标签。
-- 国家法规通过不可变国别和 `country:ID` 等采集组隔离。业务检索使用业务目的国；没有明确国家的检索不会混入国家法规，资料仍须通过审核和适用期检查。
-- 来源支持批量网址、并发抓取和逐份入库；手动与定时采集使用持久队列，可查看进度、取消和重试。按内容哈希复用原件，历史版本不覆盖；运行边界见 [采集说明](docs/INGESTION.md)。
-
-业务流程统一来自 `config/workflows/liubao-export.json` 中的六堡茶印尼／新加坡线上、线下四条路线，服务启动自动读取并校验。旧演示流程及其业务入口已下线，新建业务默认选择六堡茶路线，配置与办理边界见 [六堡茶流程说明](docs/LIUBAO_WORKFLOWS.md)。也可在页面导入、编辑、调试、发布；文件与账号内发布版本的关系见 `config/README.md`。法规采集方案独立放在 [`config/collection-plans/`](config/collection-plans/README.md)，当前仅加载印尼；后续国家通过独立国家代码和版本化配置扩展，不共享法律范围。
-
-## 验证与构建
-
-```bash
-make check
-make dev-stop
-make build
-make start
-```
-
-`make check` 运行茶业务后端测试与静态检查、整个前端的类型检查，以及新增前端交互测试；`make build` 构建 DeerFlow 前端。具体浏览器、容器与功能验证结果见 [验收记录](docs/VERIFICATION.md)。本次新增工作区的检查不等于完整上游 DeerFlow Gateway 功能检查。
-
-## 容器运行
-
-```bash
-docker compose up --build
-```
-
-容器入口默认只绑定本机 3000 端口，数据存入独立 volume，API 不直接暴露宿主端口。镜像使用非 root 用户与依赖锁文件。默认是单机演示配置；正式公网部署需要 HTTPS、明确允许的站点来源及 Secure cookie，并验证真实规则、检索质量和容量。Compose 配方的实际构建验证状态见验收记录。
-
-## 设计资料
-
-- `docs/ARCHITECTURE.md`：模块边界、DeerFlow 接法与运行边界。
-- `docs/API_CONTRACT.md`：前后端接口与配置定义。
-- `docs/DATA_PLATFORM.md`：共享法规、私有资料、数据分层与迁移升级。
-- `docs/DATA_BACKUP.md`：完整实例备份、校验与恢复演练。
-- `docs/INGESTION.md`：解析器来源、格式支持、检索与采集限制。
-- `docs/UNATTENDED_COLLECTION.md`：官方来源持续更新、失效留证、换源、无人值守服务与恢复。
-- `docs/COLLECTION_MATERIALS.md`：`make collection-catalog` 整理共享总库、原件、文本、版本关系、向量状态与原始采集缺口。
-- `docs/plans/2026-10-11-tea-export-workbench.md`：已批准设计对应的实施与验收清单。
-
-本地文档与文件内容不作为系统指令执行。依法务配置检索到的内容只作为证据输入，任务状态始终由业务服务判断。
-
-初次演示可按 `docs/DEMO_GUIDE.md` 操作，示例业务材料位于 `samples/product-profile.md`。`make check` 也会运行新增前端交互测试及后端静态检查；CI 配方在 `.github/workflows/check.yml`。
+全部专题与历史记录见 [文档中心](docs/README.md)。前端沿用 DeerFlow 上游说明；解析器提取代码保留来源与许可记录。`tmp/` 中的参考项目不参与运行。

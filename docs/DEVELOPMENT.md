@@ -1,6 +1,6 @@
 # 开发环境
 
-启动入口与 Admin System 保持相同习惯：`make dev` 准备依赖并在后台启动服务，`make dev-stop` 停止当前工作树。这里只启动茶渡 API 与 DeerFlow 前端，不引入其他项目的数据服务。
+`make dev` 准备依赖并在后台启动服务，`make dev-stop` 停止当前工作树。这两个命令管理茶渡 API 与 DeerFlow 前端；RAGFlow 和独立官方采集服务使用各自的运行入口。文档导航见 [文档中心](README.md)。
 
 ## 一条命令启动
 
@@ -15,6 +15,10 @@ make dev
 启动器会检查端口、同步锁定依赖、启动后端热更新与 Next.js 开发服务，并等待 API 与页面就绪。安装期间会显示最新进度；暂无新日志时也会提示安装仍在进行及日志位置。健康检查完成后输出访问地址并返回终端。默认入口为 <http://127.0.0.1:3000/tea>，API 监听本机 8000 端口。
 
 开发前端使用 Node.js 的 [`process.availableMemory()`](https://nodejs.org/docs/latest-v22.x/api/process.html#processavailablememory) 读取启动时系统可用内存，并据此设置堆容量，取消默认约 4GB 的上限；系统或容器约束仍生效。已有 `NODE_OPTIONS` 参数保留，显式设置 `--max-old-space-size`、`--max-old-space-size-percentage` 或 `--max-heap-size` 时沿用该设置。此默认策略只作用于开发前端，不改变后端、生产预览或构建环境。
+
+前端默认每 1000 毫秒轮询文件变化，保留已有 `WATCHPACK_POLLING` 设置；可用 `WATCHPACK_POLLING=500 make dev` 调整间隔。检测到文件监听 `ENOSPC` 时，启动器保留诊断日志并停止本次所属进程。就绪检查同时覆盖后端健康接口、`/tea` 页面及经前端转发的 API，避免页面可见但业务请求尚不可用。
+
+开发时通过 `NEXT_DISABLE_MEM_OVERRIDE=1` 禁止 Next.js 覆盖上述堆设置，关闭内存阈值自动重启；默认关闭 Node 服务端源码映射，保留浏览器调试映射和热更新。需要服务端映射时使用 `NODE_OPTIONS="--enable-source-maps" make dev`。这些开发设置不影响生产预览或构建。
 
 | 命令                  | 行为                                                                 |
 | --------------------- | -------------------------------------------------------------------- |
@@ -86,4 +90,4 @@ make worktree NAME=feature/example
 
 如果后台某个服务意外退出，管理进程会停止同次启动的其他服务；先读日志，再重新 `make dev`。锁文件与依赖声明不一致时先确认依赖变更，再用 uv 更新并提交锁文件，不用删除锁文件绕过错误。
 
-`.env` 仍为业务配置入口，密钥仅由后端读取。`data/` 保存 SQLite 数据库和原始资料；开发清理不会删除它。删除数据、迁移数据和正式部署应分别处理，不能混入日常启动或清理命令。
+私有配置默认从 `data/config/application.env` 读取，旧根 `.env` 保留兼容入口，密钥只进入后端。`data/` 保存数据库、原件、采集状态和 RAGFlow 数据；开发清理不会删除这些持久内容。使用 `make instance-paths` 查看实际路径，归集与迁移按 [实例管理](INSTANCE_MANAGEMENT.md) 执行，不能混入日常启动或清理命令。生产预览和容器配方见 [部署说明](DEPLOYMENT.md)。

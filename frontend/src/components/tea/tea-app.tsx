@@ -52,11 +52,13 @@ import { Workspace, clearChatDrafts } from "./workspace";
 
 function Welcome({
   onAuthenticated,
+  onRetry,
   initialError,
   adminMode = false,
   onBack,
 }: {
   onAuthenticated: () => void;
+  onRetry: () => void;
   initialError: string;
   adminMode?: boolean;
   onBack?: () => void;
@@ -141,7 +143,7 @@ function Welcome({
               体验业务独立保存 · 四条六堡茶出口流程
             </div>
           )}
-          {error && <ErrorNotice message={error} />}
+          {error && <ErrorNotice message={error} onRetry={onRetry} />}
         </div>
       </main>
       <footer>茶渡 · 出口业务办理空间</footer>
@@ -470,6 +472,12 @@ export function TeaApp({
     document.documentElement.lang = "zh-CN";
     const abort = new AbortController();
     setLoading(true);
+    setError("");
+    const timeout = setTimeout(() => {
+      abort.abort();
+      setError("加载工作台超时，请检查连接后重试。");
+      setLoading(false);
+    }, 15_000);
     teaRequest<Bootstrap>("/bootstrap", { signal: abort.signal })
       .then((data) => {
         if (abort.signal.aborted) return;
@@ -491,9 +499,13 @@ export function TeaApp({
           setError(errorMessage(e));
       })
       .finally(() => {
+        clearTimeout(timeout);
         if (!abort.signal.aborted) setLoading(false);
       });
-    return () => abort.abort();
+    return () => {
+      clearTimeout(timeout);
+      abort.abort();
+    };
   }, [sessionKey]);
   const userId = bootstrap?.user.id;
   useEffect(() => {
@@ -671,6 +683,7 @@ export function TeaApp({
       <div className="tea-theme">
         <Welcome
           onAuthenticated={() => setSessionKey((k) => k + 1)}
+          onRetry={() => setSessionKey((k) => k + 1)}
           initialError={error}
           adminMode={!!initialAdminPage}
           onBack={initialAdminPage ? () => router.replace("/tea") : undefined}

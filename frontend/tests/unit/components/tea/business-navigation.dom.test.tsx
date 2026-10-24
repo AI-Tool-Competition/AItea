@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -131,7 +132,55 @@ function read(input: RequestInfo | URL) {
 }
 afterEach(() => {
   cleanup();
+  rs.useRealTimers();
   rs.restoreAllMocks();
+});
+
+describe("workspace startup", () => {
+  it("stops a stalled bootstrap, retries, and ignores its late response", async () => {
+    rs.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let finish!: (value: Response) => void;
+    let signal: AbortSignal | undefined;
+    rs.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(
+        (_input, options) =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+            signal = options?.signal ?? undefined;
+          }),
+      )
+      .mockImplementation(async (input) => read(input));
+    render(<TeaApp />);
+    expect(screen.getByText("正在打开你的工作台…")).toBeTruthy();
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(15_000);
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(screen.getByRole("alert").textContent).toContain("加载工作台超时");
+    expect(screen.queryByText("正在打开你的工作台…")).toBeNull();
+    rs.useRealTimers();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByRole("button", { name: "业务资料" });
+    await act(async () => {
+      finish(response({ user: { id: "stale" }, cases: [], templates: [] }));
+    });
+    expect(screen.getByRole("button", { name: "业务资料" })).toBeTruthy();
+  });
+
+  it("clears the startup deadline after showing the signed-out welcome", async () => {
+    rs.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(response({}, 401));
+    render(<TeaApp />);
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("button", { name: "进入演示工作台" })).toBeTruthy();
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(20_000);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("正在打开你的工作台…")).toBeNull();
+  });
 });
 
 describe("business node navigation", () => {

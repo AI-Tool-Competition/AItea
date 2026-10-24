@@ -34,6 +34,8 @@ const config = {
   allowedDevOrigins: getAllowedDevOrigins(),
   experimental: {
     devMemoryThresholdRestart: false,
+    // Keep hydration working when a browser or proxy blocks the HMR socket.
+    reactDebugChannel: false,
   },
   async rewrites() {
     const teaURL = getInternalServiceURL(

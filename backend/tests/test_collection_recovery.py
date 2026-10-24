@@ -348,6 +348,112 @@ def test_mineru_visual_fallback_retries_incomplete_output_only_three_quality_cyc
     assert decision.reason == "quality_review" and not decision.retryable
 
 
+def test_bound_pending_image_is_automatically_queued_when_vision_is_configured(monkeypatch):
+    from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(
+        native_asset_ocr,
+        "assets",
+        lambda _manifest: [
+            {"asset_key": "native-asset-ocr-bound", "asset_status": "pending_vision", "ocr": {}}
+        ],
+    )
+
+    decision = classify_processing({"pages": []}, phase="parse")
+
+    assert decision.reason == "ocr_quality_retry"
+    assert decision.retryable
+    assert decision.asset_keys == ("native-asset-ocr-bound",)
+
+
+def test_bound_pending_image_stays_held_when_vision_is_not_configured(monkeypatch):
+    from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: False)
+    monkeypatch.setattr(
+        native_asset_ocr,
+        "assets",
+        lambda _manifest: [
+            {"asset_key": "native-asset-ocr-bound", "asset_status": "pending_vision", "ocr": {}}
+        ],
+    )
+
+    decision = classify_processing({"pages": []}, phase="parse")
+
+    assert decision.reason == "processing_review"
+    assert not decision.retryable
+
+
+def test_blocked_bound_pending_image_is_requeued_without_an_existing_ocr_result(service, monkeypatch):
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    content = b'<main><p>Official terms.</p><img src="/figure.png"></main>'
+    manifest = parse_file("law.html", content)
+    raw_image = raster()
+    image = service.archive.blobs.put_bytes("owner", raw_image)
+    manifest = bind_linked_image_bounded(
+        content,
+        manifest,
+        object_key=manifest["html_source"]["objects"][0]["object_key"],
+        source_url="https://official.invalid/law",
+        image=raw_image,
+        image_blob={
+            "content_hash": image.digest,
+            "size": image.size,
+            "storage_path": str(image.path.relative_to(service.db.data_dir)),
+        },
+    )
+    original = service.archive.blobs.put_bytes("owner", content)
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.html",
+            "text/html",
+            "https://official.invalid/law",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="pending-image-automatic-recovery",
+            kind_hint="law",
+        )
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision("processing_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    result = service.collection.recovery.run_due(limit=32)
+
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "ocr_quality_retry")
+    assert native_asset_ocr.pending_assets(saved)[0]["asset_status"] == "pending_vision"
+    assert "ocr" not in native_asset_ocr.pending_assets(saved)[0]
+
+
 def test_mineru_table_retry_preserves_original_page_and_marks_visual_fallback(service):
     content = make_pdf([("Schedule tariff table", False)])
     original = service.archive.blobs.put_bytes("owner", content)

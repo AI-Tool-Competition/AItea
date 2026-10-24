@@ -127,6 +127,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         is_mineru_table_review,
         is_visual_fallback_page,
     )
+    from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
 
     if phase == "embed":
         # The generic multi-batch call has no complete per-input receipt ledger.
@@ -147,6 +148,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     retry_pages, retry_assets, mineru_visual_pages = [], [], []
     unknown_outcome = False
     if phase == "parse":
+        vision_ready = vision_ocr_configured()
         for page in pages:
             metadata = page.get("ocr") or {}
             status = page.get("status")
@@ -195,7 +197,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             eligible = (
                 asset.get("asset_status") == "ocr_uncertain"
                 or (asset.get("asset_status") == "ocr_failed" and not _permanent_ocr_http_error(asset))
-                or (asset.get("asset_status") == "pending_vision" and unknown)
+                or (asset.get("asset_status") == "pending_vision" and (unknown or vision_ready))
             )
             if not eligible:
                 continue

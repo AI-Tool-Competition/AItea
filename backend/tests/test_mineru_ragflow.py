@@ -175,7 +175,7 @@ def test_recovery_reconciles_exact_remote_receipt_without_resubmitting(workspace
         conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
     workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
-        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=?", (time.time() + 3600,))
     result = workspace.collection.recovery.run_due()
     assert result["reconciled"] == 1, json.dumps(result)
     with closing(workspace.db.connect()) as conn:
@@ -211,7 +211,7 @@ def test_recovery_retries_unmatched_paid_intent_after_remote_absence_is_confirme
         conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
     workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
-        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=?", (time.time() + 3600,))
 
     result = workspace.collection.recovery.run_due()
 
@@ -294,10 +294,11 @@ def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(w
     with closing(workspace.db.connect()) as conn:
         states = [row[0] for row in conn.execute("SELECT state FROM ragflow_chunks ORDER BY local_id")]
         job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
-        recovery = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
+        recovery = conn.execute("SELECT status,reason,available_at FROM collection_recovery_jobs").fetchone()
     assert states == ["done", "intent"] or states == ["intent", "done"]
     assert job == "failed"
-    assert tuple(recovery) == ("blocked", "paid_result_unknown")
+    assert recovery["status"] == "blocked" and recovery["reason"] == "paid_result_unknown"
+    assert time.time() < recovery["available_at"] <= time.time() + 900
     posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
     assert posts_after == posts_before
 

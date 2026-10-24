@@ -912,14 +912,20 @@ class CollectionRecovery:
                     """SELECT r.id FROM collection_recovery_jobs r
                     JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
                     WHERE r.queue_kind='processing' AND r.phase='embed' AND r.status='blocked'
-                    AND r.reason='paid_result_unknown' AND r.available_at<=?
                     AND j.phase='embed' AND j.status='failed'
-                    AND EXISTS(SELECT 1 FROM ragflow_documents d WHERE d.document_id=r.item_id
-                        AND d.owner_id=r.owner_id AND d.profile=? AND d.dataset_id IS NOT NULL
-                        AND d.remote_id IS NOT NULL)"""
+                    AND r.reason='paid_result_unknown'
+                    AND EXISTS(
+                        SELECT 1 FROM ragflow_documents d
+                        JOIN ragflow_chunks c ON c.generation=d.generation
+                        WHERE d.document_id=r.item_id AND d.owner_id=r.owner_id AND d.profile=?
+                        AND d.dataset_id IS NOT NULL AND d.remote_id IS NOT NULL
+                        AND (r.available_at<=? OR (
+                            c.state='intent' AND c.intent_at<=? AND c.next_at<=?
+                        ))
+                    )"""
                     + scope
                     + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
-                    (timestamp, *arguments, fingerprint, limit),
+                    (fingerprint, timestamp, timestamp - 900, timestamp, *arguments, limit),
                 )
             ]
         for identifier in identifiers:
@@ -1117,15 +1123,23 @@ class CollectionRecovery:
                         self.collection._refresh_document(conn, document_id)
                         result["unmatched_requeued"] += 1
                         continue
-                    wait = min(
-                        MAX_RECOVERY_SECONDS,
-                        BASE_RECOVERY_SECONDS * 2 ** min(current["failure_count"], 7),
-                    )
+                    next_retry = conn.execute(
+                        """SELECT MIN(MAX(COALESCE(intent_at,?),COALESCE(next_at,?)))
+                        FROM ragflow_chunks WHERE generation=? AND state='intent'""",
+                        (timestamp, timestamp, audit["generation"]),
+                    ).fetchone()[0]
+                    available = max(timestamp + 60, next_retry or timestamp + BASE_RECOVERY_SECONDS)
+                    wait = min(MAX_RECOVERY_SECONDS, available - timestamp)
                     conn.execute(
                         "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
-                        (time.time() + wait, now(), identifier),
+                        (timestamp + wait, now(), identifier),
                     )
-                    self._event(conn, identifier, "remote_receipts_reconciled", detail)
+                    self._event(
+                        conn,
+                        identifier,
+                        "remote_receipts_reconciled",
+                        {**detail, "retry_after_seconds": int(wait)},
+                    )
                     result["partially_reconciled"] += int(matched > 0)
                     continue
                 if (

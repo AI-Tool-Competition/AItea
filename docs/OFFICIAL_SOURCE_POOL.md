@@ -57,6 +57,10 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 
 本次从失败项逐条核对原始 URL，并对 DITJEN PP、JDIHN 与 MPR 官方候选各执行一次最多 2 MiB、15 秒截止的项目受限 HTTPS GET；没有写业务数据库。服务器结果分别为连接超时、连接超时、HTTP 403。浏览器/官方检索能看到页面，只能证明页面在该检索通道中有公开记录，不代表采集服务器能够合法、稳定地抓取；403 不通过换身份、伪造浏览器状态或代理绕过。三个候选均未被标记为已接入来源。
 
+同日另对 [BPK 法规数据库](https://peraturan.bpk.go.id/)的[法规类型目录](https://peraturan.bpk.go.id/Jenis)执行一次隔离探测。官方目录按中央、地方及部门/机构类别提供法规发现入口；BPK 页面说明其记录来自相关政府机关官网，因此适合作为补充发现与交叉核验候选，不能替代制定机关原件或据聚合条目确认法律效力。服务器使用 `unattended_collection.py` 项目受限 HTTPS 传输、单来源/单请求、单主机并发 1、4 MiB 响应上限及独立忽略目录 `.dev/aitea-source-validation-20261024-bpk/`，返回 HTTP 403（`http_403`），未取得页面内容，未写正式来源状态或业务数据库。该次仅证明此精确入口当前受限，不推断整个 BPK 域名所有路径均不可达；候选暂不加入 16 项正式来源池，也不尝试绕过访问限制。
+
+另发现业务相关度更高的[印尼检疫局 JDIH](https://jdih.karantinaindonesia.go.id/document/peraturan?bentuk_peraturan=PERBAN)：官方检索列有 Perbarantin 1/2024 和其 5/2025 修订；官方库中的植物检疫 HS 表包含茶类 0902，后续海关文件也引用这两项规则并列出茶叶单元及所需检疫文件。[修订原件](https://jdih.karantinaindonesia.go.id/storage/common/dokumen/Perba5.pdf)、[官方 HS 表与文件要求](https://jdih.karantinaindonesia.go.id/document/311/download)。这补出“茶类进口的植物检疫/许可”这一具体来源缺口；HS 子目、加工状态、包装与实际检疫义务仍须逐项核原文和适用范围，目录元数据不能代替法律审核。2026-10-24 对准确的 PERBAN 目录入口执行一次单请求隔离探测（20 秒、4 MiB 上限、正式有界 HTTPS 下载器、独立来源池和数据根目录 `.dev/aitea-source-validation-20261024-barantin/`），结果为连接超时（`network_timeout`），未取得页面或原件，也未写正式来源状态或业务库。候选暂不加入 16 项正式来源池、不绕过访问限制；待同一受限方式冷却后复测可达性，再决定是否纳入并限定检疫与茶类关键词。
+
 ### 2026-10-24 新加坡食品法规候选复核
 
 为补足 SG-3.2（食品进口标签及官方转介的食品声称资料）中直接法规原文入口，核对了 [Singapore Statutes Online《Food Regulations》](https://sso.agc.gov.sg/SL/SFA1973-RG1?DocDate=20240520)。官方目录可见一般标签要求（第 5 条）、误导性标签陈述（第 9 条）、进口食品登记（第 14 条）以及茶、茶末/筛下物、速溶茶、冲泡茶（第 153–156 条）；官方检索结果可作为候选发现证据，不能替代具体版本正文、修订记录和生效状态核验。

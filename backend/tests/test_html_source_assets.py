@@ -1,10 +1,9 @@
 import hashlib
 
 import pytest
-
-from app.ingestion import _decode, parse_file
-from app.ingestion_quality import text_complete
-from app.parsing import parse_bounded
+from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+from app.contexts.knowledge.infrastructure.parsing.native import _decode, parse_file
+from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
 
 
 def digest(value):
@@ -30,14 +29,14 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
 
 
 def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_inputs():
-    from app.html_linked_asset_ocr import image_candidates_bounded
+    from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import image_candidates_bounded
 
-    body = b'''<main><h1>Food labelling</h1><p>Imported food must carry the required label.</p>
+    body = b"""<main><h1>Food labelling</h1><p>Imported food must carry the required label.</p>
     <img src="/ResourcePackages/SFA/assets/images/icons/icon-share.svg" alt="icon-share">
     <img src="/ResourcePackages/SFA/assets/images/icons/icon-next-page.svg" alt="next page">
     <img src="/ResourcePackages/SFA/assets/images/food/icon-dash-collapse.svg" alt="icon-dash">
     <img src="/ResourcePackages/SFA/assets/images/food/icon-orange-telegram.svg" alt="telegram">
-    </main>'''
+    </main>"""
     result = parse_file("sfa.html", body, "text/html")
 
     assert result["parser_version"] == "9"
@@ -56,9 +55,9 @@ def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_
 
 
 def test_named_ui_icon_does_not_hide_an_unverified_diagram():
-    body = b'''<main><h1>Import requirements</h1><p>Retain the declaration.</p>
+    body = b"""<main><h1>Import requirements</h1><p>Retain the declaration.</p>
     <img src="/assets/icons/icon-share.svg" alt="icon-share">
-    <img src="/assets/tea-labelling.svg" alt="Tea package label example"></main>'''
+    <img src="/assets/tea-labelling.svg" alt="Tea package label example"></main>"""
     result = parse_file("law.html", body, "text/html")
 
     assert result["quality"]["complete"] is False
@@ -67,10 +66,10 @@ def test_named_ui_icon_does_not_hide_an_unverified_diagram():
 
 
 def test_caution_icon_requires_matching_caution_container_and_preserves_its_text():
-    body = b'''<main><h1>Food label changes</h1><div class="caution-notification">
+    body = b"""<main><h1>Food label changes</h1><div class="caution-notification">
     <img src="/ResourcePackages/SFA/assets/images/icons/icon-info-circle.svg" alt="Icon Caution">
     <div><p>Food Amendment Regulations take effect on 30 January 2026.</p></div>
-    </div></main>'''
+    </div></main>"""
     result = parse_file("sfa.html", body, "text/html")
 
     icon = result["html_source"]["objects"][0]
@@ -81,8 +80,8 @@ def test_caution_icon_requires_matching_caution_container_and_preserves_its_text
 
 
 def test_caution_icon_without_matching_container_remains_pending():
-    body = b'''<main><h1>Food label changes</h1><p>Review the cited notice.</p>
-    <img src="/assets/images/icons/icon-info-circle.svg" alt="Icon Caution"></main>'''
+    body = b"""<main><h1>Food label changes</h1><p>Review the cited notice.</p>
+    <img src="/assets/images/icons/icon-info-circle.svg" alt="Icon Caution"></main>"""
     result = parse_file("sfa.html", body, "text/html")
 
     assert result["html_source"]["objects"][0].get("visual_role") is None

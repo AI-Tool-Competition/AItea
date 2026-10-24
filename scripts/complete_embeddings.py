@@ -180,11 +180,14 @@ class Observations:
             self.append("runtime-errors.jsonl", record)
 
     def install(self):
-        from app import ingestion, parsing, vision
-        from app.retrieval import input_hash
+        from app.contexts.knowledge.application.retrieval import input_hash
+        from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+        from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+        from app.contexts.knowledge.infrastructure.providers import vision as vision
+        from app.shared.infrastructure.http import download as ingestion_download
 
-        original = ingestion._embedding_response
-        expected = ingestion.model_service_config("EMBEDDING")[0] + "/embeddings"
+        original = ingestion_embedding._embedding_response
+        expected = ingestion_embedding.model_service_config("EMBEDDING")[0] + "/embeddings"
         recorder = self
 
         class Client:
@@ -199,7 +202,7 @@ class Observations:
                 started = time.monotonic()
                 with recorder.lock:
                     if recorder.stop.is_set():
-                        raise ingestion.EmbeddingProviderDeferred(retry_after=60)
+                        raise ingestion_embedding.EmbeddingProviderDeferred(retry_after=60)
                     record["started_at"] = time.time()
                     record["http_started"] = True
                     recorder.append("issued-requests.jsonl", record)
@@ -211,7 +214,7 @@ class Observations:
                         record["http_status"] = response.status_code
                         if response.status_code in {408, 429} or response.status_code >= 500:
                             record["rate_limited"] = response.status_code == 429
-                            record["retry_after_seconds"] = ingestion._retry_after(
+                            record["retry_after_seconds"] = ingestion_download._retry_after(
                                 response.headers.get("Retry-After")
                             )
                             recorder.failure = (
@@ -256,14 +259,14 @@ class Observations:
                     self.records.append(record)
                     self.append("requests.jsonl", record)
 
-        ingestion._embedding_response = observed
+        ingestion_embedding._embedding_response = observed
 
         def forbid(*args, **kwargs):
             self.failure = "non_embedding_operation_prevented"
             self.stop.set()
             raise AssertionError("This fixed embedding plan cannot download, parse or OCR")
 
-        ingestion._download = forbid
+        ingestion_download._download = forbid
         parsing.parse_bounded = parsing.ocr_bounded = forbid
         vision.transcribe_page = vision.transcribe_image = forbid
 
@@ -476,11 +479,12 @@ def main():
         EMBEDDING_HTTP_TIMEOUT_SECONDS=str(args.http_timeout),
         EMBEDDING_RETRY_AMBIGUOUS_TIMEOUTS="false",
     )
-    from app import ingestion
-    from app.embedding_reuse import InputCheckpointCache
-    from app.ingestion_quality import text_complete
-    from app.retrieval import embedding_text, input_hash
-    from app.service import Service
+
+    from app.bootstrap import Service
+    from app.contexts.knowledge.application.retrieval import embedding_text, input_hash
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+    from app.contexts.knowledge.infrastructure.recovery.embedding_reuse import InputCheckpointCache
 
     plan = json.loads(args.plan.read_text())
     os.environ["EMBEDDING_ADMISSION_PATH"] = str(
@@ -590,7 +594,7 @@ def main():
     deferred_documents = deferred_input_documents(document_inputs, quarantined_inputs)
     observations = Observations(output)
     observations.install()
-    original_embed = ingestion.embed_texts
+    original_embed = ingestion_embedding.embed_texts
 
     def cached(texts):
         try:
@@ -600,7 +604,7 @@ def main():
             observations.stop.set()
             raise
 
-    ingestion.embed_texts = cached
+    ingestion_embedding.embed_texts = cached
     signal.signal(signal.SIGTERM, lambda *_: observations.stop.set())
     signal.signal(signal.SIGINT, lambda *_: observations.stop.set())
     placeholders = ",".join("?" for _ in ids)
@@ -676,7 +680,7 @@ def main():
             "unique_missing_inputs": pending[1],
             "total_vectors": count,
             "provider": observations.summary(),
-            "shared_admission": ingestion._EMBEDDING_HTTP_SLOTS.snapshot(),
+            "shared_admission": ingestion_embedding._EMBEDDING_HTTP_SLOTS.snapshot(),
             "checkpoint_cache": cache.snapshot(),
             "database_waits": len(observations.database_waits),
             "runtime_errors": list(observations.runtime_errors),

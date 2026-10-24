@@ -28,24 +28,31 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from app.blob_store import Blob, BlobStore, _verify_existing  # noqa: E402 -- repository script bootstrap
-from app.checklists import load_blueprints  # noqa: E402
-from app.data_backup import _safe_absolute  # noqa: E402
-from app.discovery import (  # noqa: E402
+from app.contexts.collection.application.checklists import load_blueprints  # noqa: E402
+from app.contexts.collection.infrastructure.discovery.discovery import (  # noqa: E402
     MAX_HTML_BYTES,
     discover_page,
     normalized_seeds_for,
     recipe_for,
     request_parameters,
 )
-from app.indonesia_official import (  # noqa: E402
+from app.contexts.collection.infrastructure.discovery.indonesia_official import (  # noqa: E402
     SETNEG_ITEMS,
     ledger_record,
     original_file_relations,
     reconcile_catalogue,
     source_relation_claims,
 )
-from verify_collection_sources import SourceVerifier, write_report  # noqa: E402
+from app.shared.infrastructure.blob_store import (  # noqa: E402
+    Blob,
+    BlobStore,
+    _verify_existing,
+)
+from app.shared.infrastructure.operations.data_backup import _safe_absolute  # noqa: E402
+from verify_collection_sources import (  # noqa: E402
+    SourceVerifier,
+    write_report,
+)
 
 SOURCE_OWNER = "setneg-official-corpus-20261019"
 MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
@@ -577,8 +584,8 @@ def export_state(c: sqlite3.Connection, output: Path) -> dict:
 
 def prepare_library(output: Path, *, min_free_bytes=MIN_FREE_BYTES) -> dict:
     """Create original versions and durable processing jobs, without model calls."""
-    from app.db import dump, now
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.shared.domain.values import dump, now
 
     service = Service(output)
     with service.db.transaction() as conn:

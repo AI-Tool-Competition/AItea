@@ -1,18 +1,19 @@
 """Real local processes cover daemon restart, launch gaps and durable cooldowns."""
 
-from copy import deepcopy
 import importlib
 import os
-from pathlib import Path
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from copy import deepcopy
+from pathlib import Path
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 watchdog = importlib.import_module("collection_watchdog")
 

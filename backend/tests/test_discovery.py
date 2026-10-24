@@ -1,12 +1,15 @@
 """Discovery only returns bounded, reviewable candidates; it never approves laws."""
 
-from pathlib import Path
 import json
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-
-from app.discovery import discover_page, normalized_seeds_for, recipe_for
+from app.contexts.collection.infrastructure.discovery.discovery import (
+    discover_page,
+    normalized_seeds_for,
+    recipe_for,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
 
@@ -73,7 +76,7 @@ def test_setneg_catalog_uses_verified_type_total_and_replayable_next_page():
 
 
 def test_setneg_request_body_is_derived_only_from_trusted_item_and_fixed_api():
-    from app.discovery import request_parameters
+    from app.contexts.collection.infrastructure.discovery.discovery import request_parameters
 
     definition = {"country": "ID", "item": setneg_item()}
     params = request_parameters(SETNEG + "produkhukum?jns=UU&length=5&start=5", definition)

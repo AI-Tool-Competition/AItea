@@ -5,20 +5,20 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from app.bootstrap import Service
+from app.contexts.collection.infrastructure.discovery.egazette import EGAZETTE_APPLICATION, EGAZETTE_INDEX
+from app.paths import PROJECT_ROOT
+from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 
-from app.egazette import EGAZETTE_APPLICATION, EGAZETTE_INDEX
-from app.public_search import EGazetteSearchRequest
-from app.service import Service
-
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 try:
     recovery = importlib.import_module("official_source_supervisor_recovery")
@@ -219,7 +219,7 @@ def test_abrupt_collector_death_reuses_four_saved_unstaged_originals(sg, monkeyp
 from pathlib import Path
 sys.path[:0] = [sys.argv[1] + '/scripts', sys.argv[1] + '/backend']
 import collect_egazette as m
-from app.public_search import EGazetteSearchRequest
+from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 root = Path(sys.argv[2])
 def local(url, **options):
     return {'blob': options['consume']([b'%PDF-1.4\\n' + url.encode() + b'\\n%%EOF']), 'url': url}

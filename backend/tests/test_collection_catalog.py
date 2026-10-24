@@ -6,10 +6,9 @@ import json
 import stat
 
 import pytest
-
-from app import collection_catalog
-from app.service import Service
-from app.system_library import SYSTEM_OWNER_ID
+from app.bootstrap import Service
+from app.contexts.collection.infrastructure import collection_catalog as collection_catalog
+from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
 
 
 @pytest.fixture

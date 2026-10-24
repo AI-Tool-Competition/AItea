@@ -6,9 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
 import pytest
+from app.shared.infrastructure.db import SCHEMA, Database, DatabaseUnavailable
 from fastapi.testclient import TestClient
-
-from app.db import SCHEMA, Database, DatabaseUnavailable
 
 
 @pytest.mark.parametrize("missing", ["database", "files", "directory"])
@@ -128,7 +127,7 @@ def test_existing_startup_allows_normal_versioned_migration(tmp_path):
 
 
 def test_health_and_private_writes_refuse_missing_storage_without_creating_database(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     app = create_app(tmp_path / "store", enable_scheduler=False)
     with TestClient(app) as client:
@@ -144,7 +143,7 @@ def test_health_and_private_writes_refuse_missing_storage_without_creating_datab
 
 
 def test_health_detects_removed_schema_without_repair(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     app = create_app(tmp_path / "store", enable_scheduler=False)
     with app.state.service.db.transaction() as conn:
@@ -156,7 +155,7 @@ def test_health_detects_removed_schema_without_repair(tmp_path):
 
 
 def test_existing_app_mode_rejects_missing_directory_before_service_initialization(tmp_path, monkeypatch):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     root = tmp_path / "missing"
     monkeypatch.setenv("TEA_REQUIRE_EXISTING_DATA", "true")
@@ -166,7 +165,7 @@ def test_existing_app_mode_rejects_missing_directory_before_service_initializati
 
 
 def test_existing_app_mode_reopens_existing_database_and_rejects_invalid_setting(tmp_path, monkeypatch):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     root = tmp_path / "store"
     first = create_app(root, enable_scheduler=False)

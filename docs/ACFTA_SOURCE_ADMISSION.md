@@ -1,6 +1,6 @@
 # ACFTA 精确原件来源准入
 
-`backend/app/system_library.py` 的 `_PLAN_ORIGINAL_URLS` 增加 54 个“国家＋完整 HTTPS URL”映射（53 个不同 URL）：Enterprise Singapore 向 ID 提供的 51 份 ACFTA 原件，以及 ASEAN 条约站的 3 个国别映射。ID 共 52 项、SG 共 2 项；不开放整个 Enterprise Singapore 域给 ID，也不开放 `dev.agreement.asean.org` 的主机、目录或其他文件。SG 已有 `.gov.sg` 来源规则保持原行为。
+`backend/app/contexts/knowledge/application/system_library.py` 的 `_PLAN_ORIGINAL_URLS` 增加 54 个“国家＋完整 HTTPS URL”映射（53 个不同 URL）：Enterprise Singapore 向 ID 提供的 51 份 ACFTA 原件，以及 ASEAN 条约站的 3 个国别映射。ID 共 52 项、SG 共 2 项；不开放整个 Enterprise Singapore 域给 ID，也不开放 `dev.agreement.asean.org` 的主机、目录或其他文件。SG 已有 `.gov.sg` 来源规则保持原行为。
 
 这是来源身份准入。查询串、片段、端口写法、路径大小写／编码、邻近文件、认证信息和其他重定向入口不会继承这份精确列表；HTTPS、公网 DNS、重定向、超时和大小校验仍由现有下载门禁执行。代码不按本表的历史 SHA 或材料级别冻结文件：同一已准入 URL 后续返回的新原件仍须按既有获取收据、不可变版本、哈希、分类和审核流程保存。新增 URL 仍需单独核验。准入不会批准法律效力、完成正文／OCR、生成向量，或改变草稿、审核人、适用期与版本关系。
 

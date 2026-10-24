@@ -4,11 +4,11 @@ import importlib
 import json
 import sys
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 health = importlib.import_module("source_health")
 

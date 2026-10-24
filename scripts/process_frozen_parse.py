@@ -34,7 +34,7 @@ def digest(value):
 
 
 def document_progress(manifest):
-    from app.ingestion_quality import pdf_page_status, text_complete
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
 
     pages = manifest.get("pages", [])
     return {
@@ -141,7 +141,9 @@ def hold_previous_ambiguous_page(page):
     metadata = page.get("ocr", {})
     if page.get("status") != "pending_ocr" or not ambiguous_http_outcome(metadata.get("http_status")):
         return None
-    from app.ocr_error_evidence import preserve_previous_page_attempt
+    from app.contexts.knowledge.infrastructure.recovery.ocr_error_evidence import (
+        preserve_previous_page_attempt,
+    )
 
     updated = deepcopy(page)
     preserve_previous_page_attempt(updated)
@@ -248,12 +250,7 @@ def main():
     os.umask(0o077)
     args.data_dir = args.data_dir.resolve()
     args.snapshot = args.snapshot.resolve(strict=True)
-    from frozen_parse_supervisor import (
-        acquire_parse_lock,
-        classify_document,
-        supervise,
-        verify_child_binding,
-    )
+    from frozen_parse_supervisor import acquire_parse_lock, classify_document, supervise, verify_child_binding
 
     if args.supervise:
         return supervise(args, Path(__file__))
@@ -275,9 +272,12 @@ def main():
         TEA_PROCESS_WORKERS="32",
         TEA_PARSE_WORKERS="8",
     )
-    from app import ingestion, parsing, vision
-    from app.ingestion_quality import pdf_page_status, text_complete
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
+    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+    from app.contexts.knowledge.infrastructure.providers import vision as vision
+    from app.shared.infrastructure.http import download as ingestion_download
 
     parsing._OCR_SLOTS = parsing._VisionSlots(initial_target=args.ocr_start_workers)
     if not vision.vision_ocr_configured():
@@ -296,8 +296,8 @@ def main():
     def forbidden(*_args, **_kwargs):
         raise RuntimeError("Frozen parse runner cannot call embedding or download")
 
-    ingestion.embed_texts = forbidden
-    ingestion.download = forbidden
+    ingestion_embedding.embed_texts = forbidden
+    ingestion_download._download = forbidden
     service = Service(args.data_dir)
     service.collection.fetch_item = forbidden
     stop = Event()

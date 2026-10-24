@@ -106,8 +106,8 @@ def load_success_guard(snapshot, binding):
 
 def classify_document(row, manifest, timestamp):
     """Only already-authorized queued/expired parse work can be resumed."""
-    from app.collection_recovery import classify_processing
-    from app.ingestion_quality import pdf_page_status, text_complete
+    from app.contexts.collection.application.collection_recovery import classify_processing
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
 
     decision = classify_processing(manifest, phase="parse", retryable=True)
     if decision.reason == "paid_result_unknown":
@@ -146,7 +146,7 @@ def classify_document(row, manifest, timestamp):
 
 
 def inspect_scope(args, initial, selected, success_guard):
-    from app.ingestion_quality import pdf_page_status
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status
     from process_frozen_parse import digest, inspect_frozen_document
 
     observed, accepted = {}, {}
@@ -280,7 +280,7 @@ def completed_window(args, binding, selected, run_id):
 
 
 def supervise(args, runner):
-    from app.embedding_admission import process_identity
+    from app.contexts.knowledge.infrastructure.providers.embedding_admission import process_identity
     from process_frozen_parse import digest
 
     with (args.snapshot / ".parse-supervisor.lock").open("a") as supervisor_lock:
@@ -411,7 +411,7 @@ def supervise(args, runner):
                 try:
                     observed, accepted = inspect_scope(args, initial, selected, success_guard)
                 except sqlite3.OperationalError as exc:
-                    from app.collection import _storage_busy
+                    from app.contexts.collection.application.collection import _storage_busy
 
                     if not _storage_busy(exc):
                         raise

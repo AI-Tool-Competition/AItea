@@ -3,16 +3,19 @@
 import hashlib
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
-from official_source_supervisor_recovery import identity, write  # noqa: E402
+from app.paths import PROJECT_ROOT
 
+ROOT = PROJECT_ROOT
+sys.path.insert(0, str(ROOT / "scripts"))
+from official_source_supervisor_recovery import (  # noqa: E402
+    identity,
+    write,
+)
 
 CHILD = r"""
 from datetime import UTC, datetime
@@ -23,7 +26,7 @@ from urllib.parse import urlsplit
 repository, project, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 sys.path[:0] = [str(repository / "scripts"), str(repository / "backend")]
 import unattended_collection as collection
-from app.service import Service
+from app.bootstrap import Service
 from official_source_supervisor_recovery import identity, lock, write
 
 base = datetime(2026, 10, 20, 12, tzinfo=UTC).timestamp()

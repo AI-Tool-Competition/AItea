@@ -4,18 +4,18 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from datetime import UTC, datetime
 import json
 import math
 import os
-from pathlib import Path
 import shutil
 import signal
 import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 
 from official_source_supervisor_recovery import (
     RecoveryDeferred,
@@ -81,7 +81,7 @@ def bindings():
         "config/collection-plans/indonesia-20261003.json",
         "config/collection-plans/singapore-demo-20261009.json",
     ]
-    names += [str(path.relative_to(ROOT)) for path in sorted((ROOT / "backend/app").glob("*.py"))]
+    names += [str(path.relative_to(ROOT)) for path in sorted((ROOT / "backend/app").rglob("*.py"))]
     return {name: digest(ROOT / name) for name in names}
 
 

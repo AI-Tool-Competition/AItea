@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        from app.page_checkpoint_recovery import (
+        from app.contexts.knowledge.infrastructure.recovery.page_checkpoint_recovery import (
             _document,
             apply_page_checkpoint,
             isolated_directory,
@@ -41,7 +41,9 @@ def main():
         if args.action == "prepare":
             if args.apply:
                 raise ValueError("prepare_returns_checkpoint_only_no_database_writes")
-            from app.ocr_page_retry import prepare_physical_page_retry
+            from app.contexts.knowledge.infrastructure.recovery.ocr_page_retry import (
+                prepare_physical_page_retry,
+            )
 
             with sqlite3.connect((directory / "tea.sqlite3").as_uri() + "?mode=ro", uri=True) as conn:
                 conn.row_factory = sqlite3.Row
@@ -80,7 +82,7 @@ def main():
                 page_hashes[int(number)] = digest
             service = readonly_service(directory)
             if args.apply:
-                from app.service import Service
+                from app.bootstrap import Service
 
                 service = Service(directory)
             report = quarantine_scope_pages(
@@ -104,7 +106,7 @@ def main():
                 configure_models(args.models_env)
             service = readonly_service(directory)
             if args.apply:
-                from app.service import Service
+                from app.bootstrap import Service
 
                 service = Service(directory)
 

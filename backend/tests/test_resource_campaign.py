@@ -1,16 +1,17 @@
 """Campaigns preserve exact submissions and pipeline independent categories."""
 
-from contextlib import closing
-from copy import deepcopy
 import json
-from pathlib import Path
 import subprocess
 import sys
+from contextlib import closing
+from copy import deepcopy
+from pathlib import Path
 
 import pytest
-
-from app.resource_campaign import ResourceCampaign
-from app.service import Service
+from app.bootstrap import Service
+from app.contexts.collection.application.resource_campaign import ResourceCampaign
+from app.paths import PROJECT_ROOT
+from app.shared.infrastructure.http import download as ingestion_download
 
 PLAN = "indonesia-20261003"
 
@@ -50,7 +51,6 @@ def test_restart_after_transaction_before_checkpoint_reuses_the_same_run(tmp_pat
 
 
 def test_fast_category_starts_original_while_slow_category_is_still_discovering(tmp_path, monkeypatch):
-    from app import ingestion
 
     service = Service(tmp_path)
     campaign = ResourceCampaign(service, PLAN, options("1.1", "5.3"))
@@ -67,7 +67,7 @@ def test_fast_category_starts_original_while_slow_category_is_still_discovering(
             "blob": consume(iter([body])),
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     # Keep the other source's claimed network jobs alive while completing the
     # two fast discovery seeds. No global discovery barrier is allowed.
     for _ in range(8):
@@ -221,10 +221,10 @@ def test_claims_rotate_runs_on_a_shared_host_and_keep_connection_limits(tmp_path
     first = service.collection.claim_fetch()
     assert first["run_id"] == runs[0]["id"]
     assert service.collection.claim_fetch() is None  # Active physical job's host still counts.
-    from app import ingestion
+    from app.shared.infrastructure.http import download as ingestion_download
 
     monkeypatch.setattr(
-        ingestion,
+        ingestion_download,
         "_download",
         lambda url, consume, **kw: {
             "url": url,
@@ -246,7 +246,7 @@ def test_claims_rotate_runs_on_a_shared_host_and_keep_connection_limits(tmp_path
 
 
 def test_cli_preserves_nonempty_output_and_resumes_an_owned_campaign(tmp_path):
-    script = Path(__file__).resolve().parents[2] / "scripts/collect_resources.py"
+    script = PROJECT_ROOT / "scripts/collect_resources.py"
     output = tmp_path / "existing"
     output.mkdir()
     untouched = output / "user.txt"

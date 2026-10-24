@@ -27,7 +27,7 @@ from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDER_PREFIXES = ("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_")
+PROVIDER_PREFIXES = ("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_", "MINERU_", "RAGFLOW_")
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
@@ -129,6 +129,14 @@ def configure_models(models_env):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             os.environ[f"{prefix}_{field}"] = ""
     os.environ["VISION_OCR_ENABLED"] = "false"
+    for key in (
+        "MINERU_API_TOKEN",
+        "RAGFLOW_BASE_URL",
+        "RAGFLOW_API_KEY",
+        "RAGFLOW_EMBEDDING_MODEL",
+        "RAGFLOW_RERANK_MODEL",
+    ):
+        os.environ[key] = ""
     if models_env:
         from dotenv import dotenv_values
 
@@ -141,12 +149,12 @@ def configure_models(models_env):
 def run_verification(plan, output, models_env):
     sys.path.insert(0, str(ROOT / "backend"))
     configure_models(models_env)
-    from app.archive_inventory import export_inventory
-    from app.catalog import MetadataPatch
-    from app.collection import CollectionWorkers
-    from app.db import now, uid
-    from app.ingestion_quality import text_complete
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.contexts.collection.application.collection import CollectionWorkers
+    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
+    from app.contexts.knowledge.domain.metadata import MetadataPatch
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+    from app.shared.domain.values import now, uid
 
     started = time.monotonic()
     report = {
@@ -154,11 +162,18 @@ def run_verification(plan, output, models_env):
         "legal_review": "isolated_demo_only_not_legal_approval",
         "country": plan["country"],
         "live_models": bool(models_env),
+        "validation_scope": "ingestion_and_remote_retrieval" if models_env else "ingestion_only",
+        "retrieval_verified": False,
         "samples": [],
         "queries": [],
         "gates": {},
         "started_at": now(),
     }
+    if models_env:
+        from app.contexts.knowledge.infrastructure.providers.ragflow import configured
+
+        if not configured():
+            raise ValueError("live verification requires explicit RAGFlow configuration")
     service = Service(output)
     owner = uid()
     with service.db.transaction() as conn:
@@ -307,13 +322,15 @@ def run_verification(plan, output, models_env):
             document = dict(service.own_document(conn, owner, identifier))
             manifest = json.loads(document["manifest"])
             vectors = conn.execute(
-                "SELECT COUNT(*) FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
+                "SELECT COUNT(*) FROM ragflow_chunks c JOIN ragflow_documents d ON d.generation=c.generation WHERE d.document_id=? AND c.state='done'",
                 (identifier,),
             ).fetchone()[0]
             current_vectors = conn.execute(
-                """SELECT COUNT(*) FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid
-                WHERE c.document_id=? AND v.fingerprint=? AND v.input_hash=c.input_hash""",
-                (identifier, service.embedding_fingerprint()),
+                """SELECT COUNT(*) FROM ragflow_chunks c JOIN ragflow_documents d ON d.generation=c.generation
+                JOIN retrieval_documents r ON r.document_id=d.document_id
+                WHERE d.document_id=? AND d.profile=? AND d.source_hash=? AND d.source_version=?
+                AND d.index_revision=r.revision AND c.state='done'""",
+                (identifier, service.embedding_fingerprint(), document["content_hash"], document["version"]),
             ).fetchone()[0]
             relation_targets = conn.execute(
                 "SELECT source_document_id FROM legal_relations WHERE target_document_id=? AND owner_id=? AND collection=?",
@@ -500,13 +517,18 @@ def run_verification(plan, output, models_env):
             for state in states.values()
         )
         and all(
-            result["expected_recalled"]
-            and (not models_env or result["mode"] == "hybrid")
-            and result["restart_consistent"]
-            and result["restart_expected_recalled"]
+            result["restart_consistent"]
+            and (
+                result["expected_recalled"]
+                and result["restart_expected_recalled"]
+                and result["mode"] == "ragflow"
+                if models_env
+                else result["mode"] == result["restart"]["mode"] == "unavailable"
+            )
             for result in report["queries"]
         )
     )
+    report["retrieval_verified"] = bool(models_env) and passed and bool(report["queries"])
     report["status"] = "passed" if passed else "failed"
     checkpoint()
     return passed

@@ -1,18 +1,18 @@
 """Durability and domain contracts for streaming legal collection."""
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from threading import Event
-from concurrent.futures import ThreadPoolExecutor
-import time
 
 import pytest
-from fastapi.testclient import TestClient
-
 from admin_helpers import grant_admin, login_admin
-
-from app.main import create_app
-from app.service import Service
+from app.bootstrap import Service
+from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+from app.interfaces.http.factory import create_app
+from app.shared.infrastructure.http import download as ingestion_download
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture
@@ -50,7 +50,6 @@ def upload(client, name="main.txt", body=b"tea export requirements"):
 
 
 def downloader(monkeypatch, payload=b"tea export requirements", before=None):
-    from app import ingestion
 
     def download(url, *, consume, **kwargs):
         if before:
@@ -64,7 +63,7 @@ def downloader(monkeypatch, payload=b"tea export requirements", before=None):
             "last_modified": None,
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
 
 
 def test_submit_is_durable_idempotent_and_owner_scoped(client, tmp_path):
@@ -158,9 +157,8 @@ def test_secondary_law_is_textified_and_many_to_many_but_not_indexed(client, mon
     run(client, src["id"])
     collection = client.app.state.service.collection
     collection.fetch_item(collection.claim_fetch())
-    from app import ingestion
 
-    monkeypatch.setattr(ingestion, "embed_texts", lambda _: pytest.fail("secondary law embedded"))
+    monkeypatch.setattr(ingestion_embedding, "embed_texts", lambda _: pytest.fail("secondary law embedded"))
     collection.process_item(collection.claim_processing())
     doc = client.get("/api/tea/documents").json()["items"][0]
     assert doc["legal_level"] == "secondary" and doc["chunk_count"] > 0
@@ -205,7 +203,8 @@ def test_expired_claim_can_resume_but_old_worker_cannot_commit(client, monkeypat
 
 
 def test_migration_preserves_existing_document_and_is_idempotent(tmp_path):
-    from app.db import Database, now
+    from app.shared.domain.values import now
+    from app.shared.infrastructure.db import Database
 
     db = Database(tmp_path)
     original = db.files_dir / "old-file"
@@ -244,36 +243,8 @@ def test_migration_preserves_existing_document_and_is_idempotent(tmp_path):
     assert list(Path(tmp_path).glob("files/old-file"))
 
 
-def test_secondary_reused_as_primary_gets_index_without_reparse(client, monkeypatch):
-    main = upload(client)
-    secondary = source(client, level="secondary", primary_document_ids=[main["id"]])
-    downloader(monkeypatch)
-    run(client, secondary["id"])
-    collection = client.app.state.service.collection
-    collection.fetch_item(collection.claim_fetch())
-    collection.process_item(collection.claim_processing())
-    doc = client.get("/api/tea/documents").json()["items"][0]
-    from app import ingestion, parsing
-
-    monkeypatch.setattr(parsing, "parse_bounded", lambda *a, **kw: pytest.fail("reparsed unchanged original"))
-    monkeypatch.setattr(collection.service, "embedding_fingerprint", lambda: "configured")
-    calls = []
-    monkeypatch.setattr(
-        ingestion, "embed_texts", lambda texts: calls.append(texts) or [[1.0, 0.0] for _ in texts]
-    )
-    primary = source(client, collection="SG")
-    run(client, primary["id"], "promoted")
-    collection.fetch_item(collection.claim_fetch())
-    collection.process_item(collection.claim_processing())
-    collection.process_item(collection.claim_processing())
-    assert len(calls) == 1
-    assert client.get("/api/tea/documents").json()["total"] == 2
-    assert client.get(f"/api/tea/documents/{doc['id']}").json()["document"]["legal_level"] == "primary"
-
-
 def test_empty_retry_keeps_partial_terminal_state(client, monkeypatch):
     src = source(client, max_items=1, discover_attachments=True)
-    from app import ingestion
 
     def download(url, *, consume, **kwargs):
         return {
@@ -283,7 +254,7 @@ def test_empty_retry_keeps_partial_terminal_state(client, monkeypatch):
             "blob": consume(iter([b'<p>tea law</p><a href="attachment.txt">attachment</a>'])),
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     job = run(client, src["id"])
     collection = client.app.state.service.collection
     collection.fetch_item(collection.claim_fetch())
@@ -299,7 +270,8 @@ def test_empty_retry_keeps_partial_terminal_state(client, monkeypatch):
 
 def test_coordinator_recovers_after_transient_database_error(client, monkeypatch):
     import sqlite3
-    from app.collection import CollectionWorkers
+
+    from app.contexts.collection.application.collection import CollectionWorkers
 
     collection = client.app.state.service.collection
     attempted, recovered = Event(), Event()
@@ -321,50 +293,10 @@ def test_coordinator_recovers_after_transient_database_error(client, monkeypatch
         worker.stop()
 
 
-def test_secondary_promoted_to_relation_anchor_is_indexed(client, monkeypatch):
-    main = upload(client)
-    src = source(client, level="secondary", primary_document_ids=[main["id"]])
-    downloader(monkeypatch)
-    collection = client.app.state.service.collection
-    run(client, src["id"])
-    collection.fetch_item(collection.claim_fetch())
-    collection.process_item(collection.claim_processing())
-    anchor = client.get("/api/tea/documents").json()["items"][0]
-    target = upload(client, "related.txt")
-    client.patch(
-        f"/api/tea/documents/{target['id']}/classification",
-        json={
-            "collection": "SG",
-            "level": "secondary",
-            "tags": [],
-            "expected_revision": 0,
-        },
-    ).raise_for_status()
-    from app import ingestion, parsing
-
-    monkeypatch.setattr(collection.service, "embedding_fingerprint", lambda: "current")
-    calls = []
-    monkeypatch.setattr(ingestion, "embed_texts", lambda texts: calls.append(texts) or [[1.0] for _ in texts])
-    monkeypatch.setattr(parsing, "parse_bounded", lambda *a, **kw: pytest.fail("reparsed anchor"))
-    response = client.post(
-        f"/api/tea/documents/{anchor['id']}/relations",
-        json={
-            "collection": "SG",
-            "target_document_id": target["id"],
-            "relation": "related",
-            "locator": "",
-        },
-    )
-    assert response.status_code == 201, response.text
-    while claim := collection.claim_processing():
-        collection.process_item(claim)
-    assert len(calls) == 1
-
-
 def test_cancelled_download_keeps_physical_host_slot_until_connection_exits(client, monkeypatch):
-    from app import ingestion
-    from urllib.parse import urlsplit
+
     from threading import Lock
+    from urllib.parse import urlsplit
 
     src = source(client)
     collection = client.app.state.service.collection
@@ -399,7 +331,7 @@ def test_cancelled_download_keeps_physical_host_slot_until_connection_exits(clie
                 with lock:
                     active -= 1
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     with ThreadPoolExecutor(max_workers=2) as pool:
         original = pool.submit(collection.fetch_item, collection.claim_fetch())
         try:
@@ -467,18 +399,17 @@ def test_progress_does_not_conflict_with_cancel_but_retry_creates_new_control_re
 
 @pytest.mark.parametrize("delay", [180, 900])
 def test_retry_after_cools_actual_redirect_host(client, monkeypatch, delay):
-    from app import ingestion
 
     src = source(client)
     run(client, src["id"])
     collection = client.app.state.service.collection
 
     def unavailable(*a, **kw):
-        raise ingestion.DownloadError(
+        raise ingestion_download.DownloadError(
             "limited", retryable=True, retry_after=delay, response_host="limited.example"
         )
 
-    monkeypatch.setattr(ingestion, "_download", unavailable)
+    monkeypatch.setattr(ingestion_download, "_download", unavailable)
     started = time.time()
     claim = collection.claim_fetch()
     collection.fetch_item(claim)
@@ -491,8 +422,10 @@ def test_retry_after_cools_actual_redirect_host(client, monkeypatch, delay):
     assert collection.claim_fetch() is None
 
 
-def test_promotion_during_parsing_queues_index_using_current_classification(client, monkeypatch):
-    from app import ingestion, parsing
+def test_promotion_during_parsing_queues_index_using_current_classification(
+    client, monkeypatch, ragflow_library
+):
+    from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
 
     main = upload(client)
     src = source(client, level="secondary", primary_document_ids=[main["id"]])
@@ -509,14 +442,12 @@ def test_promotion_during_parsing_queues_index_using_current_classification(clie
         assert release.wait(5)
         return parse(*args, **kwargs)
 
-    calls = []
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
     monkeypatch.setattr(parsing, "parse_bounded", slow_parse)
-    monkeypatch.setattr(collection.service, "embedding_fingerprint", lambda: "configured")
-    monkeypatch.setattr(
-        ingestion, "embed_texts", lambda texts: calls.append(texts) or [[1.0, 0.0] for _ in texts]
-    )
     with ThreadPoolExecutor(max_workers=1) as pool:
-        processing = pool.submit(collection.process_item, collection.claim_processing())
+        processing = pool.submit(
+            collection.process_item, collection.claim_processing(owner_id=owner, document_ids=[doc["id"]])
+        )
         try:
             assert started.wait(3)
             response = client.patch(
@@ -527,8 +458,18 @@ def test_promotion_during_parsing_queues_index_using_current_classification(clie
         finally:
             release.set()
         processing.result(timeout=5)
-    queued = collection.claim_processing()
+    queued = collection.claim_processing(owner_id=owner, document_ids=[doc["id"]])
     assert queued is not None and queued["phase"] == "embed"
-    collection.process_item(queued)
-    assert len(calls) == 1
-    assert collection.claim_processing() is None
+    for _ in range(8):
+        collection.process_item(queued)
+        queued = collection.claim_processing(owner_id=owner, document_ids=[doc["id"]])
+        if queued is None:
+            break
+    assert queued is None
+    with closing(collection.db.connect()) as conn:
+        assert (
+            conn.execute("SELECT state FROM ragflow_documents WHERE document_id=?", (doc["id"],)).fetchone()[
+                0
+            ]
+            == "ready"
+        )

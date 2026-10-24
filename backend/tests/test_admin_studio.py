@@ -4,14 +4,12 @@ import json
 from contextlib import closing
 
 import pytest
+from admin_helpers import grant_admin, login_admin
+from app.bootstrap import Service
+from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
 
-from admin_helpers import grant_admin, login_admin
-
-from app.main import create_app
-from app.service import Service
-
-pytestmark = pytest.mark.usefixtures("sample_workflow")
+pytestmark = pytest.mark.usefixtures("sample_workflow", "ragflow_library")
 
 
 @pytest.fixture
@@ -224,8 +222,9 @@ def test_document_filters_and_paginated_structure_do_not_expose_embeddings(clien
 
 
 def test_studio_migration_preserves_existing_database(tmp_path):
-    from app.catalog import LegalCatalog
-    from app.db import Database, now
+    from app.contexts.knowledge.infrastructure.catalog import LegalCatalog
+    from app.shared.domain.values import now
+    from app.shared.infrastructure.db import Database
 
     db = Database(tmp_path)
     LegalCatalog(db)
@@ -341,39 +340,6 @@ def test_failed_analysis_is_visible_and_only_explicit_retry_calls_provider(clien
     assert case(client)["revision"] == value["revision"]
 
 
-def test_analysis_cache_expires_when_same_model_finishes_document_vectors(client, monkeypatch):
-    from app import ingestion
-
-    for field, item in {
-        "BASE_URL": "https://embedding.invalid",
-        "API_KEY": "test",
-        "MODEL": "fixed-model",
-    }.items():
-        monkeypatch.setenv("EMBEDDING_" + field, item)
-
-    def unavailable(texts):
-        raise ValueError("provider temporarily unavailable")
-
-    monkeypatch.setattr(ingestion, "embed_texts", unavailable)
-    document = client.post(
-        "/api/tea/documents", files={"file": ("材料.txt", "企业茶叶资料".encode(), "text/plain")}
-    ).json()
-    value = case(client)
-    payload = {"expected_revision": value["revision"]}
-    first = client.post(analysis_url(value), json=payload).json()
-    service = client.app.state.service
-    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
-    monkeypatch.setattr(ingestion, "embed_texts", lambda texts: [[1.0, 0.5] for _ in texts])
-    with service.db.transaction() as conn:
-        service.collection.queue_processing(conn, document["id"], owner)
-    for _ in range(3):
-        if claim := service.collection.claim_processing():
-            service.collection.process_item(claim)
-    second = client.post(analysis_url(value), json=payload).json()
-    assert second["id"] != first["id"]
-    assert client.post(analysis_url(value), json=payload).json()["id"] == second["id"]
-
-
 def test_legal_and_stage_caches_expire_when_reranker_configuration_changes(client, monkeypatch):
     value = case(client)
     service = client.app.state.service
@@ -387,22 +353,15 @@ def test_legal_and_stage_caches_expire_when_reranker_configuration_changes(clien
             )
 
     initial = fingerprints()
-    monkeypatch.setenv("RERANK_BASE_URL", "https://rank.example/v1")
-    monkeypatch.setenv("RERANK_MODEL", "rank-1")
-    partial = fingerprints()
-    assert all(a != b for a, b in zip(initial, partial, strict=True))
-    monkeypatch.setenv("RERANK_API_KEY", "private-test-key")
+    monkeypatch.setenv("RAGFLOW_RERANK_MODEL", "rank-1")
     enabled = fingerprints()
-    assert all(a != b for a, b in zip(partial, enabled, strict=True))
-    monkeypatch.setenv("RERANK_API_KEY", "rotated-private-test-key")
-    rotated = fingerprints()
-    assert all(a != b for a, b in zip(enabled, rotated, strict=True))
-    assert fingerprints() == rotated
-    monkeypatch.setenv("RERANK_MODEL", "rank-2")
-    changed_model = fingerprints()
-    assert all(a != b for a, b in zip(rotated, changed_model, strict=True))
-    monkeypatch.delenv("RERANK_API_KEY")
-    assert all(a != b for a, b in zip(changed_model, fingerprints(), strict=True))
+    assert all(a != b for a, b in zip(initial, enabled, strict=True))
+    assert fingerprints() == enabled
+    monkeypatch.setenv("RAGFLOW_RERANK_MODEL", "rank-2")
+    changed = fingerprints()
+    assert all(a != b for a, b in zip(enabled, changed, strict=True))
+    monkeypatch.setenv("RAGFLOW_RERANK_MODEL", "")
+    assert fingerprints() == initial
 
 
 def test_analysis_claim_prevents_duplicate_provider_calls_without_holding_write_lock(client, monkeypatch):
@@ -569,8 +528,9 @@ def test_debug_rejects_numbers_outside_finite_range(client):
 
 def test_slow_stream_cannot_extend_model_generation_indefinitely(client, monkeypatch):
     import asyncio
+
+    import app.contexts.conversation.application.assistant as assistant
     import httpx
-    import app.assistant as assistant
 
     value = template(client)
     value["agent"] = agent("guide")

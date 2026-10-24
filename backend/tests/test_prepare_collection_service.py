@@ -1,13 +1,14 @@
 """Preparing unattended collection preserves existing operational configuration."""
 
 import importlib
-from pathlib import Path
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 prepare = importlib.import_module("prepare_collection_service")
 

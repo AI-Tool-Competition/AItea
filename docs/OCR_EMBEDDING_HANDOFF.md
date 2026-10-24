@@ -59,7 +59,7 @@ uv run --project /absolute/project/backend python \
 
 必须提供一个 `legacy_fixed` 和至少一个 `prior_handoff`。每份 plan 沿用 `fixed-embedding-continuation-v1`，文档附实际 `chunk_count`。输入清单协议为 `fixed-embedding-input-inventory-v1`，包含 `plan_sha256`、`plan_digest`、`documents`（ID 到完整 chunk 列表）及 `unique_inputs_sha256`。每个 chunk 至少有连续从 0 开始的 `ordinal` 和实际 `input_hash`；生成的交接清单还保留 `chunk_id`、retrieval text SHA、locator SHA。`plan_digest` 和输入集合摘要均用现有 `complete_embeddings.digest` 计算，输入集合先去重再排序。
 
-旧计划输入清单必须是全部固定输入，不是当前缺失行、成功缓存或未知集合的子集。运维生成清单时须核对原计划文档、manifest/retrieval chunks 及 `app.retrieval.input_hash`；脚本检查完整文档集合、逐文档行数/顺序、绑定摘要，缺证据就阻挡。现有未版本化的摘要报告不能直接冒充这份完整清单。
+旧计划输入清单必须是全部固定输入，不是当前缺失行、成功缓存或未知集合的子集。运维生成清单时须核对原计划文档、manifest/retrieval chunks 及 `app.contexts.knowledge.application.retrieval.input_hash`；脚本检查完整文档集合、逐文档行数/顺序、绑定摘要，缺证据就阻挡。现有未版本化的摘要报告不能直接冒充这份完整清单。
 
 OCR holds/history 复用已有报告结构：合并 current_records、historical_records、historical_paid_missing_records、historical_paid_missing_document_ids、additional_document_holds，并核对预期唯一 ID 数。正文当前看似完整不能清除历史未知或缺失付费结果。所有旧计划文档、全部旧输入和 holds 都排除；单个输入冲突时整份候选 deferred。
 

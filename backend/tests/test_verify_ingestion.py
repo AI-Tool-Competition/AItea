@@ -1,12 +1,13 @@
 """The opt-in verifier never touches a populated data directory or implicit model keys."""
 
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
+from app.paths import PROJECT_ROOT
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts/verify_ingestion.py"
+SCRIPT = PROJECT_ROOT / "scripts/verify_ingestion.py"
 
 
 def invoke(tmp_path, plan, *options):
@@ -39,11 +40,13 @@ def test_local_verification_exercises_dedup_restart_and_tier_gates(tmp_path):
     assert report["status"] == "passed"
     assert report["legal_review"] == "isolated_demo_only_not_legal_approval"
     assert all(sample["duplicate_same_document"] for sample in report["samples"])
-    assert report["queries"][0]["expected_recalled"]
+    assert report["validation_scope"] == "ingestion_only"
+    assert report["retrieval_verified"] is False
+    assert report["queries"][0]["expected_recalled"] is False
     assert report["queries"][0]["restart_consistent"]
     assert report["queries"][0]["restart"]["hits"] == report["queries"][0]["hits"]
-    assert report["queries"][0]["restart"]["mode"] == "lexical"
-    assert report["queries"][0]["restart"]["warning"] is None
+    assert report["queries"][0]["restart"]["mode"] == "unavailable"
+    assert "RAGFlow" in report["queries"][0]["restart"]["warning"]
     assert report["queries"][0]["restart"]["reranked"] is False
     assert (
         report["gates"]["draft_excluded"]
@@ -113,6 +116,14 @@ def test_disabled_models_cannot_be_restored_by_later_dotenv_imports(tmp_path):
         for prefix in ("LLM", "EMBEDDING", "RERANK", "VISION_OCR")
         for field in ("BASE_URL", "API_KEY", "MODEL")
     }
+    values.update(
+        {
+            "MINERU_API_TOKEN": "explicit-test-value",
+            "RAGFLOW_BASE_URL": "http://127.0.0.1:19380",
+            "RAGFLOW_API_KEY": "explicit-test-value",
+            "RAGFLOW_EMBEDDING_MODEL": "fixture",
+        }
+    )
     values["VISION_OCR_ENABLED"] = "true"
     configuration.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
     code = """
@@ -126,6 +137,7 @@ for prefix in ('LLM', 'EMBEDDING', 'RERANK', 'VISION_OCR'):
     for field in ('BASE_URL', 'API_KEY', 'MODEL'):
         assert os.environ[prefix + '_' + field] == ''
 assert os.environ['VISION_OCR_ENABLED'] == 'false'
+assert os.environ['MINERU_API_TOKEN'] == os.environ['RAGFLOW_API_KEY'] == ''
 configure_models(sys.argv[2])
 assert os.environ['EMBEDDING_API_KEY'] == 'explicit-test-value'
 assert os.environ['VISION_OCR_ENABLED'] == 'true'

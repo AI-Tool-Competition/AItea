@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from official_source_supervisor_recovery import load, lock, write
-from unattended_collection import source_pool
+from official_source_supervisor_recovery import load, lock, write  # noqa: E402
+from unattended_collection import source_pool  # noqa: E402
 
 
 def digest(path: Path) -> str:
@@ -49,9 +49,9 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
     )
     for source_id, prior in old_sources.items():
         updated = new_sources[source_id]
-        if any(prior.get(key) != updated.get(key) for key in protected) or prior.get(
-            "verification", {}
-        ).get("checklist_items", []) != updated.get("verification", {}).get("checklist_items", []):
+        if any(prior.get(key) != updated.get(key) for key in protected) or prior.get("verification", {}).get(
+            "checklist_items", []
+        ) != updated.get("verification", {}).get("checklist_items", []):
             raise ValueError("Pool migration cannot change a source's reviewed network/document scope")
 
     state_path = root / "state.json"

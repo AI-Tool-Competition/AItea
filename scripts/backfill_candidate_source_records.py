@@ -12,9 +12,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 
 def main(argv=None):
-    from app.blob_store import BlobStore
-    from app.checklists import ChecklistService
-    from app.db import Database
+    from app.contexts.collection.application.checklists import ChecklistService
+    from app.shared.infrastructure.blob_store import BlobStore
+    from app.shared.infrastructure.db import Database
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")

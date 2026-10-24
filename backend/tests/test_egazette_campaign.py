@@ -1,18 +1,18 @@
 """Durable directory resume, honest source counts and bounded original reuse."""
 
-from concurrent.futures import ThreadPoolExecutor
-from hashlib import sha256
 import importlib.util
 import json
-from pathlib import Path
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+from pathlib import Path
 
 import pytest
+from app.paths import PROJECT_ROOT
+from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 
-from app.public_search import EGazetteSearchRequest
-
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 spec = importlib.util.spec_from_file_location("collect_egazette", ROOT / "scripts/collect_egazette.py")
 campaign = importlib.util.module_from_spec(spec)
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -260,7 +260,7 @@ def test_originals_reserve_disk_free_floor_before_network_transfer(tmp_path, mon
 
 
 def test_retry_after_persists_host_cooldown_and_prevents_new_requests_on_resume(tmp_path, monkeypatch):
-    from app.ingestion import DownloadError
+    from app.shared.infrastructure.http.download import DownloadError
 
     calls = []
 
@@ -310,9 +310,9 @@ def staged_fixture(tmp_path, monkeypatch, *, title=None):
 def test_acquired_original_stages_idempotent_parse_job_and_transferable_source_evidence(
     tmp_path, monkeypatch
 ):
-    from app.collection_import import import_collected_resources
-    from app.service import Service
-    from app.system_library import SYSTEM_OWNER_ID, ensure_principal
+    from app.bootstrap import Service
+    from app.contexts.collection.application.collection_import import import_collected_resources
+    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 
     source = tmp_path / "source"
     source.mkdir()
@@ -353,7 +353,7 @@ def test_acquired_original_stages_idempotent_parse_job_and_transferable_source_e
 def test_standalone_reference_publications_are_textual_secondary_sources(
     tmp_path, monkeypatch, title, document_type
 ):
-    from app.service import Service
+    from app.bootstrap import Service
 
     runner, rows, raw = staged_fixture(tmp_path, monkeypatch, title=title)
     runner.stage_originals(rows)
@@ -379,7 +379,7 @@ def test_standalone_reference_publications_are_textual_secondary_sources(
 
 
 def test_staging_refuses_to_silently_reclassify_an_existing_reference_publication(tmp_path, monkeypatch):
-    from app.service import Service
+    from app.bootstrap import Service
 
     title = "The Statutes of the Republic of Singapore - Subject Index to Acts"
     runner, rows, _ = staged_fixture(tmp_path, monkeypatch, title=title)
@@ -390,7 +390,7 @@ def test_staging_refuses_to_silently_reclassify_an_existing_reference_publicatio
     with service.db.connect() as conn:
         before = dict(conn.execute("SELECT * FROM documents").fetchone())
     monkeypatch.setattr(campaign, "publication_classification", classify)
-    from app.service import AppError
+    from app.shared.domain.errors import AppError
 
     with pytest.raises(AppError) as error:
         runner.stage_originals(rows)
@@ -417,7 +417,7 @@ def test_original_staging_rejects_invalid_or_unmapped_receipt(tmp_path, monkeypa
     path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError):
         runner.stage_originals(rows)
-    from app.service import Service
+    from app.bootstrap import Service
 
     with Service(tmp_path).db.connect() as conn:
         assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0

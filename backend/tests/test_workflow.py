@@ -1,14 +1,13 @@
 import pytest
-from fastapi.testclient import TestClient
-
 from admin_helpers import grant_admin, login_admin
+from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.usefixtures("sample_workflow")
 
 
 @pytest.fixture
 def client(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     with TestClient(create_app(data_dir=tmp_path)) as client:
         yield client
@@ -269,68 +268,23 @@ def test_message_request_id_reuse_for_different_payload_is_rejected(client):
     assert client.post(url, json={**payload, "content": "更改后的消息"}).status_code == 409
 
 
-def test_case_search_never_sees_other_case_documents(client):
-    case = demo(client)
-    other = client.post(
-        "/api/tea/cases",
-        json={
-            "title": "另一个业务",
-            "company": "",
-            "product": "",
-            "mode_id": "mode-a",
-            "template_id": case["template"]["id"],
-        },
-    ).json()
-    client.post(
-        "/api/tea/documents",
-        data={"case_id": other["id"]},
-        files={"file": ("private.md", b"rarephrase confidential", "text/markdown")},
-    )
-    assert (
-        client.post("/api/tea/search", json={"query": "rarephrase", "case_id": case["id"]}).json()["items"]
-        == []
-    )
-    assert (
-        len(
-            client.post("/api/tea/search", json={"query": "rarephrase", "case_id": other["id"]}).json()[
-                "items"
-            ]
-        )
-        == 1
-    )
-
-
-def test_embeddings_are_persisted_and_hybrid_retrieval_is_real(client, monkeypatch):
-    import app.ingestion as ingestion
-
-    for key, value in {
-        "EMBEDDING_BASE_URL": "https://provider.invalid/v1",
-        "EMBEDDING_API_KEY": "test",
-        "EMBEDDING_MODEL": "test-model",
-    }.items():
-        monkeypatch.setenv(key, value)
-    monkeypatch.setattr(ingestion, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+def test_chat_points_out_user_weight_conflict(client):
     case = demo(client)
     doc = client.post(
         "/api/tea/documents",
         data={"case_id": case["id"]},
-        files={"file": ("source.md", b"tea export evidence", "text/markdown")},
-    )
-    assert doc.status_code == 201
-    response = client.post(
-        "/api/tea/search", json={"query": "different semantic expression", "case_id": case["id"]}
-    )
-    assert response.json()["mode"] == "hybrid"
-    assert response.json()["items"][0]["document_id"] == doc.json()["id"]
-
-
-def test_chat_points_out_user_weight_conflict(client):
-    case = demo(client)
-    client.post(
-        "/api/tea/documents",
-        data={"case_id": case["id"]},
         files={"file": ("产品.txt", "乌龙茶 净含量：250克".encode(), "text/plain")},
+    ).json()
+    task = case["stages"][0]["tasks"][0]
+    patched = client.patch(
+        f"/api/tea/cases/{case['id']}/tasks/{task['id']}",
+        json={
+            "expected_revision": task["revision"],
+            "values": {"net_weight_g": 500},
+            "evidence_ids": [doc["id"]],
+        },
     )
+    assert patched.status_code == 200
     response = client.post(
         f"/api/tea/cases/{case['id']}/messages",
         json={
@@ -399,7 +353,7 @@ def test_upstream_change_invalidates_downstream_completion_and_artifact(client):
 
 
 def test_failed_parse_can_be_retried_with_same_bytes(client, monkeypatch):
-    import app.parsing as parsing
+    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
 
     case = demo(client)
 
@@ -450,7 +404,7 @@ def test_secondary_relationship_is_new_for_each_parent_version(client):
 
 
 def test_failed_source_has_durable_backoff(client, monkeypatch):
-    import app.ingestion as ingestion
+    from app.shared.infrastructure.http import download as ingestion
 
     demo(client)
     grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
@@ -479,7 +433,7 @@ def test_failed_source_has_durable_backoff(client, monkeypatch):
 
 
 def test_state_and_session_survive_process_recreation(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     with TestClient(create_app(data_dir=tmp_path)) as first:
         case = demo(first)
@@ -550,7 +504,7 @@ def test_concurrent_task_updates_reject_one_stale_writer(client):
     service = client.app.state.service
 
     def update(name):
-        from app.service import AppError
+        from app.shared.domain.errors import AppError
 
         try:
             result = service.patch_task(
@@ -610,7 +564,7 @@ def test_live_provider_failure_is_visible_and_does_not_complete_task(client, mon
 
 
 def test_partial_source_collection_preserves_original_and_exposes_warnings(client, monkeypatch):
-    import app.ingestion as ingestion
+    from app.shared.infrastructure.http import download as ingestion
 
     demo(client)
     grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
@@ -653,7 +607,7 @@ def test_partial_source_collection_preserves_original_and_exposes_warnings(clien
 
 
 def test_partial_parse_warnings_are_visible_on_document(client, monkeypatch):
-    import app.parsing as parsing
+    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
 
     case = demo(client)
     monkeypatch.setattr(

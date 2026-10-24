@@ -1,17 +1,20 @@
 """Exercise real Git worktrees, including safeguards that prevent data loss."""
+
 import importlib.util
-from pathlib import Path
 import subprocess
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-SPEC = importlib.util.spec_from_file_location("tea_worktree", Path(__file__).resolve().parents[2] / "scripts/worktree.py")
+SPEC = importlib.util.spec_from_file_location("tea_worktree", PROJECT_ROOT / "scripts/worktree.py")
 worktree = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(worktree)
 
 
 def git(root, *args):
-    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(
+        ["git", "-C", str(root), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 @pytest.fixture
@@ -54,7 +57,21 @@ def test_default_main_and_explicit_base(repo):
     assert git(target, "rev-parse", "HEAD") == git(repo, "rev-parse", "HEAD")
 
 
-@pytest.mark.parametrize("name", ["", "other/thing", "feature/../escape", "feature/wip", "fix/p0", "feature/codex-work", "feature/phase1", "feature/phase-1", "feature/phase-1-foo", "feature/$(touch danger)"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "other/thing",
+        "feature/../escape",
+        "feature/wip",
+        "fix/p0",
+        "feature/codex-work",
+        "feature/phase1",
+        "feature/phase-1",
+        "feature/phase-1-foo",
+        "feature/$(touch danger)",
+    ],
+)
 def test_reject_invalid_names(repo, name):
     with pytest.raises(ValueError, match="分支"):
         worktree.create_worktree(repo, name)

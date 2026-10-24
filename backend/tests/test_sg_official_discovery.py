@@ -1,15 +1,17 @@
 """Current public agency originals, frozen recipes and literal data boundaries."""
 
+import json
 from copy import deepcopy
 from hashlib import sha256
-import json
 from pathlib import Path
 
 import pytest
-
-from app.checklists import load_blueprint_version
-from app.discovery import _CUSTOMS_TEXT_PATHS, discover_page, recipe_for
-
+from app.contexts.collection.application.checklists import load_blueprint_version
+from app.contexts.collection.infrastructure.discovery.discovery import (
+    _CUSTOMS_TEXT_PATHS,
+    discover_page,
+    recipe_for,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
 PLAN = "singapore-demo-20261009"
@@ -201,7 +203,7 @@ def test_literal_push_never_evaluates_scripts_or_reads_module_links():
 
 
 def test_next_record_node_and_byte_limits_fail_closed(monkeypatch):
-    import app.discovery as discovery
+    import app.contexts.collection.infrastructure.discovery.discovery as discovery
 
     recipe = recipe_for(item("3.6"))
     monkeypatch.setattr(discovery, "_PDPC_FLIGHT_RECORDS", 2)
@@ -235,7 +237,7 @@ def test_pdpc_next_links_do_not_extend_unrelated_country_or_agency_rules():
 
 
 def test_pdpc_next_one_record_and_link_total_are_bounded(monkeypatch):
-    import app.discovery as discovery
+    import app.contexts.collection.infrastructure.discovery.discovery as discovery
 
     recipe = recipe_for(item("3.6"))
     monkeypatch.setattr(discovery, "_PDPC_FLIGHT_RECORD_BYTES", 10)

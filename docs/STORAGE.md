@@ -58,7 +58,7 @@ WTO 同一出口仅接收新冻结方案中经过成员、目录、公开请求�
 
 默认盘点不包含正文；采集任务可以显式使用 `include_text=True` 追加私有 `texts.jsonl`，记录两级法律用途的已保存文本、完整性与定位，不含向量。普通关联附件仍仅存原件。
 
-需要正文和来源映射时，从 `backend/` 执行 `uv run --locked python -m app.archive_inventory --data-dir /受控数据根 --include-text --include-source-mapping`。开启来源映射时仍生成 `source-mapping.jsonl`，将原件版本、页、区域、表格/单元格、正文块及保存的证据指针投影为可检查记录；映射缺口单独统计，不推断缺失内容。目录写到该数据根的 `catalogs/`，不修改数据库；需要冻结活动库时，先使用已验证备份恢复一个独占快照再导出，并保留其原件根，不能删除快照后留下失效路径。
+需要正文和来源映射时，从 `backend/` 执行 `uv run --locked python -m app.contexts.collection.infrastructure.archive_inventory --data-dir /受控数据根 --include-text --include-source-mapping`。开启来源映射时仍生成 `source-mapping.jsonl`，将原件版本、页、区域、表格/单元格、正文块及保存的证据指针投影为可检查记录；映射缺口单独统计，不推断缺失内容。目录写到该数据根的 `catalogs/`，不修改数据库；需要冻结活动库时，先使用已验证备份恢复一个独占快照再导出，并保留其原件根，不能删除快照后留下失效路径。
 
 用编辑器或数据工具打开 JSONL 即可定位原件，无须辨认哈希文件名。默认清单不包含正文，显式文本导出也不含向量或模型凭据。导出目录权限为 `700`，文件为 `600`；它包含私有资料的名称与来源，只交给有权限的人员。
 

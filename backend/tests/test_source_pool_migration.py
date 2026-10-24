@@ -5,11 +5,11 @@ import hashlib
 import importlib
 import json
 import sys
-from pathlib import Path
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 migration = importlib.import_module("migrate_unattended_source_pool")
 
@@ -80,10 +80,12 @@ def test_migration_refuses_scope_changes_and_active_requests(tmp_path):
     new_path.write_text(json.dumps(new_pool))
     old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
     (root / "state.json").write_text(
-        json.dumps({
-            "binding": {"pool_sha256": old_hash, "country": "ID", "root": str(root.resolve())},
-            "active_sources": ["id-kemendag-regulations"],
-        })
+        json.dumps(
+            {
+                "binding": {"pool_sha256": old_hash, "country": "ID", "root": str(root.resolve())},
+                "active_sources": ["id-kemendag-regulations"],
+            }
+        )
     )
     with pytest.raises(ValueError, match="active requests"):
         migration.migrate(old_path, new_path, root, "ID")

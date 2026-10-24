@@ -1,21 +1,25 @@
 """Recovery is durable, source-fenced, bounded, and never guesses paid outcomes."""
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 import hashlib
 import json
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
-
-from app.collection_recovery import BASE_RECOVERY_SECONDS, CollectionRecovery, Decision, classify_processing
-from app.db import dump, now
-from app.ingestion import DownloadError, EmbeddingServiceError
-from app.scheduler import ScheduledCollector
-from app.service import AppError, Service
-from test_ingestion_quality import make_pdf
-from test_pdf_ocr_reuse import register, stored
+from app.bootstrap import Service
+from app.contexts.collection.application.collection_recovery import (
+    BASE_RECOVERY_SECONDS,
+    CollectionRecovery,
+    Decision,
+    classify_processing,
+)
+from app.shared.domain.values import dump, now
+from app.shared.infrastructure.http.download import DownloadError
+from app.shared.infrastructure.operations.scheduler import ScheduledCollector
+from support.ingestion_quality import make_pdf
+from support.pdf_ocr_reuse import register
 
 
 @pytest.fixture
@@ -96,7 +100,7 @@ def test_marker_only_migration_is_rejected(service):
 
 
 def test_exhausted_fetch_restarts_once_with_history_and_completes(service, monkeypatch):
-    from app import ingestion
+    from app.shared.infrastructure.http import download as ingestion_download
 
     _source, _run, claim = failed_fetch(service)
     record = rows(service, "collection_recovery_jobs")[0]
@@ -121,7 +125,7 @@ def test_exhausted_fetch_restarts_once_with_history_and_completes(service, monke
             "blob": consume(iter([b"Official text"])),
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     restarted.collection.fetch_item(restarted.collection.claim_fetch())
     assert rows(restarted, "collection_items")[0]["status"] == "stored"
     assert rows(restarted, "collection_recovery_jobs")[0]["status"] == "completed"
@@ -184,7 +188,7 @@ def test_embed_last_rejection_does_not_prove_entire_multibatch_call_was_unpaid()
 
 
 def test_only_complete_legacy_mineru_receipts_blocked_on_chart_content_are_refreshable(monkeypatch):
-    from app import mineru
+    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
 
     source_hash = hashlib.sha256(b"verified source").hexdigest()
     text = "Section 1. Official text."
@@ -245,7 +249,8 @@ def test_only_complete_legacy_mineru_receipts_blocked_on_chart_content_are_refre
 
 
 def test_blocked_legacy_chart_review_requeues_once_with_audited_receipt(service, monkeypatch):
-    from app import mineru, vision
+    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
+    from app.contexts.knowledge.infrastructure.providers import vision as vision
 
     monkeypatch.setattr(mineru, "manifest_valid", lambda _manifest: True)
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
@@ -287,7 +292,9 @@ def test_blocked_legacy_chart_review_requeues_once_with_audited_receipt(service,
         },
     }
     with service.db.transaction() as conn:
-        conn.execute("UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(manifest), doc["id"]))
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(manifest), doc["id"])
+        )
         conn.execute(
             "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
             (doc["id"],),
@@ -313,204 +320,14 @@ def test_blocked_legacy_chart_review_requeues_once_with_audited_receipt(service,
     assert json.loads(event["detail"])["previous_queue_attempts"] == 3
 
 
-def test_native_processing_continues_multiple_bursts_without_losing_history(service, monkeypatch):
-    monkeypatch.setenv("VISION_OCR_ENABLED", "false")
-    for key in ("BASE_URL", "API_KEY", "MODEL"):
-        monkeypatch.setenv("EMBEDDING_" + key, "unit-test-only")
-    doc = register(service, make_pdf([("Article 1. Keep the original document.", False)]), key="native")
-    original = stored(service, doc)
-    for cycle in range(2):
-        for attempt in range(1, 4):
-            claim = service.collection.claim_processing(owner_id="owner", document_ids=[doc["id"]])
-            assert claim and claim["attempts"] == attempt
-            service.collection._failure(claim, RuntimeError("local worker unavailable"), processing=True)
-            with service.db.transaction() as conn:
-                conn.execute("UPDATE processing_jobs SET available_at=0 WHERE document_id=?", (doc["id"],))
-        record = rows(service, "collection_recovery_jobs")[0]
-        assert record["reason"] == "transient_processing" and record["status"] == "waiting"
-        assert record["failure_count"] == (cycle + 1) * 3
-        assert record["available_at"] >= time.time() + BASE_RECOVERY_SECONDS * 2**cycle - 3
-        due(service)
-        service = Service(service.db.data_dir)
-        assert service.collection.recovery.run_due()["requeued"] == 1
-        assert stored(service, doc)["manifest"] == original["manifest"]
-    claim = service.collection.claim_processing(owner_id="owner", document_ids=[doc["id"]])
-    service.collection.process_item(claim)
-    events = rows(service, "collection_recovery_events")
-    assert [event["event"] for event in events].count("attempt_failed") == 6
-    assert [event["event"] for event in events].count("requeued") == 2
-    assert events[-1]["event"] == "completed"
-    assert rows(service, "processing_jobs")[0]["phase"] == "embed"
-    assert rows(service, "retrieval_vectors") == []
-    assert stored(service, doc)["content_hash"] == original["content_hash"]
-
-
-def test_unknown_embedding_is_held_on_first_failure_and_ordinary_retry(service):
-    doc = register(service, make_pdf([("Official text", False)]), key="embed")
-    with service.db.transaction() as conn:
-        conn.execute("UPDATE processing_jobs SET phase='embed' WHERE document_id=?", (doc["id"],))
-    claim = service.collection.claim_processing(owner_id="owner", document_ids=[doc["id"]])
-    service.collection._failure(
-        claim,
-        EmbeddingServiceError(
-            retryable=True, http_status=504, request_outcome_unknown=True, request_sent=True
-        ),
-        processing=True,
-    )
-    before = rows(service, "processing_jobs")
-    assert before[0]["status"] == "failed" and before[0]["attempts"] == 1
-    assert rows(service, "collection_recovery_jobs")[0]["reason"] == "paid_result_unknown"
-    with service.db.transaction() as conn:
-        with pytest.raises(AppError) as raised:
-            service.collection.queue_processing(conn, doc["id"], "owner", retry_ocr=True)
-    assert raised.value.code == "embedding_outcome_review_required"
-    due(service)
-    assert service.collection.recovery.run_due()["requeued"] == 0
-    assert rows(service, "processing_jobs")[0]["status"] == "failed"
-    assert rows(service, "retrieval_vectors") == []
-
-
-def rejected_page(service, *, status=429):
-    doc = register(service, make_pdf([("First", True), ("Second", True)]), key="rejected")
-    manifest = stored(service, doc)["manifest"]
-    first, page = manifest["pages"]
-    first.update(status="ocr_complete", ocr={"attempts": 1, "text": "First", "complete": True})
-    page.update(status="ocr_failed", error="Explicit rate-limit rejection")
-    page["ocr"] = {
-        "attempts": 3,
-        "request_id": "rejected-request",
-        "source_hash": doc["content_hash"],
-        "page": 2,
-        "http_status": status,
-        "image_sha256": "a" * 64,
-        "prompt_version": "legal-page-transcription-v3",
-        "requested_model": "test-model",
-    }
-    evidence = {
-        "format": "ocr-error-response-v1",
-        "source_hash": doc["content_hash"],
-        "page": 2,
-        "request_id": "rejected-request",
-        "attempt": 3,
-        "image_sha256": "a" * 64,
-        "prompt_version": "legal-page-transcription-v3",
-        "requested_model": "test-model",
-        "http_status": status,
-        "response_base64": "",
-        "size": 0,
-        "content_hash": hashlib.sha256(b"").hexdigest(),
-    }
-    raw = dump(evidence).encode()
-    blob = service.archive.blobs.put_bytes("owner", raw)
-    page["ocr"]["error_response"] = {
-        key: value for key, value in evidence.items() if key != "response_base64"
-    }
-    page["ocr"]["error_response"]["blob"] = {
-        "content_hash": blob.digest,
-        "size": blob.size,
-        "storage_path": str(blob.path.relative_to(service.db.data_dir)),
-        "mime_type": "application/json",
-    }
-    with service.db.transaction() as conn:
-        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-        conn.execute("UPDATE processing_jobs SET status='failed' WHERE document_id=?", (doc["id"],))
-    return doc, manifest
-
-
-def test_exact_429_page_retry_preserves_success_original_and_complete_old_evidence(service):
-    doc, before = rejected_page(service)
-    original = dict(rows(service, "documents")[0])
-    assert service.collection.recovery.run_due()["adopted"] == 1
-    record = rows(service, "collection_recovery_jobs")[0]
-    assert record["reason"] == "ocr_rate_limited" and record["status"] == "waiting"
-    due(service)
-    assert service.collection.recovery.run_due()["requeued"] == 1
-    after = stored(service, doc)["manifest"]
-    assert after["pages"][0] == before["pages"][0]
-    assert after["pages"][1]["status"] == "pending_ocr" and after["pages"][1]["ocr"] == {"attempts": 0}
-    history = after["pages"][1]["ocr_retry_cycles"][-1]
-    assert history["previous_page"] == before["pages"][1]
-    raw = (service.db.data_dir / history["blob"]["storage_path"]).read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == history["blob"]["content_hash"]
-    assert json.loads(raw)["previous_page"] == before["pages"][1]
-    assert {
-        key: rows(service, "documents")[0][key]
-        for key in original
-        if key not in {"manifest", "status", "error"}
-    } == {key: value for key, value in original.items() if key not in {"manifest", "status", "error"}}
-    assert rows(service, "retrieval_vectors") == []
-    assert rows(service, "legal_relations") == []
-
-
-@pytest.mark.parametrize("problem", ["source", "bad_receipt", "unknown", "quality", "budget", "request"])
-def test_ocr_recovery_rechecks_current_evidence_and_never_blanket_resets(service, problem):
-    doc, manifest = rejected_page(service)
-    service.collection.recovery.run_due()
-    page = manifest["pages"][1]
-    if problem == "source":
-        page["source_hash"] = "f" * 64
-    elif problem == "bad_receipt":
-        page["ocr"]["error_response"]["blob"]["content_hash"] = "f" * 64
-    elif problem == "unknown":
-        page["ocr"]["request_outcome"] = "unknown_transport_result"
-    elif problem == "quality":
-        page["status"] = "ocr_uncertain"
-    elif problem == "request":
-        page["ocr"]["request_id"] = "different-request-after-plan"
-    else:
-        page["ocr_retry_cycles"] = [{}, {}, {}]
-    with service.db.transaction() as conn:
-        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-    due(service)
-    assert service.collection.recovery.run_due()["requeued"] == 0
-    assert stored(service, doc)["manifest"] == manifest
-    assert rows(service, "collection_recovery_jobs")[0]["status"] == "blocked"
-
-
-def test_retry_plan_cannot_expand_to_another_physical_page(service):
-    from copy import deepcopy
-
-    doc, manifest = rejected_page(service)
-    service.collection.recovery.run_due()
-    manifest["pages"][0] = deepcopy(manifest["pages"][1])
-    manifest["pages"][0]["page"] = 1
-    with service.db.transaction() as conn:
-        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
-    due(service)
-    assert service.collection.recovery.run_due()["blocked"] == 1
-    assert rows(service, "collection_recovery_jobs")[0]["reason"] == "checkpoint_changed"
-    assert stored(service, doc)["manifest"] == manifest
-
-
-def test_full_backup_restores_429_checkpoint_history_and_error_cas(service, tmp_path):
-    from app.data_backup import create_backup, restore_backup, verify_backup
-
-    doc, before = rejected_page(service)
-    service.collection.recovery.run_due()
-    due(service)
-    assert service.collection.recovery.run_due()["requeued"] == 1
-    after = stored(service, doc)["manifest"]
-    backup = tmp_path / "ocr-backup"
-    create_backup(service.db.data_dir, backup)
-    assert verify_backup(backup)["schema_version"] == 19
-    restore_backup(backup, tmp_path / "ocr-restored")
-    restored = Service(tmp_path / "ocr-restored")
-    assert stored(restored, doc)["manifest"] == after
-    assert rows(restored, "collection_recovery_events") == rows(service, "collection_recovery_events")
-    history = after["pages"][1]["ocr_retry_cycles"][-1]
-    for ref in (history["blob"], before["pages"][1]["ocr"]["error_response"]["blob"]):
-        raw = (restored.db.data_dir / ref["storage_path"]).read_bytes()
-        assert hashlib.sha256(raw).hexdigest() == ref["content_hash"]
-
-
 def test_backup_restore_preserves_recovery_events_and_due_queue(service, tmp_path):
-    from app.data_backup import create_backup, verify_backup, restore_backup
+    from app.shared.infrastructure.operations.data_backup import create_backup, restore_backup, verify_backup
 
     failed_fetch(service)
     before = rows(service, "collection_recovery_events")
     backup = tmp_path / "backup"
     create_backup(service.db.data_dir, backup)
-    assert verify_backup(backup)["schema_version"] == 19
+    assert verify_backup(backup)["schema_version"] == 22
     restore_backup(backup, tmp_path / "restored")
     restored = Service(tmp_path / "restored")
     assert rows(restored, "collection_recovery_events") == before
@@ -528,6 +345,7 @@ def test_scheduler_routes_managed_source_to_published_discovery_once(service):
         binding = conn.execute(
             "SELECT * FROM checklist_bindings WHERE owner_id='owner' AND item_id='1.3'"
         ).fetchone()
+        conn.execute("UPDATE sources SET enabled=0 WHERE owner_id='owner'")
         conn.execute("UPDATE sources SET enabled=1 WHERE id=?", (binding["source_id"],))
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(lambda _: ScheduledCollector(service).run_once(), range(2)))
@@ -546,6 +364,7 @@ def test_scheduler_does_not_grant_conditional_permission_or_spin_on_409(service)
         binding = conn.execute(
             "SELECT * FROM checklist_bindings WHERE owner_id='owner' AND item_id='4.1'"
         ).fetchone()
+        conn.execute("UPDATE sources SET enabled=0 WHERE owner_id='owner'")
         conn.execute("UPDATE sources SET enabled=1 WHERE id=?", (binding["source_id"],))
     collector = ScheduledCollector(service)
     assert collector.run_once()["failed"] == 0

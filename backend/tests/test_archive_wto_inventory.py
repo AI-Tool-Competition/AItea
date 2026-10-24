@@ -1,16 +1,20 @@
 """WTO export has source/account boundaries and never infers legal eligibility."""
 
-from copy import deepcopy
 import hashlib
 import json
+from copy import deepcopy
 from urllib.parse import urlsplit
 
 import pytest
-
-from app.checklists import ChecklistService
-from app.discovery import _canonical
-from app.service import Service
-from app.wto_discovery import GOODS, MEMBERS, _UNVERIFIED_MDB, services_catalog_url
+from app.bootstrap import Service
+from app.contexts.collection.application.checklists import ChecklistService
+from app.contexts.collection.infrastructure.discovery.discovery import _canonical
+from app.contexts.collection.infrastructure.discovery.wto_discovery import (
+    _UNVERIFIED_MDB,
+    GOODS,
+    MEMBERS,
+    services_catalog_url,
+)
 from test_archive_inventory import AT, export, page, records
 from test_wto_discovery import browser, goods_catalog, inspect, xml_catalog
 

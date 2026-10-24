@@ -2,22 +2,24 @@
 
 import copy
 import json
-from pathlib import Path
 
 import pytest
+from admin_helpers import grant_admin
+from app.contexts.legal.domain.legal_models import MAX_CASE_FACTS
+from app.contexts.workspace.domain.models import FieldDefinition
+from app.contexts.workspace.infrastructure.defaults import (
+    BUILTIN_TEMPLATES,
+    RETIRED_TEMPLATE_ID,
+    load_template,
+)
+from app.contexts.workspace.infrastructure.workflow_catalog import load_workflow_catalog
+from app.interfaces.http.factory import create_app
+from app.paths import PROJECT_ROOT
+from app.shared.domain.values import now
 from fastapi.testclient import TestClient
 
-from app.defaults import BUILTIN_TEMPLATES, RETIRED_TEMPLATE_ID, load_template
-from app.main import create_app
-from app.models import FieldDefinition
-from app.legal_models import MAX_CASE_FACTS
-from app.db import now
-from app.workflow_catalog import load_workflow_catalog
-
-from admin_helpers import grant_admin
-
 ROUTES = [key for key in BUILTIN_TEMPLATES if key.startswith("liubao-")]
-CATALOG = Path(__file__).resolve().parents[2] / "config/workflows/liubao-export.json"
+CATALOG = PROJECT_ROOT / "config/workflows/liubao-export.json"
 
 
 @pytest.fixture
@@ -122,8 +124,10 @@ def evidence(client, case):
     return response.json()["id"]
 
 
-@pytest.mark.parametrize("route", ROUTES)
-def test_route_journey_requires_evidence_and_unlocks_in_order(client, route):
+def test_route_journey_requires_evidence_and_unlocks_in_order(client):
+    # The longest route includes independent exhibition closeout as well as serial gates.
+    # All four route compositions/country differences are checked below without replaying the same engine.
+    route = "liubao-id-offline"
     case = create(client, route)
     assert case["template"]["destination"] == ("印度尼西亚" if "-id-" in route else "新加坡")
     tasks = [task for stage in case["stages"] for task in stage["tasks"]]

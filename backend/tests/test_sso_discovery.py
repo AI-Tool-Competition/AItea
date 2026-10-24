@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 
 import pytest
-
-from app.discovery import discover_page, recipe_for
+from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+from app.paths import PROJECT_ROOT
 
 FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
 
@@ -134,7 +134,7 @@ def test_aws_waf_200_page_is_explicit_access_challenge_not_empty_legislation():
 
 
 def test_version_four_snapshot_keeps_its_frozen_generic_recipe():
-    root = Path(__file__).resolve().parents[2] / "config" / "collection-plans"
+    root = PROJECT_ROOT / "config" / "collection-plans"
     old = json.loads((root / "versions/singapore-demo-20261009.v4.json").read_text())
     latest = json.loads((root / "singapore-demo-20261009.json").read_text())
     assert old["version"] == 4 and latest["version"] == 5

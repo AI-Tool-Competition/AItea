@@ -12,15 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    create = commands.add_parser(
-        "create", help="Online SQLite snapshot plus all published files"
-    )
+    create = commands.add_parser("create", help="Online SQLite snapshot plus all published files")
     create.add_argument("--source-dir", type=Path, required=True)
     create.add_argument("--backup-dir", type=Path, required=True)
     create.add_argument("--timeout", type=float, default=300)
-    verify = commands.add_parser(
-        "verify", help="Read-only full integrity and SHA verification"
-    )
+    verify = commands.add_parser("verify", help="Read-only full integrity and SHA verification")
     verify.add_argument("--backup-dir", type=Path, required=True)
     restore = commands.add_parser(
         "restore", help="Restore only into a new directory; existing targets refused"
@@ -34,7 +30,7 @@ def main():
             raise RuntimeError("Data backup/restore does not permit network calls")
 
     sys.addaudithook(offline)
-    from app.data_backup import (
+    from app.shared.infrastructure.operations.data_backup import (
         DataBackupError,
         create_backup,
         restore_backup,
@@ -43,9 +39,7 @@ def main():
 
     try:
         if args.command == "create":
-            result = create_backup(
-                args.source_dir, args.backup_dir, timeout=args.timeout
-            )
+            result = create_backup(args.source_dir, args.backup_dir, timeout=args.timeout)
         elif args.command == "verify":
             result = verify_backup(args.backup_dir)
         else:

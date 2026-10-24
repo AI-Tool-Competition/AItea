@@ -1,9 +1,8 @@
 from datetime import date
 
 import pytest
+from app.contexts.knowledge.domain.metadata import DocumentMetadata, MetadataPatch, eligible
 from pydantic import ValidationError
-
-from app.catalog import DocumentMetadata, MetadataPatch, eligible
 
 
 def test_unreviewed_law_is_never_eligible_for_answers():

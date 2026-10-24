@@ -721,9 +721,20 @@
         ],
         "collector_scope_note": "Retains exact prior PERPU catalogue endpoint; 50 rows plus next page bounded to 51 links; historical originals retained, current 404 pending recheck."
       },
-      "status": "active",
+      "status": "archived",
       "transport": "proxy",
-      "group_id": "id-general-law"
+      "group_id": "id-general-law",
+      "retirement": {
+        "reason": "repeated_http_404",
+        "reviewed_at": "2026-10-24",
+        "evidence": {
+          "http_status": 404,
+          "consecutive_failures": 8,
+          "last_checked_at": "2026-10-24T02:05:05Z",
+          "state_source": "data/official-updates/ID/state.json"
+        },
+        "note": "经现有采集回执反复返回 404，移出活动轮询；保留稳定来源编号、清单关联和历史证据。恢复时须校正官方入口并重新启用。"
+      }
     }
   ],
   "schema_version": 2,

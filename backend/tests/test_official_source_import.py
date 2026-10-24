@@ -4,10 +4,10 @@ import hashlib
 import json
 import time
 
-from app.official_source_import import OfficialSourceImporter
-from app.main import create_app
-from app.service import Service
-from app.system_library import SYSTEM_OWNER_ID
+from app.bootstrap import Service
+from app.contexts.collection.application.official_source_import import OfficialSourceImporter
+from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
+from app.interfaces.http.factory import create_app
 
 
 def _write_version(
@@ -117,7 +117,7 @@ def test_new_official_html_version_is_saved_once_and_queued_for_bounded_parse(tm
     assert "Food packaging rules" in " ".join(
         element.get("content_text", "") for element in parsed_manifest["elements"]
     )
-    from app.archive_inventory import export_inventory
+    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
 
     inventory = export_inventory(tmp_path, country="ID", owner=SYSTEM_OWNER_ID)
     receipt_file = next(inventory["path"].rglob("official-source-imports.jsonl"))
@@ -141,7 +141,10 @@ def test_first_import_replays_all_retained_version_history(tmp_path):
 
     assert importer.run_once()["stored"] == 1
     with service.db.connect() as conn:
-        assert conn.execute("SELECT version FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT version FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0]
+            == 1
+        )
 
 
 def test_transient_archive_failure_is_retried_without_losing_the_event(tmp_path, monkeypatch):
@@ -290,7 +293,10 @@ def test_extensionless_detail_html_remains_a_catalogue_page(tmp_path):
 
     assert importer.run_once()["skipped"] == 1
     with service.db.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0]
+            == 0
+        )
         receipt = conn.execute("SELECT status,reason FROM official_source_imports").fetchone()
     assert tuple(receipt) == ("skipped", "catalogue_page_not_document")
 
@@ -326,22 +332,23 @@ def test_rechecks_older_skipped_detail_when_verified_mime_is_a_document(tmp_path
                 "2026-10-24T00:00:00+00:00",
             ),
         )
-        conn.execute(
-            "UPDATE official_source_import_cursor SET event_ns=? WHERE country='ID'", (at_ns + 1,)
-        )
+        conn.execute("UPDATE official_source_import_cursor SET event_ns=? WHERE country='ID'", (at_ns + 1,))
 
     assert importer.run_once()["stored"] == 1
     with service.db.connect() as conn:
         receipt = conn.execute(
             "SELECT status,reason,document_id FROM official_source_imports WHERE event_key=?", (event_key,)
         ).fetchone()
-        doc = conn.execute("SELECT mime_type,status FROM documents WHERE id=?", (receipt["document_id"],)).fetchone()
+        doc = conn.execute(
+            "SELECT mime_type,status FROM documents WHERE id=?", (receipt["document_id"],)
+        ).fetchone()
     assert tuple(receipt[:2]) == ("stored", None)
     assert tuple(doc) == ("application/pdf", "processing")
 
 
 def test_api_health_exposes_official_import_cycle_and_shutdown(tmp_path, monkeypatch):
-    from app import collection, scheduler
+    from app.contexts.collection.application import collection as collection
+    from app.shared.infrastructure.operations import scheduler as scheduler
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(scheduler, "start_scheduler", lambda *args, **kwargs: None)

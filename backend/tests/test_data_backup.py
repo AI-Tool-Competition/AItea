@@ -8,12 +8,13 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-
-from app import data_backup as module
-from app.db import Database, dump, now
-from app.official_source_import import OfficialSourceImporter
-from app.service import AppError, Service
-from app.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.bootstrap import Service
+from app.contexts.collection.application.official_source_import import OfficialSourceImporter
+from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.shared.domain.errors import AppError
+from app.shared.domain.values import dump, now
+from app.shared.infrastructure.db import Database
+from app.shared.infrastructure.operations import data_backup as module
 
 
 def original(service, owner, key):
@@ -410,13 +411,14 @@ def test_empty_and_legacy_schema_snapshots_are_preserved_without_upgrade(tmp_pat
     else:
         # Use the deployed pre-retrieval service migrations, not a fake version
         # number over newer tables; upgrade remains the normal service's job.
-        from app.catalog import LegalCatalog
-        from app.studio import AdminStudio
-        from app.archive import LegalArchive
-        from app.collection import CollectionService
-        from app.checklists import ChecklistService
-        from app.legal import LegalService
         from types import SimpleNamespace
+
+        from app.contexts.collection.application.checklists import ChecklistService
+        from app.contexts.collection.application.collection import CollectionService
+        from app.contexts.knowledge.application.archive import LegalArchive
+        from app.contexts.knowledge.infrastructure.catalog import LegalCatalog
+        from app.contexts.legal.application.legal import LegalService
+        from app.contexts.workspace.application.studio import AdminStudio
 
         old = SimpleNamespace(db=Database(source))
         old.catalog = LegalCatalog(old.db)

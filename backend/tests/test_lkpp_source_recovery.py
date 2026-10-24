@@ -4,8 +4,7 @@ from html import escape
 from pathlib import Path
 
 import pytest
-
-from app.discovery import discover_page, recipe_for
+from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
 
 BASE = "https://jdih.lkpp.go.id/admin/uploads/documents"
 DETAIL = "https://jdih.lkpp.go.id/regulation/peraturan-lkpp/peraturan-lkpp-nomor-3-tahun-2026"

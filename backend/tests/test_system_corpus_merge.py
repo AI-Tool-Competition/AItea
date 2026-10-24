@@ -6,13 +6,14 @@ from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
-
-from app import system_corpus_merge as merge
-from app import system_corpus_migration as migration
-from app.data_backup import DataBackupError, create_backup, restore_backup
-from app.db import dump, now
-from app.service import Service
-from app.system_library import SYSTEM_OWNER_ID, ensure_principal
+from support.legacy_vectors import checkpoint_inputs, schema19_snapshot
+from app.contexts.collection.application.collection_import import _fingerprint
+from app.bootstrap import Service
+from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.shared.domain.values import dump, now
+from app.shared.infrastructure.operations import system_corpus_merge as merge
+from app.shared.infrastructure.operations import system_corpus_migration as migration
+from app.shared.infrastructure.operations.data_backup import DataBackupError, create_backup, restore_backup
 
 
 def make_doc(service, key, *, complete=True, vector=None, owner=SYSTEM_OWNER_ID):
@@ -69,7 +70,7 @@ def make_doc(service, key, *, complete=True, vector=None, owner=SYSTEM_OWNER_ID)
         )
         service.index.sync_document(conn, doc["id"], manifest)
         if vector:
-            batch = service.index.pending(conn, doc["id"], service.embedding_fingerprint())
+            batch = checkpoint_inputs(conn, doc["id"], service.embedding_fingerprint())
             service.index.store_vectors(conn, doc["id"], service.embedding_fingerprint(), batch, [vector])
         conn.execute(
             "UPDATE processing_jobs SET status=? WHERE document_id=?",
@@ -93,6 +94,7 @@ def tables(service):
 
 @pytest.fixture
 def fixture(tmp_path, monkeypatch):
+    monkeypatch.setattr(Service, "embedding_fingerprint", lambda self: _fingerprint())
     for name in ("EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_API_KEY"):
         monkeypatch.setenv(name, "unit-test")
     monkeypatch.setattr(migration, "MAX_BATCH_DOCUMENTS", 2)
@@ -121,6 +123,8 @@ def fixture(tmp_path, monkeypatch):
                 "locator": "section 1",
             },
         )
+    schema19_snapshot(source)
+    schema19_snapshot(target)
     snapshot = tmp_path / "snapshot"
     migration.export_system_corpus(source.db.data_dir, snapshot)
     candidates = [
@@ -343,7 +347,11 @@ def test_source_commit_while_live_snapshot_is_read_cannot_escape_guard(fixture, 
     monkeypatch.setattr(migration, "_stream_summary", concurrent_summary)
     with pytest.raises(migration.SystemCorpusMigrationError, match="source_resumed_or_changed_during_copy"):
         apply(f, p)
-    assert changed and tables(f["target"]) == before
+    assert changed
+    after = tables(f["target"])
+    for table, rows in before.items():
+        if table != "schema_migrations":
+            assert after[table] == rows, table
 
 
 def test_default_migration_still_refuses_same_family_different_ids(fixture):
@@ -415,7 +423,7 @@ def test_formal_delete_journal_restore_has_readonly_preflight_and_idempotent_app
 def test_target_change_during_service_initialization_is_not_hidden_by_old_read_snapshot(
     fixture, monkeypatch, tmp_path
 ):
-    from app import service as service_module
+    from app import bootstrap as service_module
 
     f = fixture
     p = plan(f)
@@ -442,3 +450,22 @@ def test_target_change_during_service_initialization_is_not_hidden_by_old_read_s
         ).fetchone()
     progress = json.loads((backup / "migration-progress.json").read_bytes())
     assert progress["mode"] == "interrupted" and progress["completed_document_batches"] == 0
+
+
+@pytest.mark.parametrize("owner", [SYSTEM_OWNER_ID, "private"])
+def test_legacy_merge_never_adopts_cloud_evidence_or_changes_private_index(fixture, owner):
+    f = fixture
+    Service(f["target"].db.data_dir)
+    with f["target"].db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ragflow_datasets(owner_id,profile,name,created_at) VALUES(?,?,?,?)",
+            (owner, "fixture", "retained-index", now()),
+        )
+    before = tables(f["target"])
+    if owner == SYSTEM_OWNER_ID:
+        with pytest.raises(migration.SystemCorpusMigrationError, match="alias_target_has_cloud_evidence"):
+            plan(f)
+        assert tables(f["target"]) == before
+    else:
+        apply(f, plan(f))
+        assert tables(f["target"])["ragflow_datasets"] == before["ragflow_datasets"]

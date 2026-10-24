@@ -5,9 +5,8 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-
-from app import ingestion
-from app.service import Service
+from app.bootstrap import Service
+from app.shared.infrastructure.http import download as ingestion_download
 
 
 @pytest.fixture
@@ -62,7 +61,7 @@ def transport(monkeypatch, content=b"abcdefghijklmno", *, change_after=None):
             on_headers(metadata)
         return {**metadata, "blob": consume(iter([body[start : end + 1]]))}
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     return calls, state
 
 
@@ -187,7 +186,7 @@ def test_cancelled_segment_request_cannot_commit_or_publish_after_cancellation(q
     transport(monkeypatch)
     tune(service)
     service.collection.fetch_item(service.collection.claim_fetch())
-    original = ingestion._download
+    original = ingestion_download._download
     cancelled = []
 
     def cancel_then_download(*args, **kwargs):
@@ -197,7 +196,7 @@ def test_cancelled_segment_request_cannot_commit_or_publish_after_cancellation(q
             service.collection.control("owner", run["id"], "cancel", revision)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(ingestion, "_download", cancel_then_download)
+    monkeypatch.setattr(ingestion_download, "_download", cancel_then_download)
     service.collection.fetch_item(service.collection.claim_fetch())
     assert row_count(service, "documents") == row_count(service, "collection_transfer_parts") == 0
     assert service.collection.run_detail("owner", run["id"])["run"]["status"] == "cancelled"

@@ -1,20 +1,20 @@
 """Periodic discovery exercises actual collectors with only local fake HTTP bytes."""
 
-from copy import deepcopy
 import importlib
 import json
 import multiprocessing
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
 import time
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 periodic = importlib.import_module("periodic_official_collection")
 sources = importlib.import_module("periodic_official_sources")
@@ -50,7 +50,7 @@ def context(tmp_path, monkeypatch):
     errors = {}
 
     def frontend():
-        from app.public_search import EGAZETTE_APPLICATION, EGAZETTE_INDEX
+        from app.shared.infrastructure.http.public_search import EGAZETTE_APPLICATION, EGAZETTE_INDEX
 
         stream = (
             "1:"
@@ -93,7 +93,7 @@ def context(tmp_path, monkeypatch):
         return {"blob": kwargs["consume"]([pdfs[url]]), "url": url}
 
     monkeypatch.setattr(sg, "_download", download)
-    from app.service import Service
+    from app.bootstrap import Service
 
     monkeypatch.setattr(
         Service, "__init__", lambda *a, **k: pytest.fail("periodic raw collector created Service")
@@ -756,6 +756,7 @@ def test_deleted_budget_cannot_silently_reset_counters(context):
 
 def test_concurrent_original_intents_share_total_reservation(context):
     from concurrent.futures import ThreadPoolExecutor
+
     from periodic_official_budget import reserve, summary
 
     c = context

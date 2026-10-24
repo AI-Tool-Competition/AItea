@@ -156,7 +156,7 @@ def decide(state, report, *, timestamp, retry_after=0):
 
 
 def supervise(args, runner: Path, arguments, initial_documents, *, inherited_fds=()):
-    from app.embedding_admission import process_identity
+    from app.contexts.knowledge.infrastructure.providers.embedding_admission import process_identity
     from complete_embeddings import digest, document_worker_limit
 
     output = args.output.resolve()

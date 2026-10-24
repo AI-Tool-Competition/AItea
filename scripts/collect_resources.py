@@ -27,9 +27,7 @@ def options_for(args, plan):
         or len(confirmed) != len(set(confirmed))
         or set(confirmed) - set(selected)
     ):
-        raise ValueError(
-            "items and confirm-items must be unique identifiers from the selected plan"
-        )
+        raise ValueError("items and confirm-items must be unique identifiers from the selected plan")
     options = {
         "items": selected,
         "confirm_items": confirmed,
@@ -38,7 +36,7 @@ def options_for(args, plan):
         "live_models": args.live_models,
     }
     if args.selection:
-        from app.campaign_selection import validate_selection
+        from app.contexts.collection.application.campaign_selection import validate_selection
 
         if (
             args.selection.is_symlink()
@@ -69,10 +67,10 @@ def child(
         os.setsid()
     os.umask(0o077)
     configure_models(models_env)
-    from app.archive_inventory import export_inventory
-    from app.collection import CollectionWorkers
-    from app.resource_campaign import ResourceCampaign
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.contexts.collection.application.collection import CollectionWorkers
+    from app.contexts.collection.application.resource_campaign import ResourceCampaign
+    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
 
     with (output / "worker.log").open("a", encoding="utf-8", buffering=1) as log:
         os.dup2(log.fileno(), 1)
@@ -86,9 +84,7 @@ def child(
                 options,
                 state=state,
                 extend=extend,
-                checkpoint=lambda payload: write_report(
-                    output, payload, "campaign.json"
-                ),
+                checkpoint=lambda payload: write_report(output, payload, "campaign.json"),
             )
             if revalidate_layout:
                 campaign.revalidate_layout()
@@ -121,12 +117,10 @@ def child(
                 or summary["secondary_vectors"]
                 or (
                     options["live_models"]
-                    and summary["primary_vector_complete"]
-                    != summary["primary_originals"]
+                    and summary["primary_vector_complete"] != summary["primary_originals"]
                 )
                 or (
-                    options.get("selection")
-                    and summary["originals"] < len(options["selection"]["materials"])
+                    options.get("selection") and summary["originals"] < len(options["selection"]["materials"])
                 )
                 or (
                     options["originals_per_item"]
@@ -159,15 +153,13 @@ def child(
 
 
 def main():
-    from app.checklists import load_blueprint_version, load_blueprints
-    from app.db import dump
+    from app.contexts.collection.application.checklists import load_blueprint_version, load_blueprints
+    from app.shared.domain.values import dump
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan-id", default="indonesia-20261003")
     output_default = os.getenv("TEA_CAMPAIGN_OUTPUT")
-    parser.add_argument(
-        "--output", type=Path, default=output_default, required=not bool(output_default)
-    )
+    parser.add_argument("--output", type=Path, default=output_default, required=not bool(output_default))
     parser.add_argument(
         "--items",
         default=os.getenv("TEA_CAMPAIGN_ITEMS"),
@@ -199,12 +191,8 @@ def main():
         choices=range(10, 7201),
         metavar="10..7200",
     )
-    parser.add_argument(
-        "--resume", action="store_true", default=os.getenv("TEA_CAMPAIGN_RESUME") == "1"
-    )
-    parser.add_argument(
-        "--extend", action="store_true", default=os.getenv("TEA_CAMPAIGN_EXTEND") == "1"
-    )
+    parser.add_argument("--resume", action="store_true", default=os.getenv("TEA_CAMPAIGN_RESUME") == "1")
+    parser.add_argument("--extend", action="store_true", default=os.getenv("TEA_CAMPAIGN_EXTEND") == "1")
     parser.add_argument("--live-models", action="store_true")
     parser.add_argument("--models-env", type=Path)
     parser.add_argument(
@@ -248,9 +236,7 @@ def main():
         if args.extend and not args.resume:
             raise ValueError("extend requires --resume")
         if args.retry_embeddings and not (args.resume and args.live_models):
-            raise ValueError(
-                "retry-embeddings requires --resume and real model configuration"
-            )
+            raise ValueError("retry-embeddings requires --resume and real model configuration")
         if args.revalidate_layout and not args.resume:
             raise ValueError("revalidate-layout requires --resume")
         if args.revalidate_native_tables and not args.resume:
@@ -258,15 +244,9 @@ def main():
         if args.revalidate_pdf_decode and not args.resume:
             raise ValueError("revalidate-pdf-decode requires --resume")
         if args.retry_ocr_recovery and not (args.resume and args.live_models):
-            raise ValueError(
-                "retry-ocr-recovery requires --resume and real model configuration"
-            )
-        if args.live_models != bool(args.models_env) or (
-            args.models_env and not args.models_env.is_file()
-        ):
-            raise ValueError(
-                "real providers require both --live-models and an existing --models-env file"
-            )
+            raise ValueError("retry-ocr-recovery requires --resume and real model configuration")
+        if args.live_models != bool(args.models_env) or (args.models_env and not args.models_env.is_file()):
+            raise ValueError("real providers require both --live-models and an existing --models-env file")
         plan = load_blueprints().get(args.plan_id)
         if not plan:
             raise ValueError("unknown collection plan")
@@ -275,40 +255,26 @@ def main():
         output = args.output.resolve()
         if args.resume:
             path = output / "campaign.json"
-            if (
-                path.is_symlink()
-                or not path.is_file()
-                or path.stat().st_size > 2 * 1024 * 1024
-            ):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
                 raise ValueError("resume requires an existing campaign checkpoint")
         elif output.exists() and (not output.is_dir() or any(output.iterdir())):
-            raise ValueError(
-                "output must be new or empty; use --resume only for this campaign"
-            )
+            raise ValueError("output must be new or empty; use --resume only for this campaign")
         output.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock = os.open(
-            output / "campaign.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
-        )
+        lock = os.open(output / "campaign.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        state = (
-            json.loads((output / "campaign.json").read_text()) if args.resume else None
-        )
+        state = json.loads((output / "campaign.json").read_text()) if args.resume else None
         if state is not None:
             if (
                 not isinstance(state, dict)
                 or state.get("format") != 1
                 or state.get("plan_id") != args.plan_id
             ):
-                raise ValueError(
-                    "resume requires the same frozen plan and campaign options"
-                )
+                raise ValueError("resume requires the same frozen plan and campaign options")
             plan = load_blueprint_version(args.plan_id, state.get("plan_version"))
         options = options_for(args, plan)
         if (
             not 1 <= args.discovery_batches <= 20
-            or not 0
-            <= args.originals_per_item
-            <= (200 if options.get("selection") else 20)
+            or not 0 <= args.originals_per_item <= (200 if options.get("selection") else 20)
             or not 10 <= args.time_budget <= 7200
         ):
             raise ValueError("campaign budgets exceed the supported bounds")
@@ -317,16 +283,12 @@ def main():
             or state.get("plan_hash") != hashlib.sha256(dump(plan).encode()).hexdigest()
             or (state.get("options") != options and not args.extend)
         ):
-            raise ValueError(
-                "resume requires the same frozen plan and campaign options"
-            )
+            raise ValueError("resume requires the same frozen plan and campaign options")
         if args.extend:
-            from app.resource_campaign import validate_extension
+            from app.contexts.collection.application.resource_campaign import validate_extension
 
             validate_extension(state["options"], options)
-        if state is None and any(
-            path.name != "campaign.lock" for path in output.iterdir()
-        ):
+        if state is None and any(path.name != "campaign.lock" for path in output.iterdir()):
             raise ValueError("output changed while acquiring the campaign lock")
         previous_report = output / "report.json"
         if state is not None and previous_report.is_file():

@@ -37,7 +37,10 @@ def main():
         from verify_ingestion import configure_models
 
         configure_models(args.models_env)
-    from app.collection_import import CollectionImportError, import_collected_resources
+    from app.contexts.collection.application.collection_import import (
+        CollectionImportError,
+        import_collected_resources,
+    )
 
     try:
         result = import_collected_resources(

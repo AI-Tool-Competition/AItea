@@ -6,10 +6,9 @@ import io
 import json
 
 import pytest
-
-from app import singapore_cases as cases
-from app.blob_store import BlobIntegrityError
-from app.ingestion import DownloadError
+from app.contexts.collection.infrastructure.discovery import singapore_cases as cases
+from app.shared.infrastructure.blob_store import BlobIntegrityError
+from app.shared.infrastructure.http.download import DownloadError
 
 HEADER = [
     "Judgment_URL",

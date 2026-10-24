@@ -22,10 +22,7 @@ def read_json(path):
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or not 0 < before.st_size <= 2 * 1024 * 1024
-        ):
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= 2 * 1024 * 1024:
             raise ValueError("需要不超过 2 MiB 的普通检查点文件。")
         raw = stream.read(before.st_size + 1)
         after = os.fstat(stream.fileno())
@@ -42,10 +39,13 @@ def child(data_dir, output, options, models_env, state, time_budget):
         os.setsid()
     os.umask(0o077)
     configure_models(models_env)
-    from app.collection import CollectionWorkers
-    from app.html_image_collection import HtmlImageCollector, HtmlProcessingPending
-    from app.ingestion_quality import text_complete
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.contexts.collection.application.collection import CollectionWorkers
+    from app.contexts.collection.application.html_image_collection import (
+        HtmlImageCollector,
+        HtmlProcessingPending,
+    )
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
 
     started = time.monotonic()
     deadline = started + time_budget
@@ -86,9 +86,7 @@ def child(data_dir, output, options, models_env, state, time_budget):
                 report["documents"].append(row)
                 report["protected_download_attempts"] = collector.request_attempts
                 write_report(output, report)
-            eligible, rejected = collector.processing_candidates(
-                options["owner_id"], options["document_ids"]
-            )
+            eligible, rejected = collector.processing_candidates(options["owner_id"], options["document_ids"])
             report["processing_allowlist"] = eligible
             report["processing_rejected"] = rejected
             if options["live_models"] and eligible and time.monotonic() < deadline:
@@ -104,9 +102,7 @@ def child(data_dir, output, options, models_env, state, time_budget):
                             "SELECT count(*) FROM processing_jobs WHERE owner_id=? AND document_id IN ("
                             + ",".join("?" for _ in eligible)
                             + ") AND status IN ('queued','processing')"
-                            + service.collection._processing_policy_clause(
-                                "draft_html_v3"
-                            ),
+                            + service.collection._processing_policy_clause("draft_html_v3"),
                             (options["owner_id"], *eligible),
                         ).fetchone()[0]
                     if not pending:
@@ -149,9 +145,7 @@ def child(data_dir, output, options, models_env, state, time_budget):
                             "vectors": vectors,
                             "retrieval_chunks": chunks,
                             "vectors_current_input_and_profile": valid_vectors,
-                            "vector_complete": bool(
-                                fingerprint and chunks and chunks == valid_vectors
-                            ),
+                            "vector_complete": bool(fingerprint and chunks and chunks == valid_vectors),
                             "status": row["status"],
                             "error": row["error"],
                         }
@@ -204,9 +198,7 @@ def main():
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument(
-        "--images-per-document", type=int, default=4, choices=range(1, 21)
-    )
+    parser.add_argument("--images-per-document", type=int, default=4, choices=range(1, 21))
     parser.add_argument("--max-downloads", type=int, default=20, choices=range(1, 101))
     parser.add_argument("--time-budget", type=int, default=300, choices=range(10, 901))
     parser.add_argument("--live-models", action="store_true")
@@ -215,21 +207,16 @@ def main():
     lock = None
     try:
         data_dir = args.data_dir.resolve()
-        if (
-            not (data_dir / "tea.sqlite3").is_file()
-            or (data_dir / "tea.sqlite3").is_symlink()
-        ):
+        if not (data_dir / "tea.sqlite3").is_file() or (data_dir / "tea.sqlite3").is_symlink():
             raise ValueError("data-dir 必须是已有资料库。")
         documents = args.document_ids.split(",")
-        from app.collection import CollectionService
+        from app.contexts.collection.application.collection import CollectionService
 
         CollectionService._processing_scope(args.owner, documents)
         if args.models_env and not args.live_models:
             raise ValueError("models-env 需要同时显式启用 live-models。")
         if args.live_models and (
-            not args.models_env
-            or not args.models_env.is_file()
-            or args.models_env.is_symlink()
+            not args.models_env or not args.models_env.is_file() or args.models_env.is_symlink()
         ):
             raise ValueError("真实处理需要已有的私有模型配置普通文件。")
         options = {
@@ -249,16 +236,10 @@ def main():
         elif output.exists() and (not output.is_dir() or any(output.iterdir())):
             raise ValueError("output 需要新目录；已有任务使用 resume。")
         output.mkdir(parents=True, mode=0o700, exist_ok=True)
-        lock = os.open(
-            output / "job.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
-        )
+        lock = os.open(output / "job.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.resume:
-            state = (
-                read_json(output / "images.json")
-                if (output / "images.json").exists()
-                else None
-            )
+            state = read_json(output / "images.json") if (output / "images.json").exists() else None
             if (output / "report.json").exists():
                 previous = (output / "report.json").read_bytes()
                 prior = output / f"report-{time.time_ns()}.json"
@@ -290,22 +271,14 @@ def main():
         process.join(args.time_budget)
         if process.is_alive():
             terminate_owned(process)
-            report = (
-                read_json(output / "report.json")
-                if (output / "report.json").exists()
-                else {}
-            )
+            report = read_json(output / "report.json") if (output / "report.json").exists() else {}
             report.update(
                 status="budget_exhausted_resumable",
                 owned_process_stopped=not process.is_alive(),
             )
             write_report(output, report)
             raise SystemExit(3)
-        report = (
-            read_json(output / "report.json")
-            if (output / "report.json").exists()
-            else {}
-        )
+        report = read_json(output / "report.json") if (output / "report.json").exists() else {}
         print(
             json.dumps(
                 {
@@ -318,8 +291,7 @@ def main():
             )
         )
         raise SystemExit(
-            process.exitcode
-            or (2 if report.get("status") != "owned_image_batch_finished" else 0)
+            process.exitcode or (2 if report.get("status") != "owned_image_batch_finished" else 0)
         )
     except KeyboardInterrupt:
         terminate_owned(process)

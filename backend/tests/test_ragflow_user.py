@@ -1,8 +1,9 @@
 import sys
 import tomllib
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+from app.paths import PROJECT_ROOT
+
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from ragflow_user import infinity_runtime_config  # noqa: E402

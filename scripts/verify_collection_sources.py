@@ -22,18 +22,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.blob_store import BlobStore
-from app.checklists import load_blueprints
-from app.db import now
-from app.discovery import (
+from app.contexts.collection.application.checklists import load_blueprints
+from app.contexts.collection.infrastructure.discovery.discovery import (
     MAX_HTML_BYTES,
     discover_page,
     normalized_seeds_for,
     recipe_for,
     request_parameters,
 )
-from app.ingestion import DownloadError, _download
-from app.source_envelopes import extract_bkpm_multipart_pdf
+from app.contexts.collection.infrastructure.discovery.source_envelopes import extract_bkpm_multipart_pdf
+from app.shared.domain.values import now
+from app.shared.infrastructure.blob_store import BlobStore
+from app.shared.infrastructure.http.download import DownloadError, _download
 
 ROOT = Path(__file__).resolve().parents[1]
 

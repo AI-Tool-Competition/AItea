@@ -1,24 +1,28 @@
 """Source-bound cloud parsing, resumable indexing and scoped RAGFlow retrieval."""
 
-from contextlib import closing
-from copy import deepcopy
-from datetime import date
 import hashlib
 import io
 import json
 import time
-from threading import Lock
 import zipfile
+from contextlib import closing
+from copy import deepcopy
+from datetime import date
+from threading import Lock
 
 import pytest
-
-from app.db import now
-from app.ingestion_quality import text_complete
-from app.mineru import Admission, MinerUWait, manifest_valid
-from app.mineru_results import _assemble, _prepare, reference, resolve_reference
-from app.native_asset_ocr import assets
-from app.ragflow import RAGFlowError, chunk_content
-from app.service import Service
+from app.bootstrap import Service
+from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+from app.contexts.knowledge.infrastructure.providers.mineru import Admission, MinerUWait, manifest_valid
+from app.contexts.knowledge.infrastructure.providers.mineru_results import (
+    _assemble,
+    _prepare,
+    reference,
+    resolve_reference,
+)
+from app.contexts.knowledge.infrastructure.providers.native_asset_ocr import assets
+from app.contexts.knowledge.infrastructure.providers.ragflow import RAGFlowError, chunk_content
+from app.shared.domain.values import now
 from test_retrieval_index import body, seed
 
 
@@ -71,7 +75,9 @@ class Remote:
 
 def prepared(service, monkeypatch, *, count=1):
     remote = Remote()
-    monkeypatch.setattr("app.ragflow.RAGFlowClient", lambda: remote)
+    monkeypatch.setattr(
+        "app.contexts.knowledge.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
+    )
     original = service.archive.blobs.put_bytes("owner", b"lawful tea clause")
     with service.db.transaction() as conn:
         seed(conn, "target", body(count=count))
@@ -167,9 +173,7 @@ def test_recovery_reconciles_exact_remote_receipt_without_resubmitting(workspace
         workspace.ragflow.step(document, claim)
     with workspace.db.transaction() as conn:
         conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
-    workspace.collection._failure(
-        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
-    )
+    workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
         conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
     result = workspace.collection.recovery.run_due()
@@ -187,7 +191,10 @@ def test_recovery_reconciles_exact_remote_receipt_without_resubmitting(workspace
     assert claim
     workspace.collection.process_item(claim)
     with closing(workspace.db.connect()) as conn:
-        assert conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0] == "completed"
+        assert (
+            conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
+            == "completed"
+        )
         assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
         assert conn.execute("SELECT status FROM collection_recovery_jobs").fetchone()[0] == "completed"
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
@@ -202,9 +209,7 @@ def test_recovery_keeps_unmatched_paid_intent_blocked_without_resubmitting(works
     remote.chunks.clear()
     with workspace.db.transaction() as conn:
         conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
-    workspace.collection._failure(
-        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
-    )
+    workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
         conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
 
@@ -225,9 +230,7 @@ def test_recovery_keeps_unmatched_paid_intent_blocked_without_resubmitting(works
 
 def test_recovery_does_not_query_ragflow_for_legacy_unknown_embedding(workspace, monkeypatch):
     remote, _document, claim = prepared(workspace, monkeypatch)
-    workspace.collection._failure(
-        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
-    )
+    workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     result = workspace.collection.recovery.run_due()
     assert result["reconciled"] == 0 and result["receipt_audit_errors"] == 0
     assert remote.calls == []
@@ -255,9 +258,7 @@ def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(w
             "UPDATE ragflow_chunks SET state='intent',intent_at=?,next_at=0 WHERE generation=?",
             (time.time() - 1000, generation),
         )
-    workspace.collection._failure(
-        claim, RAGFlowError("embedding_outcome_unknown"), processing=True
-    )
+    workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
         conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
     posts_before = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
@@ -400,9 +401,9 @@ def test_remote_completion_invalidates_analysis_cache_without_changing_source_re
 
 
 def test_mineru_parts_are_mechanical_and_within_200_pages(tmp_path, monkeypatch):
-    from pypdf import PdfWriter, PdfReader
+    from app.shared.infrastructure.blob_store import BlobStore
+    from pypdf import PdfReader, PdfWriter
     from pypdf._page import PageObject
-    from app.blob_store import BlobStore
 
     monkeypatch.setattr(PageObject, "extract_text", lambda *_a, **_k: pytest.fail("local text parser called"))
     writer = PdfWriter()
@@ -428,7 +429,7 @@ def test_mineru_parts_are_mechanical_and_within_200_pages(tmp_path, monkeypatch)
 
 
 def result_archive(tmp_path, *, unsafe=False):
-    from app.blob_store import BlobStore
+    from app.shared.infrastructure.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
     out = io.BytesIO()
@@ -470,8 +471,8 @@ def test_mineru_retains_artifacts_and_requires_page_source_proofs(tmp_path):
 
 
 def test_mineru_assembles_documents_over_four_million_characters_within_storage_bound(tmp_path):
-    from app.blob_store import BlobStore
-    from app.mineru_results import MAX_ASSEMBLED_RESULT_BYTES
+    from app.contexts.knowledge.infrastructure.providers.mineru_results import MAX_ASSEMBLED_RESULT_BYTES
+    from app.shared.infrastructure.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
     body = "x" * 4_100_000
@@ -481,8 +482,14 @@ def test_mineru_assembles_documents_over_four_million_characters_within_storage_
         result_zip.writestr(
             "task_content_list.json",
             json.dumps(
-                [{"type": "table", "page_idx": 0, "bbox": [10, 20, 900, 950],
-                  "table_body": f"<table><tr><td>{body}</td></tr></table>"}],
+                [
+                    {
+                        "type": "table",
+                        "page_idx": 0,
+                        "bbox": [10, 20, 900, 950],
+                        "table_body": f"<table><tr><td>{body}</td></tr></table>",
+                    }
+                ],
                 separators=(",", ":"),
             ),
         )
@@ -514,7 +521,7 @@ def test_untrusted_mineru_zip_cannot_escape_storage(tmp_path):
 
 
 def test_mineru_limit_and_retry_after_are_shared(tmp_path, monkeypatch):
-    from app import mineru
+    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
 
     monkeypatch.setattr(mineru.time, "time", lambda: 1000)
     first, second = Admission(tmp_path), Admission(tmp_path)
@@ -529,8 +536,9 @@ def test_mineru_limit_and_retry_after_are_shared(tmp_path, monkeypatch):
 
 def test_mineru_download_uses_bounded_transport_and_account_cas(tmp_path, monkeypatch):
     import time
-    from app.mineru import MinerUClient
-    from app.blob_store import BlobStore
+
+    from app.contexts.knowledge.infrastructure.providers.mineru import MinerUClient
+    from app.shared.infrastructure.blob_store import BlobStore
 
     monkeypatch.setenv("MINERU_API_TOKEN", "test-mineru-token")
     store = BlobStore(tmp_path / "files")
@@ -541,13 +549,13 @@ def test_mineru_download_uses_bounded_transport_and_account_cas(tmp_path, monkey
         assert max_bytes == 128 * 1024 * 1024
         return {"blob": consume(iter([b"bounded provider result"]))}
 
-    monkeypatch.setattr("app.ingestion._download", download)
+    monkeypatch.setattr("app.shared.infrastructure.http.download._download", download)
     result = MinerUClient(tmp_path).download("https://results.example/result.zip", store, "owner")
     assert resolve_reference(result, store.files_dir, "owner").read_bytes() == b"bounded provider result"
 
 
 def test_mineru_merged_tables_keep_original_text_on_each_physical_page(tmp_path):
-    from app.blob_store import BlobStore
+    from app.shared.infrastructure.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
     out = io.BytesIO()
@@ -612,7 +620,7 @@ def test_mineru_merged_tables_keep_original_text_on_each_physical_page(tmp_path)
 
 
 def capacity_clock(tmp_path, monkeypatch):
-    from app import mineru
+    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
 
     clock = [1000.0]
     monkeypatch.setattr(mineru.time, "time", lambda: clock[0])
@@ -659,7 +667,7 @@ def test_quota_does_not_become_concurrency_boundary(tmp_path, monkeypatch):
 
 
 def test_inconsistent_worker_configuration_cannot_reset_verified_evidence(tmp_path, monkeypatch):
-    from app.mineru import MinerUError
+    from app.contexts.knowledge.infrastructure.providers.mineru import MinerUError
 
     clock, admission = capacity_clock(tmp_path, monkeypatch)
     loaded_stage(clock, admission, 8)
@@ -680,7 +688,7 @@ def test_repeated_transport_failures_reduce_capacity(tmp_path, monkeypatch):
 
 
 def test_table_spans_preserve_column_alignment():
-    from app.mineru_results import _TableText
+    from app.contexts.knowledge.infrastructure.providers.mineru_results import _TableText
 
     table = _TableText()
     table.feed(
@@ -778,7 +786,7 @@ def test_chart_keeps_asset_and_requires_readable_content(tmp_path, content, capt
 
 
 def test_processing_runs_source_bound_mineru_chart_ocr_before_indexing(workspace, monkeypatch):
-    from test_native_asset_ocr import raster
+    from support.native_asset_ocr import raster
 
     service = workspace
     source = service.archive.blobs.put_bytes("owner", b"verified-chart-pdf")
@@ -800,7 +808,12 @@ def test_processing_runs_source_bound_mineru_chart_ocr_before_indexing(workspace
         "parser_version": "api-v4",
         "pipeline_version": "mineru-precise-v1",
         "source_hash": source.digest,
-        "quality": {"status": "needs_review", "complete": False, "review_required": True, "review_pages": [1]},
+        "quality": {
+            "status": "needs_review",
+            "complete": False,
+            "review_required": True,
+            "review_pages": [1],
+        },
         "pages": [
             {
                 "page": 1,
@@ -861,9 +874,11 @@ def test_processing_runs_source_bound_mineru_chart_ocr_before_indexing(workspace
         service.collection.queue_processing(conn, "chart-target", "owner")
     monkeypatch.setattr(service.collection.parser, "step", lambda *_args: deepcopy(manifest))
     monkeypatch.setattr(service, "embedding_fingerprint", lambda: None)
-    monkeypatch.setattr("app.vision.vision_ocr_configured", lambda: True)
     monkeypatch.setattr(
-        "app.vision.transcribe_chart_image",
+        "app.contexts.knowledge.infrastructure.providers.vision.vision_ocr_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.contexts.knowledge.infrastructure.providers.vision.transcribe_chart_image",
         lambda _rendered: {
             "text": "Chart title: Export value\n| Year | Value |\n| 2024 | 17 |",
             "complete": True,
@@ -880,8 +895,38 @@ def test_processing_runs_source_bound_mineru_chart_ocr_before_indexing(workspace
     claim = service.collection.claim_processing(owner_id="owner", document_ids=["chart-target"])
     service.collection.process_item(claim)
     with closing(service.db.connect()) as conn:
-        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id='chart-target'").fetchone()[0])
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id='chart-target'").fetchone()[0]
+        )
         job = dict(conn.execute("SELECT * FROM processing_jobs WHERE document_id='chart-target'").fetchone())
     assert text_complete(saved)
     assert saved["mineru_chart_assets"][0]["ocr"]["prompt_version"] == "mineru-chart-transcription-v1"
     assert job["status"] == "completed"
+
+
+def test_ragflow_retrieval_isolates_two_cases_of_the_same_account(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch)
+    workspace.ragflow.step(document, claim)
+    workspace.ragflow.step(document, claim)
+    template = workspace.templates("owner")[0]
+    values = {
+        "template_id": template["id"],
+        "mode_id": next(m["id"] for m in template["modes"] if m["enabled"]),
+        "title": "case",
+    }
+    first, second = workspace.create_case("owner", values), workspace.create_case("owner", values)
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE documents SET case_id=? WHERE id='target'", (first["id"],))
+        conn.execute("UPDATE processing_jobs SET status='completed',lease_token=NULL,lease_until=NULL")
+    seen = []
+
+    def retrieve(query, candidates, *, limit):
+        seen.extend(row["document_id"] for row in candidates)
+        return [{"id": next(iter(remote.chunks)), "document_id": "document-target"}]
+
+    monkeypatch.setattr(workspace.ragflow, "retrieve", retrieve)
+    assert workspace.search("owner", "tea", case_id=second["id"])["items"] == []
+    assert seen == []
+    assert [h["document_id"] for h in workspace.search("owner", "tea", case_id=first["id"])["items"]] == [
+        "target"
+    ]

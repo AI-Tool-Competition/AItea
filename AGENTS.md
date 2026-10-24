@@ -76,7 +76,7 @@ Python 依赖和虚拟环境统一使用 **uv**：`backend/pyproject.toml` 与 `
 - 当前持久化为 SQLite WAL、显式事务与版本化结构，不是 SQLAlchemy/Alembic 项目。新增表或字段应同步结构版本、升级逻辑及测试，覆盖已有数据库和空库；不可仅改 `CREATE TABLE IF NOT EXISTS` 就假定旧库已升级。
 - 结构升级与演示数据、业务数据修复分离。破坏性操作必须限定影响范围，说明备份、失败恢复和兼容性；不得在启动时隐式清空或重建用户数据。
 - 状态变更由业务服务统一处理，路由负责输入、鉴权与响应；复用已有服务，不在页面或模型输出中复制状态机。
-- API 入参使用 Pydantic 模型校验，响应与错误格式保持一致。接口变化同步 `backend/app/models.py`、`frontend/src/core/tea/types.ts`、调用点和 `docs/API_CONTRACT.md` 中受影响内容。
+- API 入参使用 Pydantic 模型校验，响应与错误格式保持一致。接口变化同步 `backend/app/shared/application/models.py`、`frontend/src/core/tea/types.ts`、调用点和 `docs/API_CONTRACT.md` 中受影响内容。
 - 茶业务统一经 `frontend/src/core/tea/api.ts` 请求后端；当前客户端是手工维护的类型化封装，不要求不存在的 Orval 生成流程。
 - 读取列表采用有界分页及稳定顺序；高频过滤应有合适索引，避免 N+1 与无界返回正文。
 - 写入有明确事务边界；重复请求使用现有幂等标识，编辑使用修订号或版本检查。过期写入返回冲突，不悄悄覆盖新数据。

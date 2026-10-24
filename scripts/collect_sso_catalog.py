@@ -27,8 +27,8 @@ from dotenv import dotenv_values
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.discovery import discover_page, recipe_for
-from app.ingestion import _download
+from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+from app.shared.infrastructure.http.download import _download
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOGS = {

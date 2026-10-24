@@ -209,7 +209,7 @@ def test_explicit_native_asset_retry_preserves_previous_transcript(tmp_path, ena
     previous = native.assets(first)[0]
     assert previous["asset_status"] == "ocr_uncertain"
 
-    retry = native.prepare_asset_retries(first)
+    retry = native.prepare_asset_retries(first, asset_keys=[key])
     current = native.assets(retry)[0]
     history = current["ocr_attempt_history"]
     assert current["asset_status"] == "pending_vision"
@@ -217,6 +217,8 @@ def test_explicit_native_asset_retry_preserves_previous_transcript(tmp_path, ena
     assert len(history) == 1
     assert history[0]["previous_asset"]["asset_status"] == "ocr_uncertain"
     assert history[0]["previous_asset"]["ocr"]["text"] == "The complete printed image text."
+    with pytest.raises(ValueError, match="清单"):
+        native.prepare_asset_retries(first, asset_keys=["another-image"])
     previous_bytes = json.dumps(
         history[0]["previous_asset"],
         ensure_ascii=False,

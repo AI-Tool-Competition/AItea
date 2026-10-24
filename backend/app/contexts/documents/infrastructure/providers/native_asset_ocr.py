@@ -241,20 +241,44 @@ def pending_assets(manifest: dict) -> list[dict]:
     return [value for value in assets(manifest) if value["asset_status"] == "pending_vision"]
 
 
-def prepare_asset_retries(manifest: dict, *, statuses=("ocr_failed", "ocr_uncertain"), max_assets=20) -> dict:
+def prepare_asset_retries(
+    manifest: dict,
+    *,
+    statuses=("ocr_failed", "ocr_uncertain"),
+    asset_keys=None,
+    max_assets=20,
+) -> dict:
     """Prepare an explicit bounded retry while preserving every previous result."""
     if (
         not isinstance(statuses, (tuple, list, set, frozenset))
         or not statuses
         or any(
-            not isinstance(status, str) or status not in {"ocr_failed", "ocr_uncertain"}
+            not isinstance(status, str)
+            or status not in {"ocr_failed", "ocr_uncertain", "pending_vision"}
             for status in statuses
         )
         or type(max_assets) is not int
         or not 1 <= max_assets <= 20
+        or (
+            asset_keys is not None
+            and (
+                not isinstance(asset_keys, (tuple, list, set, frozenset))
+                or not asset_keys
+                or any(not isinstance(key, str) or not key for key in asset_keys)
+                or len(set(asset_keys)) != len(asset_keys)
+            )
+        )
     ):
         raise ValueError("原生图片重试范围或批量上限无效。")
-    selected = [value for value in assets(manifest) if value["asset_status"] in statuses]
+    available = assets(manifest)
+    selected = [
+        value
+        for value in available
+        if value["asset_status"] in statuses
+        and (asset_keys is None or value["asset_key"] in asset_keys)
+    ]
+    if asset_keys is not None and {value["asset_key"] for value in selected} != set(asset_keys):
+        raise ValueError("原生图片重试清单与当前待识别图片不匹配。")
     if len(selected) > max_assets:
         raise ValueError("原生图片重试数量超过单批上限。")
     updated = deepcopy(manifest)

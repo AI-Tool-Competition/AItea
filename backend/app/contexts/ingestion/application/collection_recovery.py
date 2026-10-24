@@ -21,6 +21,8 @@ SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
 MAX_BATCH = 32
+MAX_AUTOMATIC_OCR_RECOVERIES = 3
+MAX_AUTOMATIC_OCR_TARGETS = 20
 
 
 def _encoded(value):
@@ -43,6 +45,7 @@ class Decision:
     retryable: bool = False
     pages: tuple[int, ...] = ()
     not_before: float = 0
+    asset_keys: tuple[str, ...] = ()
 
 
 def _unknown(record):
@@ -61,6 +64,11 @@ def _unknown(record):
         and not metadata.get("error_response")
         and not record.get("error")
     )
+
+
+def _permanent_ocr_http_error(record):
+    status = (record.get("ocr") or {}).get("http_status")
+    return type(status) is int and 400 <= status < 500 and status not in {408, 429}
 
 
 def _legacy_mineru_chart_refresh(manifest):
@@ -110,7 +118,7 @@ def _legacy_mineru_chart_refresh(manifest):
 
 
 def classify_processing(manifest, *, phase, error=None, retryable=False, interrupted=False):
-    """Use explicit outcome evidence, never an exception's localized message."""
+    """Use bound OCR evidence and bounded automatic retries, never exception text."""
     from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
 
     if phase == "embed":
@@ -124,12 +132,86 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         return Decision("invalid_checkpoint")
     try:
         images = assets(manifest)
-        if any(_unknown(record) for record in [*pages, *images]):
-            return Decision("paid_result_unknown")
     except (ValueError, TypeError, AttributeError):
         return Decision("invalid_checkpoint")
     if phase == "parse" and _legacy_mineru_chart_refresh(manifest):
         return Decision("mineru_chart_refresh", True)
+
+    retry_pages, retry_assets = [], []
+    retry_budget_exhausted = False
+    unknown_outcome = False
+    if phase == "parse":
+        for page in pages:
+            metadata = page.get("ocr") or {}
+            status = page.get("status")
+            unknown = _unknown(page)
+            unknown_outcome |= unknown
+            # MinerU's page-level chart/table warning is not a failed vision
+            # request. Its mapped chart assets below are the retry targets.
+            vision_page = metadata.get("provider") != "mineru" and bool(
+                metadata.get("prompt_version") or metadata.get("request_id")
+            )
+            eligible = (
+                status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
+                and (
+                    unknown
+                    or (
+                        vision_page
+                        and metadata.get("complete") is False
+                        and not _permanent_ocr_http_error(page)
+                    )
+                )
+                and type(page.get("page")) is int
+                and page["page"] > 0
+            )
+            if not eligible:
+                continue
+            cycles = page.get("ocr_retry_cycles", [])
+            if not isinstance(cycles, list):
+                return Decision("invalid_checkpoint")
+            if len(cycles) >= MAX_AUTOMATIC_OCR_RECOVERIES:
+                retry_budget_exhausted = True
+            elif len(retry_pages) < MAX_AUTOMATIC_OCR_TARGETS:
+                retry_pages.append(page["page"])
+
+        for asset in images:
+            metadata = asset.get("ocr") or {}
+            unknown = _unknown(asset)
+            unknown_outcome |= unknown
+            eligible = (
+                asset.get("asset_status") == "ocr_uncertain"
+                or (
+                    asset.get("asset_status") == "ocr_failed"
+                    and not _permanent_ocr_http_error(asset)
+                )
+                or (asset.get("asset_status") == "pending_vision" and unknown)
+            )
+            if not eligible:
+                continue
+            history = asset.get("ocr_attempt_history", [])
+            if not isinstance(history, list):
+                return Decision("invalid_checkpoint")
+            if len(history) >= MAX_AUTOMATIC_OCR_RECOVERIES:
+                retry_budget_exhausted = True
+            elif len(retry_assets) < MAX_AUTOMATIC_OCR_TARGETS:
+                retry_assets.append(asset["asset_key"])
+
+        if retry_pages or retry_assets:
+            reason = "paid_ocr_retry" if unknown_outcome else "ocr_quality_retry"
+            return Decision(
+                reason,
+                True,
+                tuple(retry_pages),
+                0,
+                tuple(retry_assets),
+            )
+        if unknown_outcome:
+            return Decision("ocr_retry_budget_review" if retry_budget_exhausted else "paid_result_unknown")
+        if retry_budget_exhausted:
+            return Decision("ocr_retry_budget_review")
+    elif any(_unknown(record) for record in [*pages, *images]):
+        return Decision("paid_result_unknown")
+
     if any(
         page.get("status") == "ocr_uncertain"
         or page.get("ocr", {}).get("phase") == "recovery"
@@ -146,7 +228,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             return Decision("ocr_retry_scope_review")
         if any(
             not isinstance(page.get("ocr_retry_cycles", []), list)
-            or len(page.get("ocr_retry_cycles", [])) >= 3
+            or len(page.get("ocr_retry_cycles", [])) >= MAX_AUTOMATIC_OCR_RECOVERIES
             for page in failed
         ):
             return Decision("ocr_retry_budget_review")
@@ -281,7 +363,7 @@ class CollectionRecovery:
         )
         status = ("waiting" if decision.retryable else "blocked") if exhausted else "queued"
         retry_plan = []
-        if processing and decision.pages:
+        if processing and (decision.pages or decision.asset_keys):
             manifest = json.loads(
                 conn.execute(
                     "SELECT manifest FROM documents WHERE id=? AND owner_id=?", (item_id, owner)
@@ -292,6 +374,13 @@ class CollectionRecovery:
                 for page in manifest.get("pages", [])
                 if page.get("page") in decision.pages
             ]
+            from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
+
+            retry_plan.extend(
+                {"asset_key": asset["asset_key"], "checkpoint_sha256": _digest(asset)}
+                for asset in assets(manifest)
+                if asset["asset_key"] in decision.asset_keys
+            )
         conn.execute(
             """UPDATE collection_recovery_jobs SET status=?,reason=?,available_at=?,failure_count=failure_count+1,
             retry_plan=?,revision=revision+1,updated_at=? WHERE id=?""",
@@ -306,6 +395,7 @@ class CollectionRecovery:
             "binding_sha256": fingerprint,
             "error_type": error_type,
             "physical_pages": list(decision.pages),
+            "assets": list(decision.asset_keys),
             "retry_plan": retry_plan,
         }
         self._event(conn, row["id"], "attempt_failed", detail)
@@ -343,7 +433,7 @@ class CollectionRecovery:
         self._event(conn, row["id"], "blocked", {"reason": reason})
 
     def _retry_pages(self, conn, row, document, manifest, decision):
-        """Archive exact rejected checkpoints in CAS before opening a new burst."""
+        """Archive exact failed OCR checkpoints in CAS before opening a new burst."""
         from app.contexts.documents.infrastructure.parsers.native_parser import pdf_quality
         from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import read_image_blob
         from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
@@ -357,14 +447,37 @@ class CollectionRecovery:
             page = by_number[number]
             if page.get("source_hash") != document["content_hash"]:
                 raise ValueError("retry_page_source_mismatch")
-            envelope = page["ocr"]["error_response"]
-            raw = read_image_blob(self.db.data_dir, row["owner_id"], envelope["blob"])
-            evidence = json.loads(raw)
-            validate_response_binding(evidence, document["content_hash"], page)
-            if evidence.get("http_status") != 429 or any(
-                evidence.get(key) != value for key, value in envelope.items() if key != "blob"
+            metadata = page.get("ocr") or {}
+            vision_page = metadata.get("provider") != "mineru" and bool(
+                metadata.get("prompt_version") or metadata.get("request_id")
+            )
+            retryable_page = (
+                page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
+                and (
+                    _unknown(page)
+                    or (
+                        vision_page
+                        and metadata.get("complete") is False
+                        and not _permanent_ocr_http_error(page)
+                    )
+                )
+            )
+            cycles = page.get("ocr_retry_cycles", [])
+            if (
+                not retryable_page
+                or not isinstance(cycles, list)
+                or len(cycles) >= MAX_AUTOMATIC_OCR_RECOVERIES
             ):
-                raise ValueError("retry_requires_bound_429_receipt")
+                raise ValueError("retry_page_checkpoint_not_eligible")
+            envelope = metadata.get("error_response")
+            if metadata.get("http_status") == 429 and isinstance(envelope, dict):
+                raw = read_image_blob(self.db.data_dir, row["owner_id"], envelope["blob"])
+                evidence = json.loads(raw)
+                validate_response_binding(evidence, document["content_hash"], page)
+                if evidence.get("http_status") != 429 or any(
+                    evidence.get(key) != value for key, value in envelope.items() if key != "blob"
+                ):
+                    raise ValueError("retry_requires_bound_429_receipt")
             previous = deepcopy(page)
             payload = {
                 "protocol": "ocr-automatic-retry-checkpoint-v1",
@@ -412,6 +525,42 @@ class CollectionRecovery:
         )
         return receipts
 
+    def _retry_assets(self, conn, row, document, decision):
+        """Preserve prior image outputs and reset only exact source-bound assets."""
+        from app.contexts.documents.infrastructure.providers.native_asset_ocr import (
+            assets,
+            prepare_asset_retries,
+        )
+
+        current = conn.execute(
+            "SELECT manifest FROM documents WHERE id=? AND owner_id=?",
+            (document["id"], row["owner_id"]),
+        ).fetchone()
+        manifest = json.loads(current["manifest"]) if current else None
+        if not isinstance(manifest, dict) or manifest.get("source_hash") != document["content_hash"]:
+            raise ValueError("retry_asset_source_mismatch")
+        selected = [asset for asset in assets(manifest) if asset["asset_key"] in decision.asset_keys]
+        if len(selected) != len(decision.asset_keys) or any(
+            asset["asset_status"] not in {"ocr_failed", "ocr_uncertain", "pending_vision"}
+            or len(asset.get("ocr_attempt_history", [])) >= MAX_AUTOMATIC_OCR_RECOVERIES
+            for asset in selected
+        ):
+            raise ValueError("retry_asset_checkpoint_not_eligible")
+        updated = prepare_asset_retries(
+            manifest,
+            statuses=("ocr_failed", "ocr_uncertain", "pending_vision"),
+            asset_keys=decision.asset_keys,
+            max_assets=MAX_AUTOMATIC_OCR_TARGETS,
+        )
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id=? AND owner_id=?",
+            (dump(updated), document["id"], row["owner_id"]),
+        )
+        return [
+            {"asset_key": asset["asset_key"], "previous_checkpoint_sha256": _digest(asset)}
+            for asset in selected
+        ]
+
     def _resume(self, conn, row, timestamp, *, worker_scope=BackgroundWorkerScope()):
         if not worker_scope.allows(row["owner_id"]):
             return "deferred"  # An excluded row must not gain an event or state change.
@@ -453,18 +602,33 @@ class CollectionRecovery:
             ):
                 self._defer(conn, row, timestamp)
                 return "deferred"
-            if decision.pages:
+            if decision.pages or decision.asset_keys:
+                from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
+
                 expected = json.loads(row["retry_plan"])
-                actual = [
+                actual_pages = [
                     {"page": page["page"], "checkpoint_sha256": _digest(page)}
                     for page in manifest.get("pages", [])
                     if page.get("page") in decision.pages
                 ]
-                if expected != actual or len({item["page"] for item in actual}) != len(decision.pages):
+                actual_assets = [
+                    {"asset_key": asset["asset_key"], "checkpoint_sha256": _digest(asset)}
+                    for asset in assets(manifest)
+                    if asset["asset_key"] in decision.asset_keys
+                ]
+                actual = [*actual_pages, *actual_assets]
+                if (
+                    expected != actual
+                    or len({item["page"] for item in actual_pages}) != len(decision.pages)
+                    or len({item["asset_key"] for item in actual_assets}) != len(decision.asset_keys)
+                ):
                     self._block(conn, row, "checkpoint_changed")
                     return "blocked"
                 try:
-                    receipts = self._retry_pages(conn, row, document, manifest, decision)
+                    if decision.pages:
+                        receipts.extend(self._retry_pages(conn, row, document, manifest, decision))
+                    if decision.asset_keys:
+                        receipts.extend(self._retry_assets(conn, row, document, decision))
                 except (OSError, ValueError, TypeError, KeyError):
                     self._block(conn, row, "retry_evidence_invalid")
                     return "blocked"
@@ -657,6 +821,89 @@ class CollectionRecovery:
                 )
                 promoted += 1
         return promoted
+
+    def _queue_automatic_ocr_retries(self, *, limit, worker_scope):
+        """Promote eligible OCR review holds into the durable retry queue."""
+        from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
+
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
+                        AND r.reason IN ('quality_review','processing_review','paid_result_unknown',
+                            'ocr_failure_review','image_failure_review','ocr_retry_scope_review')
+                        AND j.phase='parse' AND j.status='failed'"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (*arguments, limit),
+                )
+            ]
+        scheduled = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked'",
+                    (identifier,),
+                ).fetchone()
+                if row is None or not worker_scope.allows(row["owner_id"]):
+                    continue
+                binding = self._binding(conn, row["owner_id"], "processing", row["item_id"], "parse")
+                if binding is None or _digest(binding) != row["binding_sha256"]:
+                    self._block(conn, row, "source_changed")
+                    continue
+                document = conn.execute(
+                    "SELECT manifest,content_hash FROM documents WHERE id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT phase,status,available_at FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                if document is None or job is None or job["phase"] != "parse" or job["status"] != "failed":
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    self._block(conn, row, "invalid_checkpoint")
+                    continue
+                decision = classify_processing(manifest, phase="parse")
+                if not decision.retryable or not (decision.pages or decision.asset_keys):
+                    continue
+                retry_plan = [
+                    {"page": page["page"], "checkpoint_sha256": _digest(page)}
+                    for page in manifest.get("pages", [])
+                    if page.get("page") in decision.pages
+                ]
+                retry_plan.extend(
+                    {"asset_key": asset["asset_key"], "checkpoint_sha256": _digest(asset)}
+                    for asset in assets(manifest)
+                    if asset["asset_key"] in decision.asset_keys
+                )
+                timestamp = time.time()
+                available = max(timestamp, _timestamp(job["available_at"]), decision.not_before)
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='waiting',reason=?,available_at=?,
+                    retry_plan=?,revision=revision+1,updated_at=? WHERE id=?""",
+                    (decision.reason, available, dump(retry_plan), now(), identifier),
+                )
+                self._event(
+                    conn,
+                    identifier,
+                    "automatic_ocr_retry_scheduled",
+                    {
+                        "reason": decision.reason,
+                        "recovery_count": row["recovery_count"],
+                        "physical_pages": list(decision.pages),
+                        "assets": list(decision.asset_keys),
+                        "retry_plan": retry_plan,
+                    },
+                )
+                scheduled += 1
+        return scheduled
 
     def _reconcile_unknown_ragflow(self, *, limit, worker_scope):
         """Reconcile paid-unknown chunk intents by exact, read-only remote receipts."""
@@ -902,6 +1149,7 @@ class CollectionRecovery:
             if not adopted:
                 break
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(limit=limit, worker_scope=worker_scope)
+        self._queue_automatic_ocr_retries(limit=limit, worker_scope=worker_scope)
         for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
             result[key] += value
         with closing(self.db.connect()) as conn:

@@ -1,4 +1,4 @@
-"""Recovery is durable, source-fenced, bounded, and never guesses paid outcomes."""
+"""Recovery is durable, source-fenced, bounded, and preserves paid evidence."""
 
 import hashlib
 import json
@@ -15,10 +15,14 @@ from app.contexts.ingestion.application.collection_recovery import (
     Decision,
     classify_processing,
 )
+from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
+from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
+from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import bind_linked_image_bounded
 from app.shared.domain.values import dump, now
 from app.shared.infrastructure.http.download import DownloadError
 from app.shared.infrastructure.operations.scheduler import ScheduledCollector
 from support.ingestion_quality import make_pdf
+from support.native_asset_ocr import raster
 from support.pdf_ocr_reuse import register
 
 
@@ -177,10 +181,148 @@ def test_retry_after_is_persistent_and_not_shortened(service):
         {"attempts": 1, "http_status": 408},
     ],
 )
-def test_processing_unknown_paid_intents_remain_blocked(metadata):
+def test_processing_unknown_ocr_outcomes_are_retried_with_paid_attempt_history(metadata):
     manifest = {"pages": [{"page": 1, "status": "pending_ocr", "ocr": metadata}]}
-    assert classify_processing(manifest, phase="parse", retryable=True).reason == "paid_result_unknown"
-    assert not classify_processing(manifest, phase="parse", retryable=True).retryable
+    decision = classify_processing(manifest, phase="parse", retryable=True)
+    assert decision.reason == "paid_ocr_retry"
+    assert decision.retryable and decision.pages == (1,)
+
+
+def test_unknown_ocr_outcome_stops_after_three_preserved_retry_cycles():
+    manifest = {
+        "pages": [
+            {
+                "page": 1,
+                "status": "ocr_failed",
+                "ocr": {"attempts": 1, "request_outcome": "unknown_transport_result"},
+                "ocr_retry_cycles": [{"previous_page": {}} for _ in range(3)],
+            }
+        ]
+    }
+    decision = classify_processing(manifest, phase="parse")
+    assert decision.reason == "ocr_retry_budget_review"
+    assert not decision.retryable
+
+
+def test_incomplete_vision_page_is_retried_but_mineru_table_review_is_not():
+    vision_page = {
+        "page": 4,
+        "status": "ocr_uncertain",
+        "ocr": {
+            "prompt_version": "legal-page-transcription-v3",
+            "attempts": 1,
+            "complete": False,
+            "uncertain_spans": ["model_reported_incomplete"],
+        },
+    }
+    decision = classify_processing({"pages": [vision_page]}, phase="parse")
+    assert decision.reason == "ocr_quality_retry" and decision.pages == (4,)
+
+    mineru_page = {
+        "page": 4,
+        "status": "ocr_uncertain",
+        "ocr": {"provider": "mineru", "complete": False, "uncertain_spans": ["table_structure_ambiguous"]},
+    }
+    decision = classify_processing({"pages": [mineru_page]}, phase="parse")
+    assert decision.reason == "quality_review" and not decision.retryable
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_permanent_ocr_http_rejections_are_not_retried(status):
+    page = {
+        "page": 1,
+        "status": "ocr_failed",
+        "ocr": {
+            "prompt_version": "legal-page-transcription-v3",
+            "attempts": 1,
+            "http_status": status,
+            "complete": False,
+        },
+    }
+    decision = classify_processing({"pages": [page]}, phase="parse")
+    assert decision.reason == "ocr_failure_review" and not decision.retryable
+
+
+def test_blocked_incomplete_image_is_automatically_retried_with_its_old_result_preserved(service, monkeypatch):
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    body = b'<main><p>Official terms.</p><img src="/figure.png"></main>'
+    raw = raster()
+    manifest = parse_file("law.html", body)
+    original_image = service.archive.blobs.put_bytes("owner", raw)
+    manifest = bind_linked_image_bounded(
+        body,
+        manifest,
+        object_key=manifest["html_source"]["objects"][0]["object_key"],
+        source_url="https://official.invalid/law",
+        image=raw,
+        image_blob={
+            "content_hash": original_image.digest,
+            "size": original_image.size,
+            "storage_path": str(original_image.path.relative_to(service.db.data_dir)),
+        },
+    )
+
+    monkeypatch.setattr(
+        vision,
+        "transcribe_image",
+        lambda _rendered: {
+            "text": "Chart labels are partially unreadable.",
+            "complete": False,
+            "is_blank": False,
+            "uncertain_spans": ["model_reported_incomplete"],
+            "model": "test-vision",
+            "requested_model": "test-vision",
+            "prompt_version": vision.IMAGE_PROMPT_VERSION,
+            "review_status": "unreviewed",
+            "physical_pages_known": False,
+            "finish_reason": "stop",
+        },
+    )
+    image = native_asset_ocr.assets(manifest)[0]
+    uncertain = native_asset_ocr.ocr_native_assets_bounded(
+        body, manifest, image_contents={image["asset_key"]: raw}
+    )
+    previous = native_asset_ocr.assets(uncertain)[0]
+    original = service.archive.blobs.put_bytes("owner", body)
+    with service.db.transaction() as conn:
+        doc = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.html",
+            "text/html",
+            "https://official.invalid/law",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="automatic-ocr-retry",
+            kind_hint="law",
+        )
+        conn.execute("UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(uncertain), doc["id"]))
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (doc["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": doc["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision("quality_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    result = service.collection.recovery.run_due(limit=32)
+    assert result["requeued"] == 1
+    assert rows(service, "collection_recovery_events")[-2]["event"] == "automatic_ocr_retry_scheduled"
+    with closing(service.db.connect()) as conn:
+        row = conn.execute("SELECT manifest,status FROM documents WHERE id=?", (doc["id"],)).fetchone()
+        job = conn.execute("SELECT phase,status FROM processing_jobs WHERE document_id=?", (doc["id"],)).fetchone()
+    retried = native_asset_ocr.assets(json.loads(row["manifest"]))[0]
+    assert row["status"] == "processing" and tuple(job) == ("parse", "queued")
+    assert retried["asset_status"] == "pending_vision" and "ocr" not in retried
+    assert retried["ocr_attempt_history"][0]["previous_asset"] == previous
+    assert retried["ocr_attempt_history"][0]["previous_asset"]["ocr"]["text"] == previous["ocr"]["text"]
 
 
 def test_embed_last_rejection_does_not_prove_entire_multibatch_call_was_unpaid():

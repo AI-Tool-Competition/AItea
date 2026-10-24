@@ -657,6 +657,25 @@ class Collector:
                         previous_content_hash=previous_asset["content_hash"] if previous_asset else None,
                         content_hash=asset["content_hash"],
                         path=asset["path"],
+                        mime_type=asset["mime_type"],
+                        discovery_matched=(
+                            True if url != source["url"] and frontier.get(url, {}).get("purpose") == "document"
+                            else bool(asset.get("discovery", {}).get("matched"))
+                        ),
+                        discovery_purpose=(
+                            frontier.get(url, {}).get("purpose")
+                            if url != source["url"]
+                            else asset.get("discovery", {}).get("purpose")
+                        ),
+                        discovery_parent_url=(
+                            frontier.get(url, {}).get("parent_url") if url != source["url"] else None
+                        ),
+                        discovery_parent_hash=(
+                            frontier.get(url, {}).get("parent_hash") if url != source["url"] else None
+                        ),
+                        discovery_title=frontier.get(url, {}).get("title") if url != source["url"] else None,
+                        source_root=url == source["url"],
+                        source_kind=source["kind"],
                         legal_review="unreviewed",
                     )
                 if url not in cache and len(cache) >= self.limits["max_frontier"] + 1:

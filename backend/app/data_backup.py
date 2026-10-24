@@ -25,7 +25,7 @@ from .db import now, uid
 from .system_corpus_migration import SystemCorpusMigrationError, _cas_reference
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 22
+SUPPORTED_SCHEMA_VERSION = 23
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -202,6 +202,14 @@ def _database_check(path, *, primary=False):
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("candidate_source_record_schema_incomplete") from exc
+            if version >= 23:
+                try:
+                    conn.execute(
+                        "SELECT event_key,source_id,country,source_url,content_hash,previous_content_hash,source_event_at,source_kind,declared_mime_type,mime_type,discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,source_root,document_id,status,reason,created_at,updated_at FROM official_source_imports LIMIT 0"
+                    )
+                    conn.execute("SELECT country,event_ns FROM official_source_import_cursor LIMIT 0")
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("official_source_import_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")

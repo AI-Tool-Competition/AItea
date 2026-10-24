@@ -73,6 +73,12 @@ class CollectionService:
             "status": "stopped",
             "last_error_at": None,
             "shared_library_workers": "internal",
+            "official_source_import": {
+                "status": "stopped",
+                "last_cycle_at": None,
+                "last_cycle_counts": {"stored": 0, "skipped": 0, "blocked": 0, "deferred": 0},
+                "last_error_at": None,
+            },
         }
         self._migrate()
         with self.db.transaction() as conn:

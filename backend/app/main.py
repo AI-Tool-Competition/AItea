@@ -49,13 +49,18 @@ def create_app(data_dir=None, *, enable_scheduler=None):
             )
         from .collection import CollectionWorkers
         from .scheduler import start_scheduler, stop_scheduler
+        from .official_source_import import OfficialSourceImporter
 
         enabled = enable_scheduler if enable_scheduler is not None else not is_test
         handle = start_scheduler(service, enabled=enabled, **worker_scope.kwargs())
         workers = CollectionWorkers(service.collection, **worker_scope.kwargs()).start() if enabled else None
+        official_importer = None
         try:
+            official_importer = OfficialSourceImporter(service).start() if enabled else None
             yield
         finally:
+            if official_importer:
+                await run_in_threadpool(official_importer.stop)
             await run_in_threadpool(stop_scheduler, handle)
             if workers:
                 await run_in_threadpool(workers.stop)

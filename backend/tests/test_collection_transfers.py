@@ -3,6 +3,7 @@
 import hashlib
 from contextlib import closing
 from pathlib import Path
+from threading import Lock
 
 import pytest
 from app.bootstrap import Service
@@ -187,13 +188,18 @@ def test_cancelled_segment_request_cannot_commit_or_publish_after_cancellation(q
     tune(service)
     service.collection.fetch_item(service.collection.claim_fetch())
     original = ingestion_download._download
-    cancelled = []
+    cancelled = False
+    cancellation_lock = Lock()
 
     def cancel_then_download(*args, **kwargs):
-        if not cancelled:
-            cancelled.append(True)
-            revision = service.collection.run_detail("owner", run["id"])["run"]["revision"]
-            service.collection.control("owner", run["id"], "cancel", revision)
+        nonlocal cancelled
+        # Both range workers must observe the committed cancellation, not just
+        # another worker starting it; pre-cancellation checkpoints are valid.
+        with cancellation_lock:
+            if not cancelled:
+                revision = service.collection.run_detail("owner", run["id"])["run"]["revision"]
+                service.collection.control("owner", run["id"], "cancel", revision)
+                cancelled = True
         return original(*args, **kwargs)
 
     monkeypatch.setattr(ingestion_download, "_download", cancel_then_download)

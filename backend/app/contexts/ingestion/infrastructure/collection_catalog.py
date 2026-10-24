@@ -50,11 +50,16 @@ DOCUMENT_COLUMNS = (
     "review_pages",
     "review_status",
     "index_status",
+    "index_backend",
     "indexed_chunk_count",
     "source_hash_matches",
     "index_complete",
     "matching_vector_count",
     "fingerprint_counts",
+    "ragflow_generation_state",
+    "ragflow_declared_chunk_count",
+    "ragflow_matching_chunk_count",
+    "ragflow_profile_matches_current",
     "gaps",
 )
 RELATION_COLUMNS = (
@@ -151,13 +156,30 @@ def _documents(snapshot, output, summary):
         for path in sorted(snapshot.glob("*/*/documents.jsonl")):
             for row in _json_lines(path):
                 parsing, review, index = row["parsing"], row["review"], row.get("retrieval", {})
+                ragflow = index.get("ragflow", {})
+                uses_ragflow = index.get("index_backend") == "ragflow"
+                active_index_complete = (
+                    ragflow.get("complete")
+                    if uses_ragflow
+                    else None
+                    if index.get("index_backend") == "unconfigured"
+                    else index.get("complete")
+                )
+                active_source_matches = (
+                    ragflow.get("source_hash_matches") if uses_ragflow else index.get("source_hash_matches")
+                )
+                if index.get("index_backend") == "unconfigured":
+                    active_source_matches = None
                 gaps = list(row["anomalies"])
                 if row["legal_level"] != "attachment" and parsing["complete"] is not True:
                     gaps.append("text_incomplete_or_unknown")
                 if row["legal_level"] == "primary":
-                    if index.get("source_hash_matches") is not True or index.get("complete") is not True:
+                    if active_source_matches is not True or active_index_complete is not True:
                         gaps.append("index_incomplete_or_stale")
-                    if not index.get("indexed_chunk_count") or max(
+                    if uses_ragflow:
+                        if ragflow.get("complete") is not True:
+                            gaps.append("ragflow_chunks_incomplete_or_unknown")
+                    elif not index.get("indexed_chunk_count") or max(
                         (index.get("fingerprint_counts") or {}).values(), default=0
                     ) != index.get("indexed_chunk_count"):
                         gaps.append("vectors_incomplete_or_unknown")
@@ -174,17 +196,30 @@ def _documents(snapshot, output, summary):
                         "text_complete": parsing["complete"],
                         **{key: parsing[key] for key in ("pending_pages", "failed_pages", "review_pages")},
                         "review_status": review.get("review_status"),
-                        "index_status": index.get("status"),
+                        "index_status": (
+                            "ready"
+                            if active_index_complete is True
+                            else "incomplete"
+                            if uses_ragflow
+                            else "unconfigured"
+                            if index.get("index_backend") == "unconfigured"
+                            else index.get("status")
+                        ),
+                        "index_backend": index.get("index_backend", "unknown"),
                         **{
                             key: index.get(key)
                             for key in (
                                 "indexed_chunk_count",
-                                "source_hash_matches",
                                 "matching_vector_count",
                                 "fingerprint_counts",
                             )
                         },
-                        "index_complete": index.get("complete"),
+                        "source_hash_matches": active_source_matches,
+                        "index_complete": active_index_complete,
+                        "ragflow_generation_state": ragflow.get("generation_state"),
+                        "ragflow_declared_chunk_count": ragflow.get("declared_chunk_count"),
+                        "ragflow_matching_chunk_count": ragflow.get("matching_chunk_count"),
+                        "ragflow_profile_matches_current": ragflow.get("profile_matches_current"),
                         "gaps": sorted(set(gaps)),
                     }
                 )
@@ -364,9 +399,11 @@ def _readme(snapshot, summary):
 relations.jsonl 为固定版本关系，ocr-pages.jsonl、ocr-regions.jsonl 为扫描页/区域映射，
 source-mapping.jsonl 为来源映射。独立二级资料文本化；普通附件仅保留原件。
 
-text_complete 是正文完整性；index_complete、source_hash_matches 和 matching_vector_count
-描述索引现状。matching_vector_count 只计与切片输入哈希匹配的真实向量；
-fingerprint_counts 列明模型指纹，有向量不等于通过当前模型、法规效力和审核门禁。
+text_complete 是正文完整性；index_backend 与 index_complete 描述当前配置的索引。RAGFlow
+资料按当前模型配置、正文摘要、版本、索引修订和逐块远端回执核验；ragflow_matching_chunk_count
+是可核对的远端分块，不读取或伪称远端向量。matching_vector_count 和 fingerprint_counts
+只统计旧本地向量表，不能代表 RAGFlow 向量。没有当前模型配置时索引状态会标为未配置。
+索引完成不代表通过法规效力和审核门禁。
 {queue_status}该队列仅汇总共享资料的已记录代次，不含文档标识、正文或错误详情；旧代次仍在总数中，逐份资料的当前索引状态以 documents.csv 和正式快照为准。未知提交只进入只读回执核对，不等于可安全重发。
 只有一级资料按服务端审核、适用期、版本与索引规则进入 RAG；二级资料不建立向量。
 gaps 列保留未完成、未知、过期索引和审核状态，不伪造成功。
@@ -382,18 +419,23 @@ COMPLETE.json 记录本目录文件摘要；完整备份仍须包含数据库、
 """
 
 
-def export_materials(data_dir, *, country=None):
+def export_materials(data_dir, *, country=None, ragflow_profile=None):
     if country not in (None, "ID", "SG"):
         raise InventoryError("shared collection catalog country must be ID or SG")
     inventory = export_inventory(
-        data_dir, country=country, owner=SYSTEM_OWNER_ID, include_text=True, include_source_mapping=True
+        data_dir,
+        country=country,
+        owner=SYSTEM_OWNER_ID,
+        include_text=True,
+        include_source_mapping=True,
+        ragflow_profile=ragflow_profile,
     )
     snapshot = inventory["path"]
     root, catalogs = snapshot.parent.parent, snapshot.parent
     staging = Path(tempfile.mkdtemp(prefix=".materials-", dir=catalogs))
     staging.chmod(0o700)
     summary = {
-        "format_version": 1,
+        "format_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "scope": "shared_system_library_only",
         "inventory_path": snapshot.name,
@@ -438,7 +480,11 @@ def main(argv=None):
     parser.add_argument("--country", choices=("ID", "SG"), default=os.getenv("TEA_INVENTORY_COUNTRY") or None)
     args = parser.parse_args(argv)
     try:
-        report = export_materials(args.data_dir, country=args.country)
+        from app.configuration.environment import load_environment
+        from app.contexts.documents.infrastructure.providers.ragflow import profile
+
+        load_environment()
+        report = export_materials(args.data_dir, country=args.country, ragflow_profile=profile())
     except (InventoryError, OSError, ValueError) as exc:
         print(f"material catalog failed: {exc}", file=sys.stderr)
         return 1

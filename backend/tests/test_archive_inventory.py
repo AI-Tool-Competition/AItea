@@ -189,6 +189,7 @@ def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_by
     metadata = {row["document_id"]: row["retrieval"] for row in records(report)}
     assert metadata["indexed"] == {
         "status": "available",
+        "index_backend": "unconfigured",
         "index_present": True,
         "indexed_chunk_count": 3,
         "declared_chunk_count": 3,
@@ -196,9 +197,21 @@ def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_by
         "complete": True,
         "matching_vector_count": 2,
         "fingerprint_counts": {"model-a": 1, "model-b": 1},
+        "ragflow": {
+            "status": "available",
+            "profile_matches_current": None,
+            "generation_state": None,
+            "declared_chunk_count": None,
+            "matching_chunk_count": None,
+            "source_hash_matches": None,
+            "source_version_matches": None,
+            "index_revision_matches": None,
+            "complete": None,
+        },
     }
     assert metadata["not-indexed"] == {
         "status": "available",
+        "index_backend": "unconfigured",
         "index_present": False,
         "indexed_chunk_count": 0,
         "declared_chunk_count": None,
@@ -206,6 +219,17 @@ def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_by
         "complete": None,
         "matching_vector_count": 0,
         "fingerprint_counts": {},
+        "ragflow": {
+            "status": "available",
+            "profile_matches_current": None,
+            "generation_state": None,
+            "declared_chunk_count": None,
+            "matching_chunk_count": None,
+            "source_hash_matches": None,
+            "source_version_matches": None,
+            "index_revision_matches": None,
+            "complete": None,
+        },
     }
     content = "\n".join(path.read_text() for path in report["path"].rglob("*.jsonl"))
     assert all(
@@ -213,10 +237,10 @@ def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_by
         for secret in ("PRIVATE_INDEX_TEXT", "PRIVATE_INDEX_CONTEXT", "PRIVATE_OTHER_MODEL")
     )
     assert '"vector"' not in content and '"retrieval_eligible":true' not in content
-    assert report["summary"]["format_version"] == 9
+    assert report["summary"]["format_version"] == 10
     assert (
         report["summary"]["retrieval_scope"]
-        == "stored_index_and_input_hash_matching_vectors_not_rag_eligibility"
+        == "legacy_local_vectors_and_current_ragflow_chunk_receipts_not_rag_eligibility"
     )
 
 
@@ -943,7 +967,7 @@ def test_large_treaty_page_exports_all_bounded_records_and_scalar_provenance_wit
         assert row["source_url"] == page_record["final_url"]
         assert row["source_original"] == page_record["original"]
         assert row["retrieval_eligible"] is False and row["export_status"] == "exported"
-    assert report["summary"]["format_version"] == 9
+    assert report["summary"]["format_version"] == 10
     assert report["summary"]["catalog_documents"] == 40
     assert report["summary"]["catalog_document_gaps"] == report["summary"]["anomalies"] == 0
     assert report["summary"]["countries"]["ID"]["catalog_documents"] == 40
@@ -1247,7 +1271,14 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
     retrieval = records(report)[0]["retrieval"]
     assert retrieval["status"] == ("available" if version >= 10 else "unknown_schema")
     if version < 10:
-        assert all(value is None for key, value in retrieval.items() if key != "status")
+        assert retrieval["index_backend"] == "unconfigured"
+        assert retrieval["ragflow"]["status"] == "unknown_schema"
+        assert all(
+            value is None
+            for key, value in retrieval.items()
+            if key not in {"status", "index_backend", "ragflow"}
+        )
+        assert all(value is None for key, value in retrieval["ragflow"].items() if key != "status")
     else:
         assert retrieval["index_present"] is False
         assert retrieval["indexed_chunk_count"] == retrieval["matching_vector_count"] == 0

@@ -370,8 +370,48 @@ def _retrieval_available(conn):
     )
 
 
-def _retrieval_metadata(conn, ids, available):
-    """Three bounded queries per document batch; never select a vector BLOB."""
+def _ragflow_available(conn):
+    required = {
+        "ragflow_documents": {
+            "generation",
+            "document_id",
+            "owner_id",
+            "profile",
+            "source_hash",
+            "source_version",
+            "index_revision",
+            "remote_id",
+            "state",
+            "chunk_count",
+            "updated_at",
+        },
+        "ragflow_chunks": {
+            "generation",
+            "local_id",
+            "input_hash",
+            "content_hash",
+            "remote_id",
+            "state",
+        },
+        "retrieval_documents": {"document_id", "source_hash", "complete", "chunk_count", "revision"},
+        "retrieval_chunks": {"rowid", "document_id", "chunk_id", "input_hash", "content_hash"},
+        "retrieval_dirty": {"document_id"},
+    }
+    marks = ",".join("?" for _ in required)
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({marks})", tuple(required)
+        )
+    }
+    return all(
+        table in tables and columns <= {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for table, columns in required.items()
+    )
+
+
+def _retrieval_metadata(conn, ids, available, ragflow_available, ragflow_profile):
+    """Read batched index receipts without selecting a vector BLOB."""
     names = (
         "index_present",
         "indexed_chunk_count",
@@ -381,8 +421,6 @@ def _retrieval_metadata(conn, ids, available):
         "matching_vector_count",
         "fingerprint_counts",
     )
-    if not available:
-        return {identifier: {"status": "unknown_schema", **dict.fromkeys(names)} for identifier in ids}
     result = {
         identifier: {
             "status": "available",
@@ -396,6 +434,26 @@ def _retrieval_metadata(conn, ids, available):
         }
         for identifier in ids
     }
+    for record in result.values():
+        record["index_backend"] = "ragflow" if ragflow_profile else "unconfigured"
+        record["ragflow"] = {
+            "status": "available" if ragflow_available else "unknown_schema",
+            "profile_matches_current": False if ragflow_profile and ragflow_available else None,
+            "generation_state": "missing" if ragflow_profile and ragflow_available else None,
+            "declared_chunk_count": None,
+            "matching_chunk_count": None,
+            "source_hash_matches": None,
+            "source_version_matches": None,
+            "index_revision_matches": None,
+            "complete": False if ragflow_profile and ragflow_available else None,
+        }
+    if not available:
+        for record in result.values():
+            record["status"] = "unknown_schema"
+            for name in names:
+                record[name] = None
+            record["ragflow"]["status"] = "unknown_schema"
+        return result
     marks = ",".join("?" for _ in ids)
     for row in conn.execute(
         f"""SELECT i.document_id,i.chunk_count,i.complete,i.source_hash=d.content_hash source_hash_matches
@@ -425,6 +483,64 @@ def _retrieval_metadata(conn, ids, available):
         record = result[row["document_id"]]
         record["matching_vector_count"] += row["vector_count"]
         record["fingerprint_counts"][row["fingerprint"]] = row["vector_count"]
+
+    if ragflow_available:
+        profile_filter = " AND r.profile=?" if ragflow_profile else ""
+        parameters = [*ids, *([ragflow_profile] if ragflow_profile else [])]
+        for row in conn.execute(
+            f"""SELECT r.document_id,r.profile,r.state,r.chunk_count,r.remote_id,
+            (r.source_hash=d.content_hash AND i.source_hash=d.content_hash) source_hash_matches,
+            (r.source_version=d.version) source_version_matches,
+            (r.index_revision=i.revision AND NOT EXISTS(
+                SELECT 1 FROM retrieval_dirty dirty WHERE dirty.document_id=d.id
+            )) index_revision_matches,
+            COUNT(DISTINCT lc.chunk_id) local_chunk_count,
+            COUNT(DISTINCT rc.local_id) remote_chunk_count,
+            COUNT(DISTINCT CASE WHEN rc.state='done' AND rc.remote_id IS NOT NULL
+                AND rc.input_hash=lc.input_hash AND rc.content_hash=lc.content_hash
+                THEN rc.local_id END) matching_chunk_count,
+            i.complete text_index_complete,i.chunk_count text_chunk_count
+            FROM ragflow_documents r
+            JOIN documents d ON d.id=r.document_id AND d.owner_id=r.owner_id
+            JOIN retrieval_documents i ON i.document_id=d.id
+            LEFT JOIN retrieval_chunks lc ON lc.document_id=d.id
+            LEFT JOIN ragflow_chunks rc ON rc.generation=r.generation AND rc.local_id=lc.chunk_id
+            WHERE r.document_id IN ({marks}){profile_filter}
+                AND r.source_hash=d.content_hash AND i.source_hash=d.content_hash
+                AND r.source_version=d.version AND r.index_revision=i.revision
+                AND NOT EXISTS(SELECT 1 FROM retrieval_dirty dirty WHERE dirty.document_id=d.id)
+            GROUP BY r.generation
+            ORDER BY r.document_id,(r.state='ready') DESC,r.updated_at DESC,r.generation""",
+            parameters,
+        ):
+            record = result[row["document_id"]]["ragflow"]
+            if record["generation_state"] not in {"missing", None}:
+                continue
+            complete = bool(
+                ragflow_profile
+                and row["profile"] == ragflow_profile
+                and row["state"] == "ready"
+                and row["remote_id"]
+                and row["source_hash_matches"]
+                and row["source_version_matches"]
+                and row["index_revision_matches"]
+                and row["text_index_complete"]
+                and row["text_chunk_count"] > 0
+                and row["chunk_count"] == row["text_chunk_count"]
+                and row["local_chunk_count"] == row["text_chunk_count"]
+                and row["remote_chunk_count"] == row["text_chunk_count"]
+                and row["matching_chunk_count"] == row["text_chunk_count"]
+            )
+            record.update(
+                profile_matches_current=(row["profile"] == ragflow_profile) if ragflow_profile else None,
+                generation_state=row["state"],
+                declared_chunk_count=row["chunk_count"],
+                matching_chunk_count=row["matching_chunk_count"],
+                source_hash_matches=bool(row["source_hash_matches"]),
+                source_version_matches=bool(row["source_version_matches"]),
+                index_revision_matches=bool(row["index_revision_matches"]),
+                complete=complete if ragflow_profile else None,
+            )
     return result
 
 
@@ -524,7 +640,7 @@ def _text_completeness(conn, ids):
     return result
 
 
-def _documents(conn, partitions, originals, summary, owner, country):
+def _documents(conn, partitions, originals, summary, owner, country, ragflow_profile):
     where, params = _where(owner, country)
     cursor = conn.execute(
         f"""SELECT d.id,d.owner_id,d.family_id,d.version,d.parent_id,d.case_id,d.title,d.filename,d.role,
@@ -548,7 +664,13 @@ def _documents(conn, partitions, originals, summary, owner, country):
     for batch in _batches(cursor):
         ids = [row["id"] for row in batch]
         classifications, references = _document_metadata(conn, ids)
-        retrieval = _retrieval_metadata(conn, ids, summary["retrieval_status"] == "available")
+        retrieval = _retrieval_metadata(
+            conn,
+            ids,
+            summary["retrieval_status"] == "available",
+            summary["ragflow_status"] == "available",
+            ragflow_profile,
+        )
         completeness = _text_completeness(conn, ids)
         for row in batch:
             original, anomalies = originals.inspect(row["storage_path"], row["size"])
@@ -2130,7 +2252,15 @@ def _source_mappings(conn, partitions, originals, summary, owner, country):
         summary["source_mapping_gaps"] += gaps
 
 
-def export_inventory(data_dir, *, country=None, owner=None, include_text=False, include_source_mapping=False):
+def export_inventory(
+    data_dir,
+    *,
+    country=None,
+    owner=None,
+    include_text=False,
+    include_source_mapping=False,
+    ragflow_profile=None,
+):
     """Publish a catalog and return its Path and summary; no services are started."""
     country, owner = country or None, owner or None
     _country_key(country)
@@ -2152,7 +2282,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 9,
+                "format_version": 10,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -2175,7 +2305,11 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 "content_hashes": "database_values_not_recomputed",
                 "scope": "stored_records_only",
                 "retrieval_status": "available" if _retrieval_available(conn) else "unknown_schema",
-                "retrieval_scope": "stored_index_and_input_hash_matching_vectors_not_rag_eligibility",
+                "ragflow_status": "available"
+                if _ragflow_available(conn) and _retrieval_available(conn)
+                else "unknown_schema",
+                "retrieval_scope": "legacy_local_vectors_and_current_ragflow_chunk_receipts_not_rag_eligibility",
+                "ragflow_profile_configured": ragflow_profile is not None,
                 "index_queue": _index_queue_summary(conn, owner, country),
             }
             if include_text:
@@ -2204,7 +2338,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
             temporary = Path(tempfile.mkdtemp(prefix=".inventory-", dir=catalogs))
             temporary.chmod(0o700)
             with closing(_Partitions(temporary)) as partitions, closing(_Originals(root)) as originals:
-                _documents(conn, partitions, originals, summary, owner, country)
+                _documents(conn, partitions, originals, summary, owner, country, ragflow_profile)
                 _ocr_pages(conn, partitions, originals, summary, owner, country)
                 _ocr_regions(conn, partitions, originals, summary, owner, country)
                 _pages(conn, partitions, originals, summary, owner, country)
@@ -2259,14 +2393,19 @@ def main(argv=None):
     parser.add_argument("--include-source-mapping", action="store_true")
     args = parser.parse_args(argv)
     try:
+        from app.configuration.environment import load_environment
+        from app.contexts.documents.infrastructure.providers.ragflow import profile
+
+        load_environment()
         report = export_inventory(
             args.data_dir,
             country=args.country,
             owner=args.owner,
             include_text=args.include_text,
             include_source_mapping=args.include_source_mapping,
+            ragflow_profile=profile(),
         )
-    except InventoryError as exc:
+    except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(

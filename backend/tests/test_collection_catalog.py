@@ -133,6 +133,67 @@ def test_index_queue_summary_is_aggregate_and_shared_only(data):
     assert "private" not in json.dumps(queue)
 
 
+def _add_ragflow_index(data, *, profile, matching_receipt):
+    service = Service(data)
+    with service.db.transaction() as conn:
+        document = conn.execute(
+            "SELECT owner_id,content_hash,version FROM documents WHERE id='id-law'"
+        ).fetchone()
+        source_hash = document["content_hash"]
+        conn.execute(
+            "INSERT INTO retrieval_documents VALUES('id-law',?,1,1,1)", (source_hash,)
+        )
+        conn.execute(
+            """INSERT INTO retrieval_chunks(
+            document_id,chunk_id,ordinal,text,retrieval_text,tokens,locator,content_hash,input_hash
+            ) VALUES('id-law','law-chunk',0,'law text','law text','law','p1',?,'input-hash')""",
+            (source_hash,),
+        )
+        conn.execute("DELETE FROM retrieval_dirty WHERE document_id='id-law'")
+        conn.execute(
+            """INSERT INTO ragflow_documents(
+            generation,document_id,owner_id,profile,source_hash,source_version,index_revision,
+            dataset_id,remote_id,name,state,chunk_count,created_at,updated_at
+            ) VALUES('current-generation','id-law',?,?,?,1,1,'dataset','remote-law','law','ready',1,?,?)""",
+            (document["owner_id"], profile, source_hash, "2026-10-20", "2026-10-20"),
+        )
+        conn.execute(
+            """INSERT INTO ragflow_chunks(
+            generation,local_id,input_hash,content_hash,remote_id,state,attempts,intent_at,next_at
+            ) VALUES('current-generation','law-chunk','input-hash',?,?,'done',1,0,0)""",
+            (source_hash if matching_receipt else "stale-content-hash", "remote-chunk"),
+        )
+
+
+def test_catalog_uses_current_ragflow_chunk_receipts_instead_of_legacy_vector_rows(data):
+    _add_ragflow_index(data, profile="current-profile", matching_receipt=True)
+    report = collection_catalog.export_materials(data, country="ID", ragflow_profile="current-profile")
+    row = rows(report["path"] / "documents.csv")[0]
+    gaps = json.loads(row["gaps"])
+    assert row["index_backend"] == "ragflow"
+    assert row["index_status"] == "ready"
+    assert row["index_complete"] == "True"
+    assert row["source_hash_matches"] == "True"
+    assert row["matching_vector_count"] == "0"
+    assert row["ragflow_generation_state"] == "ready"
+    assert row["ragflow_declared_chunk_count"] == "1"
+    assert row["ragflow_matching_chunk_count"] == "1"
+    assert row["ragflow_profile_matches_current"] == "True"
+    assert "vectors_incomplete_or_unknown" not in gaps
+    assert "ragflow_chunks_incomplete_or_unknown" not in gaps
+
+
+def test_catalog_keeps_remote_chunk_hash_mismatch_visible(data):
+    _add_ragflow_index(data, profile="current-profile", matching_receipt=False)
+    report = collection_catalog.export_materials(data, country="ID", ragflow_profile="current-profile")
+    row = rows(report["path"] / "documents.csv")[0]
+    gaps = json.loads(row["gaps"])
+    assert row["index_status"] == "incomplete"
+    assert row["index_complete"] == "False"
+    assert row["ragflow_matching_chunk_count"] == "0"
+    assert "ragflow_chunks_incomplete_or_unknown" in gaps
+
+
 @pytest.mark.parametrize("raw_path", ["files/raw-hash", "../escape", "/tmp/escape"])
 def test_raw_candidates_remain_unreviewed_and_distinct_from_formal_records(data, raw_path):
     directory = data / "official-updates/ID"

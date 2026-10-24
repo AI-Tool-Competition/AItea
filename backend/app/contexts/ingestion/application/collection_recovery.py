@@ -157,7 +157,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                     unknown
                     or (
                         vision_page
-                        and metadata.get("complete") is False
+                        and (metadata.get("complete") is False or status == "ocr_uncertain")
                         and not _permanent_ocr_http_error(page)
                     )
                 )
@@ -440,7 +440,11 @@ class CollectionRecovery:
             )
             retryable_page = page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"} and (
                 _unknown(page)
-                or (vision_page and metadata.get("complete") is False and not _permanent_ocr_http_error(page))
+                or (
+                    vision_page
+                    and (metadata.get("complete") is False or page.get("status") == "ocr_uncertain")
+                    and not _permanent_ocr_http_error(page)
+                )
             )
             cycles = page.get("ocr_retry_cycles", [])
             if not retryable_page or not isinstance(cycles, list):

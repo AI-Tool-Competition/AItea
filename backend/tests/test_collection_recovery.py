@@ -225,7 +225,22 @@ def test_native_asset_retry_history_has_no_three_cycle_stop():
     assert all("ocr_attempt_history" not in item["previous_asset"] for item in asset["ocr_attempt_history"])
 
 
-def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(service):
+@pytest.mark.parametrize(
+    ("metadata", "reason"),
+    [
+        ({"attempts": 1, "request_outcome": "unknown_transport_result"}, "paid_ocr_retry"),
+        (
+            {
+                "attempts": 2,
+                "prompt_version": "legal-page-transcription-v3",
+                "request_id": "completed-request",
+                "complete": True,
+            },
+            "ocr_quality_retry",
+        ),
+    ],
+)
+def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(service, metadata, reason):
     content = make_pdf([("Official text", False)])
     original = service.archive.blobs.put_bytes("owner", content)
     manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
@@ -233,7 +248,7 @@ def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(
     page.update(
         status="ocr_uncertain",
         text="Previous OCR output",
-        ocr={"attempts": 1, "request_outcome": "unknown_transport_result"},
+        ocr=metadata,
         ocr_retry_cycles=[{"protocol": "old", "previous_page": {"text": "older output"}} for _ in range(5)],
     )
     with service.db.transaction() as conn:
@@ -256,7 +271,7 @@ def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(
             {"owner_id": "owner", "id": "recovery", "recovery_count": 5},
             {"id": document["id"], "version": 1, "content_hash": original.digest},
             manifest,
-            Decision("paid_ocr_retry", True, pages=(1,)),
+            Decision(reason, True, pages=(1,)),
         )
     with closing(service.db.connect()) as conn:
         stored_manifest = json.loads(
@@ -282,6 +297,19 @@ def test_incomplete_vision_page_is_retried_but_mineru_table_review_is_not():
     }
     decision = classify_processing({"pages": [vision_page]}, phase="parse")
     assert decision.reason == "ocr_quality_retry" and decision.pages == (4,)
+
+    completed_but_uncertain = {
+        "page": 8,
+        "status": "ocr_uncertain",
+        "ocr": {
+            "prompt_version": "legal-page-transcription-v3",
+            "request_id": "completed-request",
+            "attempts": 2,
+            "complete": True,
+        },
+    }
+    decision = classify_processing({"pages": [completed_but_uncertain]}, phase="parse")
+    assert decision.reason == "ocr_quality_retry" and decision.pages == (8,)
 
     mineru_page = {
         "page": 4,

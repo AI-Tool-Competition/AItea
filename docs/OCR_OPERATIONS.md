@@ -3,6 +3,7 @@
 `scripts/process_frozen_parse.py` 只处理冻结清单中仍位于 `parse` 阶段的文档。
 完成正文后停在 `embed` 队列；该入口禁止下载和调用 embedding。
 共享库允许另一个工作进程同时处理不同 ID 的向量任务。
+本文只说明这个固定范围 CLI 的恢复边界；普通主站采集任务由持久恢复队列自动重试视觉 OCR 失败页和图片，包括结果未知的请求，并保留旧检查点，详见 [资料采集与处理](INGESTION.md)。
 
 输入快照包含 `initial-report.json`、`initial-parse-ids.json` 和
 `initial-parse-documents.json`。报告绑定两个清单的 SHA256、账号和数据库目录；

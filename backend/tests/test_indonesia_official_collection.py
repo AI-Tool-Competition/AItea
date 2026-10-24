@@ -1,21 +1,25 @@
 """Full provider pagination is proven independently of originals and legal scope."""
 
-import importlib.util
 import hashlib
+import importlib.util
 import json
-from pathlib import Path
-import sys
 import sqlite3
-import time
+import sys
 import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from app.contexts.collection.infrastructure.discovery.indonesia_official import (
+    SETNEG_ITEMS,
+    original_file_relations,
+    reconcile_catalogue,
+)
+from app.paths import PROJECT_ROOT
+from app.shared.infrastructure.http.download import DownloadError
 
-from app.indonesia_official import SETNEG_ITEMS, original_file_relations, reconcile_catalogue
-from app.ingestion import DownloadError
-
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 spec = importlib.util.spec_from_file_location(
     "indonesia_collector", ROOT / "scripts/collect_indonesia_official.py"
 )
@@ -388,7 +392,7 @@ def test_resume_rejects_changed_historical_response_proof(tmp_path):
 
 
 def association_record(tmp_path, owner=collector.SOURCE_OWNER):
-    from app.blob_store import BlobStore
+    from app.shared.infrastructure.blob_store import BlobStore
 
     blobs = BlobStore(tmp_path / "files", max_bytes=1024 * 1024)
     catalogue = blobs.put(owner, [b'{"catalogue":"source evidence"}'])
@@ -427,7 +431,7 @@ def association_record(tmp_path, owner=collector.SOURCE_OWNER):
 
 
 def test_explicit_file_association_is_idempotent_and_preserves_processed_versions(tmp_path, monkeypatch):
-    from app.archive import LegalArchive
+    from app.contexts.knowledge.application.archive import LegalArchive
 
     record = association_record(tmp_path)
     (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
@@ -596,7 +600,7 @@ def test_original_concurrency_is_bounded_by_host_and_reserved_bytes(
 
 
 def test_prepare_library_reuses_owned_originals_without_a_second_blob_write(tmp_path, monkeypatch):
-    from app.blob_store import BlobStore
+    from app.shared.infrastructure.blob_store import BlobStore
 
     record = association_record(tmp_path)
     (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
@@ -609,7 +613,7 @@ def test_prepare_library_reuses_owned_originals_without_a_second_blob_write(tmp_
 def test_prepare_library_defers_cross_owner_copy_at_reserve_and_copies_shared_proof_once(
     tmp_path, monkeypatch
 ):
-    from app.blob_store import BlobStore
+    from app.shared.infrastructure.blob_store import BlobStore
 
     record = association_record(tmp_path, owner="historical-other-owner")
     (tmp_path / "ledger.jsonl").write_text(json.dumps(record) + "\n")
@@ -639,7 +643,7 @@ def test_prepare_library_defers_cross_owner_copy_at_reserve_and_copies_shared_pr
 def test_original_preparation_preserves_proofs_and_queues_once_without_models(
     tmp_path, monkeypatch, files_available
 ):
-    from app import ingestion
+    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
 
     calls = []
     originals = b"%PDF-1.4\n% synthetic original for persistence test\n%%EOF\n"
@@ -676,7 +680,7 @@ def test_original_preparation_preserves_proofs_and_queues_once_without_models(
     def forbidden_model(*args, **kwargs):
         raise AssertionError("source preparation must not call the embedding model")
 
-    monkeypatch.setattr(ingestion, "embed_texts", forbidden_model)
+    monkeypatch.setattr(ingestion_embedding, "embed_texts", forbidden_model)
     monkeypatch.setattr(sys.modules[collector.SourceVerifier.__module__], "_download", download)
     args = arguments(tmp_path)
     args.detail_types = ["PERPU"]
@@ -707,7 +711,7 @@ def test_original_preparation_preserves_proofs_and_queues_once_without_models(
     assert Path(document["original"]["cas_path"]).read_bytes() == originals
     # A parser may complete between collector invocations. Source preparation
     # must not resave/reclassify that version or overwrite derived evidence.
-    from app.archive import LegalArchive
+    from app.contexts.knowledge.application.archive import LegalArchive
 
     derived_manifest = {"source_hash": document["original"]["sha256"], "worker_checkpoint": "preserve"}
     with sqlite3.connect(args.output / "tea.sqlite3") as connection:

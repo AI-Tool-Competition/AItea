@@ -4,10 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
-
-from app.archive import family_key, sanitize_filename
-from app.service import Service
-from test_archive_parsing import pdf_file
+from app.bootstrap import Service
+from app.contexts.knowledge.application.archive import family_key, sanitize_filename
+from support.archive_parsing import pdf_file
 
 
 @pytest.fixture
@@ -18,7 +17,7 @@ def service(tmp_path):
     return instance
 
 
-def test_long_pdf_upload_parses_real_pages_and_retains_version_family(service, tmp_path):
+def test_long_pdf_upload_queues_mineru_and_retains_version_family(service, tmp_path):
     path, digest, _ = pdf_file(tmp_path, ["Tea source law."])
     content = path.read_bytes()
     unsafe_name = "C:\\folder\\" + "Legal original " * 30 + "\x01.pdf"
@@ -26,12 +25,11 @@ def test_long_pdf_upload_parses_real_pages_and_retains_version_family(service, t
     first = service.store_document("owner", unsafe_name, content, "application/pdf")
     assert first["filename"].endswith(".pdf") and len(first["filename"]) == 180
     assert "\\" not in first["filename"] and "\x01" not in first["filename"]
-    assert first["status"] == "ready"
+    assert first["status"] == "processing"
     with service.db.connect() as conn:
         original = dict(conn.execute("SELECT * FROM documents WHERE id=?", (first["id"],)).fetchone())
     manifest = json.loads(original["manifest"])
-    assert manifest["pages"][0]["source_hash"] == digest
-    assert "Tea source law." in manifest["pages"][0]["native_text"]
+    assert manifest["remote_parse"] == {"provider": "mineru", "source_hash": digest, "state": "planned"}
     assert original["family_id"] == family_key("owner", cleaned[:180])
     repeat = service.store_document("owner", unsafe_name, content, "application/pdf")
     assert repeat["id"] == first["id"] and repeat["version"] == 1
@@ -47,7 +45,7 @@ def test_long_pdf_upload_parses_real_pages_and_retains_version_family(service, t
     assert Path(original["storage_path"]).read_bytes() == content
 
 
-def test_archive_long_original_is_parsed_by_normal_processing_worker(service, tmp_path):
+def test_archive_long_original_reaches_mineru_with_preserved_name(service, tmp_path, monkeypatch):
     path, digest, _ = pdf_file(tmp_path, ["Official acquired law."])
     name = "Official title " * 40 + ".pdf"
     blob = service.archive.blobs.put_bytes("owner", path.read_bytes())
@@ -66,13 +64,17 @@ def test_archive_long_original_is_parsed_by_normal_processing_worker(service, tm
     assert len(doc["filename"]) == 180 and doc["filename"].endswith(".pdf")
     claim = service.collection.claim_processing(owner_id="owner", document_ids=[doc["id"]])
     assert claim
+    calls = []
+    from app.contexts.knowledge.infrastructure.parsing.native import parse_file
+
+    def parsed(document, lease, manifest):
+        calls.append((document["filename"], document["content_hash"], lease["document_id"]))
+        return parse_file("fixture.txt", b"Official acquired law.", "text/plain")
+
+    monkeypatch.setattr(service.collection.parser, "step", parsed)
     service.collection.process_item(claim)
-    with service.db.connect() as conn:
-        saved = conn.execute("SELECT status,manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()
-    assert saved["status"] == "ready"
-    manifest = json.loads(saved["manifest"])
-    assert manifest["pages"][0]["page"] == 1 and manifest["pages"][0]["source_hash"] == digest
-    assert "Official acquired law." in manifest["pages"][0]["native_text"]
+    assert calls == [(doc["filename"], digest, doc["id"])]
+    assert service.document_detail("owner", doc["id"])["document"]["status"] == "ready"
 
 
 def test_existing_long_attachment_identity_and_filename_are_not_changed(service):

@@ -5,9 +5,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
-
-from app.main import create_app
 
 
 @pytest.fixture
@@ -70,8 +69,8 @@ def test_material_change_refreshes_same_node_report_and_preserves_manual_edit(cl
 
 
 def test_cancelled_entry_releases_claim_and_resumes_same_report(client, monkeypatch):
-    from app.models import StageAnalysisInput
-    from app.streaming import StreamCancelled
+    from app.contexts.workspace.application.contracts import StageAnalysisInput
+    from app.shared.application.streaming import StreamCancelled
 
     case, route = entry(client)
     service = client.app.state.service

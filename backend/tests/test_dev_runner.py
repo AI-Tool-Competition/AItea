@@ -1,19 +1,21 @@
 """Lifecycle boundaries: safe ownership, lockfiles, ports, cache and rollback."""
+
 from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
 import signal
 import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts/dev.py"
+SCRIPT = PROJECT_ROOT / "scripts/dev.py"
 spec = importlib.util.spec_from_file_location("tea_dev_runner", SCRIPT)
 dev = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev)
@@ -21,8 +23,9 @@ spec.loader.exec_module(dev)
 
 def managed_process(root: Path) -> tuple[subprocess.Popen, dict]:
     env = {**os.environ, "TEA_DEV_ROOT": str(root), "TEA_DEV_TOKEN": "test-private-launch"}
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=root,
-                               env=env, start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], cwd=root, env=env, start_new_session=True
+    )
     record = dev.launched_identity(process, "test-private-launch", root)
     assert record
     return process, record
@@ -38,7 +41,9 @@ def test_new_child_identity_waits_for_launch_credentials(monkeypatch, tmp_path):
 
 
 def test_exited_child_identity_cannot_be_recorded(monkeypatch, tmp_path):
-    monkeypatch.setattr(dev, "process_identity", lambda pid: pytest.fail("exited process must not be recorded"))
+    monkeypatch.setattr(
+        dev, "process_identity", lambda pid: pytest.fail("exited process must not be recorded")
+    )
     process = SimpleNamespace(pid=123, poll=lambda: 1)
     assert dev.launched_identity(process, "owned-launch", tmp_path) is None
 
@@ -88,8 +93,15 @@ def test_concurrent_lifecycle_cannot_enter_lock(tmp_path):
 
 
 def test_clean_preserves_data_dependencies_config_and_caches(tmp_path):
-    paths = ("data/business.sqlite", ".env", "backend/.venv/pyvenv.cfg", ".dev/uv-cache/item",
-             ".dev/pnpm-store/item", ".dev/dependencies.json", ".dev/control.lock")
+    paths = (
+        "data/business.sqlite",
+        ".env",
+        "backend/.venv/pyvenv.cfg",
+        ".dev/uv-cache/item",
+        ".dev/pnpm-store/item",
+        ".dev/dependencies.json",
+        ".dev/control.lock",
+    )
     for name in (*paths, ".dev/api.log", ".dev/web.log"):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,9 +131,12 @@ def test_dependency_invalidation_and_skip_missing_environment(tmp_path):
     (tmp_path / "backend/pyproject.toml").write_text("initial")
     (tmp_path / "backend/uv.lock").write_text("lock-v1")
     assert dev.needs_sync("api", "auto", tmp_path)
-    dev.write_json(dev.runtime(tmp_path) / "dependencies.json", {
-        "api": dev.dependency_fingerprint("api", tmp_path),
-    })
+    dev.write_json(
+        dev.runtime(tmp_path) / "dependencies.json",
+        {
+            "api": dev.dependency_fingerprint("api", tmp_path),
+        },
+    )
     assert not dev.needs_sync("api", "auto", tmp_path)
     assert dev.needs_sync("api", "force", tmp_path)
     (tmp_path / "backend/uv.lock").write_text("lock-v2")
@@ -145,9 +160,14 @@ def test_uv_environment_is_checkout_local(tmp_path, monkeypatch):
 def test_linked_worktree_ports_are_stable_and_distinct(tmp_path, monkeypatch):
     assert dev.default_ports(tmp_path) == (8000, 3000)
     (tmp_path / ".git").write_text("gitdir: elsewhere")
-    monkeypatch.setattr(dev.subprocess, "run", lambda *a, **k: SimpleNamespace(
-        stdout="/repo/.git/worktrees/topic\n/repo/.git\n", returncode=0,
-    ))
+    monkeypatch.setattr(
+        dev.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout="/repo/.git/worktrees/topic\n/repo/.git\n",
+            returncode=0,
+        ),
+    )
     ports = dev.default_ports(tmp_path)
     assert ports == dev.default_ports(tmp_path)
     assert 9000 <= ports[0] <= 9999
@@ -189,8 +209,8 @@ def test_supervisor_rolls_back_when_second_service_fails(tmp_path):
     # Use the actual runner functions with only the child commands replaced. This
     # exercises Popen, /proc identity, failure cleanup, and persisted failed state.
     source = SCRIPT.read_text()
-    source = source[:source.rfind('if __name__ == "__main__":')]
-    source += '''
+    source = source[: source.rfind('if __name__ == "__main__":')]
+    source += """
 def health_ready(*args, **kwargs):
     # Isolate this failed-start fixture from a real development server on 3000/8000.
     return False
@@ -199,14 +219,19 @@ def service_commands(args, root=ROOT):
             ("web", ROOT, [sys.executable, "-c", "raise SystemExit(7)"])]
 if __name__ == "__main__":
     sys.exit(main())
-'''
+"""
     copied = scripts / "dev.py"
     copied.write_text(source)
     (tmp_path / ".dev").mkdir()
     env = {**os.environ, "TEA_DEV_ROOT": str(tmp_path), "TEA_DEV_TOKEN": "rollback-check"}
-    process = subprocess.Popen([sys.executable, str(copied), "serve", "--token", "rollback-check"],
-                               env=env, cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, str(copied), "serve", "--token", "rollback-check"],
+        env=env,
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     try:
         assert process.wait(timeout=15) == 1
         state = dev.read_json(tmp_path / ".dev/dev.json")
@@ -230,8 +255,12 @@ def test_state_file_private(tmp_path):
 
 def test_new_child_identity_waits_for_launch_environment(tmp_path, monkeypatch):
     environment = {**os.environ, "TEA_DEV_ROOT": str(tmp_path), "TEA_DEV_TOKEN": "delayed-identity"}
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                               cwd=tmp_path, env=environment, start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=tmp_path,
+        env=environment,
+        start_new_session=True,
+    )
     read_bytes = Path.read_bytes
     attempts = 0
 
@@ -260,10 +289,20 @@ def test_new_child_identity_waits_for_launch_environment(tmp_path, monkeypatch):
 
 def test_orphaned_group_is_still_owned_and_stopped(tmp_path):
     child_file = tmp_path / "child.pid"
-    child_code = "import os,time; from pathlib import Path; Path(" + repr(str(child_file)) + ").write_text(str(os.getpid())); time.sleep(60)"
-    leader_code = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', " + repr(child_code) + "]); time.sleep(0.3)"
+    child_code = (
+        "import os,time; from pathlib import Path; Path("
+        + repr(str(child_file))
+        + ").write_text(str(os.getpid())); time.sleep(60)"
+    )
+    leader_code = (
+        "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', "
+        + repr(child_code)
+        + "]); time.sleep(0.3)"
+    )
     env = {**os.environ, "TEA_DEV_ROOT": str(tmp_path), "TEA_DEV_TOKEN": "orphan-launch"}
-    leader = subprocess.Popen([sys.executable, "-c", leader_code], cwd=tmp_path, env=env, start_new_session=True)
+    leader = subprocess.Popen(
+        [sys.executable, "-c", leader_code], cwd=tmp_path, env=env, start_new_session=True
+    )
     record = dev.process_identity(leader.pid)
     assert record
     try:
@@ -296,9 +335,18 @@ def test_production_build_rejects_wrong_api_rewrite(tmp_path):
     build = tmp_path / "frontend/.next"
     build.mkdir(parents=True)
     (build / "BUILD_ID").write_text("test-build")
-    dev.write_json(build / "routes-manifest.json", {"rewrites": {"beforeFiles": [], "afterFiles": [
-        {"source": "/api/tea/:path*", "destination": "http://127.0.0.1:8000/api/tea/:path*"},
-    ], "fallback": []}})
+    dev.write_json(
+        build / "routes-manifest.json",
+        {
+            "rewrites": {
+                "beforeFiles": [],
+                "afterFiles": [
+                    {"source": "/api/tea/:path*", "destination": "http://127.0.0.1:8000/api/tea/:path*"},
+                ],
+                "fallback": [],
+            }
+        },
+    )
     dev.check_production_build(8000, tmp_path)
     with pytest.raises(dev.DevError, match="make build API_PORT=9000"):
         dev.check_production_build(9000, tmp_path)
@@ -309,7 +357,7 @@ def test_launcher_sigterm_reaps_detached_services(tmp_path, ready):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     source = SCRIPT.read_text()
-    source = source[:source.rfind('if __name__ == "__main__":')]
+    source = source[: source.rfind('if __name__ == "__main__":')]
     source += "\ndef sync_dependencies(*args, **kwargs): pass\n"
     source += "def available_port(*args, **kwargs): pass\n"
     source += "def health_ready(*args, **kwargs): return " + repr(ready) + "\n"
@@ -322,8 +370,13 @@ if __name__ == "__main__":
 """
     copied = scripts / "dev.py"
     copied.write_text(source)
-    process = subprocess.Popen([sys.executable, str(copied), "start", "--foreground"], cwd=tmp_path,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, str(copied), "start", "--foreground"],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -352,13 +405,15 @@ if __name__ == "__main__":
             dev.signal_owned(record, signal.SIGKILL, tmp_path, group=True)
 
 
-@pytest.mark.parametrize("start_command,stop_command", [("start", "stop"), ("setup", "stop"), ("start", "clean")])
+@pytest.mark.parametrize(
+    "start_command,stop_command", [("start", "stop"), ("setup", "stop"), ("start", "clean")]
+)
 def test_stop_cancels_in_progress_dependency_install(tmp_path, start_command, stop_command):
     """A separate stop CLI must cancel the locked installer and its descendants."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     source = SCRIPT.read_text()
-    source = source[:source.rfind('if __name__ == "__main__":')]
+    source = source[: source.rfind('if __name__ == "__main__":')]
     worker_file = tmp_path / "installer-worker.pid"
     worker_code = f"import os,time; from pathlib import Path; Path({str(worker_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
     installer_code = f"import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', {worker_code!r}]); time.sleep(60)"
@@ -374,8 +429,13 @@ if __name__ == '__main__':
     # Verify preservation on clean against the same cancellation path.
     (tmp_path / "data").mkdir()
     (tmp_path / "data/business").write_text("keep")
-    process = subprocess.Popen([sys.executable, str(copied), start_command], cwd=tmp_path,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    process = subprocess.Popen(
+        [sys.executable, str(copied), start_command],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     state = {}
     try:
         deadline = time.monotonic() + 10
@@ -389,8 +449,14 @@ if __name__ == '__main__':
             pytest.fail("installer and its descendant did not start")
         assert dev.status(tmp_path)["status"] == "preparing"
         worker_pid = int(worker_file.read_text())
-        stopped = subprocess.run([sys.executable, str(copied), stop_command], cwd=tmp_path,
-                                 capture_output=True, text=True, timeout=15, check=False)
+        stopped = subprocess.run(
+            [sys.executable, str(copied), stop_command],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
         assert stopped.returncode == 0, stopped.stdout + stopped.stderr
         assert "取消" in stopped.stdout
         assert process.wait(timeout=5) == 130
@@ -400,8 +466,14 @@ if __name__ == '__main__':
         assert (tmp_path / "data/business").read_text() == "keep"
         assert not (tmp_path / ".dev/startup.json").exists()
         # Repeated stop is safe, and a subsequent start can acquire the same lock.
-        repeated = subprocess.run([sys.executable, str(copied), "stop"], cwd=tmp_path,
-                                  capture_output=True, text=True, timeout=5, check=False)
+        repeated = subprocess.run(
+            [sys.executable, str(copied), "stop"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
         assert repeated.returncode == 0, repeated.stdout + repeated.stderr
         with dev.control_lock(tmp_path):
             pass
@@ -416,8 +488,15 @@ if __name__ == '__main__':
 def test_dependency_progress_is_visible_before_install_finishes(tmp_path, capsys):
     log = tmp_path / "install.log"
     result = dev.run_install(
-        [sys.executable, "-c", "import time; print('Downloaded 12/20 packages', flush=True); time.sleep(3.3)"],
-        tmp_path, dev.local_env(tmp_path), log, tmp_path,
+        [
+            sys.executable,
+            "-c",
+            "import time; print('Downloaded 12/20 packages', flush=True); time.sleep(3.3)",
+        ],
+        tmp_path,
+        dev.local_env(tmp_path),
+        log,
+        tmp_path,
     )
     assert result == 0
     assert "Downloaded 12/20 packages" in capsys.readouterr().out
@@ -428,7 +507,7 @@ def fixture_runner(tmp_path: Path, overrides: str) -> Path:
     script = tmp_path / "scripts/dev.py"
     script.parent.mkdir()
     source = SCRIPT.read_text()
-    source = source[:source.rfind('if __name__ == "__main__":')]
+    source = source[: source.rfind('if __name__ == "__main__":')]
     source += "\ndef sync_dependencies(*args, **kwargs): pass\n"
     source += "def available_port(*args, **kwargs): pass\n"
     source += "def check_production_build(*args, **kwargs): pass\n"
@@ -437,23 +516,36 @@ def fixture_runner(tmp_path: Path, overrides: str) -> Path:
 
 
 def stop_fixture(script: Path, root: Path) -> None:
-    subprocess.run([sys.executable, str(script), "stop"], cwd=root,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True)
+    subprocess.run(
+        [sys.executable, str(script), "stop"],
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=True,
+    )
 
 
-@pytest.mark.parametrize("production,polling,expected_web", [
-    (False, None, "1000"),
-    (False, "false", "false"),
-    (False, "750", "750"),
-    (True, None, None),
-    (True, "750", "750"),
-])
+@pytest.mark.parametrize(
+    "production,polling,expected_web",
+    [
+        (False, None, "1000"),
+        (False, "false", "false"),
+        (False, "750", "750"),
+        (True, None, None),
+        (True, "750", "750"),
+    ],
+)
 def test_service_polling_is_development_web_only(tmp_path, production, polling, expected_web):
-    child = ("import json,os,time; from pathlib import Path; "
-             "time.sleep(0.1 if '{name}' == 'api' else 0); "
-             "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
-             "json.dumps(os.environ.get('WATCHPACK_POLLING'))); time.sleep(60)")
-    script = fixture_runner(tmp_path, f'''
+    child = (
+        "import json,os,time; from pathlib import Path; "
+        "time.sleep(0.1 if '{name}' == 'api' else 0); "
+        "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
+        "json.dumps(os.environ.get('WATCHPACK_POLLING'))); time.sleep(60)"
+    )
+    script = fixture_runner(
+        tmp_path,
+        f"""
 def health_ready(url, *, api=False):
     try:
         json.loads((ROOT / ('api.json' if api else 'web.json')).read_text())
@@ -463,7 +555,8 @@ def health_ready(url, *, api=False):
 def service_commands(args, root=ROOT):
     return [(name, ROOT, [sys.executable, '-c', {child!r}.format(name=name)])
             for name in ('api', 'web')]
-''')
+""",
+    )
     env = os.environ.copy()
     env.pop("WATCHPACK_POLLING", None)
     if polling is not None:
@@ -472,11 +565,13 @@ def service_commands(args, root=ROOT):
     if production:
         command.append("--production")
     try:
-        result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True,
-                                timeout=10, check=False)
+        result = subprocess.run(
+            command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10, check=False
+        )
         assert result.returncode == 0, result.stdout + result.stderr
         assert dev.read_json(tmp_path / ".dev/dev.json")["status"] == "ready"
         import json
+
         assert json.loads((tmp_path / "web.json").read_text()) == expected_web
         assert json.loads((tmp_path / "api.json").read_text()) == polling
         assert result.stdout.count("前端监听：") == (0 if production else 1)
@@ -486,16 +581,25 @@ def service_commands(args, root=ROOT):
 
 @pytest.mark.parametrize("api_ready", [False, True])
 def test_start_failure_reports_each_readiness_check_and_bounded_logs(tmp_path, api_ready):
-    script = fixture_runner(tmp_path, f'''
+    script = fixture_runner(
+        tmp_path,
+        f"""
 START_TIMEOUT = 0.2
 def health_ready(url, *, api=False): return api and {api_ready!r}
 def service_commands(args, root=ROOT):
     code = "import time; print('test diagnostic ' + '测' * 20000, flush=True); time.sleep(60)"
     return [(name, ROOT, [sys.executable, '-c', code]) for name in ('api', 'web')]
-''')
+""",
+    )
     try:
-        result = subprocess.run([sys.executable, str(script), "start"], cwd=tmp_path,
-                                capture_output=True, text=True, timeout=10, check=False)
+        result = subprocess.run(
+            [sys.executable, str(script), "start"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
         assert result.returncode == 1
         output = result.stdout + result.stderr
         expected = "已就绪" if api_ready else "未就绪"
@@ -513,15 +617,23 @@ def service_commands(args, root=ROOT):
 
 def test_watcher_exhaustion_fails_promptly_and_reaps_services(tmp_path):
     error = "Watchpack Error (watcher): Error: ENOSPC: System limit for number of file watchers reached"
-    script = fixture_runner(tmp_path, f'''
+    script = fixture_runner(
+        tmp_path,
+        f"""
 def health_ready(url, *, api=False): return api
 def service_commands(args, root=ROOT):
     return [("api", ROOT, [sys.executable, "-c", "import time; time.sleep(60)"]),
             ("web", ROOT, [sys.executable, "-c", "import time; print({error!r}, flush=True); time.sleep(60)"])]
-''')
+""",
+    )
     started = time.monotonic()
-    process = subprocess.Popen([sys.executable, str(script), "start"], cwd=tmp_path,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process = subprocess.Popen(
+        [sys.executable, str(script), "start"],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
         try:
             stdout, stderr = process.communicate(timeout=6)
@@ -547,23 +659,31 @@ def test_background_services_serve_after_launcher_exits(tmp_path):
         web_socket.bind(("127.0.0.1", 0))
         api_port = api_socket.getsockname()[1]
         web_port = web_socket.getsockname()[1]
-    child = '''import http.server, sys
+    child = """import http.server, sys
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'{"status":"ok"}' if self.path == '/api/tea/health' else b'tea ready')
 http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
-'''
-    script = fixture_runner(tmp_path, f'''
+"""
+    script = fixture_runner(
+        tmp_path,
+        f"""
 def service_commands(args, root=ROOT):
     return [(name, ROOT, [sys.executable, '-c', {child!r}, str(port)])
             for name, port in [('api', args.api_port), ('web', args.web_port)]]
-''')
+""",
+    )
     try:
-        result = subprocess.run([sys.executable, str(script), "start", "--api-port", str(api_port),
-                                 "--web-port", str(web_port)], cwd=tmp_path, capture_output=True,
-                                text=True, timeout=10, check=False)
+        result = subprocess.run(
+            [sys.executable, str(script), "start", "--api-port", str(api_port), "--web-port", str(web_port)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
         assert result.returncode == 0, result.stdout + result.stderr
         assert dev.status(tmp_path)["status"] == "running"
         assert dev.health_ready(f"http://127.0.0.1:{api_port}/api/tea/health", api=True)
@@ -572,19 +692,26 @@ def service_commands(args, root=ROOT):
         stop_fixture(script, tmp_path)
 
 
-@pytest.mark.parametrize("prefix_size,error", [
-    (0, "Watchpack Error: ENOSPC: file watchers exhausted"),
-    (65532, "ENOSPC: Watchpack file watchers exhausted"),
-    (65534, "Watchpack Error: ENOSPC: file watchers exhausted"),
-    (131072, "Watchpack Error: ENOSPC: file watchers exhausted"),
-])
+@pytest.mark.parametrize(
+    "prefix_size,error",
+    [
+        (0, "Watchpack Error: ENOSPC: file watchers exhausted"),
+        (65532, "ENOSPC: Watchpack file watchers exhausted"),
+        (65534, "Watchpack Error: ENOSPC: file watchers exhausted"),
+        (131072, "Watchpack Error: ENOSPC: file watchers exhausted"),
+    ],
+)
 def test_buried_watcher_error_blocks_ready_across_log_chunks(tmp_path, prefix_size, error):
     marker = tmp_path / "web-log-written"
-    child = ("import time; from pathlib import Path; "
-             f"print('x' * {prefix_size} + {error!r}, flush=True); "
-             "print('ordinary startup output\\n' * 30, flush=True); "
-             f"Path({str(marker)!r}).write_text('done'); time.sleep(60)")
-    script = fixture_runner(tmp_path, f'''
+    child = (
+        "import time; from pathlib import Path; "
+        f"print('x' * {prefix_size} + {error!r}, flush=True); "
+        "print('ordinary startup output\\n' * 30, flush=True); "
+        f"Path({str(marker)!r}).write_text('done'); time.sleep(60)"
+    )
+    script = fixture_runner(
+        tmp_path,
+        f"""
 def health_ready(url, *, api=False):
     deadline = time.monotonic() + 3
     while not (ROOT / 'web-log-written').exists() and time.monotonic() < deadline:
@@ -593,10 +720,17 @@ def health_ready(url, *, api=False):
 def service_commands(args, root=ROOT):
     return [("api", ROOT, [sys.executable, "-c", "import time; time.sleep(60)"]),
             ("web", ROOT, [sys.executable, "-c", {child!r}])]
-''')
+""",
+    )
     try:
-        result = subprocess.run([sys.executable, str(script), "start"], cwd=tmp_path,
-                                capture_output=True, text=True, timeout=10, check=False)
+        result = subprocess.run(
+            [sys.executable, str(script), "start"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
         assert marker.exists(), "both health checks must observe the fully written log"
         assert result.returncode == 1, "an earlier watcher failure must prevent reporting readiness"
         assert "ENOSPC" in result.stderr and "文件监听" in result.stderr
@@ -625,27 +759,37 @@ def test_watcher_log_scans_incrementally_and_retains_detected_failure(tmp_path):
     assert scanner.scan(), "an observed watcher failure must remain sticky"
 
 
-@pytest.mark.parametrize("production,node_options,disable_override", [
-    (False, None, None),
-    (False, '--trace-warnings --require "/tmp/my preload.js"', None),
-    (False, "--max-old-space-size=2048 --trace-warnings", None),
-    (False, "--max_old_space_size=2048 --trace-warnings", None),
-    (False, "--max-old-space-size-percentage 25", None),
-    (False, "--max-heap-size=2048", None),
-    (False, None, "1"),
-    (False, None, "0"),
-    (False, None, ""),
-    (True, None, None),
-    (True, "--trace-warnings", "0"),
-])
+@pytest.mark.parametrize(
+    "production,node_options,disable_override",
+    [
+        (False, None, None),
+        (False, '--trace-warnings --require "/tmp/my preload.js"', None),
+        (False, "--max-old-space-size=2048 --trace-warnings", None),
+        (False, "--max_old_space_size=2048 --trace-warnings", None),
+        (False, "--max-old-space-size-percentage 25", None),
+        (False, "--max-heap-size=2048", None),
+        (False, None, "1"),
+        (False, None, "0"),
+        (False, None, ""),
+        (True, None, None),
+        (True, "--trace-warnings", "0"),
+    ],
+)
 def test_web_environment_uses_available_memory_and_preserves_user_node_options(
-    tmp_path, production, node_options, disable_override,
+    tmp_path,
+    production,
+    node_options,
+    disable_override,
 ):
-    child = ("import json,os,time; from pathlib import Path; "
-             "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
-             "json.dumps([os.environ.get('NODE_OPTIONS'), os.environ.get('NEXT_DISABLE_MEM_OVERRIDE')])); "
-             "time.sleep(60)")
-    script = fixture_runner(tmp_path, f'''
+    child = (
+        "import json,os,time; from pathlib import Path; "
+        "Path(os.environ['TEA_DEV_ROOT'], '{name}.json').write_text("
+        "json.dumps([os.environ.get('NODE_OPTIONS'), os.environ.get('NEXT_DISABLE_MEM_OVERRIDE')])); "
+        "time.sleep(60)"
+    )
+    script = fixture_runner(
+        tmp_path,
+        f"""
 def health_ready(*args, **kwargs):
     # Readiness must wait for the child snapshots that this test inspects.
     return all(path.is_file() and path.read_text().endswith(']')
@@ -653,7 +797,8 @@ def health_ready(*args, **kwargs):
 def service_commands(args, root=ROOT):
     return [(name, ROOT, [sys.executable, '-c', {child!r}.format(name=name)])
             for name in ('api', 'web')]
-''')
+""",
+    )
     env = os.environ.copy()
     for key, value in (("NODE_OPTIONS", node_options), ("NEXT_DISABLE_MEM_OVERRIDE", disable_override)):
         env.pop(key, None)
@@ -663,16 +808,24 @@ def service_commands(args, root=ROOT):
     if production:
         command.append("--production")
     try:
-        result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True,
-                                timeout=10, check=False)
+        result = subprocess.run(
+            command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10, check=False
+        )
         assert result.returncode == 0, result.stdout + result.stderr
         import json
+
         web_options, web_override = json.loads((tmp_path / "web.json").read_text())
         options = dev.node_option_names(node_options or "")
-        if production or options & {"--max-old-space-size", "--max-old-space-size-percentage", "--max-heap-size"}:
+        if production or options & {
+            "--max-old-space-size",
+            "--max-old-space-size-percentage",
+            "--max-heap-size",
+        }:
             assert web_options == node_options
         else:
-            assert web_options.startswith(f"{node_options} --max-old-space-size=" if node_options else "--max-old-space-size=")
+            assert web_options.startswith(
+                f"{node_options} --max-old-space-size=" if node_options else "--max-old-space-size="
+            )
             assert int(web_options.rsplit("=", 1)[1]) > 0
         assert web_override == (disable_override if production else "1")
         assert json.loads((tmp_path / "api.json").read_text()) == [node_options, disable_override]
@@ -701,10 +854,16 @@ def test_development_heap_exceeds_node_default_without_preallocating_memory(monk
     assert calls[0][1]["timeout"] == 10
 
 
-@pytest.mark.parametrize("value", [
-    "--max-old-space-size=8192", "--max_old_space_size 8192", "--max-old-space-size-percentage=75",
-    "--max-heap-size=8192", '--require "unterminated',
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "--max-old-space-size=8192",
+        "--max_old_space_size 8192",
+        "--max-old-space-size-percentage=75",
+        "--max-heap-size=8192",
+        '--require "unterminated',
+    ],
+)
 def test_explicit_or_invalid_heap_options_are_not_rewritten(monkeypatch, value):
     monkeypatch.setattr(dev.subprocess, "run", lambda *args, **kwargs: pytest.fail("unexpected memory probe"))
     assert dev.development_node_options({"NODE_OPTIONS": value}) == value
@@ -713,23 +872,33 @@ def test_explicit_or_invalid_heap_options_are_not_rewritten(monkeypatch, value):
 @pytest.mark.parametrize("returncode,output", [(1, "8192"), (0, "0"), (0, "invalid")])
 def test_unavailable_memory_fails_instead_of_silently_restoring_default_cap(monkeypatch, returncode, output):
     monkeypatch.setattr(dev.shutil, "which", lambda name: "/local/node")
-    monkeypatch.setattr(dev.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
-        returncode=returncode, stdout=output,
-    ))
+    monkeypatch.setattr(
+        dev.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=returncode,
+            stdout=output,
+        ),
+    )
     with pytest.raises(dev.DevError, match="无法读取开发前端可用内存"):
         dev.development_node_options({})
 
 
-@pytest.mark.parametrize("production,node_options,disable_maps", [
-    (False, None, True),
-    (False, "--trace-warnings", True),
-    (False, "--enable-source-maps --trace-warnings", False),
-    (False, "--enable_source_maps", False),
-    (False, '--require "/tmp/--enable-source-maps.js"', True),
-    (True, None, False),
-    (True, "--enable-source-maps", False),
-])
-def test_node_source_maps_default_and_explicit_debugging_choice(monkeypatch, production, node_options, disable_maps):
+@pytest.mark.parametrize(
+    "production,node_options,disable_maps",
+    [
+        (False, None, True),
+        (False, "--trace-warnings", True),
+        (False, "--enable-source-maps --trace-warnings", False),
+        (False, "--enable_source_maps", False),
+        (False, '--require "/tmp/--enable-source-maps.js"', True),
+        (True, None, False),
+        (True, "--enable-source-maps", False),
+    ],
+)
+def test_node_source_maps_default_and_explicit_debugging_choice(
+    monkeypatch, production, node_options, disable_maps
+):
     monkeypatch.setattr(dev, "require_tools", lambda: ("uv", "node"))
     monkeypatch.delenv("NODE_OPTIONS", raising=False)
     if node_options is not None:
@@ -741,17 +910,26 @@ def test_node_source_maps_default_and_explicit_debugging_choice(monkeypatch, pro
 
 
 def test_tea_page_success_does_not_hide_failed_api_forwarding(tmp_path):
-    script = fixture_runner(tmp_path, '''
+    script = fixture_runner(
+        tmp_path,
+        """
 START_TIMEOUT = 0.2
 def health_ready(url, *, api=False):
     return url != 'http://127.0.0.1:3000/api/tea/health'
 def service_commands(args, root=ROOT):
     return [(name, ROOT, [sys.executable, '-c', 'import time; time.sleep(60)'])
             for name in ('api', 'web')]
-''')
+""",
+    )
     try:
-        result = subprocess.run([sys.executable, str(script), "start", "--api-port", "8000", "--web-port", "3000"],
-                                cwd=tmp_path, capture_output=True, text=True, timeout=10, check=False)
+        result = subprocess.run(
+            [sys.executable, str(script), "start", "--api-port", "8000", "--web-port", "3000"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
         assert result.returncode == 1, "readiness must include the frontend's real API forwarding path"
         assert "API 健康检查：已就绪" in result.stderr
         assert "前端 /tea 及 API 转发：未就绪" in result.stderr

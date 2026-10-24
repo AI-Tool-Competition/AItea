@@ -1,11 +1,11 @@
 """The existing debugger uses the same six-stage legal runtime when opted in."""
 
 import pytest
+from admin_helpers import login_admin
+from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
 
-from app.main import create_app
-
-from admin_helpers import login_admin
+pytestmark = pytest.mark.usefixtures("ragflow_library")
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def test_legal_debugger_pauses_and_resumes_checked_legal_state(client):
     assert stale.status_code == 409 and stale.json()["error"]["code"] == "stale_checkpoint"
 
 
-@pytest.mark.parametrize("mode", ["lexical", "hybrid"])
+@pytest.mark.parametrize("mode", ["unavailable", "ragflow"])
 @pytest.mark.parametrize("stop_after_step_id", ["qa01", "qa06"])
 def test_legal_debugger_reports_actual_retrieval_mode(client, monkeypatch, mode, stop_after_step_id):
     monkeypatch.setattr(

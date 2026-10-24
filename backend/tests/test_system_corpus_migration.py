@@ -8,13 +8,14 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from support.legacy_vectors import checkpoint_inputs, schema19_snapshot
+from app.contexts.collection.application.collection_import import _fingerprint
+from app.bootstrap import Service
+from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE
+from app.shared.domain.values import dump, now
+from app.shared.infrastructure.operations import system_corpus_migration as module
 from PIL import Image
-
-from app import system_corpus_migration as module
-from app.db import dump, now
-from app.defaults import DEFAULT_TEMPLATE
-from app.service import Service
-from app.system_library import SYSTEM_OWNER_ID, ensure_principal
 
 AUTOMATIC_STREAM_REQUIRED = module._stream_required
 
@@ -37,6 +38,7 @@ def private_state(service):
 
 
 def downgrade9(service):
+    schema19_snapshot(service)
     with service.db.transaction() as conn:
         for name in [
             "retrieval_chunk_insert",
@@ -72,6 +74,7 @@ def downgrade9(service):
 
 @pytest.fixture(params=["legacy", "streaming"])
 def pair(tmp_path, monkeypatch, request):
+    monkeypatch.setattr(Service, "embedding_fingerprint", lambda self: _fingerprint())
     if request.param == "streaming":
         monkeypatch.setattr(module, "_stream_required", lambda _conn: True)
         monkeypatch.setattr(module, "MAX_BATCH_DOCUMENTS", 2)
@@ -190,7 +193,7 @@ def pair(tmp_path, monkeypatch, request):
             )
             source.index.sync_document(conn, doc["id"], manifest)
             if complete and level == "primary":
-                batch = source.index.pending(conn, doc["id"], source.embedding_fingerprint())
+                batch = checkpoint_inputs(conn, doc["id"], source.embedding_fingerprint())
                 source.index.store_vectors(
                     conn, doc["id"], source.embedding_fingerprint(), batch, [[0.6, 0.8] for _ in batch]
                 )
@@ -239,6 +242,7 @@ def pair(tmp_path, monkeypatch, request):
                 },
                 conn,
             )
+    schema19_snapshot(source)
     return source, target, docs
 
 
@@ -250,7 +254,7 @@ def snapshot(source, tmp_path):
 
 
 def test_subset_export_refuses_to_drop_system_recovery_history(pair, tmp_path):
-    from app.collection_recovery import Decision
+    from app.contexts.collection.application.collection_recovery import Decision
 
     source, _target, docs = pair
     document = docs["a"]
@@ -285,7 +289,7 @@ def test_schema9_upgrade_preserves_private_business_and_exact_ids_proofs_and_vec
         result["target_writes"] == 6
         and result["true_vectors"] == 2
         and result["relations"] == 3
-        and result["target_schema_after"] == 19
+        and result["target_schema_after"] == 22
     )
     after = private_state(target)
     after["users"] = [row for row in after["users"] if row[0] != SYSTEM_OWNER_ID]
@@ -347,7 +351,7 @@ def test_partial_vector_cache_without_manifest_fingerprint_keeps_bytes_and_queue
         manifest_bytes = dump(manifest)
         conn.execute("UPDATE documents SET manifest=? WHERE id=?", (manifest_bytes, document_id))
         source.index.sync_document(conn, document_id, manifest)
-        pending = source.index.pending(conn, document_id, fingerprint)
+        pending = checkpoint_inputs(conn, document_id, fingerprint)
         assert [chunk["chunk_id"] for chunk in pending] == ["part-1", "part-2"]
         source.index.store_vectors(conn, document_id, fingerprint, pending[:1], [[0.6, 0.8]])
         if source_job == "missing":
@@ -378,7 +382,7 @@ def test_partial_vector_cache_without_manifest_fingerprint_keeps_bytes_and_queue
             ).fetchone()
         )
         assert actual == cached
-        assert [chunk["chunk_id"] for chunk in target.index.pending(conn, document_id, fingerprint)] == [
+        assert [chunk["chunk_id"] for chunk in checkpoint_inputs(conn, document_id, fingerprint)] == [
             "part-2"
         ]
         job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (document_id,)).fetchone()
@@ -461,7 +465,7 @@ def test_late_copy_failure_rolls_back_only_corpus_and_keeps_backup_upgrade(pair,
     assert after == before
     with closing(target.db.connect()) as conn:
         assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == (6 if streaming else 0)
-        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 19
+        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 22
     backups = list((target.db.data_dir / "migration-backups").glob("*/tea.sqlite3"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as conn:
@@ -756,7 +760,7 @@ def test_vector_validation_checks_full_text_once_per_document(pair, monkeypatch)
         )
         conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), ident))
         source.index.sync_document(conn, ident, manifest)
-        pending = source.index.pending(conn, ident, source.embedding_fingerprint())
+        pending = checkpoint_inputs(conn, ident, source.embedding_fingerprint())
         source.index.store_vectors(
             conn, ident, source.embedding_fingerprint(), pending, [[0.6, 0.8] for _ in pending]
         )

@@ -95,11 +95,11 @@ ragflow-stop:
 archive-inventory: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 archive-inventory: export TEA_INVENTORY_OWNER = $(OWNER)
 archive-inventory:
-	cd backend && uv run --locked python -m app.archive_inventory
+	cd backend && uv run --locked python -m app.contexts.collection.infrastructure.archive_inventory
 
 collection-catalog: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 collection-catalog:
-	cd backend && uv run --locked python -m app.collection_catalog
+	cd backend && uv run --locked python -m app.contexts.collection.infrastructure.collection_catalog
 
 collect-resources: export TEA_CAMPAIGN_OUTPUT = $(if $(strip $(OUTPUT)),$(abspath $(OUTPUT)))
 collect-resources: export TEA_CAMPAIGN_ITEMS = $(ITEMS)
@@ -118,6 +118,7 @@ collection-status:
 	uv run --project backend --locked python scripts/collection_watchdog.py status --fleet "$(CURDIR)/.dev/collection-service/fleet.json" --state-dir "$(CURDIR)/.dev/collection-service/state"
 
 backend-check:
+	@mkdir -p "$(dir $(PYTEST_BASETEMP))"
 	uv run --project backend --locked pytest backend/tests --basetemp="$(PYTEST_BASETEMP)"
 	uv run --project backend --locked ruff check --config backend/pyproject.toml backend/app backend/tests scripts
 

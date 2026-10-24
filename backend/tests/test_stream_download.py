@@ -9,8 +9,7 @@ from email.utils import format_datetime
 from types import SimpleNamespace
 
 import pytest
-
-from app import ingestion
+from app.shared.infrastructure.http import download as ingestion_download
 
 
 class Response:
@@ -61,16 +60,16 @@ def transport(monkeypatch):
             self.closed = True
 
     monkeypatch.setattr(
-        ingestion,
+        ingestion_download,
         "_public_addresses",
         lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
     )
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", Connection)
     return responses, requests, connections
 
 
 def download(**kwargs):
-    return ingestion._download("https://example.com/law", deadline=time.monotonic() + 10, **kwargs)
+    return ingestion_download._download("https://example.com/law", deadline=time.monotonic() + 10, **kwargs)
 
 
 def test_consumer_receives_chunks_before_later_network_reads(transport):
@@ -111,8 +110,8 @@ def test_connect_failure_before_response_records_zero_body_bytes(transport, monk
         def close(self):
             pass
 
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", FailedRequest)
-    with pytest.raises(ingestion.DownloadError) as error:
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", FailedRequest)
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.bytes_received == 0
 
@@ -125,7 +124,7 @@ def test_partial_response_failure_keeps_quota_reservation_unknown(transport):
             headers={"Content-Length": "9", "Content-Type": "application/pdf"},
         )
     )
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download(consume=lambda chunks: list(chunks))
     assert error.value.bytes_received is None
 
@@ -160,9 +159,9 @@ def test_pinned_transport_falls_back_without_changing_tls_hostname(monkeypatch):
 
     first = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700::6812:1c3a", 443, 0, 0))
     second = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
-    monkeypatch.setattr(ingestion.ssl, "create_default_context", lambda: Context())
-    monkeypatch.setattr(ingestion.socket, "socket", lambda family, *_: Socket(family))
-    connection = ingestion._PinnedHTTPSConnection("official.example", first, 15)
+    monkeypatch.setattr(ingestion_download.ssl, "create_default_context", lambda: Context())
+    monkeypatch.setattr(ingestion_download.socket, "socket", lambda family, *_: Socket(family))
+    connection = ingestion_download._PinnedHTTPSConnection("official.example", first, 15)
     connection.alternate_addresses = [second]
     connection.deadline = time.monotonic() + 20
     connection.connect()
@@ -178,14 +177,14 @@ def test_download_prefers_validated_ipv4_before_unreachable_ipv6(transport, monk
     ipv6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700::6812:1c3a", 443, 0, 0))
     ipv4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
     selected = []
-    original = ingestion._PinnedHTTPSConnection
+    original = ingestion_download._PinnedHTTPSConnection
 
     def connection(host, address, timeout):
         selected.append(address)
         return original(host, address, timeout)
 
-    monkeypatch.setattr(ingestion, "_public_addresses", lambda *a, **kw: [ipv6, ipv4])
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", connection)
+    monkeypatch.setattr(ingestion_download, "_public_addresses", lambda *a, **kw: [ipv6, ipv4])
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", connection)
     assert download()["content"] == b"original"
     assert selected == [ipv4]
 
@@ -248,7 +247,7 @@ def test_dataset_range_rejects_whole_file_or_different_total_before_reading(tran
         },
     )
     responses.append(response)
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(byte_range=(0, 3), max_bytes=4, range_total_bytes=764 * 1024 * 1024)
     assert response.reads == 0
 
@@ -265,7 +264,7 @@ def test_dataset_range_rejects_whole_file_or_different_total_before_reading(tran
 )
 def test_dataset_opt_in_cannot_remove_response_or_generic_file_limits(transport, options):
     _, requests, _ = transport
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(**options)
     assert not requests
 
@@ -275,7 +274,7 @@ def test_malformed_or_unrequested_ranges_are_not_consumed(transport, header):
     responses, _, _ = transport
     response = Response([b"bad!"], status=206, headers={"Content-Length": "4", "Content-Range": header})
     responses.append(response)
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(byte_range=(4, 7), range_validator='"v1"')
     assert response.reads == 0
 
@@ -289,22 +288,22 @@ def test_header_callback_can_defer_large_file_before_body_is_read(transport):
 
     def defer(meta):
         assert meta["total_size"] == 8 and meta["accept_ranges"] is True
-        raise ingestion.DownloadError("defer before body", retryable=True)
+        raise ingestion_download.DownloadError("defer before body", retryable=True)
 
-    with pytest.raises(ingestion.DownloadError, match="defer"):
+    with pytest.raises(ingestion_download.DownloadError, match="defer"):
         download(on_headers=defer)
     assert response.reads == 0 and all(c.closed for c in connections)
 
 
 def test_larger_original_limit_is_explicit_and_still_stream_bounded(transport, monkeypatch):
     responses, _, _ = transport
-    monkeypatch.setattr(ingestion, "MAX_BYTES", 3)
+    monkeypatch.setattr(ingestion_download, "MAX_BYTES", 3)
     responses.append(Response([b"abcdefgh"], headers={"Content-Length": "8"}))
-    with pytest.raises(ingestion.DownloadError, match="大小"):
+    with pytest.raises(ingestion_download.DownloadError, match="大小"):
         download()
     responses.append(Response([b"abcdefgh"], headers={"Content-Length": "8"}))
     assert download(max_bytes=8)["content"] == b"abcdefgh"
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(max_bytes=128 * 1024 * 1024 + 1)
 
 
@@ -345,7 +344,7 @@ def test_compressed_responses_cannot_publish_invalid_or_unbounded_content(transp
     elif variant == "trailing":
         body += gzip.compress(b"extra")
     elif variant == "bomb":
-        monkeypatch.setattr(ingestion, "MAX_COMPRESSED_HTML_BYTES", 512)
+        monkeypatch.setattr(ingestion_download, "MAX_COMPRESSED_HTML_BYTES", 512)
     responses.append(
         Response(
             [body],
@@ -363,7 +362,7 @@ def test_compressed_responses_cannot_publish_invalid_or_unbounded_content(transp
         published.append(result)
         return result
 
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(accept_compressed_html=variant != "not_opted_in", consume=consume)
     assert not published
 
@@ -388,13 +387,13 @@ def test_official_catalog_json_request_and_response_are_bounded(transport):
 def test_catalog_post_never_replays_body_on_redirect(transport):
     responses, requests, _ = transport
     responses.append(Response(status=307, headers={"Location": "https://another.example/list"}))
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(json_body={"jns": ["UU"]})
     assert len(requests) == 1
 
 
 def test_oversized_catalog_request_is_rejected_before_connecting(transport):
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(json_body={"filter": "x" * 16385})
     assert not transport[2]
 
@@ -434,7 +433,7 @@ def test_incomplete_or_invalid_body_never_reaches_publication(
 ):
     responses, _, connections = transport
     responses.append(Response(chunks, headers=headers))
-    monkeypatch.setattr(ingestion, "MAX_BYTES", limit)
+    monkeypatch.setattr(ingestion_download, "MAX_BYTES", limit)
     published = []
 
     def consume(blocks):
@@ -444,7 +443,7 @@ def test_incomplete_or_invalid_body_never_reaches_publication(
         published.append(bytes(temporary))
         return temporary
 
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download(consume=consume)
     assert error.value.retryable is retryable
     assert published == []
@@ -496,7 +495,7 @@ def test_response_and_request_validators_are_bounded_and_cannot_inject_headers(t
 def test_transient_http_errors_preserve_server_retry_after(transport, status):
     responses, _, _ = transport
     responses.append(Response(status=status, headers={"Retry-After": "900"}))
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable is True
     assert error.value.retry_after == 900
@@ -511,7 +510,7 @@ def test_redirect_retry_after_identifies_actual_limited_host(transport):
             Response(status=429, headers={"Retry-After": "180"}),
         ]
     )
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.response_host == "limited.example"
     assert error.value.retry_after == 180
@@ -521,7 +520,7 @@ def test_redirect_retry_after_identifies_actual_limited_host(transport):
 def test_other_http_errors_are_permanent(transport, status):
     responses, _, _ = transport
     responses.append(Response(status=status, headers={"Retry-After": "60"}))
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable is False
     assert error.value.retry_after is None
@@ -532,7 +531,7 @@ def test_retry_after_accepts_http_date(transport, delay):
     responses, _, _ = transport
     date = datetime.now(timezone.utc) + timedelta(seconds=delay)
     responses.append(Response(status=503, headers={"Retry-After": format_datetime(date, usegmt=True)}))
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert delay - 2 <= error.value.retry_after <= delay
 
@@ -541,7 +540,7 @@ def test_retry_after_accepts_http_date(transport, delay):
 def test_invalid_retry_after_does_not_create_a_cooldown(transport, value):
     responses, _, _ = transport
     responses.append(Response(status=429, headers={"Retry-After": value}))
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable is True
     assert error.value.retry_after is None
@@ -590,7 +589,7 @@ def test_connection_slot_releases_on_interrupted_body(transport):
             assert connections[-1].closed
             released.append(host)
 
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download(connection_slot=slot)
     assert error.value.retryable
     assert released == ["example.com"]
@@ -599,7 +598,7 @@ def test_connection_slot_releases_on_interrupted_body(transport):
 def test_slot_wait_uses_remaining_deadline_before_opening_connection(transport, monkeypatch):
     _, _, connections = transport
     current_time = [100.0]
-    monkeypatch.setattr(ingestion.time, "monotonic", lambda: current_time[0])
+    monkeypatch.setattr(ingestion_download.time, "monotonic", lambda: current_time[0])
     events = []
 
     @contextmanager
@@ -611,7 +610,7 @@ def test_slot_wait_uses_remaining_deadline_before_opening_connection(transport, 
         finally:
             events.append("exited")
 
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download(connection_slot=slot)
     assert error.value.retryable
     assert events == ["entered", "exited"]
@@ -624,7 +623,7 @@ def test_unconditional_304_cannot_validate_an_original(transport, redirect):
     if redirect:
         responses.append(Response(status=302, headers={"Location": "/different.txt"}))
     responses.append(Response(status=304))
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download(validators={"etag": '"v1"'} if redirect else None)
     assert error.value.retryable is False
 
@@ -632,7 +631,7 @@ def test_unconditional_304_cannot_validate_an_original(transport, redirect):
 def test_partial_response_is_rejected_without_publishing(transport):
     responses, _, _ = transport
     responses.append(Response([b"partial"], status=206))
-    with pytest.raises(ingestion.DownloadError):
+    with pytest.raises(ingestion_download.DownloadError):
         download(consume=lambda _: pytest.fail("unsolicited partial response must not be saved"))
 
 
@@ -648,7 +647,7 @@ def test_partial_response_is_rejected_without_publishing(transport):
 def test_invalid_representation_headers_fail_before_blob_creation(transport, headers):
     responses, _, _ = transport
     responses.append(Response([b"abc"], headers=headers))
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download(consume=lambda _: pytest.fail("invalid response must not open storage"))
     assert error.value.retryable is False
 
@@ -659,9 +658,9 @@ def test_transient_dns_failure_can_retry_without_opening_connection(monkeypatch)
 
     monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
     monkeypatch.setattr(
-        ingestion, "_PinnedHTTPSConnection", lambda *args: pytest.fail("DNS was not validated")
+        ingestion_download, "_PinnedHTTPSConnection", lambda *args: pytest.fail("DNS was not validated")
     )
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable is True
 
@@ -676,30 +675,32 @@ def test_mixed_public_private_dns_is_permanent(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        ingestion, "_PinnedHTTPSConnection", lambda *args: pytest.fail("private IP was not rejected")
+        ingestion_download, "_PinnedHTTPSConnection", lambda *args: pytest.fail("private IP was not rejected")
     )
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable is False
 
 
 def test_discovery_is_network_free_same_origin_bounded_and_deduplicated(monkeypatch):
-    monkeypatch.setattr(ingestion, "_download", lambda *args, **kwargs: pytest.fail("discovery fetched data"))
+    monkeypatch.setattr(
+        ingestion_download, "_download", lambda *args, **kwargs: pytest.fail("discovery fetched data")
+    )
     html = b"""<a href="/one.pdf#article">one</a><a href="/one.pdf">again</a>
       <a href="https://other.example/two.pdf">outside</a><a href="/page.html">page</a>
       <a href="https://example.com:8443/unsafe.pdf">port</a>
       <a href="/second.docx">two</a><a href="/third.txt">three</a>"""
-    assert ingestion.discover_attachments("https://example.com/law", html, "text/html", 2) == [
+    assert ingestion_download.discover_attachments("https://example.com/law", html, "text/html", 2) == [
         "https://example.com/one.pdf",
         "https://example.com/second.docx",
     ]
-    assert ingestion.discover_attachments("https://example.com/law", html, "application/pdf") == []
+    assert ingestion_download.discover_attachments("https://example.com/law", html, "application/pdf") == []
 
 
 def test_unsafe_urls_are_permanent_before_transport(transport):
     _, requests, _ = transport
-    with pytest.raises(ingestion.DownloadError) as error:
-        ingestion._download("https://127.0.0.1/law", deadline=time.monotonic() + 10)
+    with pytest.raises(ingestion_download.DownloadError) as error:
+        ingestion_download._download("https://127.0.0.1/law", deadline=time.monotonic() + 10)
     assert error.value.retryable is False
     assert not requests
 
@@ -722,7 +723,7 @@ def pinned_transport(monkeypatch):
         response_calls=0,
         handshake_timeout=None,
     )
-    monkeypatch.setattr(ingestion.time, "monotonic", lambda: state.clock)
+    monkeypatch.setattr(ingestion_download.time, "monotonic", lambda: state.clock)
 
     class Socket:
         def __init__(self):
@@ -788,7 +789,7 @@ def pinned_transport(monkeypatch):
         def cancel(self):
             pass
 
-    class Connection(ingestion._PinnedHTTPSConnection):
+    class Connection(ingestion_download._PinnedHTTPSConnection):
         def __init__(self, *args):
             super().__init__(*args)
             state.connection = self
@@ -800,12 +801,12 @@ def pinned_transport(monkeypatch):
             state.response_calls += 1
             return Response([b"body"])
 
-    monkeypatch.setattr(ingestion.socket, "socket", socket_factory)
-    monkeypatch.setattr(ingestion.ssl, "create_default_context", lambda: TLSContext())
-    monkeypatch.setattr(ingestion.threading, "Timer", Timer)
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr(ingestion_download.socket, "socket", socket_factory)
+    monkeypatch.setattr(ingestion_download.ssl, "create_default_context", lambda: TLSContext())
+    monkeypatch.setattr(ingestion_download.threading, "Timer", Timer)
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", Connection)
     monkeypatch.setattr(
-        ingestion,
+        ingestion_download,
         "_public_addresses",
         lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
     )
@@ -831,7 +832,7 @@ def test_connect_and_handshake_share_the_same_absolute_deadline(pinned_transport
 @pytest.mark.parametrize("phase", ["before_socket", "socket_creation", "tcp", "wrap", "tls"])
 def test_watchdog_expiry_cannot_start_or_leave_network_work_alive(pinned_transport, phase):
     pinned_transport.phase = phase
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable is True
     assert pinned_transport.response_calls == 0
@@ -845,7 +846,7 @@ def test_watchdog_expiry_cannot_start_or_leave_network_work_alive(pinned_transpo
 
 def test_late_tcp_completion_cannot_begin_tls_after_deadline(pinned_transport):
     pinned_transport.tcp_elapsed = 11
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable
     assert pinned_transport.wraps == []
@@ -854,7 +855,7 @@ def test_late_tcp_completion_cannot_begin_tls_after_deadline(pinned_transport):
 
 def test_late_tls_completion_cannot_begin_http_response_after_deadline(pinned_transport):
     pinned_transport.tls_elapsed = 11
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable
     assert pinned_transport.response_calls == 0
@@ -864,7 +865,7 @@ def test_late_tls_completion_cannot_begin_http_response_after_deadline(pinned_tr
 def test_watchdog_closes_unconnected_socket_even_when_shutdown_fails(pinned_transport):
     pinned_transport.phase = "tcp"
     pinned_transport.shutdown_fails = True
-    with pytest.raises(ingestion.DownloadError) as error:
+    with pytest.raises(ingestion_download.DownloadError) as error:
         download()
     assert error.value.retryable
     assert pinned_transport.raw.closed
@@ -890,7 +891,7 @@ def test_late_redirect_watchdog_does_not_expire_the_next_connection(transport, m
         def cancel(self):
             pass
 
-    monkeypatch.setattr(ingestion.threading, "Timer", Timer)
+    monkeypatch.setattr(ingestion_download.threading, "Timer", Timer)
     result = download()
     assert result["content"] == b"body"
     assert connections[0].deadline_expired.is_set()

@@ -1,18 +1,19 @@
 """Scoped HTML workers authorize the current source before every model phase."""
 
+import json
+import time
 from contextlib import closing
 from copy import deepcopy
-import json
 from threading import Event
-import time
 
 import pytest
-
-from app import ingestion, vision
-from app.collection import CollectionWorkers
-from app.db import dump, now
-from app.html_image_collection import HtmlImageCollector
-from test_html_image_collection import document, downloader, service as service
+from app.contexts.collection.application.collection import CollectionWorkers
+from app.contexts.collection.application.html_image_collection import HtmlImageCollector
+from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+from app.contexts.knowledge.infrastructure.providers import vision as vision
+from app.shared.domain.values import dump, now
+from test_html_image_collection import document, downloader
+from test_html_image_collection import service as service
 from test_html_linked_asset_ocr import transcript
 
 POLICY = "draft_html_v3"
@@ -173,7 +174,9 @@ def test_authorization_changes_after_claim_cannot_call_model_or_change_document(
     before = row(service, "documents", doc["id"])
     before_job = row(service, "processing_jobs", doc["id"])
     monkeypatch.setattr(vision, "transcribe_image", lambda *_: pytest.fail("No current HTML draft authority"))
-    monkeypatch.setattr(ingestion, "embed_texts", lambda *_: pytest.fail("No current HTML draft authority"))
+    monkeypatch.setattr(
+        ingestion_embedding, "embed_texts", lambda *_: pytest.fail("No current HTML draft authority")
+    )
     service.collection.process_item(claim)
     assert row(service, "documents", doc["id"]) == before
     after_job = row(service, "processing_jobs", doc["id"])
@@ -185,7 +188,7 @@ def test_authorization_changes_after_claim_cannot_call_model_or_change_document(
 
 
 def test_review_change_during_image_read_is_checked_before_provider(service, monkeypatch):
-    from app import html_linked_asset_ocr
+    from app.contexts.knowledge.infrastructure.providers import html_linked_asset_ocr as html_linked_asset_ocr
 
     doc = bound(service, monkeypatch)
     claim = service.collection.claim_processing(
@@ -212,7 +215,9 @@ def test_legal_queued_html_draft_resumes_and_secondary_legal_text_gets_no_vector
     doc = bound(service, monkeypatch)
     calls = []
     monkeypatch.setattr(vision, "transcribe_image", lambda image: (calls.append(image), transcript())[1])
-    monkeypatch.setattr(ingestion, "embed_texts", lambda *_: pytest.fail("Secondary legal text cannot embed"))
+    monkeypatch.setattr(
+        ingestion_embedding, "embed_texts", lambda *_: pytest.fail("Secondary legal text cannot embed")
+    )
     claim = service.collection.claim_processing(
         owner_id="owner", document_ids=[doc["id"]], processing_policy=POLICY
     )
@@ -241,7 +246,9 @@ def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypa
         manifest["pipeline_version"] = "html-source-mapping-v6+layout-token-hierarchical-v2"
         conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
     monkeypatch.setattr(vision, "transcribe_image", lambda *_: transcript())
-    monkeypatch.setattr(ingestion, "embed_texts", lambda *_: pytest.fail("Legal draft cannot embed"))
+    monkeypatch.setattr(
+        ingestion_embedding, "embed_texts", lambda *_: pytest.fail("Legal draft cannot embed")
+    )
     claim = service.collection.claim_processing(
         owner_id="owner", document_ids=[doc["id"]], processing_policy=POLICY
     )
@@ -256,7 +263,7 @@ def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypa
 
 
 def test_html_image_ocr_resumes_bounded_batches_until_all_images_are_processed(service, monkeypatch):
-    from app.native_asset_ocr import assets
+    from app.contexts.knowledge.infrastructure.providers.native_asset_ocr import assets
     from test_html_image_collection import image
 
     html = (
@@ -362,7 +369,7 @@ def test_review_change_while_persisting_sent_pixels_is_checked_before_model(serv
 
 
 def test_review_change_when_selecting_embedding_batch_is_checked_before_model(service, monkeypatch):
-    from app import ragflow
+    from app.contexts.knowledge.infrastructure.providers import ragflow as ragflow
 
     doc = document(service, html="<main><p>Complete primary native legal text.</p></main>")
     with service.db.transaction() as conn:

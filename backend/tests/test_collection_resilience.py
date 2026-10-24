@@ -8,14 +8,13 @@ from contextlib import closing
 from threading import Event
 
 import pytest
-from fastapi.testclient import TestClient
-
 from admin_helpers import grant_admin, login_admin
-
-from app import ingestion, parsing
-from app.collection import MAX_ATTEMPTS
-from app.main import create_app
-from app.service import Service
+from app.bootstrap import Service
+from app.contexts.collection.application.collection import MAX_ATTEMPTS
+from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+from app.interfaces.http.factory import create_app
+from app.shared.infrastructure.http import download as ingestion_download
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture
@@ -79,7 +78,7 @@ def fake_download(monkeypatch, before=None):
             "last_modified": None,
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     return calls
 
 
@@ -221,7 +220,7 @@ def test_manual_retry_cannot_bypass_queue_backpressure(client, monkeypatch):
     failed_run = begin(client, source["id"], key="failed-first")
 
     def unavailable(url):
-        raise ingestion.DownloadError("HTTP 404", retryable=False)
+        raise ingestion_download.DownloadError("HTTP 404", retryable=False)
 
     fake_download(monkeypatch, before=unavailable)
     collection = client.app.state.service.collection
@@ -256,7 +255,7 @@ def test_discovery_obeys_the_same_queue_budget_as_initial_submission(client, mon
         body = "".join(f'<a href="/attachment-{index}.pdf">file</a>' for index in range(5)).encode()
         return {"url": url, "filename": "source.html", "mime_type": "text/html", "blob": consume([body])}
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     collection = client.app.state.service.collection
     collection.fetch_item(collection.claim_fetch())
     queued = rows(
@@ -341,7 +340,7 @@ def test_retry_preserves_successful_items_and_only_downloads_failures(client, mo
 
     def before(url):
         if url == bad and failed:
-            raise ingestion.DownloadError("HTTP 404", retryable=False)
+            raise ingestion_download.DownloadError("HTTP 404", retryable=False)
 
     downloads = fake_download(monkeypatch, before=before)
     monkeypatch.setattr(parsing, "parse_bounded", lambda *args, **kwargs: manifest())
@@ -410,7 +409,7 @@ def test_retry_after_pauses_same_host_durably_but_other_hosts_progress(client, t
 
     def before(url):
         if url == first:
-            raise ingestion.DownloadError("HTTP 429", retryable=True, retry_after=180)
+            raise ingestion_download.DownloadError("HTTP 429", retryable=True, retry_after=180)
 
     fake_download(monkeypatch, before=before)
     collection = client.app.state.service.collection
@@ -492,82 +491,6 @@ def test_parser_crash_exhaustion_preserves_downloadable_original(client, tmp_pat
     assert client.get(f"/api/tea/documents/{document['id']}/download").content == original
 
 
-def test_embedding_batches_resume_after_restart_without_reembedding_committed_chunks(
-    client, tmp_path, monkeypatch
-):
-    for name, value in {
-        "EMBEDDING_BASE_URL": "https://embedding.example/v1",
-        "EMBEDDING_API_KEY": "test-only",
-        "EMBEDDING_MODEL": "test-embedding",
-    }.items():
-        monkeypatch.setenv(name, value)
-    source = make_source(client)
-    job = begin(client, source["id"])
-    fake_download(monkeypatch)
-    parses, batches = [], []
-
-    def parse(*args, **kwargs):
-        parses.append(True)
-        return manifest(count=130)
-
-    fail_once = False
-
-    def embed(texts):
-        nonlocal fail_once
-        batches.append(list(texts))
-        if fail_once:
-            fail_once = False
-            raise ValueError("provider unavailable")
-        return [[float(int(text.rsplit("-", 1)[-1]) + 1), 1.0] for text in texts]
-
-    monkeypatch.setattr(parsing, "parse_bounded", parse)
-    monkeypatch.setattr(ingestion, "embed_texts", embed)
-    collection = client.app.state.service.collection
-    collection.fetch_item(collection.claim_fetch())
-    document = client.get("/api/tea/documents").json()["items"][0]
-    assert document["status"] == "processing"
-    assert client.get(f"/api/tea/documents/{document['id']}/download").status_code == 200
-    collection.process_item(collection.claim_processing())
-    collection.process_item(collection.claim_processing())
-    saved = json.loads(
-        rows(collection, "SELECT manifest FROM documents WHERE id=?", (document["id"],))[0]["manifest"]
-    )
-    assert not any("embedding" in chunk for chunk in saved["chunks"])
-    assert (
-        rows(
-            collection,
-            "SELECT COUNT(*) n FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
-            (document["id"],),
-        )[0]["n"]
-        == 64
-    )
-    restarted = Service(tmp_path).collection
-    fail_once = True
-    restarted.process_item(restarted.claim_processing())
-    assert restarted.claim_processing() is None
-    with collection.db.transaction() as conn:
-        conn.execute("UPDATE processing_jobs SET available_at=0 WHERE document_id=?", (document["id"],))
-    while claim := restarted.claim_processing():
-        restarted.process_item(claim)
-    assert len(parses) == 1
-    assert [len(batch) for batch in batches] == [64, 64, 64, 2]
-    assert batches[1] == batches[2]
-    assert set(batches[0]).isdisjoint(text for batch in batches[1:] for text in batch)
-    saved = json.loads(
-        rows(collection, "SELECT manifest FROM documents WHERE id=?", (document["id"],))[0]["manifest"]
-    )
-    assert not any("embedding" in chunk for chunk in saved["chunks"])
-    assert (
-        rows(
-            collection,
-            "SELECT COUNT(*) n FROM retrieval_vectors v JOIN retrieval_chunks c ON c.rowid=v.chunk_rowid WHERE c.document_id=?",
-            (document["id"],),
-        )[0]["n"]
-        == 130
-    )
-    assert detail(client, job)["run"]["status"] == "completed"
-
-
 def test_304_for_a_different_final_resource_cannot_reuse_cached_original(client, monkeypatch):
     source = make_source(client)
     collection = client.app.state.service.collection
@@ -576,7 +499,7 @@ def test_304_for_a_different_final_resource_cannot_reuse_cached_original(client,
     collection.fetch_item(collection.claim_fetch())
     repeated = begin(client, source["id"], key="redirected-cache")
     monkeypatch.setattr(
-        ingestion,
+        ingestion_download,
         "_download",
         lambda *args, **kwargs: {"not_modified": True, "url": "https://other.example/different-law.txt"},
     )

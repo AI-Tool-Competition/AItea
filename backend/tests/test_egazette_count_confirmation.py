@@ -1,11 +1,10 @@
 """Independent exact counts cannot hide incomplete or inconsistent saved pages."""
 
-from copy import deepcopy
 import json
 import re
+from copy import deepcopy
 
 import pytest
-
 from test_egazette_campaign import campaign, collector, row
 
 

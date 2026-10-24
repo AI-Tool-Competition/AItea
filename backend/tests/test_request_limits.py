@@ -52,7 +52,7 @@ async def body_app(scope, receive, send):
 
 class RequestLimitsTests(unittest.TestCase):
     def setUp(self):
-        self.middleware = importlib.import_module("app.request_limits").RequestLimitMiddleware
+        self.middleware = importlib.import_module("app.interfaces.http.request_limits").RequestLimitMiddleware
 
     def test_chunked_json_is_limited_without_content_length(self):
         sent = asyncio.run(

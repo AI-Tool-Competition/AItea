@@ -2,16 +2,31 @@
 
 from copy import deepcopy
 from hashlib import sha256
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
 from xml.etree import ElementTree
 
 import pytest
-
-from app.checklists import ChecklistService, load_blueprints, load_blueprint_version
-from app.discovery import _Recipe, discover_page, recipe_for, request_parameters
-from app.wto_discovery import DOCS, GOODS, MEMBERS, XML_PATH, catalog_url, services_catalog_url
+from app.contexts.collection.application.checklists import (
+    ChecklistService,
+    load_blueprint_version,
+    load_blueprints,
+)
+from app.contexts.collection.infrastructure.discovery.discovery import (
+    _Recipe,
+    discover_page,
+    recipe_for,
+    request_parameters,
+)
+from app.contexts.collection.infrastructure.discovery.wto_discovery import (
+    DOCS,
+    GOODS,
+    MEMBERS,
+    XML_PATH,
+    catalog_url,
+    services_catalog_url,
+)
+from app.paths import PROJECT_ROOT
 
 
 def item(member="ID", version=None):
@@ -285,7 +300,7 @@ def test_original_headers_reject_html_and_do_not_assert_parser_acceptance():
 
 
 def test_unknown_mdb_requires_the_exact_frozen_source_bytes_and_stays_unparsed(monkeypatch):
-    from app import wto_discovery
+    from app.contexts.collection.infrastructure.discovery import wto_discovery as wto_discovery
 
     url, known = next(iter(wto_discovery._UNVERIFIED_MDB.items()))
     body = b"\x01\x00\x00\x00unrecognized historical source bytes"
@@ -333,13 +348,7 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
         assert _Recipe(recipe_for(current)).purpose(api) == "catalog"
         plan_id = "indonesia-20261003" if member == "ID" else "singapore-demo-20261009"
         assert load_blueprints()[plan_id]["version"] == current_version
-        source = (
-            Path(__file__).resolve().parents[2]
-            / "config"
-            / "collection-plans"
-            / "versions"
-            / f"{plan_id}.v{old_version}.json"
-        )
+        source = PROJECT_ROOT / "config" / "collection-plans" / "versions" / f"{plan_id}.v{old_version}.json"
         assert source.exists()
 
 
@@ -350,8 +359,8 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
 def test_generic_office_originals_stay_inside_the_frozen_public_legal_directory(
     member, item, version, extension, signature
 ):
-    from app.checklists import load_blueprints
-    from app.discovery import recipe_for, discover_page
+    from app.contexts.collection.application.checklists import load_blueprints
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
 
     name = "indonesia-20261003" if member == "ID" else "singapore-demo-20261009"
     plan = load_blueprints()[name]

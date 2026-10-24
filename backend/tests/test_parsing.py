@@ -1,6 +1,5 @@
 import pytest
-
-from app.parsing import parse_bounded
+from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
 
 
 def _sleeping_worker(*args):
@@ -16,8 +15,8 @@ def test_normal_document_parses_in_an_isolated_process():
 
 
 def test_parser_failure_is_returned_as_a_controlled_error():
-    with pytest.raises(ValueError, match="DOC.*OLE"):
-        parse_bounded("legacy.doc", b"not a real legacy word document")
+    with pytest.raises(ValueError, match="格式.*支持"):
+        parse_bounded("unknown.unsupported", b"unrecognized format")
 
 
 def test_secondary_attachment_cannot_start_a_parser_process():
@@ -31,7 +30,7 @@ def test_empty_upload_is_rejected_before_process_creation():
 
 
 def test_a_stalled_parser_is_terminated_and_capacity_is_released(monkeypatch):
-    import app.parsing as parsing
+    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
 
     original = parsing._parse_worker
     monkeypatch.setenv("TEA_PARSE_TIMEOUT", "0.1")
@@ -44,9 +43,10 @@ def test_a_stalled_parser_is_terminated_and_capacity_is_released(monkeypatch):
 
 
 def test_pipe_initialization_failure_does_not_leak_worker_slots(monkeypatch):
-    import app.parsing as parsing
     from threading import BoundedSemaphore
     from types import SimpleNamespace
+
+    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
 
     slots = BoundedSemaphore(2)
     monkeypatch.setattr(parsing, "_SLOTS", slots)

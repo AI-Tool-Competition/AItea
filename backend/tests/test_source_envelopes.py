@@ -1,8 +1,10 @@
 import hashlib
 
 import pytest
-
-from app.source_envelopes import MAX_ENVELOPE_BYTES, extract_bkpm_multipart_pdf
+from app.contexts.collection.infrastructure.discovery.source_envelopes import (
+    MAX_ENVELOPE_BYTES,
+    extract_bkpm_multipart_pdf,
+)
 
 URL = "https://jdih-storage.bkpm.go.id/jdih/jdih/2026-law.pdf"
 BOUNDARY = b"----WebKitFormBoundaryAbc123"

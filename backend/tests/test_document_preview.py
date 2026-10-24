@@ -5,13 +5,13 @@ import json
 from copy import deepcopy
 
 import pytest
+from app.bootstrap import Service
+from app.contexts.knowledge.application.document_preview import preview
+from app.interfaces.http.factory import create_app
+from app.shared.domain.errors import AppError
+from app.shared.domain.values import dump, now
 from fastapi.testclient import TestClient
-
-from app.document_preview import preview
-from app.main import create_app
-from app.db import dump, now
-from app.service import AppError, Service
-from test_native_asset_ocr import docx, raster
+from support.native_asset_ocr import docx, raster
 
 
 @pytest.fixture
@@ -46,8 +46,8 @@ def original(service, content, manifest, owner="alice"):
 
 
 def test_preview_preserves_headings_table_spans_and_source_manifest():
-    from test_docx_parsing import _package, _p
-    from app.docx_parsing import parse_docx
+    from app.contexts.knowledge.infrastructure.parsing.docx_parsing import parse_docx
+    from support.docx_parsing import _p, _package
 
     manifest = parse_docx(
         _package(
@@ -234,7 +234,7 @@ def test_saved_page_image_allows_configured_data_link_but_rejects_nested_links(t
 
 
 def test_shared_law_image_reads_source_owners_pixels_without_changing_eligibility(service):
-    from app.system_library import SYSTEM_OWNER_ID, ensure_principal
+    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
     from test_system_library import original as public_original
 
     with service.db.transaction() as conn:

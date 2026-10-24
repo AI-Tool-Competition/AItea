@@ -3,12 +3,13 @@
 import gzip
 import importlib.util
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 spec = importlib.util.spec_from_file_location("collect_sso_catalog", ROOT / "scripts/collect_sso_catalog.py")
 collector_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collector_module)

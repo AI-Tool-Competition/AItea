@@ -8,9 +8,8 @@ import ssl
 import time
 
 import pytest
-
-from app import collection_proxy as transport
-from app.ingestion import DownloadError
+from app.contexts.collection.infrastructure import collection_proxy as transport
+from app.shared.infrastructure.http.download import DownloadError
 
 
 @pytest.fixture(autouse=True)

@@ -6,8 +6,7 @@ import socket
 import time
 
 import pytest
-
-from app import ingestion
+from app.shared.infrastructure.http import download as ingestion_download
 
 
 @pytest.fixture
@@ -36,11 +35,11 @@ def stdlib_transport(monkeypatch):
             return response
 
     monkeypatch.setattr(
-        ingestion,
+        ingestion_download,
         "_public_addresses",
         lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
     )
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", Connection)
     try:
         yield responses, original_fd
     finally:
@@ -55,15 +54,15 @@ def test_early_exit_closes_connection_close_response_and_underlying_fd(stdlib_tr
     responses, original_fd = stdlib_transport
 
     def abort_headers(_metadata):
-        raise ingestion.DownloadError("intentional header abort")
+        raise ingestion_download.DownloadError("intentional header abort")
 
     def abort_consumer(chunks):
         assert next(iter(chunks)) == b"abc"
-        raise ingestion.DownloadError("intentional body abort")
+        raise ingestion_download.DownloadError("intentional body abort")
 
     options = {"on_headers": abort_headers} if stage == "headers" else {"consume": abort_consumer}
-    with pytest.raises(ingestion.DownloadError, match="intentional"):
-        ingestion._download("https://example.com/law", deadline=time.monotonic() + 5, **options)
+    with pytest.raises(ingestion_download.DownloadError, match="intentional"):
+        ingestion_download._download("https://example.com/law", deadline=time.monotonic() + 5, **options)
     assert len(responses) == 1 and responses[0].will_close
     assert responses[0].isclosed(), "stdlib response still owns its socket file"
     assert responses[0].fp is None

@@ -23,9 +23,9 @@ STOP = Event()
 
 
 def main():
-    from app.collection import CollectionWorkers
-    from app.service import Service
-    from app.mineru import Admission
+    from app.bootstrap import Service
+    from app.contexts.collection.application.collection import CollectionWorkers
+    from app.contexts.knowledge.infrastructure.providers.mineru import Admission
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -46,24 +46,17 @@ def main():
     if scope.get("protocol") != "aitea-mineru-scope-v1":
         raise ValueError("MinerU 范围文件版本无效。")
     owner, documents = scope["owner_id"], scope["documents"]
-    if (
-        not isinstance(owner, str)
-        or not isinstance(documents, list)
-        or not 1 <= len(documents) <= 2000
-    ):
+    if not isinstance(owner, str) or not isinstance(documents, list) or not 1 <= len(documents) <= 2000:
         raise ValueError("处理范围必须明确账号和一至两千个资料版本。")
     ids = [item["id"] for item in documents]
-    if len(ids) != len(set(ids)) or any(
-        not isinstance(i, str) or not 1 <= len(i) <= 100 for i in ids
-    ):
+    if len(ids) != len(set(ids)) or any(not isinstance(i, str) or not 1 <= len(i) <= 100 for i in ids):
         raise ValueError("处理范围包含无效或重复资料。")
     service = Service(args.data_dir.resolve(), require_existing=True)
     with closing(service.db.connect()) as conn:
         for item in documents:
             current = service.own_document(conn, owner, item["id"])
             if current["role"] != "primary" or any(
-                current[key] != item[key]
-                for key in ("content_hash", "version", "size", "filename")
+                current[key] != item[key] for key in ("content_hash", "version", "size", "filename")
             ):
                 raise ValueError("冻结的原件或版本已变更，未启动处理。")
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -145,9 +138,7 @@ def main():
         deadline = time.monotonic() + 180
         while any(worker.thread and worker.thread.is_alive() for worker in workers):
             if time.monotonic() > deadline:
-                raise RuntimeError(
-                    "处理请求仍在退出，保留当前进程和任务回执；未强制停止。"
-                )
+                raise RuntimeError("处理请求仍在退出，保留当前进程和任务回执；未强制停止。")
             time.sleep(0.2)
         progress()
     return 130

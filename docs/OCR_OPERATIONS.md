@@ -95,7 +95,7 @@ SIGTERM/SIGINT 停止新窗口并请求已核实身份的子进程排空；不�
 429 仍按明确拒绝和 `Retry-After` 有界重试。通用识别服务的默认重试行为保持兼容。
 旧 408/5xx 待重试页追加暂停检查点，原响应 CAS、请求号、尝试数与完整旧页保留，其他页继续处理。
 
-`app.ocr_response_reparse.apply_saved_response_reparse` 可离线重解析已完整保存的错误响应。
+`app.contexts.knowledge.infrastructure.recovery.ocr_response_reparse.apply_saved_response_reparse` 可离线重解析已完整保存的错误响应。
 仅接受当前提示版本、完整未截断正文以及仍匹配账号、原件、版本、manifest、请求和像素的证据。
 合法格式包装只允许外层恰好为 `type: "json_object"` 和对象类型 `content`；
 内层仍执行严格字段、类型、数字、表格和完整性检查。

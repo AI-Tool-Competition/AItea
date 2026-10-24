@@ -3,12 +3,12 @@
 from contextlib import closing
 
 import pytest
+from admin_helpers import grant_admin, login_admin
+from app.bootstrap import Service
+from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
 
-from app.main import create_app
-from app.service import Service
-
-from admin_helpers import grant_admin, login_admin
+pytestmark = pytest.mark.usefixtures("ragflow_library")
 
 
 def test_empty_database_has_distinct_country_and_debugger_migrations(tmp_path):

@@ -8,17 +8,16 @@ from contextlib import closing
 from urllib.parse import quote, urlsplit
 
 import pytest
-
-from app import ingestion
-from app.service import Service
-from app.system_library import (
+from app.bootstrap import Service
+from app.contexts.knowledge.application.system_library import (
     SYSTEM_OWNER_ID,
     ensure_principal,
     official_source_allowed,
     register_source_guard,
 )
-from test_stream_download import Response, transport as transport
-
+from app.shared.infrastructure.http import download as ingestion_download
+from test_stream_download import Response
+from test_stream_download import transport as transport
 
 # Independent transcription of the 54 audited country/URL identities. SHA-256,
 # original classification, receipt and page evidence are recorded in the doc.
@@ -444,11 +443,13 @@ def test_admitted_original_still_uses_public_dns_validation(monkeypatch, url):
         ],
     )
     monkeypatch.setattr(
-        ingestion, "_PinnedHTTPSConnection", lambda *args: pytest.fail("unsafe DNS opened a connection")
+        ingestion_download,
+        "_PinnedHTTPSConnection",
+        lambda *args: pytest.fail("unsafe DNS opened a connection"),
     )
     assert official_source_allowed(url, "ID")
-    with pytest.raises(ingestion.DownloadError, match="public"):
-        ingestion._download(url, deadline=time.monotonic() + 10)
+    with pytest.raises(ingestion_download.DownloadError, match="public"):
+        ingestion_download._download(url, deadline=time.monotonic() + 10)
 
 
 @pytest.mark.parametrize(
@@ -463,8 +464,8 @@ def test_admitted_original_does_not_bypass_redirect_transport_guard(transport, l
     responses, requests, connections = transport
     responses.append(Response(status=302, headers={"Location": location}))
     assert official_source_allowed(_ASEAN_PROTOCOL, "ID")
-    with pytest.raises(ingestion.DownloadError):
-        ingestion._download(_ASEAN_PROTOCOL, deadline=time.monotonic() + 10)
+    with pytest.raises(ingestion_download.DownloadError):
+        ingestion_download._download(_ASEAN_PROTOCOL, deadline=time.monotonic() + 10)
     assert len(requests) == 1
     assert all(connection.closed for connection in connections)
 

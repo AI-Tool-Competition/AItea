@@ -28,19 +28,23 @@ from dotenv import dotenv_values
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.blob_store import Blob, BlobStore
-from app.egazette import (
+from app.contexts.collection.infrastructure.discovery.egazette import (
     LEGISLATIVE_CATEGORIES,
     MAX_SOURCE_BYTES,
     SOURCE_ROLE,
     inspect_search_response,
     original_url,
-    publication_classification,
     public_search_from_html,
+    publication_classification,
     search_body,
 )
-from app.ingestion import DownloadError, _download
-from app.public_search import EGAZETTE_ORIGIN, EGAZETTE_SEARCH_HOST, EGAZETTE_SEARCH_URL
+from app.shared.infrastructure.blob_store import Blob, BlobStore
+from app.shared.infrastructure.http.download import DownloadError, _download
+from app.shared.infrastructure.http.public_search import (
+    EGAZETTE_ORIGIN,
+    EGAZETTE_SEARCH_HOST,
+    EGAZETTE_SEARCH_URL,
+)
 from collect_sso_catalog import write_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -914,9 +918,9 @@ class GazetteCollector:
 
     def stage_originals(self, rows, *, reuse_roots=()):
         """Queue verified originals and transferable source evidence, without workers."""
-        from app.catalog import MetadataPatch
-        from app.db import dump, now
-        from app.service import Service
+        from app.bootstrap import Service
+        from app.contexts.knowledge.domain.metadata import MetadataPatch
+        from app.shared.domain.values import dump, now
 
         indexed = {row["download_url"]: row for row in rows}
         roots = [self.output.resolve(), *(Path(root).resolve() for root in reuse_roots)]

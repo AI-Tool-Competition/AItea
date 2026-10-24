@@ -11,13 +11,13 @@ import threading
 import zipfile
 from copy import deepcopy
 from datetime import UTC, datetime
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
 import pytest
+from app.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
 collection = importlib.import_module("unattended_collection")
 
@@ -107,7 +107,7 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(collection, "datetime", Clock)
     monkeypatch.setattr(collection.time, "time", lambda: clock[0])
     monkeypatch.setattr(collection.shutil, "disk_usage", lambda _: SimpleNamespace(free=1024**4))
-    from app.service import Service
+    from app.bootstrap import Service
 
     monkeypatch.setattr(Service, "__init__", lambda *a, **k: pytest.fail("raw collector constructed Service"))
     responses, calls = {}, []
@@ -514,9 +514,10 @@ def test_repeated_pre_response_network_failures_do_not_exhaust_byte_budget(envir
 
     assert all(receipt["outcome"]["status"] == "network_error" for receipt in receipts)
     assert all(receipt["charged_bytes"] == 0 for receipt in receipts)
-    assert sum(row["charged_bytes"] for row in collector.requests.values()) == collector.limits[
-        "max_response_bytes"
-    ]
+    assert (
+        sum(row["charged_bytes"] for row in collector.requests.values())
+        == collector.limits["max_response_bytes"]
+    )
     assert fifth["status"] == "issued"
     assert path.exists()
 
@@ -532,9 +533,7 @@ def test_repeated_pre_response_network_failures_do_not_exhaust_byte_budget(envir
         (ConnectionResetError("peer detail"), "connection_interrupted"),
     ],
 )
-def test_network_failures_have_stable_codes_without_persisting_exception_text(
-    environment, cause, expected
-):
+def test_network_failures_have_stable_codes_without_persisting_exception_text(environment, cause, expected):
     collector = environment.make()
     origin = source()["url"]
 
@@ -542,9 +541,7 @@ def test_network_failures_have_stable_codes_without_persisting_exception_text(
         try:
             raise cause
         except OSError as exc:
-            raise collection.DownloadError(
-                "抓取连接失败或超时，请检查来源后重试。", retryable=True
-            ) from exc
+            raise collection.DownloadError("抓取连接失败或超时，请检查来源后重试。", retryable=True) from exc
 
     environment.responses[origin] = fail_with_cause
     receipt = collector.fetch(source(), origin)
@@ -646,14 +643,18 @@ def test_redirect_host_must_remain_in_reviewed_allowlist(environment):
     assert not env.events(collector, "content_version")
 
 
-def test_existing_scope_cannot_silently_change_or_reinitialize_missing_state(environment):
+def test_valid_registry_edits_reload_without_reinitializing_evidence(environment):
     env = environment
     collector = env.make()
     pool = json.loads(collector.pool_path.read_text())
     pool["sources"][0]["priority"] -= 1
     collector.pool_path.write_text(json.dumps(pool))
-    with pytest.raises(ValueError, match="scope changed"):
-        env.restart(collector)
+    previous = collector.binding["pool_sha256"]
+    resumed = env.restart(collector)
+    assert resumed.binding["pool_sha256"] != previous
+    assert resumed.sources[0]["priority"] == pool["sources"][0]["priority"]
+    assert resumed.state["sources"] == collector.state["sources"]
+    assert len(list((collector.root / "registry-versions").glob("*.json"))) == 2
     collector.state_path.unlink()
     with pytest.raises(ValueError, match="Missing state"):
         env.restart(collector)
@@ -962,7 +963,7 @@ def real_rcep_html():
 
 
 def test_real_rcep_html_filters_third_country_tariffs_before_link_cap():
-    from app.discovery import discover_page
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page
 
     configured = rcep_source()
     legacy_recipe = collection.recipe(configured)
@@ -1129,3 +1130,72 @@ def test_rcep_policy_does_not_rediscover_from_corrupt_cached_root(environment, m
     assert not env.events(resumed, "source_reference")
     assert len(env.calls) == calls_before
     assert {p: p.read_bytes() for p in requests_before} == requests_before
+
+
+def test_dynamic_registry_preserves_versions_quota_and_last_good_revision(environment):
+    env = environment
+    collector = env.make()
+    env.responses[source()["url"]] = html()
+    collector.tick()
+    previous = deepcopy(collector.state["sources"])
+    requests = deepcopy(collector.requests)
+    first_digest = collector.binding["pool_sha256"]
+    pool = json.loads(collector.pool_path.read_text())
+    pool["sources"].append(source("sg-new", path="/new"))
+    collector.pool_path.write_text(json.dumps(pool))
+    collector.reload_sources()
+    assert len(collector.sources) == 2
+    assert collector.state["sources"] == previous
+    assert collector.requests == requests
+    assert first_digest != collector.binding["pool_sha256"]
+    assert {r["pool_sha256"] for r in collector.requests.values()} == {first_digest}
+
+    pool["sources"] = [pool["sources"][1]]
+    collector.pool_path.write_text(json.dumps(pool))
+    collector.reload_sources()
+    assert [s["id"] for s in collector.sources] == ["sg-new"]
+    assert collector.state["sources"] == previous
+    saved_digest = collector.binding["pool_sha256"]
+    collector.pool_path.write_text('{"sources":')
+    collector.reload_sources()
+    collector.reload_sources()
+    assert collector.binding["pool_sha256"] == saved_digest
+    assert len(env.events(collector, "source_registry_rejected")) == 1
+    resumed = env.restart(collector)
+    assert resumed.binding["pool_sha256"] == saved_digest
+    assert resumed.requests == requests
+    assert resumed.state["sources"] == previous
+
+
+def test_registry_source_identity_cannot_move_between_countries(environment):
+    env = environment
+    collector = env.make()
+    pool = json.loads(collector.pool_path.read_text())
+    pool["sources"] = [source(country="ID", host="one.go.id")]
+    collector.pool_path.write_text(json.dumps(pool))
+    collector.reload_sources()
+    assert collector.sources[0]["country"] == "SG"
+    assert collector.state["registry_error"]["code"] == "invalid_source_registry"
+
+
+def test_proxy_required_source_never_falls_back_to_direct_transport(environment, monkeypatch):
+    collector = environment.make()
+    configured = {**collector.sources[0], "transport": "proxy"}
+    for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(collection.DownloadError, match="Required collection proxy"):
+        with collector.slot(configured["allowed_hosts"][0], configured):
+            pytest.fail("unconfigured proxy allowed a connection")
+
+
+def test_malformed_nested_registry_keeps_last_good_revision(environment):
+    collector = environment.make()
+    revision = collector.binding["pool_sha256"]
+    pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    pool["source_relations"] = [None]
+    for invalid in (json.dumps(pool), "[" * 2000 + "]" * 2000):
+        collector.pool_path.write_text(invalid)
+        collector.reload_sources()
+        assert collector.binding["pool_sha256"] == revision
+        assert collector.state["registry_error"]["code"] == "invalid_source_registry"
+    assert environment.restart(collector).binding["pool_sha256"] == revision

@@ -2,12 +2,17 @@ import json
 
 import httpx
 import pytest
+from app.contexts.conversation.application import tool_runtime as runtime
+from app.contexts.conversation.application.contracts import MessageStreamEvent
+from app.contexts.conversation.application.tool_runtime import (
+    CHECK_MATERIALS,
+    GENERATE_GUIDANCE,
+    SEARCH_DOCUMENTS,
+    ToolRun,
+    call_tool,
+)
+from app.shared.application.streaming import StreamCancelled
 from pydantic import ValidationError
-
-from app import tool_runtime as runtime
-from app.models import MessageStreamEvent
-from app.streaming import StreamCancelled
-from app.tool_runtime import CHECK_MATERIALS, GENERATE_GUIDANCE, SEARCH_DOCUMENTS, ToolRun, call_tool
 
 
 def upstream_error(status):

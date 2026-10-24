@@ -1,16 +1,17 @@
 """Only documented original paths widen; legal and source gates stay intact."""
 
-from copy import deepcopy
 import json
-from pathlib import Path
+from copy import deepcopy
 
 import pytest
+from app.contexts.collection.infrastructure.discovery.discovery import _Recipe, discover_page, recipe_for
+from app.contexts.collection.infrastructure.discovery.official_source_recovery import (
+    recover_official_recipe,
+    request_headers_for,
+)
+from app.paths import PROJECT_ROOT
 
-from app.discovery import _Recipe, discover_page, recipe_for
-from app.official_source_recovery import recover_official_recipe, request_headers_for
-
-
-PLAN = Path(__file__).resolve().parents[2] / "config/collection-plans/indonesia-20261003.json"
+PLAN = PROJECT_ROOT / "config/collection-plans/indonesia-20261003.json"
 
 
 def item_recipe(item_id):

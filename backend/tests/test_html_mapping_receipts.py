@@ -5,9 +5,8 @@ import json
 from copy import deepcopy
 
 import pytest
-
-from app.ingestion import parse_file
-from app.native_mapping_inventory import mappings, validate_mapping
+from app.contexts.knowledge.infrastructure.parsing.native import parse_file
+from app.contexts.knowledge.infrastructure.parsing.native_mapping_inventory import mappings, validate_mapping
 from test_html_rsc_video_sources import VIDEO, component, source
 
 

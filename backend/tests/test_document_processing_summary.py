@@ -3,10 +3,10 @@
 from contextlib import closing
 
 import pytest
-
-from app.db import dump, now
-from app.document_processing import processing_details
-from app.service import AppError, Service
+from app.bootstrap import Service
+from app.contexts.knowledge.application.document_processing import processing_details
+from app.shared.domain.errors import AppError
+from app.shared.domain.values import dump, now
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def document(service, *, manifest=None, status="processing", phase="parse", job=
     ],
 )
 def test_only_current_lease_reports_running(service, monkeypatch, status, job, lease, expected):
-    monkeypatch.setattr("app.document_processing.time.time", lambda: 1000)
+    monkeypatch.setattr("app.contexts.knowledge.application.document_processing.time.time", lambda: 1000)
     identifier = document(service, status=status, job=job, lease=lease)
     result = service.document_detail("alice", identifier)
     detail = result["document"]["processing_detail"]
@@ -68,7 +68,7 @@ def test_only_current_lease_reports_running(service, monkeypatch, status, job, l
 @pytest.mark.parametrize(
     "manifest,expected",
     [
-        ({"pages": [{"status": "pending_ocr"}]}, "ocr_disabled"),
+        ({"pages": [{"status": "pending_ocr"}]}, "incomplete"),
         ({"pages": [{"status": "ocr_uncertain"}]}, "needs_review"),
         ({"pages": [{"status": "source_incomplete"}]}, "needs_review"),
         ({"quality": {"review_required": True}}, "needs_review"),
@@ -77,7 +77,7 @@ def test_only_current_lease_reports_running(service, monkeypatch, status, job, l
             {"pages": [{"status": "ocr_failed", "ocr": {"request_outcome": "unknown_transport_result"}}]},
             "failed",
         ),
-        ({"assets_pending": [{"asset_status": "pending_vision"}]}, "ocr_disabled"),
+        ({"assets_pending": [{"asset_status": "pending_vision"}]}, "incomplete"),
         ({"html_source": {"linked_images": [{"asset_status": "ocr_uncertain"}]}}, "needs_review"),
         (
             {"legacy": {"conversion": {"images": [{"asset_status": "image_reference_pending"}]}}},
@@ -101,8 +101,8 @@ def test_quality_is_reported_without_mutating_requests(service, manifest, expect
         )
 
 
-def test_enabled_ocr_is_waiting_until_a_worker_claims_it(service, monkeypatch):
-    monkeypatch.setattr("app.document_processing.vision_ocr_configured", lambda: True)
+def test_enabled_mineru_is_waiting_until_a_worker_claims_it(service, monkeypatch):
+    monkeypatch.setenv("MINERU_API_TOKEN", "fixture-only")
     identifier = document(service, manifest={"pages": [{"status": "pending_ocr"}]})
     assert service.document_detail("alice", identifier)["document"]["processing_detail"]["state"] == "queued"
 
@@ -153,9 +153,11 @@ def test_failed_unknown_page_is_visible_even_when_other_pages_await_disabled_ocr
         assert conn.total_changes == 0
 
 
-@pytest.mark.parametrize("ocr_enabled,expected", [(False, "ocr_disabled"), (True, "failed")])
-def test_disabled_ocr_is_not_misreported_as_a_parser_failure(service, monkeypatch, ocr_enabled, expected):
-    monkeypatch.setattr("app.document_processing.vision_ocr_configured", lambda: ocr_enabled)
+@pytest.mark.parametrize("ocr_enabled,expected", [(False, "incomplete"), (True, "failed")])
+def test_unconfigured_mineru_is_not_misreported_as_a_parser_failure(
+    service, monkeypatch, ocr_enabled, expected
+):
+    monkeypatch.setenv("MINERU_API_TOKEN", "fixture-only" if ocr_enabled else "")
     identifier = document(
         service, manifest={"pages": [{"status": "pending_ocr"}]}, status="failed", job="failed"
     )

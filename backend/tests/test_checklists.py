@@ -1,19 +1,18 @@
 """Document checklists are scoped plans, not an implicit full-site crawler."""
 
 import json
+import sqlite3
 from contextlib import closing
 from pathlib import Path
-import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fastapi.testclient import TestClient
-
 from admin_helpers import grant_admin, login_admin
-
-from app.db import now
-from app.main import create_app
-from app.service import Service
+from app.bootstrap import Service
+from app.interfaces.http.factory import create_app
+from app.shared.domain.values import now
+from app.shared.infrastructure.http import download as ingestion_download
+from fastapi.testclient import TestClient
 
 PLAN = "indonesia-20261003"
 BASE = f"/api/tea/collection-plans/{PLAN}"
@@ -136,7 +135,6 @@ def test_configuration_schedules_only_unconditional_automated_sources(client):
 
 
 def fake_web(monkeypatch):
-    from app import ingestion
 
     pages = {
         "https://peraturan.bpk.go.id/Search?jenis=8": b'<html><title>Undang-Undang</title><a href="/Details/10/uu-1">UU No 1</a><a href="/Search?jenis=8&p=2">Next</a></html>',
@@ -163,7 +161,7 @@ def fake_web(monkeypatch):
             "blob": consume(iter([body])),
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     return pages
 
 
@@ -197,7 +195,7 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
 
 
 def test_setneg_source_fields_keep_page_hash_and_are_exposed_as_unreviewed(client):
-    from app.discovery import discover_page, recipe_for
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, request="setneg-structured-source-record")
@@ -272,7 +270,7 @@ def test_candidate_source_record_migration_upgrades_an_existing_database(tmp_pat
 
 
 def test_saved_setneg_detail_backfill_requires_matching_candidate_and_page_hash(client):
-    from app.discovery import discover_page, recipe_for
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, request="setneg-source-record-backfill")
@@ -321,7 +319,7 @@ def test_saved_setneg_detail_backfill_requires_matching_candidate_and_page_hash(
 
 
 def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
-    from app.discovery import discover_page, recipe_for
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, code="4.1", request="bkpm-source-record-backfill")
@@ -369,7 +367,7 @@ def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
 
 
 def test_saved_rcep_catalog_backfill_preserves_source_hierarchy(client):
-    from app.discovery import discover_page, recipe_for
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, code="5.3", request="rcep-source-record-backfill")
@@ -496,7 +494,7 @@ def test_block_pages_do_not_create_candidates_or_documents(client, monkeypatch):
 
 
 def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_path):
-    from app import checklists
+    from app.contexts.collection.application import checklists as checklists
 
     monkeypatch.setattr(checklists, "PAGE_BATCH", 3)
     fake_web(monkeypatch)
@@ -856,7 +854,7 @@ def test_business_search_reports_unavailable_without_ragflow_and_rejects_overrid
     ],
 )
 def test_checklist_document_type_is_only_a_draft_hint(client, monkeypatch, code, kind, url):
-    from app.db import now, uid
+    from app.shared.domain.values import now, uid
 
     fake_web(monkeypatch)
     configure(client)
@@ -889,7 +887,7 @@ def test_checklist_document_type_is_only_a_draft_hint(client, monkeypatch, code,
 
 
 def test_setneg_post_discovery_keeps_immutable_request_and_total_separate_from_documents(client, monkeypatch):
-    from app import ingestion
+    from app.shared.infrastructure.http import download as ingestion_download
 
     service = client.app.state.service
     item = next(x for x in service.checklists.plans[PLAN]["items"] if x["id"] == "1.3")
@@ -921,7 +919,7 @@ def test_setneg_post_discovery_keeps_immutable_request_and_total_separate_from_d
             "blob": consume(iter([json.dumps(data).encode()])),
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     run = discover(client)
     drain_downloads(client)
     state = client.get(f"/api/tea/collection-runs/{run['id']}").json()["run"]

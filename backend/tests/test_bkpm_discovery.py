@@ -1,13 +1,16 @@
 """The public investment catalog is scoped evidence, not legal approval."""
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
-
-from app.checklists import load_blueprints
-from app.discovery import discover_page, recipe_for, request_parameters
+from app.contexts.collection.application.checklists import load_blueprints
+from app.contexts.collection.infrastructure.discovery.discovery import (
+    discover_page,
+    recipe_for,
+    request_parameters,
+)
 
 API = "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=2&page=1"
 FIXTURE = Path(__file__).parent / "fixtures/discovery/bkpm-investment.json"

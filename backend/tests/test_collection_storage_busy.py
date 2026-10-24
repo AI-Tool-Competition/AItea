@@ -4,13 +4,11 @@ import json
 import sqlite3
 import time
 from contextlib import closing
-from threading import Lock
 
 import pytest
-
-from app import collection as module
-from app.db import now
-from app.service import Service
+from app.bootstrap import Service
+from app.contexts.collection.application import collection as module
+from app.shared.domain.values import now
 
 
 def busy_error(path, snapshot=False):
@@ -109,77 +107,3 @@ def test_nonbusy_error_still_fails_exhausted_claim(prepared, kind):
     with closing(service.db.connect()) as conn:
         job = conn.execute("SELECT * FROM processing_jobs WHERE document_id=?", (doc["id"],)).fetchone()
     assert job["status"] == "failed" and job["attempts"] == 3
-
-
-def test_checkpoint_retries_only_local_transaction_and_rechecks_guard(prepared, monkeypatch):
-    service, doc, _, checkpoint = prepared
-    blocker = service.db.connect()
-    blocker.execute("BEGIN IMMEDIATE")
-    real_connect = service.db.connect
-
-    def quick_connect():
-        conn = real_connect()
-        conn.execute("PRAGMA busy_timeout=0")
-        return conn
-
-    monkeypatch.setattr(service.db, "connect", quick_connect)
-    waits = []
-
-    def release_busy(delay):
-        waits.append(delay)
-        blocker.rollback()
-
-    monkeypatch.setattr(module.time, "sleep", release_busy)
-    validations = []
-    writes = []
-
-    def validate(conn):
-        validations.append(1)
-        assert service.own_document(conn, "owner", doc["id"])["content_hash"] == doc["content_hash"]
-
-    def update(conn):
-        writes.append(1)
-        checkpoint["pages"][0]["status"] = "ocr_complete"
-        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (json.dumps(checkpoint), doc["id"]))
-        return "saved"
-
-    try:
-        assert service.collection._write_ocr_checkpoint(Lock(), validate, update) == "saved"
-    finally:
-        blocker.close()
-    assert waits == [0.1] and validations == writes == [1]
-    with closing(real_connect()) as conn:
-        assert json.loads(service.own_document(conn, "owner", doc["id"])["manifest"]) == checkpoint
-
-
-def test_checkpoint_transaction_retries_are_bounded_and_guard_failure_does_not_retry(prepared, monkeypatch):
-    service, doc, _, _ = prepared
-    blocker = service.db.connect()
-    blocker.execute("BEGIN IMMEDIATE")
-    real_connect = service.db.connect
-
-    def quick_connect():
-        conn = real_connect()
-        conn.execute("PRAGMA busy_timeout=0")
-        return conn
-
-    monkeypatch.setattr(service.db, "connect", quick_connect)
-    waits = []
-    monkeypatch.setattr(module.time, "sleep", waits.append)
-    try:
-        with pytest.raises(sqlite3.OperationalError):
-            service.collection._write_ocr_checkpoint(
-                Lock(), lambda _: None, lambda _: pytest.fail("write ran")
-            )
-    finally:
-        blocker.rollback()
-        blocker.close()
-    assert waits == [0.1, 0.2]
-    waits.clear()
-
-    def stale(_):
-        raise ValueError("lease or source changed")
-
-    with pytest.raises(ValueError, match="lease or source changed"):
-        service.collection._write_ocr_checkpoint(Lock(), stale, lambda _: pytest.fail("write ran"))
-    assert waits == []

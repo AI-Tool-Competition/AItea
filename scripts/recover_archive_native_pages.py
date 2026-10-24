@@ -23,15 +23,20 @@ def main():
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        from app.archive_page_recovery import recover_native_page_shards
-        from app.page_checkpoint_recovery import isolated_directory, readonly_service
+        from app.contexts.knowledge.infrastructure.parsing.archive_page_recovery import (
+            recover_native_page_shards,
+        )
+        from app.contexts.knowledge.infrastructure.recovery.page_checkpoint_recovery import (
+            isolated_directory,
+            readonly_service,
+        )
         from extract_archive_page_shards import _offline
 
         sys.addaudithook(_offline)
         directory = isolated_directory(args.data_dir)
         service = readonly_service(directory)
         if args.apply:
-            from app.service import Service
+            from app.bootstrap import Service
 
             service = Service(directory)
         report = recover_native_page_shards(

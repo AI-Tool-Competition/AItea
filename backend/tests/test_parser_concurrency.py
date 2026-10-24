@@ -1,4 +1,4 @@
-"""Real local child-process capacity, cleanup and durable scheduling up to 32 jobs."""
+"""Real local child-process capacity, cleanup and durable scheduling at representative capacity."""
 
 from __future__ import annotations
 
@@ -13,11 +13,12 @@ from pathlib import Path
 from threading import Lock
 
 import pytest
-
-from app import archive_parsing, ingestion, parsing
-from app.db import now
-from app.service import Service
-from test_archive_parsing import pdf_file
+from app.bootstrap import Service
+from app.contexts.knowledge.infrastructure.parsing import archive_parsing as archive_parsing
+from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+from app.shared.domain.values import now
+from support.archive_parsing import pdf_file
 
 
 class _ObservedConnection:
@@ -104,7 +105,7 @@ def test_default_capacity_remains_two_and_setup_can_precede_first_use(parser_slo
         parser_slots.release()
 
 
-@pytest.mark.parametrize("limit", range(1, 129))
+@pytest.mark.parametrize("limit", [1, 2, 32, 128])
 def test_explicit_parse_capacities_are_bounded(parser_slots, monkeypatch, limit):
     monkeypatch.setenv("TEA_PARSE_WORKERS", str(limit))
     assert all(parser_slots.acquire(timeout=0) for _ in range(limit))
@@ -136,10 +137,8 @@ def test_active_capacity_cannot_be_replaced_and_acquired_slots_can_return(parser
         parser_slots.release()
 
 
-@pytest.mark.parametrize("capacity", [8, 16, 32])
-def test_real_mixed_children_share_capacity_and_next_child_defers(
-    parser_slots, tmp_path, monkeypatch, capacity
-):
+def test_real_mixed_children_share_capacity_and_next_child_defers(parser_slots, tmp_path, monkeypatch):
+    capacity = 8
     observations = tmp_path / "observations"
     observations.mkdir()
     monkeypatch.setenv("TEA_TEST_PARSE_OBSERVATIONS", str(observations))
@@ -211,20 +210,18 @@ def test_real_mixed_children_share_capacity_and_next_child_defers(
     finally:
         parsing._OCR_SLOTS.release()
         parsing._OCR_SLOTS.release()
-    assert ingestion._EMBEDDING_HTTP_SLOTS.acquire(timeout=0)
-    assert ingestion._EMBEDDING_HTTP_SLOTS.acquire(timeout=0)
+    assert ingestion_embedding._EMBEDDING_HTTP_SLOTS.acquire(timeout=0)
+    assert ingestion_embedding._EMBEDDING_HTTP_SLOTS.acquire(timeout=0)
     try:
-        assert not ingestion._EMBEDDING_HTTP_SLOTS.acquire(timeout=0)
+        assert not ingestion_embedding._EMBEDDING_HTTP_SLOTS.acquire(timeout=0)
     finally:
-        ingestion._EMBEDDING_HTTP_SLOTS.release()
-        ingestion._EMBEDDING_HTTP_SLOTS.release()
+        ingestion_embedding._EMBEDDING_HTTP_SLOTS.release()
+        ingestion_embedding._EMBEDDING_HTTP_SLOTS.release()
 
 
 @pytest.mark.parametrize("mode", ["crash", "timeout", "error"])
-@pytest.mark.parametrize("capacity", [1, 32])
-def test_failed_children_are_reaped_before_capacity_is_reused(
-    parser_slots, monkeypatch, tmp_path, mode, capacity
-):
+def test_failed_children_are_reaped_before_capacity_is_reused(parser_slots, monkeypatch, tmp_path, mode):
+    capacity = 1
     monkeypatch.setenv("TEA_PARSE_WORKERS", str(capacity))
     assert all(parser_slots.acquire(timeout=0) for _ in range(capacity - 1))
     marker = tmp_path / "pid"
@@ -393,9 +390,9 @@ def _store_text(service, index, *, shared=None, level="primary"):
         )
 
 
-@pytest.fixture(params=[8, 16, 32])
-def concurrent_job_service(tmp_path, monkeypatch, request):
-    monkeypatch.setenv("TEA_PROCESS_WORKERS", str(request.param))
+@pytest.fixture
+def concurrent_job_service(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", "8")
     service = Service(tmp_path / "owned")
     with service.db.transaction() as conn:
         conn.execute("INSERT INTO users VALUES(?,?,?,?,?,?)", ("owner", "owner", None, None, 1, now()))

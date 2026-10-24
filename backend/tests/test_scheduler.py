@@ -1,4 +1,4 @@
-from app.scheduler import ScheduledCollector
+from app.shared.infrastructure.operations.scheduler import ScheduledCollector
 
 
 class SourceService:

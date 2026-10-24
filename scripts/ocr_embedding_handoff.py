@@ -8,13 +8,11 @@ then paid embedding work. It never authorizes retrying an uncertain request.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack, closing
 import fcntl
 import hashlib
 import json
 import os
 import re
-from pathlib import Path
 import signal
 import sqlite3
 import stat
@@ -22,14 +20,24 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from contextlib import ExitStack, closing
+from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
 
-from complete_embeddings import digest, stable_manifest, unresolved_issued_inputs  # noqa: E402
+from complete_embeddings import (  # noqa: E402
+    digest,
+    stable_manifest,
+    unresolved_issued_inputs,
+)
 from embedding_supervisor import persist  # noqa: E402
-from process_frozen_parse import frozen_inputs, inspect_frozen_document, read_db  # noqa: E402
+from process_frozen_parse import (  # noqa: E402
+    frozen_inputs,
+    inspect_frozen_document,
+    read_db,
+)
 
 PROTOCOL = "ocr-embedding-handoff-v1"
 SOURCE_FIELDS = ("id", "owner_id", "version", "content_hash", "source_url", "size", "storage_path")
@@ -94,7 +102,7 @@ def owned_lock(path, inherited_fd=None):
 
 
 def exclusions(args):
-    from app.system_library import SYSTEM_OWNER_ID
+    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
 
     policy = read_json(args.exclusions)
     if (
@@ -155,8 +163,8 @@ def exclusions(args):
 
 
 def configured_model(args, policy):
-    from app.embedding_admission import model_scope
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.contexts.knowledge.infrastructure.providers.embedding_admission import model_scope
     from verify_ingestion import configure_models
 
     configure_models(args.models_env)
@@ -295,10 +303,10 @@ def audit_ocr_events(path, report, selected):
 
 
 def inspect_document(conn, data, initial, success, identifier, fingerprint):
-    from app.archive import LegalArchive
-    from app.countries import document_country
-    from app.ingestion_quality import pdf_page_status, text_complete
-    from app.retrieval import embedding_text, input_hash
+    from app.contexts.knowledge.application.archive import LegalArchive
+    from app.contexts.knowledge.application.retrieval import embedding_text, input_hash
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
+    from app.shared.domain.countries import document_country
 
     checked, manifest = inspect_frozen_document(
         data, initial, identifier, successful_pages=success[identifier]
@@ -665,7 +673,7 @@ def revalidate(args, batch):
 
 
 def completion(batch):
-    from app.retrieval import stored_vector
+    from app.contexts.knowledge.application.retrieval import stored_vector
 
     plan = read_json(batch / "selection.json")
     output = batch / "output"
@@ -749,7 +757,7 @@ def completion(batch):
 
 
 def execute(args, state, entry, lock):
-    from app.embedding_admission import process_identity
+    from app.contexts.knowledge.infrastructure.providers.embedding_admission import process_identity
     from embedding_supervisor import supervise
 
     batch = validate_batch(args.handoff_root, entry)

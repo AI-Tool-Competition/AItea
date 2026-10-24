@@ -6,16 +6,22 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from admin_helpers import login_admin
+from app.bootstrap import Service
+from app.contexts.identity.application.auth import COOKIE, Auth
+from app.contexts.knowledge.application.contracts import ClassificationPatch, LegalRelationInput
+from app.contexts.knowledge.application.system_library import (
+    SYSTEM_OWNER_ID,
+    ensure_principal,
+    official_source_allowed,
+)
+from app.contexts.knowledge.domain.metadata import MetadataPatch
+from app.interfaces.http.factory import create_app
+from app.shared.domain.errors import AppError
+from app.shared.domain.values import dump, now
 from fastapi.testclient import TestClient
 
-from admin_helpers import login_admin
-from app.auth import Auth, COOKIE
-from app.catalog import MetadataPatch
-from app.db import dump, now
-from app.main import create_app
-from app.models import ClassificationPatch, LegalRelationInput
-from app.service import AppError, Service
-from app.system_library import SYSTEM_OWNER_ID, ensure_principal, official_source_allowed
+pytestmark = pytest.mark.usefixtures("ragflow_library")
 
 
 @pytest.fixture
@@ -424,7 +430,7 @@ def test_attachment_country_is_immutable_and_parent_scope_is_preserved(service):
 
 
 def test_shared_selection_and_snapshots_follow_case_country_and_review_changes(service):
-    from app.defaults import DEFAULT_TEMPLATE
+    from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE
 
     case = service.create_case(
         "alice",
@@ -510,7 +516,7 @@ def test_http_authenticated_reads_download_and_anonymous_boundary(tmp_path):
 
 
 def test_personal_inventory_includes_all_own_countries_and_case_uploads(service, tmp_path):
-    from app.defaults import DEFAULT_TEMPLATE
+    from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE
 
     def make_case(owner, title):
         return service.create_case(
@@ -607,11 +613,7 @@ def test_personal_inventory_includes_all_own_countries_and_case_uploads(service,
 
 
 @pytest.mark.parametrize("scope", [None, "personal", "system"])
-def test_search_scope_filters_backfill_lexical_dense_and_rerank_before_candidates(
-    service, monkeypatch, scope
-):
-    from app import ingestion, reranking
-
+def test_search_scope_filters_remote_candidates(service, ragflow_library, monkeypatch, scope):
     docs = [
         original(service, key, owner=owner)
         for key, owner in (
@@ -622,58 +624,31 @@ def test_search_scope_filters_backfill_lexical_dense_and_rerank_before_candidate
     ]
     for doc in docs:
         approve(service, doc)
-    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
-    monkeypatch.setenv("EMBEDDING_MODEL", "scope-test")
-    monkeypatch.setenv("EMBEDDING_API_KEY", "test-only")
-    fingerprint = service.embedding_fingerprint()
-    with service.db.transaction() as conn:
-        for doc in docs:
-            chunks = [
-                dict(row)
-                for row in conn.execute(
-                    "SELECT rowid,input_hash FROM retrieval_chunks WHERE document_id=?", (doc["id"],)
-                )
-            ]
-            service.index.store_vectors(conn, doc["id"], fingerprint, chunks, [[1.0, 0.0]])
-            conn.execute("INSERT INTO retrieval_dirty VALUES(?)", (doc["id"],))
     allowed = {
         doc["id"]
         for doc in docs[:2]
         if scope is None or (doc["owner_id"] == SYSTEM_OWNER_ID) == (scope == "system")
     }
-    seen = []
-    lexical, dense = service.index._lexical, service.index._dense
+    sent = []
+    remote_call = ragflow_library.call
 
-    def checked_lexical(conn, query):
-        seen.append({row[0] for row in conn.execute("SELECT id FROM retrieval_eligible")})
-        return lexical(conn, query)
+    def call(method, path, **kwargs):
+        if path == "/retrieval":
+            sent.extend(kwargs["payload"]["document_ids"])
+        return remote_call(method, path, **kwargs)
 
-    def checked_dense(conn, model, vector):
-        seen.append({row[0] for row in conn.execute("SELECT id FROM retrieval_eligible")})
-        return dense(conn, model, vector)
-
-    candidates = []
-    gates = []
-    eligibility_sql = service.archive.eligibility_sql
-
-    def checked_gate(*args, **kwargs):
-        gates.append(kwargs.get("source_scope"))
-        return eligibility_sql(*args, **kwargs)
-
-    monkeypatch.setattr(service.archive, "eligibility_sql", checked_gate)
-    monkeypatch.setattr(service.index, "_lexical", checked_lexical)
-    monkeypatch.setattr(service.index, "_dense", checked_dense)
-    monkeypatch.setattr(ingestion, "embed_texts", lambda texts: [[1.0, 0.0]])
-    monkeypatch.setattr(reranking, "rerank_texts", lambda query, texts, **kw: candidates.extend(texts))
+    monkeypatch.setattr(ragflow_library, "call", call)
     result = service.search("alice", "tea lawful", country="ID", limit=10, source_scope=scope)
-    assert ids(result) == allowed and result["mode"] == "hybrid"
-    assert seen == [allowed, allowed]
-    assert gates == [scope, scope, scope]  # Backfill, candidate snapshot, post-provider revalidation.
-    assert len(candidates) == len(allowed) and not any("foreign-candidate" in text for text in candidates)
+    assert ids(result) == allowed and result["mode"] == "ragflow"
     with closing(service.db.connect()) as conn:
-        assert {row[0] for row in conn.execute("SELECT document_id FROM retrieval_dirty")} == {
-            doc["id"] for doc in docs if doc["id"] not in allowed
+        sources = {
+            r["document_id"]
+            for r in conn.execute(
+                "SELECT document_id FROM ragflow_documents WHERE remote_id IN (SELECT value FROM json_each(?))",
+                (dump(sent),),
+            )
         }
+    assert sources == allowed
 
 
 def test_http_regular_users_share_system_reads_but_never_each_others_uploads(tmp_path):

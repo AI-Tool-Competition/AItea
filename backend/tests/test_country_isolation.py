@@ -4,13 +4,12 @@ from contextlib import closing
 from datetime import date
 
 import pytest
+from app.interfaces.http.factory import create_app
+from app.shared.domain.countries import country_from_collection, document_country, resolve_country
+from app.shared.domain.errors import AppError
 from fastapi.testclient import TestClient
 
-from app.countries import country_from_collection, document_country, resolve_country
-from app.main import create_app
-from app.service import AppError
-
-pytestmark = pytest.mark.usefixtures("sample_workflow")
+pytestmark = pytest.mark.usefixtures("sample_workflow", "ragflow_library")
 
 
 @pytest.fixture
@@ -59,7 +58,7 @@ def classify(workspace, document_id, collection, *, level="primary", revision=0)
 
 
 def publish(workspace, document_id, start="2020-01-01", end=None):
-    from app.catalog import MetadataPatch
+    from app.contexts.knowledge.domain.metadata import MetadataPatch
 
     service, owner, _ = workspace
     # Process the same durable queue used by the live collector.
@@ -245,7 +244,7 @@ def test_existing_cross_scope_relation_prevents_partial_country_reclassification
 
 
 def test_country_membership_survives_restart_and_cannot_be_removed_by_classification(workspace):
-    from app.service import Service
+    from app.bootstrap import Service
 
     service, owner, _ = workspace
     law = stored(workspace, "ID")
@@ -282,33 +281,6 @@ def test_raw_attachment_exposes_parent_country_without_an_independent_legal_tier
     assert doc["country"] == "ID" and doc["legal_level"] == "attachment"
 
 
-def test_semantic_ranking_receives_only_matching_country_and_primary_tier(workspace, monkeypatch):
-    import json
-
-    service, owner, _ = workspace
-    main = stored(workspace, "ID", identity="main")
-    child = stored(workspace, "ID", identity="child", level="secondary")
-    other = stored(workspace, "SG")
-    for doc in (main, child, other):
-        publish(workspace, doc["id"])
-    classify(workspace, child["id"], "ordinary", level="primary")
-    monkeypatch.setattr(service, "embedding_fingerprint", lambda: "scope-test")
-    monkeypatch.setattr("app.ingestion.embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    # Simulate vectors retained from older classifications: ranking must still
-    # filter immutable country and today's primary/secondary membership first.
-    with service.db.transaction() as conn:
-        for doc in (main, child, other):
-            row = conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()
-            manifest = json.loads(row["manifest"])
-            manifest["embedding_fingerprint"] = "scope-test"
-            for chunk in manifest["chunks"]:
-                chunk["embedding"] = [1.0, 0.0]
-            conn.execute("UPDATE documents SET manifest=? WHERE id=?", (json.dumps(manifest), doc["id"]))
-    result = service.search(owner, "semantic-only-question", country="ID")
-    assert result["mode"] == "hybrid"
-    assert {hit["document_id"] for hit in result["items"]} == {main["id"]}
-
-
 def test_first_country_assignment_resets_default_business_approval(workspace):
     from pathlib import Path
 
@@ -340,8 +312,9 @@ def test_first_country_assignment_resets_default_business_approval(workspace):
     "kind,expected", [("law", "law"), ("guidance", "guidance"), ("case", "case"), ("demo", "law")]
 )
 def test_country_assignment_keeps_legal_kind_and_resets_existing_review(workspace, kind, expected):
-    from app.catalog import MetadataPatch
     import json
+
+    from app.contexts.knowledge.domain.metadata import MetadataPatch
 
     service, owner, _ = workspace
     old = service.store_document(owner, "reviewed-law.txt", b"tea reviewed v1", "text/plain")
@@ -389,7 +362,7 @@ def test_repeated_country_membership_does_not_revoke_approval_but_new_version_st
 
 @pytest.mark.parametrize("kind", ["case", "guidance"])
 def test_trusted_kind_hint_initializes_country_document_without_overwriting_review(workspace, kind):
-    from app.catalog import MetadataPatch
+    from app.contexts.knowledge.domain.metadata import MetadataPatch
 
     service, owner, _ = workspace
     doc = stored(workspace, "ID", kind_hint=kind)

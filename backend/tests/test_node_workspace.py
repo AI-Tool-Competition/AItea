@@ -4,10 +4,9 @@ import json
 from contextlib import closing
 
 import pytest
+from app.contexts.conversation.application.node_workspace import NodeWorkspace, select_skills
+from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
-
-from app.main import create_app
-from app.node_workspace import NodeWorkspace, select_skills
 
 
 @pytest.fixture
@@ -167,7 +166,7 @@ def test_upgrade_backfills_old_messages_without_changing_them(setup):
     }
     NodeWorkspace(service)
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 19
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 22
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

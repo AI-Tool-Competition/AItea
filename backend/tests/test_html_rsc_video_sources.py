@@ -5,12 +5,14 @@ import json
 from copy import deepcopy
 
 import pytest
-
-from app.html_linked_asset_ocr import image_candidates_bounded, update_quality
-from app.html_parsing import RSC_VIDEO_SCAN_VERSION
-from app.ingestion import _decode, parse_file
-from app.native_mapping_inventory import mappings, validate_mapping
-from app.parsing import parse_bounded
+from app.contexts.knowledge.infrastructure.parsing.html_parsing import RSC_VIDEO_SCAN_VERSION
+from app.contexts.knowledge.infrastructure.parsing.native import _decode, parse_file
+from app.contexts.knowledge.infrastructure.parsing.native_mapping_inventory import mappings, validate_mapping
+from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
+from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import (
+    image_candidates_bounded,
+    update_quality,
+)
 
 VIDEO_ID = "sYvtQX3oPbE"
 VIDEO = "https://www.youtube-nocookie.com/embed/" + VIDEO_ID + "?si=example"

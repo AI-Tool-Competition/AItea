@@ -1,17 +1,26 @@
 """Public treaty originals, catalog-only diplomacy, and immutable older plans."""
 
+import json
 from contextlib import closing
 from copy import deepcopy
-import json
 from urllib.parse import urlencode
 
 import pytest
-
-from app.checklists import load_blueprints, load_blueprint_version
-from app.db import now
-from app.discovery import _Recipe, discover_page, recipe_for, request_parameters
-from app.service import AppError, Service
-from app.treaty_room_discovery import BASE, catalog_url, original_url
+from app.bootstrap import Service
+from app.contexts.collection.application.checklists import load_blueprint_version, load_blueprints
+from app.contexts.collection.infrastructure.discovery.discovery import (
+    _Recipe,
+    discover_page,
+    recipe_for,
+    request_parameters,
+)
+from app.contexts.collection.infrastructure.discovery.treaty_room_discovery import (
+    BASE,
+    catalog_url,
+    original_url,
+)
+from app.shared.domain.errors import AppError
+from app.shared.domain.values import now
 
 PLAN = "indonesia-20261003"
 

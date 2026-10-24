@@ -3,16 +3,15 @@
 import json
 
 import pytest
-from fastapi.testclient import TestClient
-
 from admin_helpers import grant_admin
+from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.usefixtures("sample_workflow")
 
 
 @pytest.fixture
 def client(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     with TestClient(create_app(data_dir=tmp_path)) as instance:
         assert instance.post("/api/tea/auth/demo", json={}).status_code == 200
@@ -32,30 +31,6 @@ def upload(client, case_id, filename, content, **extra):
     )
     assert response.status_code == 201, response.text
     return response.json()
-
-
-def test_retrieval_never_crosses_cases_owned_by_the_same_account(client):
-    first = current_case(client)
-    second = client.post(
-        "/api/tea/cases",
-        json={
-            "title": "另一次业务",
-            "company": "演示茶商",
-            "product": "红茶",
-            "mode_id": first["mode_id"],
-            "template_id": first["template"]["id"],
-        },
-    ).json()
-    upload(client, first["id"], "scope.txt", "orchidneedle42 belongs only to the first export business.")
-    assert client.post("/api/tea/search", json={"query": "orchidneedle42", "case_id": first["id"]}).json()[
-        "items"
-    ]
-    assert (
-        client.post("/api/tea/search", json={"query": "orchidneedle42", "case_id": second["id"]}).json()[
-            "items"
-        ]
-        == []
-    )
 
 
 def test_download_remains_private_and_uses_attachment_disposition(client):
@@ -78,7 +53,7 @@ def test_cookie_session_rejects_mutation_from_untrusted_origin(client):
 
 
 def test_a_case_survives_application_restart(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     with TestClient(create_app(data_dir=tmp_path)) as first:
         first.post("/api/tea/auth/demo", json={})
@@ -108,13 +83,13 @@ def test_failed_parse_keeps_original_without_indexing_it(client):
     response = client.post(
         "/api/tea/documents",
         data={"case_id": case["id"]},
-        files={"file": ("broken.pdf", b"not a pdf", "application/pdf")},
+        files={"file": ("broken.unsupported", b"not a supported document", "application/octet-stream")},
     )
     assert response.status_code == 201, response.text
     document = response.json()
     assert document["status"] == "failed"
     assert document["chunk_count"] == 0
-    assert client.get(f"/api/tea/documents/{document['id']}/download").content == b"not a pdf"
+    assert client.get(f"/api/tea/documents/{document['id']}/download").content == b"not a supported document"
 
 
 def test_old_message_key_cannot_silently_replace_a_different_message(client):
@@ -130,49 +105,8 @@ def test_old_message_key_cannot_silently_replace_a_different_message(client):
     assert client.post(url, json=payload).status_code == 409
 
 
-def test_legal_review_and_effective_dates_gate_retrieval(client):
-    case = current_case(client)
-    doc = upload(
-        client, case["id"], "法规演示.txt", "samplelegalneedle 这是一条用于系统测试的非真实法律文字。"
-    )
-    classified = client.patch(
-        f"/api/tea/documents/{doc['id']}/classification",
-        json={"collection": "country:ID", "level": "primary", "expected_revision": 0},
-    )
-    assert classified.status_code == 200, classified.text
-    url = f"/api/tea/documents/{doc['id']}/metadata"
-    response = client.patch(
-        url,
-        json={
-            "expected_revision": classified.json()["metadata_revision"],
-            "kind": "law",
-            "jurisdiction": "Indonesia",
-            "review_status": "draft",
-        },
-    )
-    assert response.status_code == 200, response.text
-    search = {"query": "samplelegalneedle", "case_id": case["id"]}
-    assert client.post("/api/tea/search", json=search).json()["items"] == []
-    reviewed = client.patch(
-        url,
-        json={
-            "expected_revision": response.json()["metadata_revision"],
-            "review_status": "published",
-            "effective_from": "2025-01-01",
-            "effective_to": "2025-12-31",
-        },
-    )
-    assert reviewed.status_code == 200, reviewed.text
-    assert client.post("/api/tea/search", json={**search, "as_of": "2026-10-11"}).json()["items"] == []
-    hits = client.post("/api/tea/search", json={**search, "as_of": "2025-06-01"}).json()["items"]
-    assert len(hits) == 1
-    assert hits[0]["metadata"]["kind"] == "law"
-    assert hits[0]["metadata_revision"] == reviewed.json()["metadata_revision"]
-    assert client.patch(url, json={"expected_revision": 1, "language": "id"}).status_code == 409
-
-
 def test_unreviewed_fetched_material_is_excluded_by_default(client, monkeypatch):
-    from app import ingestion
+    from app.shared.infrastructure.http import download as ingestion_download
 
     grant_admin(client, client.get("/api/tea/auth/me").json()["id"])
 
@@ -184,7 +118,7 @@ def test_unreviewed_fetched_material_is_excluded_by_default(client, monkeypatch)
             "blob": consume(iter([b"legalreviewneedle fixture, not an actual law."])),
         }
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     source = client.post(
         "/api/tea/sources", json={"name": "测试来源", "url": "https://legal.example/regulation"}
     ).json()

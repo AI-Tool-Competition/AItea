@@ -8,15 +8,18 @@ from contextlib import closing
 from copy import deepcopy
 
 import pytest
+from app.contexts.knowledge.infrastructure.parsing.html_parsing import VISUAL_PENDING_WARNING
+from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import ocr_work_pending, text_complete
+from app.contexts.knowledge.infrastructure.parsing.native import parse_file
+from app.contexts.knowledge.infrastructure.parsing.native_mapping_inventory import mappings, validate_mapping
+from app.contexts.knowledge.infrastructure.providers import native_asset_ocr as native
+from app.contexts.knowledge.infrastructure.providers import vision as vision
+from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import (
+    bind_linked_image_bounded,
+    read_linked_images,
+)
+from app.shared.infrastructure.blob_store import BlobStore
 from PIL import Image
-
-from app import native_asset_ocr as native, vision
-from app.blob_store import BlobStore
-from app.html_linked_asset_ocr import bind_linked_image_bounded, read_linked_images
-from app.html_parsing import VISUAL_PENDING_WARNING
-from app.ingestion import parse_file
-from app.ingestion_quality import ocr_work_pending, text_complete
-from app.native_mapping_inventory import mappings, validate_mapping
 
 
 def digest(raw):
@@ -271,8 +274,8 @@ def test_malformed_source_maps_fail_closed_without_attribute_errors(tmp_path, fi
 def test_existing_worker_textualizes_only_main_files_and_secondary_laws_never_get_vectors(
     tmp_path, monkeypatch, level, redirected
 ):
-    from app.service import Service
-    from app import ingestion
+    from app.bootstrap import Service
+    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
 
     service = Service(tmp_path / "business")
     with service.db.transaction() as conn:
@@ -331,7 +334,9 @@ def test_existing_worker_textualizes_only_main_files_and_secondary_laws_never_ge
         )
         conn.execute("UPDATE documents SET manifest=? WHERE id=?", (json.dumps(manifest), doc["id"]))
     monkeypatch.setattr(
-        ingestion, "embed_texts", lambda *_: pytest.fail("Text processing made unexpected vector request")
+        ingestion_embedding,
+        "embed_texts",
+        lambda *_: pytest.fail("Text processing made unexpected vector request"),
     )
     calls = []
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)

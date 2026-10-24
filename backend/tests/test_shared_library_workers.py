@@ -1,23 +1,28 @@
 """External shared workers leave system evidence intact and private queues live."""
 
-from contextlib import closing
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from threading import Event
 
 import pytest
+from app.bootstrap import Service
+from app.contexts.collection.application.collection import CollectionWorkers
+from app.contexts.collection.application.collection_recovery import Decision
+from app.contexts.knowledge.application.system_library import (
+    SYSTEM_OWNER_ID,
+    BackgroundWorkerScope,
+    ensure_principal,
+)
+from app.interfaces.http.factory import create_app
+from app.shared.domain.errors import AppError
+from app.shared.domain.values import now
+from app.shared.infrastructure.operations.scheduler import ScheduledCollector
 from fastapi.testclient import TestClient
-
-from app.collection import CollectionWorkers
-from app.collection_recovery import Decision
-from app.db import now
-from app.main import create_app
-from app.scheduler import ScheduledCollector
-from app.service import AppError, Service
-from app.system_library import BackgroundWorkerScope, SYSTEM_OWNER_ID, ensure_principal
 from test_system_library import approve, original
 
+pytestmark = pytest.mark.usefixtures("ragflow_library")
 
 EXTERNAL = BackgroundWorkerScope("external")
 
@@ -224,7 +229,16 @@ def test_external_recovery_preserves_system_waiting_blocked_and_legacy_evidence(
     record_failed(service, private)
     before = system_state(service)
     result = service.collection.recovery.run_due(limit=1, worker_scope=EXTERNAL)
-    assert result == {"adopted": 0, "requeued": 1, "blocked": 0, "deferred": 0}
+    assert result == {
+        "adopted": 0,
+        "requeued": 1,
+        "blocked": 0,
+        "deferred": 0,
+        "reconciled": 0,
+        "partially_reconciled": 0,
+        "chart_refreshes": 0,
+        "receipt_audit_errors": 0,
+    }
     assert system_state(service) == before
     # Manual retry retains the existing unknown-outcome block even for an explicit operator.
     with pytest.raises(AppError) as error, service.db.transaction() as conn:
@@ -274,6 +288,10 @@ def test_external_fetch_recovery_ignores_2000_system_backlog_and_preserves_unkno
         "requeued": 1,
         "blocked": 0,
         "deferred": 0,
+        "reconciled": 0,
+        "partially_reconciled": 0,
+        "chart_refreshes": 0,
+        "receipt_audit_errors": 0,
     }
     assert service.collection.claim_fetch(worker_scope=EXTERNAL)["id"] == private["id"]
     assert system_state(service) == before
@@ -297,6 +315,10 @@ def test_external_failed_fetch_adoption_ignores_earlier_system_rows(service):
         "requeued": 0,
         "blocked": 0,
         "deferred": 0,
+        "reconciled": 0,
+        "partially_reconciled": 0,
+        "chart_refreshes": 0,
+        "receipt_audit_errors": 0,
     }
     with closing(service.db.connect()) as conn:
         row = conn.execute(
@@ -371,7 +393,8 @@ def test_external_worker_picks_new_private_owner_after_start_and_never_processes
 
 
 def test_main_injects_mode_in_both_workers_and_keeps_upload_and_shared_search(tmp_path, monkeypatch):
-    from app import collection, scheduler
+    from app.contexts.collection.application import collection as collection
+    from app.shared.infrastructure.operations import scheduler as scheduler
 
     monkeypatch.setenv("TEA_SHARED_LIBRARY_WORKERS", "external")
     captured = {}
@@ -402,7 +425,12 @@ def test_main_injects_mode_in_both_workers_and_keeps_upload_and_shared_search(tm
             "official_source_import": {
                 "status": "running",
                 "last_cycle_at": collector["official_source_import"]["last_cycle_at"],
-                "last_cycle_counts": {"stored": 0, "skipped": 0, "blocked": 0, "deferred": 0},
+                "last_cycle_counts": {
+                    "stored": 0,
+                    "skipped": 0,
+                    "blocked": 0,
+                    "deferred": 0,
+                },
                 "last_error_at": None,
             },
         }

@@ -7,8 +7,7 @@ from pathlib import Path
 from threading import Barrier
 
 import pytest
-
-from app.blob_store import BlobIntegrityError, BlobStore
+from app.shared.infrastructure.blob_store import BlobIntegrityError, BlobStore
 
 
 def blob_path(files_dir, owner, content):

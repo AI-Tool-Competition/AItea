@@ -3,9 +3,10 @@
 from contextlib import closing
 
 import pytest
+from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
 
-from app.main import create_app
+pytestmark = pytest.mark.usefixtures("ragflow_library")
 
 
 @pytest.fixture

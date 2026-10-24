@@ -5,10 +5,12 @@ from contextlib import closing
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.usefixtures("ragflow_library")
+
 
 @pytest.fixture
 def client(tmp_path):
-    from app.main import create_app
+    from app.interfaces.http.factory import create_app
 
     with TestClient(create_app(data_dir=tmp_path)) as client:
         yield client
@@ -84,7 +86,7 @@ def test_confirmation_cannot_claim_evidence_verification(client):
 
 
 def test_legal_migration_upgrades_existing_data_and_reopens(client, tmp_path):
-    from app.service import Service
+    from app.bootstrap import Service
 
     case, url = workspace(client)
     assert client.patch(url + "/facts/payment_due", json=fact_payload()).status_code == 200
@@ -98,7 +100,7 @@ def test_legal_migration_upgrades_existing_data_and_reopens(client, tmp_path):
 
 
 def test_scope_search_preserves_legacy_country_gate(client):
-    from app.service import AppError
+    from app.shared.domain.errors import AppError
 
     case, _ = workspace(client)
     service = client.app.state.service
@@ -119,7 +121,7 @@ def test_scope_search_preserves_legacy_country_gate(client):
 
 
 def fake_result(question, content="原始建议"):
-    from app.legal_models import LegalResult
+    from app.contexts.legal.domain.legal_models import LegalResult
 
     return LegalResult.model_validate(
         {
@@ -251,7 +253,7 @@ def test_legal_stream_and_analysis_ownership(client, monkeypatch):
 
 
 def test_task_fact_changes_fence_old_edit_and_preserve_resolved_conflicts(client):
-    from app.db import dump, now
+    from app.shared.domain.values import dump, now
 
     case, url = workspace(client)
     service = client.app.state.service
@@ -306,7 +308,7 @@ def test_task_fact_changes_fence_old_edit_and_preserve_resolved_conflicts(client
 
 
 def test_failed_or_cancelled_analysis_reuses_request_and_releases_claim(client, monkeypatch):
-    from app.streaming import StreamCancelled
+    from app.shared.application.streaming import StreamCancelled
 
     case, url = workspace(client)
     service = client.app.state.service
@@ -356,7 +358,7 @@ def test_demo_runs_real_engine_without_inventing_sources(client):
 
 
 def test_empty_proposal_is_saved_without_self_confirmation(client, monkeypatch):
-    from app.legal_models import LegalFact
+    from app.contexts.legal.domain.legal_models import LegalFact
 
     case, url = workspace(client)
     assert (
@@ -394,8 +396,8 @@ def test_empty_proposal_is_saved_without_self_confirmation(client, monkeypatch):
 
 
 def test_task_fact_does_not_overwrite_a_model_fact_from_another_source(client, monkeypatch):
-    from app.db import dump, now
-    from app.legal_models import LegalFact
+    from app.contexts.legal.domain.legal_models import LegalFact
+    from app.shared.domain.values import dump, now
 
     case, url = workspace(client)
     service = client.app.state.service
@@ -464,7 +466,7 @@ def test_reclassified_issue_never_relabels_manual_paragraph(client):
 
 
 def test_scoped_sources_and_revoked_evidence_need_review(client):
-    from app.catalog import MetadataPatch
+    from app.contexts.knowledge.domain.metadata import MetadataPatch
     from test_country_isolation import publish, stored
 
     case, url = workspace(client)
@@ -509,8 +511,8 @@ def test_scoped_sources_and_revoked_evidence_need_review(client):
 
 
 def test_migration_from_version_eight_preserves_case_and_facts(client, tmp_path):
-    from app.db import dump, now
-    from app.service import Service
+    from app.bootstrap import Service
+    from app.shared.domain.values import dump, now
 
     case, _ = workspace(client)
     service = client.app.state.service
@@ -535,8 +537,8 @@ def test_migration_from_version_eight_preserves_case_and_facts(client, tmp_path)
 
 
 def test_enabled_chat_uses_versioned_legal_analysis_and_sse_text(client):
-    from app.db import dump
-    from app.legal_models import default_legal_policy
+    from app.contexts.legal.domain.legal_models import default_legal_policy
+    from app.shared.domain.values import dump
 
     case, url = workspace(client)
     template = case["template"]

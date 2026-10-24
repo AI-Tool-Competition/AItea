@@ -31,13 +31,33 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
 
-from app.blob_store import BlobStore  # noqa: E402
-from app.collection_context.application.source_catalog import active_sources  # noqa: E402
-from app.collection_context.infrastructure.source_registry_json import read_source_registry  # noqa: E402
-from app.discovery import discover_page  # noqa: E402
-from app.ingestion import DownloadError, _download, _validated_url  # noqa: E402
-from official_source_supervisor_recovery import load, lock, write  # noqa: E402
-from source_health import choose_sources, due, observe, replacement_decisions  # noqa: E402
+from app.contexts.collection.application.source_catalog import (  # noqa: E402
+    SourceCatalog,
+    active_sources,
+)
+from app.contexts.collection.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
+from app.contexts.collection.infrastructure.discovery.discovery import discover_page  # noqa: E402
+from app.contexts.collection.infrastructure.source_registry_json import (  # noqa: E402
+    JsonSourceRegistry,
+    read_source_registry,
+)
+from app.shared.infrastructure.blob_store import BlobStore  # noqa: E402
+from app.shared.infrastructure.http.download import (  # noqa: E402
+    DownloadError,
+    _download,
+    _validated_url,
+)
+from official_source_supervisor_recovery import (  # noqa: E402
+    load,
+    lock,
+    write,
+)
+from source_health import (  # noqa: E402
+    choose_sources,
+    due,
+    observe,
+    replacement_decisions,
+)
 
 PROTOCOL = "aitea-unattended-collection-v1"
 SETNEG_ID = "id-setneg-perpu"
@@ -190,32 +210,41 @@ class Collector:
         self.pool_path, self.root, self.country = Path(pool).resolve(), Path(root).resolve(), country
         if not self.root.is_relative_to(ROOT) or self.root == ROOT:
             raise ValueError("Collection output must remain in this project")
-        self.sources = source_pool(self.pool_path, country)
-        if not self.sources:
-            raise ValueError("No configured sources for country")
         self.limits = {**LIMITS, **(limits or {})}
         if any(type(v) is not int or v < 1 for v in self.limits.values()):
             raise ValueError("Collection limits must be positive integers")
         if self.limits["workers"] > 8 or self.limits["per_host"] > 2:
             raise ValueError("Unattended concurrency exceeds verified limits")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.state_path = self.root / "state.json"
+        saved = load(self.state_path) if self.state_path.exists() else None
+        if saved is None and any(p.name != ".collector.lock" for p in self.root.iterdir()):
+            raise ValueError("Missing state for existing evidence; refusing an empty replacement")
+        self.catalog = SourceCatalog(
+            JsonSourceRegistry(self.pool_path, self.root / "registry-versions"),
+            _validated_url,
+            previous=saved["binding"]["pool_sha256"] if saved else None,
+        )
+        self.sources = self.catalog.sources(country)
         self.binding = {
             "protocol": PROTOCOL,
-            "pool_sha256": sha(self.pool_path),
+            "pool_sha256": self.catalog.current.digest,
             "country": country,
             "root": str(self.root),
             "limits": self.limits,
         }
-        self.state_path = self.root / "state.json"
-        if self.state_path.exists():
-            self.state = load(self.state_path)
+        if saved is not None:
+            self.state = saved
             if self.state["binding"] != self.binding:
                 raise ValueError("Collector scope changed; preserve and explicitly migrate its state")
         else:
-            if any(p.name != ".collector.lock" for p in self.root.iterdir()):
-                raise ValueError("Missing state for existing evidence; refusing an empty replacement")
             self.state = {"binding": self.binding, "sources": {}, "active_sources": [], "status": "ready"}
             self.save()
+        self.catalog.accept(self.catalog.current)
+        self.identities = self.state.setdefault("source_countries", {})
+        self.identities.update({s["id"]: s["country"] for s in self.catalog.current.payload["sources"]})
+        self._doh_hosts = set(filter(None, os.getenv("COLLECTION_DOH_HOSTS", "").split(",")))
+        self.configure_transport()
         self.mutex = threading.RLock()
         self.stop = threading.Event()
         self.host_slots = {}
@@ -237,8 +266,57 @@ class Collector:
                 interval_seconds=source["interval_seconds"],
             )
         self.state["active_sources"] = []
+        self.reload_sources()
         self.apply_candidate_policy()
         self.save()
+
+    def configure_transport(self):
+        hosts = {
+            host
+            for source in self.sources
+            if source.get("transport") == "proxy"
+            for host in source["allowed_hosts"]
+        }
+        if len(hosts) > 64:
+            raise ValueError("Collection proxy scope exceeds 64 hosts")
+        if hosts or self.catalog.current.payload["protocol"] == "aitea-official-source-pool-v2":
+            os.environ["COLLECTION_PROXY_HOSTS"] = ",".join(sorted(hosts))
+            os.environ["COLLECTION_DOH_HOSTS"] = ",".join(sorted(self._doh_hosts & hosts))
+
+    def reload_sources(self):
+        try:
+            revision = self.catalog.candidate(self.identities)
+            if revision is None:
+                self.state.pop("registry_error", None)
+                return
+            candidate = active_sources(revision.payload, self.country, _validated_url)
+            if len({h for s in candidate for h in s["allowed_hosts"]}) > 64:
+                raise ValueError("Collection proxy scope exceeds 64 hosts")
+            before = {s["id"]: s for s in self.sources}
+            after = {s["id"]: s for s in candidate}
+            old_digest = self.catalog.current.digest
+            self.catalog.accept(revision)
+            self.sources = candidate
+            self.configure_transport()
+            self.binding["pool_sha256"] = revision.digest
+            self.state["binding"] = self.binding
+            self.identities.update({s["id"]: s["country"] for s in revision.payload["sources"]})
+            self.state.pop("registry_error", None)
+            self.event(
+                "source_registry_reloaded",
+                previous_sha256=old_digest,
+                pool_sha256=revision.digest,
+                added=sorted(after.keys() - before.keys()),
+                removed=sorted(before.keys() - after.keys()),
+                changed=sorted(k for k in before.keys() & after.keys() if before[k] != after[k]),
+            )
+            self.save()
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            # Last good revision and every receipt/budget remain intact; log no raw configuration.
+            failure = {"code": "invalid_source_registry", "error_type": type(error).__name__}
+            if self.state.get("registry_error") != failure:
+                self.event("source_registry_rejected", **failure)
+            self.state["registry_error"] = failure
 
     def save(self):
         self.state["updated_at"] = time.time()
@@ -291,6 +369,7 @@ class Collector:
             identifier = uuid.uuid4().hex
             row = {
                 "request_id": identifier,
+                "pool_sha256": self.catalog.current.digest,
                 "source_id": source["id"],
                 "url": url,
                 "day": self.request_day,
@@ -312,6 +391,8 @@ class Collector:
     def slot(self, host, source):
         if host not in source["allowed_hosts"]:
             raise DownloadError("Redirect host is outside the reviewed official source scope")
+        if source.get("transport") == "proxy" and proxy_for_host(host) is None:
+            raise DownloadError("Required collection proxy is not configured for this source")
         with self.mutex:
             semaphore = self.host_slots.setdefault(host, threading.BoundedSemaphore(self.limits["per_host"]))
         if not semaphore.acquire(timeout=self.limits["timeout_seconds"]):
@@ -433,11 +514,7 @@ class Collector:
             }
             outcome = {
                 "status": (
-                    "http_error"
-                    if status
-                    else "network_error"
-                    if network_failure
-                    else "content_invalid"
+                    "http_error" if status else "network_error" if network_failure else "content_invalid"
                 ),
                 "http_status": int(status[1]) if status else None,
                 "error_type": type(error).__name__,
@@ -629,6 +706,7 @@ class Collector:
             )
             if url != source["url"]
             and not scope_excluded(source, url)
+            and urlsplit(url).hostname in source["allowed_hosts"]
             and due(item.get("health"), time.time())
         ]
         urls = deque(urls)
@@ -682,7 +760,8 @@ class Collector:
                         path=asset["path"],
                         mime_type=asset["mime_type"],
                         discovery_matched=(
-                            True if url != source["url"] and frontier.get(url, {}).get("purpose") == "document"
+                            True
+                            if url != source["url"] and frontier.get(url, {}).get("purpose") == "document"
                             else bool(asset.get("discovery", {}).get("matched"))
                         ),
                         discovery_purpose=(
@@ -752,6 +831,7 @@ class Collector:
         return current
 
     def tick(self):
+        self.reload_sources()
         selected = choose_sources(
             self.sources, self.state["sources"], now=time.time(), max_sources=self.limits["sources_per_tick"]
         )

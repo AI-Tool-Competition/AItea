@@ -7,8 +7,7 @@ import struct
 from pathlib import Path
 
 import pytest
-
-from app.service import Service
+from app.bootstrap import Service
 
 AT = "2026-10-12T00:00:00+00:00"
 
@@ -130,7 +129,7 @@ def page(archive, *, owner="owner-a", country="ID"):
 
 
 def export(archive, **kwargs):
-    from app.archive_inventory import export_inventory
+    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
 
     return export_inventory(archive.db.data_dir, **kwargs)
 
@@ -261,7 +260,7 @@ def test_retrieval_inventory_distinguishes_stale_source_partial_index_and_declar
     ],
 )
 def test_inventory_text_complete_uses_real_gate_instead_of_quality_flag(archive, manifest, expected):
-    from app.ingestion_quality import text_complete
+    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
 
     document(archive, "law")
     with archive.db.transaction() as conn:
@@ -274,7 +273,7 @@ def test_inventory_text_complete_uses_real_gate_instead_of_quality_flag(archive,
 def test_retrieval_inventory_uses_same_snapshot_across_batches_and_concurrent_vector_updates(
     archive, monkeypatch
 ):
-    from app import archive_inventory
+    from app.contexts.collection.infrastructure import archive_inventory as archive_inventory
 
     for identifier in ("first", "second"):
         document(archive, identifier)
@@ -301,7 +300,7 @@ def test_retrieval_inventory_uses_same_snapshot_across_batches_and_concurrent_ve
 
 
 def test_retrieval_inventory_reads_metadata_in_bounded_batches_not_per_document(archive, monkeypatch):
-    from app import archive_inventory
+    from app.contexts.collection.infrastructure import archive_inventory as archive_inventory
 
     for identifier in ("one", "two", "three"):
         document(archive, identifier)
@@ -844,7 +843,7 @@ def test_official_api_request_evidence_retains_pagination_without_arbitrary_secr
     ],
 )
 def test_generic_evidence_does_not_export_request_credentials_or_controls(url):
-    from app.archive_inventory import _page_evidence
+    from app.contexts.collection.infrastructure.archive_inventory import _page_evidence
 
     anomalies = []
     evidence = _page_evidence(json.dumps({"request": {"method": "GET", "url": url}, "scope": {}}), anomalies)
@@ -854,8 +853,8 @@ def test_generic_evidence_does_not_export_request_credentials_or_controls(url):
 
 
 def treaty_page(archive, *, country="ID", owner="owner-a", mutate=None):
-    from app.discovery import discover_page, recipe_for
-    from app.treaty_room_discovery import catalog_url
+    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.collection.infrastructure.discovery.treaty_room_discovery import catalog_url
 
     page(archive, owner=owner, country=country)
     url = catalog_url()
@@ -1149,7 +1148,7 @@ def test_export_keeps_database_and_originals_unchanged_and_report_private(archiv
 
 
 def test_snapshot_excludes_concurrent_writes_to_documents_and_classifications(archive, monkeypatch):
-    from app import archive_inventory
+    from app.contexts.collection.infrastructure import archive_inventory as archive_inventory
 
     monkeypatch.setattr(archive_inventory, "BATCH_SIZE", 1)
     document(archive, "first")
@@ -1175,7 +1174,7 @@ def test_snapshot_excludes_concurrent_writes_to_documents_and_classifications(ar
 
 
 def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
-    from app import archive_inventory
+    from app.contexts.collection.infrastructure import archive_inventory as archive_inventory
 
     document(archive, "law")
     previous = export(archive)["path"]
@@ -1258,7 +1257,7 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
 
 @pytest.mark.parametrize("version", [6, 16])
 def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, version):
-    from app.archive_inventory import InventoryError, export_inventory
+    from app.contexts.collection.infrastructure.archive_inventory import InventoryError, export_inventory
 
     with pytest.raises(InventoryError, match="tea.sqlite3"):
         export_inventory(tmp_path)
@@ -1274,7 +1273,7 @@ def test_missing_or_unsupported_database_is_not_created_or_upgraded(tmp_path, ve
 
 
 def test_cli_environment_defaults_and_explicit_filters_only_print_summary(archive, monkeypatch, capsys):
-    from app.archive_inventory import main
+    from app.contexts.collection.infrastructure.archive_inventory import main
 
     document(archive, "law")
     document(archive, "sg-law", country="SG")
@@ -1293,7 +1292,7 @@ def test_cli_environment_defaults_and_explicit_filters_only_print_summary(archiv
 
 
 def test_reports_directory_cannot_redirect_output_outside_data(archive, tmp_path):
-    from app.archive_inventory import InventoryError
+    from app.contexts.collection.infrastructure.archive_inventory import InventoryError
 
     outside = tmp_path.parent / "not-a-catalog-root"
     outside.mkdir()

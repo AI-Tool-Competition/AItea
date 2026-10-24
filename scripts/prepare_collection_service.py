@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 from collection_watchdog import read_config, render_unit
 from official_source_supervisor_recovery import load, value_digest, write

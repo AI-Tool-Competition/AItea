@@ -1,24 +1,23 @@
 """Read-only public search credentials, isolated transport, and honest counts."""
 
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
-from hashlib import sha256
 import json
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from hashlib import sha256
 
 import pytest
-
-from app import ingestion
-from app.egazette import (
+from app.contexts.collection.infrastructure.discovery.egazette import (
     inspect_search_response,
     original_url,
-    publication_classification,
     public_search_from_html,
+    publication_classification,
     search_body,
 )
-from app.public_search import (
+from app.shared.infrastructure.http import download as ingestion_download
+from app.shared.infrastructure.http.public_search import (
     EGAZETTE_APPLICATION,
     EGAZETTE_INDEX,
     EGAZETTE_ORIGIN,
@@ -144,10 +143,12 @@ def credential(key="a" * 32):
     ],
 )
 def test_credentials_are_rejected_before_dns_for_wrong_endpoint_or_method(monkeypatch, url, parameters):
-    monkeypatch.setattr(ingestion, "_public_addresses", lambda *a, **k: pytest.fail("must reject before DNS"))
+    monkeypatch.setattr(
+        ingestion_download, "_public_addresses", lambda *a, **k: pytest.fail("must reject before DNS")
+    )
     arguments = {"json_body": search_body(), "public_search": credential(), **parameters}
-    with pytest.raises(ingestion.DownloadError):
-        ingestion._download(url, deadline=time.monotonic() + 5, **arguments)
+    with pytest.raises(ingestion_download.DownloadError):
+        ingestion_download._download(url, deadline=time.monotonic() + 5, **arguments)
 
 
 @pytest.mark.parametrize("location", ["https://example.com/steal", EGAZETTE_SEARCH_URL])
@@ -170,11 +171,13 @@ def test_search_credentials_never_follow_redirects(monkeypatch, location):
             pass
 
     monkeypatch.setattr(
-        ingestion, "_public_addresses", lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))]
+        ingestion_download,
+        "_public_addresses",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
     )
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
-    with pytest.raises(ingestion.DownloadError, match="不允许重定向"):
-        ingestion._download(
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", Connection)
+    with pytest.raises(ingestion_download.DownloadError, match="不允许重定向"):
+        ingestion_download._download(
             EGAZETTE_SEARCH_URL,
             deadline=time.monotonic() + 5,
             json_body=search_body(),
@@ -204,12 +207,14 @@ def test_parallel_search_credentials_do_not_cross_requests_or_leak_into_ordinary
             pass
 
     monkeypatch.setattr(
-        ingestion, "_public_addresses", lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))]
+        ingestion_download,
+        "_public_addresses",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", ("93.184.216.34", 443))],
     )
-    monkeypatch.setattr(ingestion, "_PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr(ingestion_download, "_PinnedHTTPSConnection", Connection)
 
     def run(index):
-        return ingestion._download(
+        return ingestion_download._download(
             EGAZETTE_SEARCH_URL if index < 2 else "https://assets.egazette.gov.sg/public.pdf",
             deadline=time.monotonic() + 10,
             **(

@@ -6,11 +6,11 @@ import json
 from pathlib import Path
 
 import pytest
+from app.contexts.collection.application.checklists import load_blueprints
+from app.paths import PROJECT_ROOT
+from app.shared.infrastructure.http.download import DownloadError
 
-from app.checklists import load_blueprints
-from app.ingestion import DownloadError
-
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
 spec = importlib.util.spec_from_file_location(
     "collection_source_verification", ROOT / "scripts/verify_collection_sources.py"
 )

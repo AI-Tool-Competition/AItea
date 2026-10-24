@@ -374,7 +374,7 @@ def _row_hash(row):
 
 def capture_guard(root, owner):
     """Snapshot only immutable data and completed pages; native progress is allowed."""
-    from app.data_backup import SUPPORTED_SCHEMA_VERSION
+    from app.shared.infrastructure.operations.data_backup import SUPPORTED_SCHEMA_VERSION
 
     result = {"documents": {}, "tables": {}}
     with closing(sqlite3.connect((root / "tea.sqlite3").as_uri() + "?mode=ro", uri=True)) as conn:
@@ -382,7 +382,7 @@ def capture_guard(root, owner):
         conn.execute("PRAGMA query_only=ON")
         conn.execute("BEGIN")
         version = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
-        if version != SUPPORTED_SCHEMA_VERSION:
+        if version not in range(19, SUPPORTED_SCHEMA_VERSION + 1):
             raise ValueError("source schema must be explicitly upgraded before recovery")
         for row in conn.execute("SELECT * FROM documents ORDER BY id"):
             if len(result["documents"]) >= MAX_DOCUMENTS or row["owner_id"] != owner:
@@ -507,7 +507,10 @@ def _journal_fingerprint(conn):
 
 
 def _sg_preflight(root, rows, guard, inventory):
-    from app.egazette import SOURCE_ROLE, publication_classification
+    from app.contexts.collection.infrastructure.discovery.egazette import (
+        SOURCE_ROLE,
+        publication_classification,
+    )
 
     indexed = {row["download_url"]: row for row in rows}
     receipts = {row["source_url"]: row for row in inventory["receipts"]}
@@ -650,7 +653,10 @@ def recover_interrupted_window(*, source, window, project, data, bundle, control
         if os.environ.get("VISION_OCR_ENABLED", "false").lower() != "false":
             raise ValueError("offline recovery requires OCR disabled")
         if source == "sg":
-            from app.egazette import EGAZETTE_ORIGIN, public_search_from_html
+            from app.contexts.collection.infrastructure.discovery.egazette import (
+                EGAZETTE_ORIGIN,
+                public_search_from_html,
+            )
 
             request, proof = public_search_from_html(EGAZETTE_ORIGIN, (root / "frontend.html").read_bytes())
             write(evidence / "public-config-proof.json", proof)

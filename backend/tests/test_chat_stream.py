@@ -3,11 +3,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from app.contexts.conversation.application import assistant as assistant
+from app.interfaces.http.factory import create_app
+from app.shared.domain.errors import AppError
 from fastapi.testclient import TestClient
-
-from app import assistant
-from app.main import create_app
-from app.service import AppError
 
 
 @pytest.fixture
@@ -132,7 +131,7 @@ def test_chat_stream_reuses_opaque_openai_cache_key_and_logs_usage(chat, monkeyp
 
     client, case, payload, owner = chat
     monkeypatch.setenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    caplog.set_level(logging.INFO, logger="app.assistant")
+    caplog.set_level(logging.INFO, logger="app.contexts.conversation.application.assistant")
 
     usage = {
         "choices": [],
@@ -193,7 +192,7 @@ def test_aerisun_deepseek_requests_usage_and_keeps_case_context_in_cache_prefix(
     import logging
 
     monkeypatch.setenv("LLM_BASE_URL", "https://aerisun.top/sub2api")
-    caplog.set_level(logging.INFO, logger="app.assistant")
+    caplog.set_level(logging.INFO, logger="app.contexts.conversation.application.assistant")
     usage = {
         "choices": [],
         "usage": {
@@ -267,7 +266,7 @@ def test_truncated_provider_stream_fails_without_saving_a_reply(chat, monkeypatc
 
 
 def test_cancel_and_duplicate_inflight_do_not_save_or_generate_twice(chat, monkeypatch):
-    from app.streaming import StreamCancelled
+    from app.shared.application.streaming import StreamCancelled
 
     client, case, payload, owner = chat
     service = client.app.state.service
@@ -301,8 +300,9 @@ def test_cancel_and_duplicate_inflight_do_not_save_or_generate_twice(chat, monke
 
 def test_stop_interrupts_a_provider_waiting_for_its_first_byte(monkeypatch):
     import asyncio
+
     import httpx
-    from app.streaming import StreamCancelled
+    from app.shared.application.streaming import StreamCancelled
 
     entered, cancelled, closed = threading.Event(), threading.Event(), threading.Event()
     monkeypatch.setenv("LLM_MODEL", "test-model")

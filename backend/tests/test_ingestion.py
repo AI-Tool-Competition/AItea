@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import importlib
 import io
-import os
 import socket
 import unittest
 import zipfile
 from unittest.mock import patch
 
+from app.contexts.knowledge.domain import text
+from app.contexts.knowledge.infrastructure.parsing import native
+from app.shared.infrastructure.http import download as transport
+
 
 class IngestionTests(unittest.TestCase):
-    def setUp(self):
-        self.ingestion = importlib.import_module("app.ingestion")
-
     def test_markdown_sections_and_verbatim_locations(self):
-        result = self.ingestion.parse_file(
+        result = native.parse_file(
             "法规.md", "# 茶叶资料\n## 包装\n每袋净含量为250克。\n\n## 成分\n成分为茶叶。".encode()
         )
         self.assertEqual(len(result["chunks"]), 2)
@@ -27,15 +26,15 @@ class IngestionTests(unittest.TestCase):
 
     def test_secondary_is_never_parsed(self):
         with self.assertRaisesRegex(ValueError, "secondary"):
-            self.ingestion.parse_file("attachment.txt", b"must not index", role="secondary")
+            native.parse_file("attachment.txt", b"must not index", role="secondary")
 
     def test_empty_and_oversize_input_rejected(self):
         for content in (b"", b"x" * (20 * 1024 * 1024 + 1)):
             with self.assertRaises(ValueError):
-                self.ingestion.parse_file("file.txt", content)
+                native.parse_file("file.txt", content)
 
     def test_html_ignores_active_content_preserves_section_locator(self):
-        result = self.ingestion.parse_file(
+        result = native.parse_file(
             "law.html",
             b'<html><h1>Law</h1><script>secret</script><style>hidden</style><h2 id="a">Article 1</h2><p>Tea <b>label</b> is required.</p><p>Keep records.</p></html>',
         )
@@ -53,8 +52,8 @@ class IngestionTests(unittest.TestCase):
                 "word/document.xml",
                 """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>产品信息</w:t></w:r></w:p><w:p><w:r><w:t>净含量250克</w:t></w:r></w:p></w:body></w:document>""",
             )
-        with patch.object(self.ingestion, "_parse_native_text", side_effect=AssertionError("local DOCX parsing")):
-            result = self.ingestion.parse_file("product.docx", data.getvalue())
+        with patch.object(native, "_parse_native_text", side_effect=AssertionError("local DOCX parsing")):
+            result = native.parse_file("product.docx", data.getvalue())
         self.assertEqual(result["parser"], "mineru")
         self.assertFalse(result["quality"]["complete"])
         self.assertEqual(result["chunks"], [])
@@ -62,12 +61,12 @@ class IngestionTests(unittest.TestCase):
 
     def test_unsupported_format_rejected_and_docx_is_deferred_without_xml_expansion(self):
         with self.assertRaises(ValueError):
-            self.ingestion.parse_file("unsupported.exe", b"not a document")
+            native.parse_file("unsupported.exe", b"not a document")
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as archive:
             archive.writestr("word/document.xml", '<!DOCTYPE test [<!ENTITY x "oops">]><test>&x;</test>')
-        with patch.object(self.ingestion, "_parse_native_text", side_effect=AssertionError("local XML parsing")):
-            result = self.ingestion.parse_file("bad.docx", data.getvalue())
+        with patch.object(native, "_parse_native_text", side_effect=AssertionError("local XML parsing")):
+            result = native.parse_file("bad.docx", data.getvalue())
         self.assertEqual(result["parser"], "mineru")
         self.assertEqual(result["chunks"], [])
         self.assertEqual(result["remote_parse"]["state"], "planned")
@@ -77,8 +76,8 @@ class IngestionTests(unittest.TestCase):
         with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("word/document.xml", b"x" * (16 * 1024 * 1024 + 1))
         self.assertLess(len(data.getvalue()), 100000)
-        with patch.object(self.ingestion, "_parse_native_text", side_effect=AssertionError("local XML expansion")):
-            result = self.ingestion.parse_file("compressed.docx", data.getvalue())
+        with patch.object(native, "_parse_native_text", side_effect=AssertionError("local XML expansion")):
+            result = native.parse_file("compressed.docx", data.getvalue())
         self.assertEqual(result["parser"], "mineru")
         self.assertEqual(result["chunks"], [])
         self.assertEqual(result["remote_parse"]["state"], "planned")
@@ -88,20 +87,11 @@ class IngestionTests(unittest.TestCase):
             {"id": "a", "text": "茶叶包装需要注明净含量。", "document_id": "d1", "locator": {"page": 2}},
             {"id": "b", "text": "物流运输的装箱单。", "document_id": "d2"},
         ]
-        hits = self.ingestion.lexical_search("包装净含量", chunks)
+        hits = text.lexical_search("包装净含量", chunks)
         self.assertEqual(hits[0]["document_id"], "d1")
         self.assertEqual(hits[0]["locator"], {"page": 2})
-        self.assertEqual(self.ingestion.lexical_search("quantum astronomy", chunks), [])
+        self.assertEqual(text.lexical_search("quantum astronomy", chunks), [])
         self.assertNotIn("score", chunks[0])
-
-    def test_embedding_is_none_without_configuration(self):
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(self.ingestion.embed_texts(["茶叶"]))
-
-    def test_embedding_partial_configuration_is_an_error(self):
-        with patch.dict(os.environ, {"EMBEDDING_MODEL": "test"}, clear=True):
-            with self.assertRaisesRegex(ValueError, "EMBEDDING"):
-                self.ingestion.embed_texts(["茶叶"])
 
     def test_fetch_rejects_private_addresses_and_unsafe_urls_before_connect(self):
         for url in (
@@ -113,7 +103,7 @@ class IngestionTests(unittest.TestCase):
             "https://example.com/a\r\nX: y",
         ):
             with self.subTest(url=url), self.assertRaises(ValueError):
-                self.ingestion.fetch_source(url)
+                transport.fetch_source(url)
 
     def test_fetch_rejects_mixed_public_private_dns(self):
         addresses = [
@@ -124,87 +114,13 @@ class IngestionTests(unittest.TestCase):
             patch("socket.getaddrinfo", return_value=addresses),
             self.assertRaisesRegex(ValueError, "public"),
         ):
-            self.ingestion.fetch_source("https://example.com/law.pdf")
-
-    def test_embedding_validates_real_provider_response(self):
-        from types import SimpleNamespace
-
-        class Client:
-            def __init__(self, **kwargs):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-            def stream(self, *args, **kwargs):
-                from contextlib import nullcontext
-
-                return nullcontext(
-                    SimpleNamespace(
-                        raise_for_status=lambda: None,
-                        iter_bytes=lambda: [
-                            b'{"data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[3]}]}'
-                        ],
-                    )
-                )
-
-        configuration = {
-            "EMBEDDING_BASE_URL": "https://example.com/v1",
-            "EMBEDDING_API_KEY": "test-only",
-            "EMBEDDING_MODEL": "test",
-        }
-        with (
-            patch.dict(os.environ, configuration, clear=True),
-            patch("httpx.Client", Client),
-            self.assertRaisesRegex(ValueError, "维度"),
-        ):
-            self.ingestion.embed_texts(["one", "two"])
-
-    def test_embedding_response_read_stops_at_size_limit(self):
-        from contextlib import nullcontext
-        from types import SimpleNamespace
-
-        consumed = []
-
-        def blocks():
-            for index in range(20):
-                consumed.append(index)
-                yield b"x" * (1024 * 1024)
-
-        class Client:
-            def __init__(self, **kwargs):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-            def stream(self, *args, **kwargs):
-                return nullcontext(SimpleNamespace(raise_for_status=lambda: None, iter_bytes=blocks))
-
-        configuration = {
-            "EMBEDDING_BASE_URL": "https://example.com/v1",
-            "EMBEDDING_API_KEY": "test-only",
-            "EMBEDDING_MODEL": "test",
-        }
-        with (
-            patch.dict(os.environ, configuration, clear=True),
-            patch("httpx.Client", Client),
-            self.assertRaises(ValueError),
-        ):
-            self.ingestion.embed_texts(["one"])
-        self.assertEqual(len(consumed), 17)
+            transport.fetch_source("https://example.com/law.pdf")
 
     def test_dns_deadline_prevents_indefinite_waiting(self):
         import time
 
         with self.assertRaisesRegex(ValueError, "时间"):
-            self.ingestion._public_addresses("example.com", deadline=time.monotonic() - 1)
+            transport._public_addresses("example.com", deadline=time.monotonic() - 1)
 
     def test_pdf_is_deferred_to_mineru_without_local_text_extraction(self):
         from pypdf import PdfWriter
@@ -227,8 +143,8 @@ class IngestionTests(unittest.TestCase):
         page[NameObject("/Contents")] = writer._add_object(stream)
         output = io.BytesIO()
         writer.write(output)
-        with patch.object(self.ingestion, "_parse_pdf", side_effect=AssertionError("local PDF parsing")):
-            result = self.ingestion.parse_file("product.pdf", output.getvalue())
+        with patch.object(native, "_parse_pdf", side_effect=AssertionError("local PDF parsing")):
+            result = native.parse_file("product.pdf", output.getvalue())
         self.assertEqual(result["parser"], "mineru")
         self.assertFalse(result["quality"]["complete"])
         self.assertEqual(result["chunks"], [])
@@ -241,8 +157,8 @@ class IngestionTests(unittest.TestCase):
         writer.add_blank_page(width=100, height=100)
         output = io.BytesIO()
         writer.write(output)
-        with patch.object(self.ingestion, "_parse_pdf", side_effect=AssertionError("local PDF parsing")):
-            result = self.ingestion.parse_file("scan.pdf", output.getvalue())
+        with patch.object(native, "_parse_pdf", side_effect=AssertionError("local PDF parsing")):
+            result = native.parse_file("scan.pdf", output.getvalue())
         self.assertEqual(result["chunks"], [])
         self.assertEqual(result["parser"], "mineru")
         self.assertFalse(result["quality"]["complete"])
@@ -267,8 +183,8 @@ class IngestionTests(unittest.TestCase):
                 "content": b"raw-secondary",
             }
 
-        with patch.object(self.ingestion, "_download", download):
-            result = self.ingestion.fetch_source("https://example.com/law.html")
+        with patch.object(transport, "_download", download):
+            result = transport.fetch_source("https://example.com/law.html")
         self.assertEqual(
             [x["url"] for x in result["attachments"]],
             ["https://example.com/one.pdf", "https://example.com/three.docx"],
@@ -300,14 +216,14 @@ class IngestionTests(unittest.TestCase):
 
         with (
             patch.object(
-                self.ingestion,
+                transport,
                 "_public_addresses",
                 return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
             ),
-            patch.object(self.ingestion, "_PinnedHTTPSConnection", Connection),
+            patch.object(transport, "_PinnedHTTPSConnection", Connection),
             self.assertRaisesRegex(ValueError, "public"),
         ):
-            self.ingestion._download("https://example.com/law", deadline=time.monotonic() + 10)
+            transport._download("https://example.com/law", deadline=time.monotonic() + 10)
 
     def test_dynamic_download_url_uses_actual_document_mime(self):
         import time
@@ -344,14 +260,14 @@ class IngestionTests(unittest.TestCase):
 
         with (
             patch.object(
-                self.ingestion,
+                transport,
                 "_public_addresses",
                 return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
             ),
-            patch.object(self.ingestion, "_PinnedHTTPSConnection", Connection),
+            patch.object(transport, "_PinnedHTTPSConnection", Connection),
         ):
-            result = self.ingestion._download(
-                "https://example.com/download.aspx?id=1", deadline=time.monotonic() + 10
+            result = transport._download(
+                "https://example.com/transport.aspx?id=1", deadline=time.monotonic() + 10
             )
         self.assertTrue(result["filename"].endswith(".pdf"))
 

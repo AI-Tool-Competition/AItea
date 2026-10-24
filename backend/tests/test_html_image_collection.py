@@ -1,26 +1,26 @@
 """Protected image preparation, cache recovery and scoped processing fairness."""
 
-from contextlib import closing
-from copy import deepcopy
 import hashlib
 import io
 import json
 import time
+from contextlib import closing
+from copy import deepcopy
 
-from PIL import Image
 import pytest
-
-from app import ingestion
-from app.db import dump, now
-from app.html_image_collection import HtmlImageCollector
-from app.html_linked_asset_ocr import read_linked_images
-from app.ingestion_quality import text_complete
-from app.service import Service
+from app.bootstrap import Service
+from app.contexts.collection.application.html_image_collection import HtmlImageCollector
+from app.contexts.knowledge.infrastructure.parsing import native as ingestion_native
+from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import read_linked_images
+from app.shared.domain.values import dump, now
+from app.shared.infrastructure.http import download as ingestion_download
+from PIL import Image
 
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    for name in list(ingestion.os.environ):
+    for name in list(ingestion_download.os.environ):
         if name.startswith(("EMBEDDING_", "LLM_", "VISION_OCR_")):
             monkeypatch.delenv(name)
     monkeypatch.setenv("TEA_PROCESS_WORKERS", "2")
@@ -52,7 +52,7 @@ def document(service, *, owner="owner", level="primary", name="law", html=None):
         )
         conn.execute(
             "UPDATE documents SET manifest=?,status='ready' WHERE id=?",
-            (dump(ingestion.parse_file(name + ".html", content)), doc["id"]),
+            (dump(ingestion_native.parse_file(name + ".html", content)), doc["id"]),
         )
         conn.execute("UPDATE processing_jobs SET status='completed' WHERE document_id=?", (doc["id"],))
     return doc
@@ -78,7 +78,7 @@ def downloader(service, monkeypatch, *, during=None, mime="image/png", raw=None)
                 during()
             return {"url": url, "blob": blob, "mime_type": mime, "response_status": 200}
 
-    monkeypatch.setattr(ingestion, "_download", download)
+    monkeypatch.setattr(ingestion_download, "_download", download)
     return requests
 
 
@@ -169,7 +169,7 @@ def test_unsupported_or_unauthorized_sources_never_download(service, monkeypatch
         with service.db.transaction() as conn:
             conn.execute("UPDATE processing_jobs SET status='queued' WHERE document_id=?", (doc["id"],))
     monkeypatch.setattr(
-        ingestion, "_download", lambda *_a, **_kw: pytest.fail("Unsupported source was fetched")
+        ingestion_download, "_download", lambda *_a, **_kw: pytest.fail("Unsupported source was fetched")
     )
     try:
         result = HtmlImageCollector(service).prepare("owner", doc["id"], deadline=time.monotonic() + 60)
@@ -177,7 +177,7 @@ def test_unsupported_or_unauthorized_sources_never_download(service, monkeypatch
     except (ValueError, RuntimeError) as error:
         assert reason not in {"private", "responsive"} or isinstance(error, ValueError)
     except Exception as error:
-        from app.service import AppError
+        from app.shared.domain.errors import AppError
 
         assert reason == "other_owner" and isinstance(error, AppError)
 

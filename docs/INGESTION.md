@@ -268,7 +268,7 @@ HTTP ETag/Last-Modified 保存在账号内缓存，304 仅复用匹配最终地�
 
 ## 统一来源清单动态更新
 
-`config/collection-sources/id-sg-unattended.json` 是无人值守采集的统一清单，按国家、章节和来源分组，并显式列出来源间的补充、交叉核对和原件发布关系。v2 活动来源均要求代理；代理缺失或目标域不在允许范围时请求失败，不回退到直连。
+`config/collection-sources/id-sg-unattended.json` 是无人值守采集的统一清单，按国家、章节和来源分组，并显式列出来源间的补充、交叉核对和原件发布关系。采集代理精确域名由 `config/collection-proxy.json` 统一维护；私有代理端点只放在 `data/config/application.env`。代理配置启用后，缺少白名单或目标域未获允许都会失败，不会回退到直连。
 
 采集器在每轮开始时完整校验清单，成功后才切换活动集合。每个接受的配置版本原样保存到对应数据目录的 `registry-versions/<sha256>.json`；每笔新请求记录配置指纹。删除或归档来源只停止后续调度，不删除其原件、发现关系、内容版本、请求回执和已消耗配额。来源编号不得跨国家重新绑定。
 

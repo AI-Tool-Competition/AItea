@@ -126,6 +126,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         fallback_attempts,
         is_mineru_table_review,
         is_visual_fallback_page,
+        missing_visual_provider_pages,
     )
     from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
 
@@ -149,7 +150,15 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     unknown_outcome = False
     if phase == "parse":
         vision_ready = vision_ocr_configured()
+        if vision_ready:
+            for page_number in missing_visual_provider_pages(manifest):
+                if len(retry_pages) >= MAX_AUTOMATIC_OCR_TARGETS:
+                    break
+                retry_pages.append(page_number)
+                mineru_visual_pages.append(page_number)
         for page in pages:
+            if page.get("page") in retry_pages:
+                continue
             metadata = page.get("ocr") or {}
             status = page.get("status")
             unknown = _unknown(page)

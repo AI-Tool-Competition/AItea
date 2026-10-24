@@ -313,4 +313,5 @@ def test_collection_worker_runs_visual_fallback_and_indexes_rebuilt_table(monkey
     assert row["status"] == "ready"
     assert saved["quality"]["complete"] is True
     assert saved["pages"][0]["ocr_fallback"]["accepted"] is True
+    assert saved["pages"][0]["ocr"]["provider"] == "vision"
     assert any("| 0101 | 0% |" in chunk["text"] for chunk in saved["chunks"])

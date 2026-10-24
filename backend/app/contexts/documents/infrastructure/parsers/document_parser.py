@@ -688,6 +688,7 @@ def apply_page_transcription(page, metadata, transcript, *, native_hint):
     """Apply the same physical-page quality gates to live and saved responses."""
     from app.contexts.documents.infrastructure.parsers.ingestion_quality import validate_ocr_page
 
+    metadata["provider"] = "vision"
     if transcript["is_blank"] and page["native_text"].strip():
         transcript["uncertain_spans"].append("blank_response_conflicts_with_native_text")
     elif len(native_hint) > 200 and len(transcript["text"]) < len(native_hint) * 0.5:

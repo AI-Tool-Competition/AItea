@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import ssl
 import time
+from urllib.parse import urlsplit
 
 import pytest
+from app.configuration.paths import PROJECT_ROOT
 from app.contexts.ingestion.infrastructure import collection_proxy as transport
+from app.shared.infrastructure.http import download as download_transport
 from app.shared.infrastructure.http.download import DownloadError
 
 
@@ -74,12 +78,70 @@ def test_host_scope_rejects_wildcards_ports_and_urls(monkeypatch, host_list):
 
 def test_partial_and_unreviewed_doh_configuration_fail_closed(monkeypatch):
     monkeypatch.setenv("COLLECTION_PROXY_URL", "http://127.0.0.1:17890")
-    with pytest.raises(DownloadError, match="同时配置"):
-        transport.proxy_for_host("official.example")
+    assert transport.proxy_for_host("official.example") is None
     configure(monkeypatch)
     monkeypatch.setenv("COLLECTION_DOH_HOSTS", "unreviewed.example")
     with pytest.raises(DownloadError, match="必须属于"):
         transport.proxy_for_host("official.example")
+
+
+def test_versioned_proxy_catalog_supplies_exact_source_hosts(monkeypatch):
+    monkeypatch.setenv("COLLECTION_PROXY_URL", "http://127.0.0.1:17890")
+    endpoint = transport.proxy_for_host("fta.mofcom.gov.cn")
+    assert endpoint is not None
+    assert transport.proxy_for_host("unreviewed.example") is None
+    assert transport.proxy_for_host("sub.fta.mofcom.gov.cn") is None
+
+
+def test_versioned_proxy_catalog_covers_configured_collection_domains():
+    catalog = json.loads((PROJECT_ROOT / "config/collection-proxy.json").read_text())
+    allowed = set(catalog["allowed_hosts"])
+    required = set()
+    for path in (PROJECT_ROOT / "config").rglob("*.json"):
+        if not any(part.startswith("collection-") for part in path.parts):
+            continue
+        if path.name == "collection-proxy.json":
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        stack = [payload]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                hosts = value.get("allowed_hosts")
+                if isinstance(hosts, list):
+                    required.update(host for host in hosts if isinstance(host, str))
+                stack.extend(value.values())
+            elif isinstance(value, list):
+                stack.extend(value)
+            elif isinstance(value, str):
+                for url in re.findall(r"https?://[^\s\"'<>]+", value):
+                    host = urlsplit(url.rstrip(".,;)]}")).hostname
+                    if host:
+                        required.add(host.lower().rstrip("."))
+    assert required <= allowed
+    assert len(allowed) <= 64
+
+
+def test_proxy_mode_rejects_unreviewed_host_before_direct_dns_or_connect(monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setenv("COLLECTION_PROXY_HOSTS", "approved.example")
+    monkeypatch.setattr(
+        download_transport,
+        "_public_addresses",
+        lambda *args, **kwargs: pytest.fail("unreviewed host reached direct DNS"),
+    )
+    monkeypatch.setattr(
+        download_transport,
+        "_PinnedHTTPSConnection",
+        lambda *args, **kwargs: pytest.fail("unreviewed host reached direct HTTPS"),
+    )
+    with pytest.raises(DownloadError, match="不在采集代理白名单"):
+        download_transport._download(
+            "https://unreviewed.example/", deadline=time.monotonic() + 5
+        )
 
 
 @pytest.mark.parametrize(

@@ -315,19 +315,22 @@ def _download(
             raise DownloadError("关联附件重定向到了不同来源，已拒绝抓取。")
         # Some official domains advertise IPv6 without a reachable route from
         # this host. All answers are validated before ordering or connecting.
-        proxy = None
-        if any(
+        proxy_enabled = any(
             os.getenv(key)
             for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS")
-        ):
+        )
+        proxy = None
+        if proxy_enabled:
             from app.contexts.ingestion.infrastructure.collection_proxy import (
                 PinnedProxyHTTPSConnection,
                 proxy_for_host,
                 resolve_addresses,
             )
 
-            addresses = resolve_addresses(host, deadline=deadline, fallback=_public_addresses)
             proxy = proxy_for_host(host)
+            if proxy is None:
+                raise DownloadError("当前来源域名不在采集代理白名单中。")
+            addresses = resolve_addresses(host, deadline=deadline, fallback=_public_addresses)
         else:
             addresses = _public_addresses(host, deadline=deadline)
         addresses = sorted(addresses, key=lambda row: row[0] != socket.AF_INET)

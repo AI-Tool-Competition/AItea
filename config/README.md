@@ -1,6 +1,6 @@
 # 仓库配置
 
-此目录保存随 Git 管理的业务配置默认值：`workflows/` 为办理流程，`collection-plans/` 为版本化法律采集要求，`collection-sources/` 为热更新来源清单，`collection-selections/` 为有界采集范围，`verification/` 为验证规则。私有凭据保存在实例的 `data/config/application.env`，不写入本目录。
+此目录保存随 Git 管理的业务配置默认值：`workflows/` 为办理流程，`collection-plans/` 为版本化法律采集要求，`collection-sources/` 为热更新来源清单，`collection-selections/` 为有界采集范围，`collection-proxy.json` 为采集代理的精确域名白名单，`verification/` 为验证规则。私有代理凭据保存在实例的 `data/config/application.env`，不写入本目录。新增或更换采集来源时，同步核对代理白名单；未允许的域名会失败，不会直连。
 
 `TEA_CONFIG_DIR` 可指定唯一活动配置根；完整实例恢复默认使用其 `data/config/catalogs/` 快照。修改前运行 `make instance-paths` 查看生效位置，详见 [实例管理](../docs/INSTANCE_MANAGEMENT.md)。
 

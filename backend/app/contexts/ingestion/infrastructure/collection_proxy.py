@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urlencode, urlsplit
 
+from app.configuration.paths import InstancePaths
 from app.shared.infrastructure.http.download import DownloadError, _PinnedHTTPSConnection
 
 _DOH_IPS = ("8.8.8.8", "8.8.4.4")
@@ -62,6 +63,34 @@ def _hosts(value: str) -> frozenset[str]:
     return frozenset(_canonical_host(entry.strip()) for entry in entries)
 
 
+def _catalog_proxy_hosts() -> tuple[frozenset[str], frozenset[str]]:
+    """Read the versioned, non-secret proxy scope from the active catalog root."""
+    path = InstancePaths.resolve().catalogs / "collection-proxy.json"
+    try:
+        if path.stat().st_size > 64 * 1024:
+            raise DownloadError("采集代理域名清单超过 64 KiB。")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except DownloadError:
+        raise
+    except FileNotFoundError:
+        return frozenset(), frozenset()
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise DownloadError("采集代理域名清单无法读取。") from None
+    if not isinstance(payload, dict) or payload.get("protocol") != "aitea-collection-proxy-v1":
+        raise DownloadError("采集代理域名清单格式无效。")
+    allowed, doh = payload.get("allowed_hosts"), payload.get("doh_hosts", [])
+    if (
+        not isinstance(allowed, list)
+        or not isinstance(doh, list)
+        or any(not isinstance(value, str) for value in (*allowed, *doh))
+    ):
+        raise DownloadError("采集代理域名清单格式无效。")
+    hosts, doh_hosts = _hosts(",".join(allowed)), _hosts(",".join(doh))
+    if len(hosts) > 64 or not doh_hosts.issubset(hosts):
+        raise DownloadError("采集代理域名清单超出限制或 DNS 域名未获允许。")
+    return hosts, doh_hosts
+
+
 @dataclass(frozen=True)
 class ProxyEndpoint:
     address: str
@@ -77,9 +106,13 @@ def proxy_for_host(host: str) -> ProxyEndpoint | None:
     doh_list = os.getenv("COLLECTION_DOH_HOSTS", "")
     if not (url or host_list or doh_list):
         return None
-    if not url or not host_list:
-        raise DownloadError("采集代理需要同时配置 COLLECTION_PROXY_URL 和 COLLECTION_PROXY_HOSTS。")
-    hosts, doh_hosts = _hosts(host_list), _hosts(doh_list)
+    catalog_hosts, catalog_doh_hosts = _catalog_proxy_hosts()
+    hosts = catalog_hosts | _hosts(host_list)
+    doh_hosts = catalog_doh_hosts | _hosts(doh_list)
+    if not url or not hosts:
+        raise DownloadError("采集代理需要配置端点和受审阅的精确域名清单。")
+    if len(hosts) > 64:
+        raise DownloadError("采集代理域名清单最多允许 64 个精确域名。")
     if not doh_hosts.issubset(hosts):
         raise DownloadError("COLLECTION_DOH_HOSTS 必须属于已允许的采集代理域名。")
     try:

@@ -48,6 +48,66 @@ def fallback_attempts(page: dict) -> int:
     return attempts
 
 
+def missing_visual_provider_pages(manifest: dict) -> tuple[int, ...]:
+    """Find accepted vision pages whose receipt is otherwise valid but lacks its provider tag.
+
+    Older OCR checkpoints omitted ``provider='vision'`` from the vision receipt.
+    Retry only when adding that one missing field makes the full MinerU manifest
+    pass its source, task, page, image, and transcript validation.
+    """
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("parser") != "mineru"
+        or (manifest.get("remote_parse") or {}).get("state") != "done"
+    ):
+        return ()
+    pages = manifest.get("pages")
+    if not isinstance(pages, list):
+        return ()
+
+    candidates = []
+    for index, page in enumerate(pages):
+        if not isinstance(page, dict) or page.get("status") != "ocr_complete":
+            continue
+        marker = page.get("ocr_fallback")
+        proof = page.get("ocr")
+        if (
+            not is_visual_fallback_page(page)
+            or not isinstance(marker, dict)
+            or marker.get("accepted") is not True
+            or not isinstance(proof, dict)
+            or proof.get("provider") is not None
+        ):
+            continue
+        try:
+            if fallback_attempts(page) >= MAX_RETRY_CYCLES:
+                continue
+        except ValueError:
+            continue
+        candidates.append((index, page))
+
+    if not candidates:
+        return ()
+
+    probe = dict(manifest)
+    probe_pages = list(pages)
+    for index, page in candidates:
+        repaired_page = dict(page)
+        repaired_proof = dict(page["ocr"])
+        repaired_proof["provider"] = "vision"
+        repaired_page["ocr"] = repaired_proof
+        probe_pages[index] = repaired_page
+    probe["pages"] = probe_pages
+    try:
+        from app.contexts.documents.infrastructure.providers.mineru import manifest_valid
+
+        if not manifest_valid(probe):
+            return ()
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return tuple(page["page"] for _, page in candidates if type(page.get("page")) is int)
+
+
 def markdown_table_is_consistent(text: str) -> bool:
     """Require every pipe-delimited table block to keep one consistent shape."""
     lines = text.splitlines()

@@ -348,6 +348,40 @@ def test_mineru_visual_fallback_retries_incomplete_output_only_three_quality_cyc
     assert decision.reason == "quality_review" and not decision.retryable
 
 
+@pytest.mark.parametrize(("validator_accepts", "attempts", "expected"), [(True, 2, True), (False, 2, False), (True, 3, False)])
+def test_mineru_visual_page_with_missing_provider_tag_is_retried_only_when_receipt_valid(
+    monkeypatch, validator_accepts, attempts, expected
+):
+    from app.contexts.documents.infrastructure.providers import mineru
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(
+        mineru,
+        "manifest_valid",
+        lambda value: validator_accepts and value["pages"][0]["ocr"].get("provider") == "vision",
+    )
+    page = {
+        "page": 1,
+        "status": "ocr_complete",
+        "ocr_fallback": {
+            "protocol": "mineru-table-visual-page-v1",
+            "attempts": attempts,
+            "accepted": True,
+        },
+        "ocr": {"complete": True, "provider": None, "uncertain_spans": []},
+    }
+    manifest = {"parser": "mineru", "remote_parse": {"state": "done"}, "pages": [page]}
+
+    decision = classify_processing(manifest, phase="parse")
+
+    if expected:
+        assert decision.reason == "mineru_visual_table_retry"
+        assert decision.retryable and decision.pages == (1,)
+    else:
+        assert decision.reason == "processing_review"
+        assert not decision.retryable
+
+
 def test_bound_pending_image_is_automatically_queued_when_vision_is_configured(monkeypatch):
     from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
 

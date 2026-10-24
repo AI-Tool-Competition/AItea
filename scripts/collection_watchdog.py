@@ -264,6 +264,42 @@ def model_free_environment(project, task, token):
     for prefix in ("LLM", "VISION", "EMBEDDING", "RERANK"):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             env[f"{prefix}_{field}"] = ""
+    proxy_config = {}
+    dotenv = Path(project) / ".env"
+    if dotenv.is_file() and dotenv.stat().st_size <= 64 * 1024:
+        for line in dotenv.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            key = key.removeprefix("export ").strip()
+            if separator and key in {"COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"}:
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                proxy_config[key] = value
+    for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"):
+        if key in os.environ:
+            proxy_config[key] = os.environ[key]
+    pool_path = Path(project) / "config/collection-sources/id-sg-unattended.json"
+    if pool_path.is_file() and pool_path.stat().st_size <= 2 * 1024**2:
+        pool = json.loads(pool_path.read_text(encoding="utf-8"))
+        if pool.get("protocol") == "aitea-official-source-pool-v2":
+            proxy_hosts = {
+                host
+                for source in pool.get("sources", [])
+                if source.get("status") == "active" and source.get("transport") == "proxy"
+                for host in source.get("allowed_hosts", [])
+            }
+            if len(proxy_hosts) > 64:
+                raise ValueError("Active collection proxy host scope exceeds 64 exact hosts")
+            configured = {
+                host.strip().lower()
+                for host in proxy_config.get("COLLECTION_PROXY_HOSTS", "").split(",")
+                if host.strip()
+            }
+            configured |= proxy_hosts
+            if len(configured) > 64:
+                raise ValueError("Collection proxy host scope exceeds 64 exact hosts")
+            proxy_config["COLLECTION_PROXY_HOSTS"] = ",".join(sorted(configured))
+    env.update(proxy_config)
     env.update(
         VISION_OCR_ENABLED="false",
         TEA_SHARED_LIBRARY_WORKERS="external",

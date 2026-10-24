@@ -37,6 +37,29 @@ def source(identifier="sg-main", *, host="one.gov.sg", path="/food", **changes):
     }
 
 
+def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tmp_path):
+    registry_path = ROOT / "config/collection-sources/id-sg-unattended.json"
+    registry = json.loads(registry_path.read_text())
+    assert registry["protocol"] == "aitea-official-source-pool-v2"
+    assert registry["schema_version"] == 2
+    assert len(registry["source_relations"]) >= 6
+    for country in ("ID", "SG"):
+        active = collection.source_pool(registry_path, country)
+        assert active
+        assert all(source["transport"] == "proxy" and source["status"] == "active" for source in active)
+
+    archived_id = "id-setneg-perpu"
+    next(source for source in registry["sources"] if source["id"] == archived_id)["status"] = "archived"
+    migrated = tmp_path / "registry.json"
+    migrated.write_text(json.dumps(registry))
+    assert archived_id not in {source["id"] for source in collection.source_pool(migrated, "ID")}
+    relation = registry["source_relations"][0]
+    relation["related_source_id"] = "missing-source"
+    migrated.write_text(json.dumps(registry))
+    with pytest.raises(ValueError, match="source relationship"):
+        collection.source_pool(migrated, "ID")
+
+
 def html(*links, text="Food import official guidance"):
     return (
         "<html><head><title>Food guidance</title></head><body><h1>"

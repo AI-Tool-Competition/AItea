@@ -511,12 +511,14 @@ class RAGFlowIndex:
             content = chunk_content(chunk)
             known = existing.get(content)
             if state["state"] == "intent" and not known:
-                # Ten minutes covers RAGFlow's documented server insertion
-                # timeout. Absence still cannot prove the embedding was unbilled.
+                # Confirm exact absence first and let the server insertion
+                # window settle before automatically repeating an unknown write.
                 age = time.time() - state["intent_at"]
-                if age >= 900:
-                    raise RAGFlowError("embedding_outcome_unknown", retry_after=3600)
-                return
+                if age < 900:
+                    return
+                # Automatic paid-result retries are enabled. A duplicate is
+                # still possible if remote indexing is stale, so keep the
+                # exact-content lookup and 15-minute grace period above.
             with self.db.transaction() as conn:
                 self._guard(conn, doc, claim, generation, fingerprint)
                 if not known:

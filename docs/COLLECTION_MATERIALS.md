@@ -32,7 +32,7 @@ make collection-catalog COUNTRY=SG
 
 `text_complete` 表示解析完整性，未知和未完成保持可见。独立二级法规文本化，普通附件只保留原件。自动采集的新法规和指引会先建立带哈希的系统资料版本并排入解析；来源采集回执、解析队列与法律审核状态分别核对。一级资料的 `indexed_chunk_count`、`source_hash_matches`、`index_complete` 和 `matching_vector_count` 描述索引现状；`fingerprint_counts` 列明模型指纹。匹配向量只表示与当前切片输入哈希一致，不证明它通过当前模型、有效版本、适用期及审核。正式 RAG 准入仍由 [共享总库规则](SYSTEM_LIBRARY.md) 判断。
 
-共享总库目录的 `summary.json.index_queue` 聚合已记录的 RAGFlow 代次、分块、解析任务、未知提交数和超过 15 分钟未更新的待处理代次，不含文档标识、正文或错误详情。多个旧模型/资料版本代次也会计入，因此该计数用于观察积压；每份资料的 `index_status`、切片哈希和向量数仍是判断当前版本的依据。`paid_result_unknown` 只通过远端回执只读核账，不自动再次提交。
+共享总库目录的 `summary.json.index_queue` 聚合已记录的 RAGFlow 代次、分块、解析任务、未知提交数和超过 15 分钟未更新的待处理代次，不含文档标识、正文或错误详情。多个旧模型/资料版本代次也会计入，因此该计数用于观察积压；每份资料的 `index_status`、切片哈希和向量数仍是判断当前版本的依据。`paid_result_unknown` 会先核对远端精确回执；没有远端写入记录的任务自动重排。有写入意图但 15 分钟后仍查不到相同内容的任务也会自动重试，并保留逐字内容核对。远端索引可见性延迟仍可能造成重复分块或计费，按用户授权继续处理。
 
 `gaps` 中 `legal_review_not_published` 是审核待办，不等于文件损坏。`text_incomplete_or_unknown`、`index_incomplete_or_stale`、`vectors_incomplete_or_unknown` 分别指向文本、索引、向量待办。原件异常见 inventory 的 `anomalies`。统计只覆盖本库现有记录，不证明外部法规清单全部采齐。
 

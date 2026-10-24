@@ -200,7 +200,7 @@ def test_recovery_reconciles_exact_remote_receipt_without_resubmitting(workspace
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
 
 
-def test_recovery_keeps_unmatched_paid_intent_blocked_without_resubmitting(workspace, monkeypatch):
+def test_recovery_retries_unmatched_paid_intent_after_remote_absence_is_confirmed(workspace, monkeypatch):
     remote, document, claim = prepared(workspace, monkeypatch)
     assert workspace.ragflow.step(document, claim) == 1
     remote.lose_response = True
@@ -216,27 +216,51 @@ def test_recovery_keeps_unmatched_paid_intent_blocked_without_resubmitting(works
     result = workspace.collection.recovery.run_due()
 
     assert result["reconciled"] == 0
+    assert result["requeued"] == 1
     assert result["partially_reconciled"] == 0
     with closing(workspace.db.connect()) as conn:
         chunk = conn.execute("SELECT state FROM ragflow_chunks").fetchone()
         job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()
         recovery = conn.execute("SELECT status,reason,available_at FROM collection_recovery_jobs").fetchone()
     assert chunk["state"] == "intent"
-    assert job["status"] == "failed"
-    assert recovery["status"] == "blocked" and recovery["reason"] == "paid_result_unknown"
-    assert recovery["available_at"] > time.time()
-    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+    assert job["status"] == "queued"
+    assert recovery["status"] == "queued" and recovery["reason"] == "unmatched_intents_retry"
+    posts_before = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
+    for _ in range(4):
+        with workspace.db.transaction() as conn:
+            conn.execute(
+                "UPDATE processing_jobs SET available_at=0 WHERE document_id='target' AND status='queued'"
+            )
+        claim = workspace.collection.claim_processing(owner_id="owner", document_ids=["target"])
+        assert claim
+        workspace.collection.process_item(claim)
+        with closing(workspace.db.connect()) as conn:
+            if (
+                conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
+                == "completed"
+            ):
+                break
+    with closing(workspace.db.connect()) as conn:
+        assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
+        assert conn.execute("SELECT state FROM ragflow_chunks").fetchone()[0] == "done"
+    posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
+    assert posts_after == posts_before + 1
 
 
-def test_recovery_does_not_query_ragflow_for_legacy_unknown_embedding(workspace, monkeypatch):
+def test_recovery_requeues_legacy_unknown_embedding_without_remote_write_ledger(workspace, monkeypatch):
     remote, _document, claim = prepared(workspace, monkeypatch)
     workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
     result = workspace.collection.recovery.run_due()
     assert result["reconciled"] == 0 and result["receipt_audit_errors"] == 0
+    assert result["requeued"] == 1
     assert remote.calls == []
     with closing(workspace.db.connect()) as conn:
-        row = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
-    assert tuple(row) == ("blocked", "paid_result_unknown")
+        recovery = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
+        job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()
+    assert tuple(recovery) == ("queued", "unstarted_ragflow_retry")
+    assert job["status"] == "queued"
 
 
 def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(workspace, monkeypatch):
@@ -256,7 +280,7 @@ def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(w
     with workspace.db.transaction() as conn:
         conn.execute(
             "UPDATE ragflow_chunks SET state='intent',intent_at=?,next_at=0 WHERE generation=?",
-            (time.time() - 1000, generation),
+            (time.time() - 100, generation),
         )
     workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
@@ -301,7 +325,7 @@ def test_queue_recovers_lost_embedding_response_without_repeating_the_write(work
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
 
 
-def test_expired_unconfirmed_embedding_is_held_for_review(workspace, monkeypatch):
+def test_expired_unconfirmed_embedding_is_retried_after_exact_absence_check(workspace, monkeypatch):
     import time
 
     remote, document, claim = prepared(workspace, monkeypatch)
@@ -318,13 +342,11 @@ def test_expired_unconfirmed_embedding_is_held_for_review(workspace, monkeypatch
     with closing(workspace.db.connect()) as conn:
         assert (
             conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
-            == "failed"
+            == "completed"
         )
-    with workspace.db.transaction() as conn:
-        with pytest.raises(Exception) as rejected:
-            workspace.collection.queue_processing(conn, document["id"], "owner")
-    assert getattr(rejected.value, "code", None) == "embedding_outcome_review_required"
-    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+        assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
+        assert conn.execute("SELECT state FROM ragflow_chunks").fetchone()[0] == "done"
+    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 2
 
 
 def test_changed_source_fences_an_old_index_claim(workspace, monkeypatch):

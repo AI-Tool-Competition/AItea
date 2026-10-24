@@ -329,7 +329,7 @@ def test_external_failed_fetch_adoption_ignores_earlier_system_rows(service):
 
 
 @pytest.mark.parametrize("phase,reason", [("embed", "paid_result_unknown"), ("parse", "processing_review")])
-def test_external_failed_adoption_filters_before_limit_and_private_unknown_remains_blocked(
+def test_external_failed_adoption_filters_before_limit_and_retries_private_unknown_embeddings(
     service, phase, reason
 ):
     for number in range(12):
@@ -337,12 +337,16 @@ def test_external_failed_adoption_filters_before_limit_and_private_unknown_remai
     private = job(service, "private-failure", owner="alice", status="failed", phase=phase)
     before = system_state(service)
     result = service.collection.recovery.run_due(limit=1, worker_scope=EXTERNAL)
-    assert result["adopted"] == 1 and result["requeued"] == 0
+    assert result["adopted"] == 1
+    assert result["requeued"] == int(phase == "embed")
     with closing(service.db.connect()) as conn:
         row = conn.execute(
             "SELECT * FROM collection_recovery_jobs WHERE item_id=?", (private["id"],)
         ).fetchone()
-        assert row["owner_id"] == "alice" and row["status"] == "blocked" and row["reason"] == reason
+        expected_status = "queued" if phase == "embed" else "blocked"
+        expected_reason = "unstarted_ragflow_retry" if phase == "embed" else reason
+        assert row["owner_id"] == "alice" and row["status"] == expected_status
+        assert row["reason"] == expected_reason
     assert system_state(service) == before
 
 

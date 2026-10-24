@@ -1,8 +1,9 @@
-"""Durable OCR recovery with preserved evidence and progressively delayed retries.
+"""Durable OCR and indexing recovery with preserved evidence and delayed retries.
 
 Each processing attempt remains bounded. Eligible uncertain or incomplete OCR
 results can start another attempt after backoff, while permanent provider errors,
-source changes, and quality issues without a retryable OCR result stay held.
+source changes, and quality issues without a retryable OCR result stay held. Unknown
+RAGFlow writes are checked by exact receipt before they are automatically repeated.
 """
 
 import hashlib
@@ -176,10 +177,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             unknown_outcome |= unknown
             eligible = (
                 asset.get("asset_status") == "ocr_uncertain"
-                or (
-                    asset.get("asset_status") == "ocr_failed"
-                    and not _permanent_ocr_http_error(asset)
-                )
+                or (asset.get("asset_status") == "ocr_failed" and not _permanent_ocr_http_error(asset))
                 or (asset.get("asset_status") == "pending_vision" and unknown)
             )
             if not eligible:
@@ -439,16 +437,9 @@ class CollectionRecovery:
             vision_page = metadata.get("provider") != "mineru" and bool(
                 metadata.get("prompt_version") or metadata.get("request_id")
             )
-            retryable_page = (
-                page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
-                and (
-                    _unknown(page)
-                    or (
-                        vision_page
-                        and metadata.get("complete") is False
-                        and not _permanent_ocr_http_error(page)
-                    )
-                )
+            retryable_page = page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"} and (
+                _unknown(page)
+                or (vision_page and metadata.get("complete") is False and not _permanent_ocr_http_error(page))
             )
             cycles = page.get("ocr_retry_cycles", [])
             if not retryable_page or not isinstance(cycles, list):
@@ -895,10 +886,17 @@ class CollectionRecovery:
         return scheduled
 
     def _reconcile_unknown_ragflow(self, *, limit, worker_scope):
-        """Reconcile paid-unknown chunk intents by exact, read-only remote receipts."""
+        """Reconcile unknown writes and retry old intents only after exact absence checks."""
         from app.contexts.documents.infrastructure.providers.ragflow import configured, profile
 
-        result = {"reconciled": 0, "partially_reconciled": 0, "receipt_audit_errors": 0}
+        result = {
+            "reconciled": 0,
+            "partially_reconciled": 0,
+            "receipt_audit_errors": 0,
+            "unmatched_requeued": 0,
+            "unstarted_requeued": 0,
+            "deferred": 0,
+        }
         if not configured():
             return result
         fingerprint = profile()
@@ -921,7 +919,7 @@ class CollectionRecovery:
                         AND d.remote_id IS NOT NULL)"""
                     + scope
                     + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
-                    (timestamp, *arguments, fingerprint, min(limit, 2)),
+                    (timestamp, *arguments, fingerprint, limit),
                 )
             ]
         for identifier in identifiers:
@@ -1064,6 +1062,61 @@ class CollectionRecovery:
                     "unresolved_intents": remaining,
                 }
                 if remaining:
+                    retryable_intents = conn.execute(
+                        """SELECT count(*) FROM ragflow_chunks
+                        WHERE generation=? AND state='intent' AND intent_at<=? AND next_at<=?""",
+                        (audit["generation"], time.time() - 900, time.time()),
+                    ).fetchone()[0]
+                    if retryable_intents:
+                        if (
+                            conn.execute(
+                                "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+                                + queue_scope,
+                                queue_arguments,
+                            ).fetchone()[0]
+                            >= 200
+                        ):
+                            wait = 60
+                            conn.execute(
+                                "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                                (time.time() + wait, now(), identifier),
+                            )
+                            self._event(
+                                conn,
+                                identifier,
+                                "unmatched_remote_retry_deferred",
+                                {**detail, "retry_after_seconds": wait},
+                            )
+                            result["deferred"] += 1
+                            continue
+                        conn.execute(
+                            """UPDATE processing_jobs SET status='queued',attempts=0,available_at=0,
+                            lease_token=NULL,lease_until=NULL,error=NULL,updated_at=?
+                            WHERE document_id=? AND owner_id=? AND phase='embed' AND status='failed'""",
+                            (now(), document_id, owner),
+                        )
+                        conn.execute(
+                            "UPDATE documents SET status='processing',error=NULL WHERE id=? AND owner_id=?",
+                            (document_id, owner),
+                        )
+                        conn.execute(
+                            """UPDATE collection_recovery_jobs SET status='queued',reason='unmatched_intents_retry',
+                            available_at=0,recovery_count=recovery_count+1,revision=revision+1,updated_at=? WHERE id=?""",
+                            (now(), identifier),
+                        )
+                        self._event(
+                            conn,
+                            identifier,
+                            "unmatched_remote_intents_auto_requeued",
+                            {
+                                **detail,
+                                "retryable_intents": retryable_intents,
+                                "absence_confirmed_after_seconds": 900,
+                            },
+                        )
+                        self.collection._refresh_document(conn, document_id)
+                        result["unmatched_requeued"] += 1
+                        continue
                     wait = min(
                         MAX_RECOVERY_SECONDS,
                         BASE_RECOVERY_SECONDS * 2 ** min(current["failure_count"], 7),
@@ -1113,6 +1166,131 @@ class CollectionRecovery:
                 self._event(conn, identifier, "remote_receipts_reconciled_and_resumed", detail)
                 self.collection._refresh_document(conn, document_id)
                 result["reconciled"] += 1
+        unstarted = self._requeue_unstarted_ragflow(
+            limit=limit, worker_scope=worker_scope, fingerprint=fingerprint
+        )
+        result["unstarted_requeued"] += unstarted["requeued"]
+        result["deferred"] += unstarted["deferred"]
+        return result
+
+    def _requeue_unstarted_ragflow(self, *, limit, worker_scope, fingerprint):
+        """Resume failed indexes only when no remote document or chunk write is recorded.
+
+        An `intent` row is an uncertain remote write and must go through exact
+        receipt reconciliation first. A missing generation, or a planned
+        generation with no remote document ID and no chunk intents, can restart
+        through RAGFlow's stable dataset/document lookup path.
+        """
+        result = {"requeued": 0, "deferred": 0}
+        scope, arguments = worker_scope.sql("j.owner_id")
+        queue_scope, queue_arguments = worker_scope.sql()
+        timestamp = time.time()
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='embed' AND r.status='blocked'
+                    AND r.reason='paid_result_unknown' AND r.available_at<=?
+                    AND j.phase='embed' AND j.status='failed'
+                    AND NOT EXISTS(
+                        SELECT 1 FROM ragflow_documents d
+                        WHERE d.document_id=r.item_id AND d.owner_id=r.owner_id
+                        AND (d.remote_id IS NOT NULL OR EXISTS(
+                            SELECT 1 FROM ragflow_chunks c
+                            WHERE c.generation=d.generation AND c.state='intent'
+                        ))
+                    )"""
+                    + scope
+                    + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
+                    (timestamp, *arguments, limit),
+                )
+            ]
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked'",
+                    (identifier,),
+                ).fetchone()
+                if row is None or not worker_scope.allows(row["owner_id"]):
+                    continue
+                binding = self._binding(conn, row["owner_id"], "processing", row["item_id"], "embed")
+                if binding is None or _digest(binding) != row["binding_sha256"]:
+                    self._block(conn, row, "source_changed")
+                    continue
+                job = conn.execute(
+                    "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                current = self.service.ragflow.binding(
+                    conn, row["item_id"], fingerprint, include_chunks=False
+                )
+                has_remote_write = conn.execute(
+                    """SELECT 1 FROM ragflow_documents d WHERE d.document_id=? AND d.owner_id=?
+                    AND (d.remote_id IS NOT NULL OR EXISTS(
+                        SELECT 1 FROM ragflow_chunks c
+                        WHERE c.generation=d.generation AND c.state='intent'
+                    )) LIMIT 1""",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                if (
+                    job is None
+                    or job["phase"] != "embed"
+                    or job["status"] != "failed"
+                    or current is None
+                    or current[2] is None
+                    or has_remote_write is not None
+                ):
+                    continue
+                if (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+                        + queue_scope,
+                        queue_arguments,
+                    ).fetchone()[0]
+                    >= 200
+                ):
+                    available = timestamp + 60
+                    conn.execute(
+                        "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                        (available, now(), identifier),
+                    )
+                    self._event(
+                        conn,
+                        identifier,
+                        "unstarted_ragflow_retry_deferred",
+                        {"retry_after_seconds": 60},
+                    )
+                    result["deferred"] += 1
+                    continue
+                conn.execute(
+                    """UPDATE processing_jobs SET status='queued',attempts=0,available_at=?,
+                    lease_token=NULL,lease_until=NULL,error=NULL,updated_at=?
+                    WHERE document_id=? AND owner_id=? AND phase='embed' AND status='failed'""",
+                    (timestamp, now(), row["item_id"], row["owner_id"]),
+                )
+                conn.execute(
+                    "UPDATE documents SET status='processing',error=NULL WHERE id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                )
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='queued',reason='unstarted_ragflow_retry',
+                    available_at=?,recovery_count=recovery_count+1,revision=revision+1,updated_at=? WHERE id=?""",
+                    (timestamp, now(), identifier),
+                )
+                self._event(
+                    conn,
+                    identifier,
+                    "unstarted_ragflow_retry_queued",
+                    {
+                        "source_hash": current[0]["content_hash"],
+                        "generation": current[2],
+                        "remote_document_or_chunk_intent": False,
+                    },
+                )
+                self.collection._refresh_document(conn, row["item_id"])
+                result["requeued"] += 1
         return result
 
     def run_due(self, *, limit=10, worker_scope=BackgroundWorkerScope()):
@@ -1140,7 +1318,7 @@ class CollectionRecovery:
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(limit=limit, worker_scope=worker_scope)
         self._queue_automatic_ocr_retries(limit=limit, worker_scope=worker_scope)
         for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
-            result[key] += value
+            result["requeued" if key in {"unmatched_requeued", "unstarted_requeued"} else key] += value
         with closing(self.db.connect()) as conn:
             identifiers = [
                 row[0]

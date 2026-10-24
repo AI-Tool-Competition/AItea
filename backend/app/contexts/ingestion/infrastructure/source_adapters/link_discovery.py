@@ -70,6 +70,7 @@ _LKPP_FILES = "https://jdih.lkpp.go.id/admin/uploads/documents"
 _BKPM_HOST = "jdih.bkpm.go.id"
 _BKPM_FILES_HOST = "jdih-storage.bkpm.go.id"
 _BKPM_API = "https://jdih.bkpm.go.id/api/document-search"
+_DEPHUB_HOST = "jdih.dephub.go.id"
 _PDPC_HOST = "www.pdpc.gov.sg"
 _IPOS_HOST = "www.ipos.gov.sg"
 _SG_OFFICIAL_HOSTS = {
@@ -1225,6 +1226,9 @@ class _Recipe:
         self.sg_official_2026 = recipe.get("sg_official_2026", False)
         if not isinstance(self.sg_official_2026, bool):
             raise ValueError("新加坡官方新站配置无效。")
+        self.dephub_regulations = recipe.get("dephub_regulations", False)
+        if not isinstance(self.dephub_regulations, bool):
+            raise ValueError("交通部法规目录配置无效。")
         self.sso_catalog_2026 = recipe.get("sso_catalog_2026", False)
         if not isinstance(self.sso_catalog_2026, bool):
             raise ValueError("SSO 目录配置无效。")
@@ -1293,6 +1297,10 @@ class _Recipe:
             and not parsed.query
         ):
             return "document"
+        if self.dephub_regulations and parsed.hostname == _DEPHUB_HOST:
+            from app.contexts.ingestion.infrastructure.source_adapters.dephub_discovery import purpose
+
+            return purpose(url)
         if self.wto_public_catalog and parsed.hostname in {"docs.wto.org", "goods-schedules.wto.org"}:
             from app.contexts.ingestion.infrastructure.source_adapters.wto_discovery import purpose
 
@@ -1693,6 +1701,17 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         label = (" ".join(link.text) or link.title or unquote(urlsplit(candidate).path.rsplit("/", 1)[-1]))[
             :300
         ]
+        if (
+            rules.dephub_regulations
+            and urlsplit(current).hostname == _DEPHUB_HOST
+            and candidate_purpose == "detail"
+        ):
+            from app.contexts.ingestion.infrastructure.source_adapters.dephub_discovery import (
+                is_formal_regulation_title,
+            )
+
+            if not is_formal_regulation_title(label):
+                continue
         context = (label + " " + unquote(candidate)).casefold()
         type_context = (label + " " + unquote(urlsplit(candidate).path)).casefold()
         if candidate_purpose == "catalog":
@@ -1700,6 +1719,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
                 continue
             if (
                 rules.adapter == "bpk"
+                and urlsplit(candidate).hostname == "peraturan.bpk.go.id"
                 and rules.bpk_types
                 and urlsplit(candidate).path.casefold() == "/search"
             ):
@@ -1738,6 +1758,7 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
                     continue
             if (
                 rules.adapter == "bpk"
+                and urlsplit(current).hostname == "peraturan.bpk.go.id"
                 and rules.bpk_types
                 and not any(term in type_context for term in rules.bpk_types)
             ):
@@ -1923,6 +1944,9 @@ def recipe_for(item: dict) -> dict:
         }
         if len(jenis) == 1 and None not in jenis:
             result["required_query"] = {"jenis": jenis.pop()}
+        if _country(item) == "ID" and item.get("id") == "1.8" and _DEPHUB_HOST in hosts:
+            result["dephub_regulations"] = True
+            result.setdefault("required_query_by_host", {})[_DEPHUB_HOST] = {}
         if item.get("id") == "1.2":
             result["bpk_types"] = ["ketetapan mpr", "ketetapan mprs", "tap mpr", "tap mprs"]
             result["bpk_search_terms"] = ["Ketetapan MPR", "TAP MPR", "TAP MPRS"]

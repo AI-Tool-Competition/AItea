@@ -48,6 +48,12 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
     assert len(detail["plan"]["chapters"]) == 5
     assert len(detail["items"]) == 29
     assert all(i["source_id"] is None and i["coverage"] == "not_started" for i in detail["items"])
+    central_regulations = next(item for item in detail["plan"]["items"] if item["id"] == "1.8")
+    assert central_regulations["trusted_hosts"] == ["jdih.dephub.go.id"]
+    assert any(
+        entry["url"] == "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=1&per-page=12"
+        for entry in central_regulations["entries"]
+    )
     assert (
         detail["plan"]["source_document"]["sha256"]
         == "eee5a9d8b42183dd4a3ad09ca53903ded3e47141ad9b187360b6d5a27a38e944"
@@ -66,7 +72,7 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 9
+    assert plan["version"] == 10
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
@@ -412,12 +418,16 @@ def test_retired_rcep_catalog_remains_available_in_immutable_plan_history(client
 
     current = client.app.state.service.checklists.plans[PLAN]
     archived = load_blueprint_version(PLAN, 8)
+    previous = load_blueprint_version(PLAN, 9)
     current_sources = [
         entry["url"]
         for item in current["items"] if item["id"] == "5.3"
         for entry in item["entries"]
     ]
     historical_item = next(item for item in archived["items"] if item["id"] == "5.3")
+    previous_central = next(item for item in previous["items"] if item["id"] == "1.8")
+    assert previous["version"] == 9
+    assert "jdih.dephub.go.id" not in previous_central["trusted_hosts"]
     assert not any("rcepsec.org" in url for url in current_sources)
     assert any("rcepsec.org" in entry["url"] for entry in historical_item["entries"])
     body = b"""<html><title>RCEP Agreements</title><body><ul class="rcep-list">

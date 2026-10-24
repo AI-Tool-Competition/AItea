@@ -913,7 +913,7 @@ def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeyp
 
 
 @pytest.mark.parametrize("status", [400, 401, 403])
-def test_permanent_ocr_http_rejections_are_not_retried(status):
+def test_ocr_http_rejections_are_automatically_retried_after_backoff(status):
     page = {
         "page": 1,
         "status": "ocr_failed",
@@ -925,7 +925,8 @@ def test_permanent_ocr_http_rejections_are_not_retried(status):
         },
     }
     decision = classify_processing({"pages": [page]}, phase="parse")
-    assert decision.reason == "ocr_failure_review" and not decision.retryable
+    assert decision.reason == "ocr_quality_retry"
+    assert decision.retryable and decision.pages == (1,)
 
 
 def test_budget_review_incomplete_image_is_automatically_retried_with_its_old_result_preserved(

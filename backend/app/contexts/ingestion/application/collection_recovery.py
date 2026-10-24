@@ -3,7 +3,8 @@
 Each processing attempt remains bounded. Eligible uncertain or incomplete OCR
 results can start another attempt after backoff. Confirmed terminal MinerU failures
 start a fresh generation after backoff, reusing successful and live part receipts.
-Source changes and quality issues without retryable evidence stay held. Unknown
+OCR provider failures, including HTTP rejection responses, remain eligible for
+automatic retry after backoff. Source/checkpoint changes stay held. Unknown
 RAGFlow writes are checked by exact receipt before they are automatically repeated;
 unmatched writes resume after the provider backoff expires.
 """
@@ -70,11 +71,6 @@ def _unknown(record):
         and not metadata.get("error_response")
         and not record.get("error")
     )
-
-
-def _permanent_ocr_http_error(record):
-    status = (record.get("ocr") or {}).get("http_status")
-    return type(status) is int and 400 <= status < 500 and status not in {408, 429}
 
 
 def _legacy_mineru_chart_refresh(manifest):
@@ -188,7 +184,6 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                     or (
                         vision_page
                         and (metadata.get("complete") is False or status == "ocr_uncertain")
-                        and not _permanent_ocr_http_error(page)
                     )
                 )
                 and type(page.get("page")) is int
@@ -210,7 +205,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             unknown_outcome |= unknown
             eligible = (
                 asset.get("asset_status") == "ocr_uncertain"
-                or (asset.get("asset_status") == "ocr_failed" and not _permanent_ocr_http_error(asset))
+                or asset.get("asset_status") == "ocr_failed"
                 or (asset.get("asset_status") == "pending_vision" and (unknown or vision_ready))
             )
             if not eligible:
@@ -679,7 +674,6 @@ class CollectionRecovery:
                 or (
                     vision_page
                     and (metadata.get("complete") is False or page.get("status") == "ocr_uncertain")
-                    and not _permanent_ocr_http_error(page)
                 )
             )
             cycles = page.get("ocr_retry_cycles", [])

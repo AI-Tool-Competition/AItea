@@ -698,6 +698,81 @@ def test_bpk_central_branch_only_discovers_formal_regulation_categories():
     assert len(result["links"]) == 1 and result["links"][0]["title"] == "Peraturan Menteri"
 
 
+def test_dephub_catalog_paginates_only_formal_regulations_and_verified_media_route():
+    central = item("ID", "1.8", "bpk", ("https://peraturan.bpk.go.id/Jenis/2", "catalog"))
+    central["trusted_hosts"] = ["jdih.dephub.go.id"]
+    rules = recipe_for(central)
+    assert rules["dephub_regulations"] is True
+
+    pm_token = "A" * 154
+    amendment_token = "B" * 154
+    excluded_tokens = ["C" * 154, "D" * 154, "E" * 154, "F" * 154]
+    listing = "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=1&per-page=12"
+    result = discover_page(
+        listing,
+        html(
+            f'<a href="?kelompok=4&amp;page=2&amp;per-page=12">Next page</a>'
+            f'<a href="/peraturan/detail?data={pm_token}">PM 3 Tahun 2026 tentang Keselamatan Penerbangan</a>'
+            f'<a href="/peraturan/detail?data={amendment_token}">Perubahan atas Peraturan Menteri Perhubungan</a>'
+            f'<a href="/peraturan/detail?data={excluded_tokens[0]}">Keputusan Menteri Perhubungan Nomor KM 1 Tahun 2026</a>'
+            f'<a href="/peraturan/detail?data={excluded_tokens[1]}">Surat Edaran Menteri Perhubungan</a>'
+            f'<a href="/peraturan/detail?data={excluded_tokens[2]}">Instruksi Menteri Perhubungan</a>'
+            f'<a href="/peraturan/detail?data={excluded_tokens[3]}">Rancangan Peraturan Menteri Perhubungan</a>'
+            '<a href="?kelompok=5&amp;page=2&amp;per-page=12">Other group</a>'
+        ),
+        "text/html",
+        rules,
+    )
+    assert result["matched"] and result["purpose"] == "catalog"
+    assert [(link["purpose"], link["title"]) for link in result["links"]] == [
+        ("catalog", "Next page"),
+        ("detail", "PM 3 Tahun 2026 tentang Keselamatan Penerbangan"),
+        ("detail", "Perubahan atas Peraturan Menteri Perhubungan"),
+    ]
+
+    media_token = "G" * 220
+    related_token = "H" * 154
+    rejected_related_token = "I" * 154
+    detail_url = f"https://jdih.dephub.go.id/peraturan/detail?data={pm_token}"
+    detail = discover_page(
+        detail_url,
+        html(
+            f'<a href="/peraturan/detail?data={related_token}">Peraturan Menteri Perhubungan Nomor PM 4 Tahun 2026</a>'
+            f'<a href="/peraturan/detail?data={rejected_related_token}">Keputusan Menteri Perhubungan Nomor KM 2 Tahun 2026</a>'
+            f'<iframe src="/api/media?data={media_token}"></iframe>'
+        ),
+        "text/html",
+        rules,
+    )
+    assert [(link["purpose"], link["title"]) for link in detail["links"]] == [
+        ("detail", "Peraturan Menteri Perhubungan Nomor PM 4 Tahun 2026"),
+        ("document", "media"),
+    ]
+    media_url = detail["links"][1]["url"]
+    assert discover_page(media_url, b"%PDF-1.7\\n%%EOF", "application/pdf", rules)["matched"]
+    assert not discover_page(media_url, b"HTML error page", "application/pdf", rules)["matched"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://jdih.dephub.go.id/peraturan/index?kelompok=5&page=1&per-page=12",
+        "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=0&per-page=12",
+        "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=1&per-page=12&extra=1",
+        "https://jdih.dephub.go.id/peraturan/detail?data=short",
+        "https://jdih.dephub.go.id/api/media?data=short",
+        "https://jdih.dephub.go.id/api/media?data=" + "A" * 100 + "&download=1",
+        "https://jdih.dephub.go.id/keputusan/detail?data=" + "A" * 154,
+        "https://jdih.dephub.go.id.evil.test/api/media?data=" + "A" * 154,
+    ],
+)
+def test_dephub_discovery_rejects_unverified_routes_and_query_scopes(url):
+    central = item("ID", "1.8", "bpk", ("https://peraturan.bpk.go.id/Jenis/2", "catalog"))
+    central["trusted_hosts"] = ["jdih.dephub.go.id"]
+    result = discover_page(url, html("Official content"), "text/html", recipe_for(central))
+    assert not result["matched"] and not result["links"]
+
+
 def test_verified_download_host_and_exact_catalog_are_preserved():
     constitution = item("ID", "1.1", "html_links", ("https://www.mkri.id/peraturan/peraturan-uud", "catalog"))
     constitution["trusted_hosts"] = ["s.mkri.id"]

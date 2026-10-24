@@ -602,6 +602,7 @@ def create_backup(source_dir, backup_dir, *, timeout=300, configuration_dir=None
             "source_writes": 0,
             "configuration_included": configuration_dir is not None,
             "instance_project_root": str(Path(project_root).resolve()) if project_root is not None else None,
+            "source_configuration_dir": str(configuration) if configuration_dir is not None else None,
         }
         _write_json(stage / "manifest.json", report)
         _require((stage / "manifest.json").stat().st_size <= MAX_MANIFEST_BYTES, "backup_manifest_too_large")

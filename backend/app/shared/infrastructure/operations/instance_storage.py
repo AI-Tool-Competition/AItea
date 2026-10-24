@@ -190,7 +190,7 @@ def _fleet_digest(value):
     ).hexdigest()
 
 
-def _relocate_fleet(paths, source, old_project):
+def _relocate_fleet(paths, source, old_project, old_catalogs):
     if not paths.collection_fleet.exists():
         return
     original = paths.collection_fleet.read_bytes()
@@ -204,8 +204,8 @@ def _relocate_fleet(paths, source, old_project):
             return value
         path = Path(value)
         for old, new in (
+            (old_catalogs, paths.catalogs),
             (source, paths.data),
-            (old_project / "config", paths.catalogs),
             (old_project, paths.project),
         ):
             if path.is_relative_to(old):
@@ -267,6 +267,7 @@ def restore_instance(backup, target, *, project):
         raise DataBackupError("instance_target_must_be_a_new_project_subdirectory")
     source = Path(manifest["source_data_dir"])
     old_project = Path(manifest["instance_project_root"])
+    old_catalogs = Path(manifest.get("source_configuration_dir") or old_project / "config")
     result = restore_backup(backup, target)
     try:
         changed = []
@@ -286,7 +287,7 @@ def restore_instance(backup, target, *, project):
         released_leases = (
             release_restored_leases(paths.embedding_admission) if paths.embedding_admission.exists() else 0
         )
-        _relocate_fleet(paths, source, old_project)
+        _relocate_fleet(paths, source, old_project, old_catalogs)
         if paths.env_file.exists():
             values = dotenv_values(paths.env_file, interpolate=False)
             for key in ("TEA_TEMPLATE_FILE", "EMBEDDING_ADMISSION_PATH", "AITEA_RAGFLOW_TOOLS"):
@@ -294,10 +295,10 @@ def restore_instance(backup, target, *, project):
                 if not value or not Path(value).is_absolute():
                     continue
                 original = Path(value)
-                if original.is_relative_to(source):
+                if original.is_relative_to(old_catalogs):
+                    replacement = paths.catalogs / original.relative_to(old_catalogs)
+                elif original.is_relative_to(source):
                     replacement = target / original.relative_to(source)
-                elif original.is_relative_to(old_project / "config"):
-                    replacement = paths.catalogs / original.relative_to(old_project / "config")
                 elif original.is_relative_to(old_project):
                     replacement = project / original.relative_to(old_project)
                 else:

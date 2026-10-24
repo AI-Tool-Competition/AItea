@@ -2,6 +2,7 @@
 
 import json
 import io
+import hashlib
 import sqlite3
 import subprocess
 import sys
@@ -115,7 +116,7 @@ def test_open_instance_files_block_offline_operations(tmp_path):
     require_stopped(paths)
 
 
-def instance(populated, tmp_path):
+def instance(populated, tmp_path, catalog_name="config"):
     service, documents, proof = populated
     # MinerU chart assets retain their original JPEG bytes, unlike historical
     # page OCR which always wrote PNG. Both must survive a complete backup.
@@ -139,8 +140,12 @@ def instance(populated, tmp_path):
         ]
         conn.execute("UPDATE documents SET manifest=? WHERE id=?", (json.dumps(manifest), identifier))
     data = service.db.data_dir
-    paths = InstancePaths(tmp_path, data, tmp_path / "config", data / "config/application.env")
-    write(paths.env_file, "RAGFLOW_API_KEY='fixture-only-$literal'\n")
+    paths = InstancePaths(tmp_path, data, tmp_path / catalog_name, data / "config/application.env")
+    write(
+        paths.env_file,
+        "RAGFLOW_API_KEY='fixture-only-$literal'\n"
+        f"TEA_TEMPLATE_FILE='{paths.catalogs / 'workflows/sample.json'}'\n",
+    )
     write(paths.ragflow_config / ".env", "MYSQL_PASSWORD='existing-fixture-password'\n")
     write(paths.ragflow_config / "conf/private.pem", "keep-ragflow-key")
     write(paths.catalogs / "collection-sources/pool.json", '{"version":3}\n')
@@ -169,6 +174,8 @@ def instance(populated, tmp_path):
                 "command": [
                     str(paths.project / "backend/.venv/bin/python"),
                     str(paths.project / "scripts/unattended_collection.py"),
+                    "--pool",
+                    str(paths.catalogs / "collection-sources/pool.json"),
                     "--root",
                     str(root),
                 ],
@@ -207,10 +214,22 @@ def instance(populated, tmp_path):
     return paths, documents, proof
 
 
-def test_complete_instance_roundtrip_relocates_active_paths_and_keeps_history(populated, tmp_path):
-    paths, documents, proof = instance(populated, tmp_path)
+@pytest.mark.parametrize("catalog_name", ["config", "custom-catalogs"])
+def test_complete_instance_roundtrip_relocates_active_paths_and_keeps_history(
+    populated, tmp_path, catalog_name
+):
+    paths, documents, proof = instance(populated, tmp_path, catalog_name)
     backup = tmp_path / "backup"
     backup_instance(paths, backup)
+    if catalog_name == "config":
+        # Early complete-instance snapshots recorded the default root implicitly.
+        manifest_file = backup / "manifest.json"
+        manifest = json.loads(manifest_file.read_text())
+        manifest.pop("source_configuration_dir")
+        manifest_file.write_text(json.dumps(manifest))
+        seal = json.loads((backup / "COMPLETE").read_text())
+        seal["manifest_sha256"] = hashlib.sha256(manifest_file.read_bytes()).hexdigest()
+        (backup / "COMPLETE").write_text(json.dumps(seal))
     verify_backup(backup)
     destination = tmp_path / "new-checkout/data"
     destination.parent.mkdir()
@@ -219,7 +238,9 @@ def test_complete_instance_roundtrip_relocates_active_paths_and_keeps_history(po
     assert result["embedding_leases_released"] == 1
     restored = InstancePaths.resolve(destination.parent, environ={})
     assert restored.catalogs == destination / "config/catalogs"
-    assert restored.env_file.read_bytes() == paths.env_file.read_bytes()
+    values = read_environment(destination.parent, environ={})
+    assert values["RAGFLOW_API_KEY"] == "fixture-only-$literal"
+    assert values["TEA_TEMPLATE_FILE"] == str(restored.catalogs / "workflows/sample.json")
     assert restored.env_file.stat().st_mode & 0o777 == 0o600
     assert (restored.ragflow_config / "conf/private.pem").read_text() == "keep-ragflow-key"
     assert (restored.ragflow_data / "mysql/ibdata1").read_text() == "cold-mysql-state"
@@ -231,6 +252,7 @@ def test_complete_instance_roundtrip_relocates_active_paths_and_keeps_history(po
     assert fleet["project_root"] == str(destination.parent)
     assert fleet["tasks"][0]["enabled"] is False
     assert fleet["tasks"][0]["command"][-1] == str(destination / "official-updates/ID")
+    assert fleet["tasks"][0]["command"][-3] == str(restored.catalogs / "collection-sources/pool.json")
     supervisor = json.loads((restored.collection_state / "state.json").read_text())
     assert supervisor["config_hash"] == fleet["config_hash"]
     assert supervisor["tasks"]["official-id"] == {

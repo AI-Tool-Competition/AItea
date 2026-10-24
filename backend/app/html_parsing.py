@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from .vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v8"
+VERSION = "html-source-mapping-v9"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -70,6 +70,44 @@ def _youtube_id(url):
         return None
     match = re.fullmatch(r"/(?:embed|vi)/([A-Za-z0-9_-]{6,64})(?:/[^/]*)?", parsed.path)
     return match[1] if match else None
+
+
+def _decorative_ui_image(tag, references, metadata, parent_classes):
+    """Recognize only explicit SVG icon labels, never infer from image appearance."""
+    if tag != "img" or len(references) != 1 or references[0].get("attribute") != "src":
+        return None
+    label = str(metadata.get("alt", "")).strip().casefold()
+    source = str(references[0].get("decoded_value", ""))
+    try:
+        filename = urlsplit(source).path.rsplit("/", 1)[-1].casefold()
+    except ValueError:
+        return None
+    if not filename.endswith(".svg") or not label:
+        return None
+    stem = filename[:-4]
+    if stem.startswith("icon-") and label.startswith("icon-") and (stem == label or stem.startswith(label + "-")):
+        return "svg_icon_name_matches_alternative_text"
+    social = {"facebook", "twitter", "whatsapp", "linkedin", "telegram"}
+    if stem.startswith("icon-") and stem[5:] in social and label == stem[5:]:
+        return "svg_social_sharing_control"
+    if stem == "icon-orange-telegram" and label == "telegram":
+        return "svg_social_sharing_control"
+    if (stem, label) in {
+        ("icon-envelope", "icon-share-mail"),
+        ("icon-printer", "icon-share-printer"),
+    }:
+        return "svg_sharing_control"
+    if (
+        stem == "icon-info-circle"
+        and label == "icon caution"
+        and "caution-notification" in parent_classes
+    ):
+        return "svg_caution_symbol_with_textual_notice"
+    if stem == "icon-next-page" and label in {"next page", "next page icon"}:
+        return "svg_navigation_control"
+    if stem == "back-to-top" and label in {"back to top", "back to top icon"}:
+        return "svg_navigation_control"
+    return None
 
 
 def _rsc_videos(source, source_hash, scripts, objects):
@@ -890,6 +928,7 @@ class HTMLDocument(HTMLParser):
         )
         frame = {
             "tag": tag,
+            "classes": str(values.get("class", ""))[:4096].split()[:32],
             "hidden": hidden,
             "main": in_main,
             "path": path,
@@ -985,22 +1024,30 @@ class HTMLDocument(HTMLParser):
             }
             if any(len(value) > 65_536 for value in metadata.values()):
                 raise ValueError("HTML 图片元数据超过限制。")
-            self.objects.append(
-                {
-                    "object_key": key,
-                    "tag": tag,
-                    "source_hash": self.source_hash,
-                    "locator": locator,
-                    "url_attributes": references,
-                    "metadata": metadata,
-                    "alt_is_recognized_text": False,
-                    "parent_object_key": parent_object,
-                    "duplicate_url_attributes": duplicates,
-                    "vision_status": "pending",
-                    "resource_fetched": False,
-                    "indexed": False,
-                }
-            )
+            record = {
+                "object_key": key,
+                "tag": tag,
+                "source_hash": self.source_hash,
+                "locator": locator,
+                "url_attributes": references,
+                "metadata": metadata,
+                "alt_is_recognized_text": False,
+                "parent_object_key": parent_object,
+                "duplicate_url_attributes": duplicates,
+                "vision_status": "pending",
+                "resource_fetched": False,
+                "indexed": False,
+            }
+            parent_classes = {
+                class_name
+                for ancestor in self._stack
+                for class_name in ancestor.get("classes", [])
+            }
+            exclusion_reason = _decorative_ui_image(tag, references, metadata, parent_classes)
+            if exclusion_reason:
+                record["visual_role"] = "decorative_ui"
+                record["visual_exclusion_reason"] = exclusion_reason
+            self.objects.append(record)
             frame["object_index"] = len(self.objects) - 1
         if visible and not inside_visual and not visual and tag in self._blocks:
             self._flush()
@@ -1204,9 +1251,14 @@ class HTMLDocument(HTMLParser):
             )
         )
         error_page = download_error or any(_ERROR_TITLE.fullmatch(title) for title in titles)
-        complete = has_body and not self.objects and not self._uncertain and not error_page
+        pending_objects = [
+            record["object_key"]
+            for record in self.objects
+            if record.get("visual_role") != "decorative_ui"
+        ]
+        complete = has_body and not pending_objects and not self._uncertain and not error_page
         warnings = []
-        if self.objects:
+        if pending_objects:
             warnings.append(VISUAL_PENDING_WARNING)
         if self._uncertain:
             warnings.append("HTML 对象边界或重复引用属性仍待核验。")
@@ -1215,15 +1267,20 @@ class HTMLDocument(HTMLParser):
         quality = {
             "status": "complete" if complete else "partial",
             "complete": complete,
-            "pending_objects": [record["object_key"] for record in self.objects],
+            "pending_objects": pending_objects,
             "source_mapping_complete": not self._uncertain,
             "body_text_present": has_body,
-            "visual_verification_required": bool(self.objects),
+            "visual_verification_required": bool(pending_objects),
+            "decorative_ui_object_keys": [
+                record["object_key"]
+                for record in self.objects
+                if record.get("visual_role") == "decorative_ui"
+            ],
             "error_page_detected": error_page,
         }
         return HTMLParsedDocument(
             "html-basic",
-            "8",
+            "9",
             VERSION,
             self.elements,
             [],

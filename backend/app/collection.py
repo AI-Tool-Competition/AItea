@@ -691,10 +691,10 @@ class CollectionService:
                 AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
                 AND json_extract({metadata},'$.review_status')='draft'
                 AND json_extract({manifest},'$.parser')='html-basic'
-                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8')
-                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8')
-                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+','html-source-mapping-v8+'))
-                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8')
+                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9')
+                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+','html-source-mapping-v8+','html-source-mapping-v9+'))
+                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9')
                 AND json_extract({manifest},'$.source_hash')=d.content_hash
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""

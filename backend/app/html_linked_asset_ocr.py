@@ -50,7 +50,7 @@ def _object(manifest, object_key):
     if (
         not isinstance(source, dict)
         or manifest.get("parser") != "html-basic"
-        or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8"}
+        or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9"}
         or source.get("mapping_version") != f"html-source-mapping-v{manifest.get('parser_version')}"
         or source.get("source_hash") != manifest.get("source_hash")
     ):
@@ -62,6 +62,8 @@ def _object(manifest, object_key):
     if len(matches) != 1:
         raise ValueError("HTML 图片必须唯一对应正文对象。")
     row = matches[0]
+    if row.get("visual_role") == "decorative_ui":
+        raise ValueError("界面装饰图标不进入正文图片识别。")
     attributes = row.get("url_attributes", [])
     locator = row.get("locator") or {}
     if (
@@ -176,6 +178,8 @@ def _candidates(content, manifest):
     rows = _parent_objects(content, manifest)
     eligible, unresolved = [], []
     for row in rows:
+        if row.get("visual_role") == "decorative_ui":
+            continue
         try:
             eligible.append(deepcopy(_object(manifest, row["object_key"])))
         except ValueError:
@@ -390,7 +394,11 @@ def update_quality(manifest, values):
     source = manifest.get("html_source") or {}
     rows = source.get("objects", [])
     complete_keys = {value["object_key"] for value in values if value["asset_status"] == "ocr_complete"}
-    pending = [row["object_key"] for row in rows if row["object_key"] not in complete_keys]
+    pending = [
+        row["object_key"]
+        for row in rows
+        if row.get("visual_role") != "decorative_ui" and row["object_key"] not in complete_keys
+    ]
     complete = (
         quality.get("source_mapping_complete") is True
         and quality.get("body_text_present") is True
@@ -419,7 +427,11 @@ def update_quality(manifest, values):
 
 
 def complete(manifest, values):
-    objects = (manifest.get("html_source") or {}).get("objects", [])
+    objects = [
+        row
+        for row in (manifest.get("html_source") or {}).get("objects", [])
+        if isinstance(row, dict) and row.get("visual_role") != "decorative_ui"
+    ]
     if not isinstance(objects, list) or any(not isinstance(row, dict) for row in objects):
         return False
     if not objects:

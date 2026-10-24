@@ -15,8 +15,8 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
     url = "https://isomer-user-content.by.gov.sg/174/420282d6-4bf3-4200-ac0b-0f9f4ee31d99/how-to-import-ur-goods.jpg"
     body = f'<html><nav><img src="site-logo.png"></nav><main id="main-content"><nav><svg><path/></svg></nav><h1>Import Operations Overview</h1><p>Import pathways from a Free Trade Zone.</p><img src="{url}" alt="A flowchart illustrating import pathways." width="100%" height="auto"></main></html>'.encode()
     result = parse_file("customs.html", body, "text/html")
-    assert result["parser"] == "html-basic" and result["parser_version"] == "8"
-    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v8"
+    assert result["parser"] == "html-basic" and result["parser_version"] == "9"
+    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v9"
     assert result["html_source"]["source_hash"] == digest(body)
     assert not result["quality"]["complete"]
     objects = result["html_source"]["objects"]
@@ -27,6 +27,67 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
     assert "flowchart" not in " ".join(chunk["text"] for chunk in result["chunks"])
     assert obj["vision_status"] == "pending" and obj["resource_fetched"] is False
     assert obj["locator"]["dom_path"] == "html[1]/main[1]/img[1]"
+
+
+def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_inputs():
+    from app.html_linked_asset_ocr import image_candidates_bounded
+
+    body = b'''<main><h1>Food labelling</h1><p>Imported food must carry the required label.</p>
+    <img src="/ResourcePackages/SFA/assets/images/icons/icon-share.svg" alt="icon-share">
+    <img src="/ResourcePackages/SFA/assets/images/icons/icon-next-page.svg" alt="next page">
+    <img src="/ResourcePackages/SFA/assets/images/food/icon-dash-collapse.svg" alt="icon-dash">
+    <img src="/ResourcePackages/SFA/assets/images/food/icon-orange-telegram.svg" alt="telegram">
+    </main>'''
+    result = parse_file("sfa.html", body, "text/html")
+
+    assert result["parser_version"] == "9"
+    assert result["quality"]["complete"] is True
+    assert result["quality"]["pending_objects"] == []
+    assert result["quality"]["decorative_ui_object_keys"] == [
+        "html-object-000001",
+        "html-object-000002",
+        "html-object-000003",
+        "html-object-000004",
+    ]
+    assert all(obj["visual_role"] == "decorative_ui" for obj in result["html_source"]["objects"])
+    assert text_complete(result) is True
+    assert image_candidates_bounded(body, result)["eligible"] == []
+    assert image_candidates_bounded(body, result)["unresolved"] == []
+
+
+def test_named_ui_icon_does_not_hide_an_unverified_diagram():
+    body = b'''<main><h1>Import requirements</h1><p>Retain the declaration.</p>
+    <img src="/assets/icons/icon-share.svg" alt="icon-share">
+    <img src="/assets/tea-labelling.svg" alt="Tea package label example"></main>'''
+    result = parse_file("law.html", body, "text/html")
+
+    assert result["quality"]["complete"] is False
+    assert result["quality"]["decorative_ui_object_keys"] == ["html-object-000001"]
+    assert result["quality"]["pending_objects"] == ["html-object-000002"]
+
+
+def test_caution_icon_requires_matching_caution_container_and_preserves_its_text():
+    body = b'''<main><h1>Food label changes</h1><div class="caution-notification">
+    <img src="/ResourcePackages/SFA/assets/images/icons/icon-info-circle.svg" alt="Icon Caution">
+    <div><p>Food Amendment Regulations take effect on 30 January 2026.</p></div>
+    </div></main>'''
+    result = parse_file("sfa.html", body, "text/html")
+
+    icon = result["html_source"]["objects"][0]
+    assert icon["visual_role"] == "decorative_ui"
+    assert icon["visual_exclusion_reason"] == "svg_caution_symbol_with_textual_notice"
+    assert result["quality"]["complete"] is True
+    assert any("30 January 2026" in item["content_text"] for item in result["elements"])
+
+
+def test_caution_icon_without_matching_container_remains_pending():
+    body = b'''<main><h1>Food label changes</h1><p>Review the cited notice.</p>
+    <img src="/assets/images/icons/icon-info-circle.svg" alt="Icon Caution"></main>'''
+    result = parse_file("sfa.html", body, "text/html")
+
+    assert result["html_source"]["objects"][0].get("visual_role") is None
+    assert result["quality"]["pending_objects"] == ["html-object-000001"]
+    assert result["quality"]["complete"] is False
 
 
 def test_unicode_positions_and_literal_entity_url_hashes_are_exact():
@@ -134,7 +195,7 @@ def test_long_style_metadata_keeps_source_proof_without_blocking_complete_body()
     locator = paragraph["locator"]
     start_tag = raw[locator["start_tag_char_start"] : locator["start_tag_char_end"]]
 
-    assert result["parser_version"] == "8"
+    assert result["parser_version"] == "9"
     assert result["quality"]["complete"] is True
     assert text_complete(result) is True
     assert locator["class_attribute_length"] == len(classes)
@@ -152,7 +213,7 @@ def test_v5_html_completeness_remains_compatible_after_v7_structured_table_evide
     result = parse_file("law.html", b"<main><p>Keep this legal text.</p></main>")
     legacy = dict(result)
     legacy["parser_version"] = "5"
-    legacy["pipeline_version"] = result["pipeline_version"].replace("v8", "v5")
+    legacy["pipeline_version"] = result["pipeline_version"].replace("v9", "v5")
     legacy["html_source"] = dict(result["html_source"])
     legacy["html_source"]["mapping_version"] = "html-source-mapping-v5"
 

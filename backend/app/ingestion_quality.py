@@ -275,7 +275,7 @@ def text_complete(manifest: dict) -> bool:
         return False
     quality = manifest.get("quality")
     if manifest.get("parser") == "html-basic" and (
-        manifest.get("parser_version") not in {"5", "6", "7", "8"}
+        manifest.get("parser_version") not in {"5", "6", "7", "8", "9"}
         or str(manifest.get("pipeline_version", "")).split("+", 1)[0]
         != f"html-source-mapping-v{manifest.get('parser_version')}"
         or not isinstance(quality, dict)
@@ -324,6 +324,7 @@ def has_mapped_source_objects(manifest: dict) -> bool:
                 "html-source-mapping-v6",
                 "html-source-mapping-v7",
                 "html-source-mapping-v8",
+                "html-source-mapping-v9",
             }
             and isinstance(html.get("objects"), list)
             and html["objects"]

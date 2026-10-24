@@ -609,6 +609,92 @@ def test_blocked_mineru_table_review_is_automatically_queued_for_visual_fallback
     assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["text"] == "Original MinerU tariff row"
 
 
+def test_blocked_mineru_download_resumes_existing_batch_without_resubmitting(service):
+    from app.contexts.documents.infrastructure.providers.mineru import (
+        MinerUParser,
+        parse_profile_hash,
+        pending_manifest,
+    )
+
+    content = make_pdf([("Existing remote task", False)])
+    document = register(service, content, key="mineru-proxy-result-resume")
+    manifest = pending_manifest("official.pdf", document["content_hash"])
+    manifest.pop("parser")
+    manifest.pop("source_hash")
+    profile_hash = parse_profile_hash(MinerUParser.profile())
+    manifest["remote_parse"].update(
+        state="pending",
+        profile_hash=profile_hash,
+        page_count=1,
+    )
+    batch_id = "existing-batch-123"
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed',error=? WHERE id=?",
+            (dump(manifest), "当前来源域名不在采集代理白名单中。", document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        conn.execute(
+            """INSERT INTO document_parse_tasks(
+            id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,
+            part_blob,state,batch_id,private_data,progress,attempts,next_at,error_code,created_at,updated_at
+            ) VALUES(?,?,?,?,?,0,1,1,?,'uploaded',?,'{}','{}',0,0,'rate_wait',?,?)""",
+            (
+                "existing-task-123",
+                document["id"],
+                "owner",
+                document["content_hash"],
+                profile_hash,
+                dump(
+                    {
+                        "content_hash": document["content_hash"],
+                        "size": document["size"],
+                        "storage_path": document["storage_path"],
+                        "mime_type": document["mime_type"],
+                    }
+                ),
+                batch_id,
+                now(),
+                now(),
+            ),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision("processing_review"),
+            exhausted=True,
+            error_type="DownloadError",
+        )
+        current = conn.execute(
+            "SELECT id,owner_id,content_hash,manifest FROM documents WHERE id=?", (document["id"],)
+        ).fetchone()
+        assert service.collection.recovery._resumable_mineru_parse(
+            conn, "owner", current, json.loads(current["manifest"])
+        ) is not None
+
+    result = service.collection.recovery.run_due(limit=32)
+
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+        task = conn.execute(
+            "SELECT state,batch_id,attempts FROM document_parse_tasks WHERE document_id=?",
+            (document["id"],),
+        ).fetchone()
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "mineru_parse_resume")
+    assert tuple(task) == ("uploaded", batch_id, 0)
+
+
 @pytest.mark.parametrize("status", [400, 401, 403])
 def test_permanent_ocr_http_rejections_are_not_retried(status):
     page = {

@@ -122,6 +122,7 @@ def test_versioned_proxy_catalog_covers_configured_collection_domains():
                     if host:
                         required.add(host.lower().rstrip("."))
     assert required <= allowed
+    assert "cdn-mineru.openxlab.org.cn" in allowed
     assert len(allowed) <= 64
 
 

@@ -10,6 +10,7 @@ unmatched writes resume after the provider backoff expires.
 import hashlib
 import json
 import math
+import re
 import time
 from contextlib import closing
 from copy import deepcopy
@@ -342,6 +343,58 @@ class CollectionRecovery:
             ).fetchone()
         return {"queue_kind": kind, "phase": phase, **dict(row)} if row else None
 
+    @staticmethod
+    def _resumable_mineru_parse(conn, owner, document, manifest):
+        """Resume only source-bound MinerU batches that already have remote IDs."""
+        from app.contexts.documents.infrastructure.providers.mineru import (
+            ACTIVE,
+            MinerUParser,
+            parse_profile_hash,
+        )
+
+        if not isinstance(manifest, dict):
+            return None
+        remote = manifest.get("remote_parse")
+        source_hash = document["content_hash"]
+        if (
+            manifest.get("parser") not in {None, "mineru"}
+            or manifest.get("source_hash") not in {None, source_hash}
+            or not isinstance(remote, dict)
+            or remote.get("provider") != "mineru"
+            or remote.get("state") != "pending"
+            or remote.get("source_hash") != source_hash
+            or not isinstance(remote.get("profile_hash"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", remote["profile_hash"])
+            or type(remote.get("page_count")) is not int
+            or not 1 <= remote["page_count"] <= 3000
+        ):
+            return None
+        try:
+            current_profile = parse_profile_hash(MinerUParser.profile(), remote.get("retry_generation"))
+        except ValueError:
+            return None
+        if current_profile != remote["profile_hash"]:
+            return None
+        tasks = conn.execute(
+            """SELECT part_index,state,batch_id,next_at FROM document_parse_tasks
+            WHERE document_id=? AND owner_id=? AND source_hash=? AND profile_hash=? ORDER BY part_index""",
+            (document["id"], owner, source_hash, remote["profile_hash"]),
+        ).fetchall()
+        if not tasks or len(tasks) > remote["page_count"]:
+            return None
+        if [task["part_index"] for task in tasks] != list(range(len(tasks))):
+            return None
+        allowed_states = {*ACTIVE, "done"}
+        if any(
+            task["state"] not in allowed_states
+            or not isinstance(task["batch_id"], str)
+            or not re.fullmatch(r"[A-Za-z0-9-]{8,100}", task["batch_id"])
+            for task in tasks
+        ):
+            return None
+        due = [_timestamp(task["next_at"]) for task in tasks if task["state"] != "done"]
+        return {"task_count": len(tasks), "available_at": min(due, default=0)}
+
     def record_failure(self, conn, claim, *, processing, decision, exhausted, ready_at=0, error_type=None):
         kind, phase = ("processing", claim["phase"]) if processing else ("fetch", "fetch")
         item_id = claim["document_id"] if processing else claim["id"]
@@ -642,7 +695,14 @@ class CollectionRecovery:
                 "SELECT * FROM documents WHERE id=? AND owner_id=?", (row["item_id"], row["owner_id"])
             ).fetchone()
             manifest = json.loads(document["manifest"])
-            decision = classify_processing(manifest, phase=row["phase"], retryable=True)
+            if row["reason"] == "mineru_parse_resume":
+                resumable = self._resumable_mineru_parse(conn, row["owner_id"], document, manifest)
+                if resumable is None:
+                    self._block(conn, row, "mineru_checkpoint_changed")
+                    return "blocked"
+                decision = Decision("mineru_parse_resume", True, not_before=resumable["available_at"])
+            else:
+                decision = classify_processing(manifest, phase=row["phase"], retryable=True)
             if not decision.retryable:
                 self._block(conn, row, decision.reason)
                 return "blocked"
@@ -877,6 +937,73 @@ class CollectionRecovery:
                 )
                 promoted += 1
         return promoted
+
+    def _queue_pending_mineru_resumes(self, *, limit, worker_scope):
+        """Requeue failed parses with intact, already-submitted MinerU batches."""
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
+                        AND r.reason='processing_review' AND j.phase='parse' AND j.status='failed'"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (*arguments, limit),
+                )
+            ]
+        scheduled = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='processing_review'",
+                    (identifier,),
+                ).fetchone()
+                if row is None or not worker_scope.allows(row["owner_id"]):
+                    continue
+                binding = self._binding(conn, row["owner_id"], "processing", row["item_id"], "parse")
+                if binding is None or _digest(binding) != row["binding_sha256"]:
+                    self._block(conn, row, "source_changed")
+                    continue
+                document = conn.execute(
+                    "SELECT id,owner_id,content_hash,manifest FROM documents WHERE id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (row["item_id"], row["owner_id"]),
+                ).fetchone()
+                if document is None or job is None or job["phase"] != "parse" or job["status"] != "failed":
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    self._block(conn, row, "invalid_checkpoint")
+                    continue
+                resumable = self._resumable_mineru_parse(conn, row["owner_id"], document, manifest)
+                if resumable is None:
+                    continue
+                timestamp = time.time()
+                available = max(timestamp, resumable["available_at"])
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='waiting',reason='mineru_parse_resume',
+                    available_at=?,retry_plan='[]',revision=revision+1,updated_at=? WHERE id=?""",
+                    (available, now(), identifier),
+                )
+                self._event(
+                    conn,
+                    identifier,
+                    "existing_mineru_batch_resume_scheduled",
+                    {
+                        "source_hash": document["content_hash"],
+                        "task_count": resumable["task_count"],
+                        "remote_tasks_resubmitted": False,
+                    },
+                )
+                scheduled += 1
+        return scheduled
 
     def _queue_automatic_ocr_retries(self, *, limit, worker_scope):
         """Promote eligible OCR review holds into the durable retry queue."""
@@ -1407,6 +1534,7 @@ class CollectionRecovery:
             if not adopted:
                 break
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(limit=limit, worker_scope=worker_scope)
+        self._queue_pending_mineru_resumes(limit=limit, worker_scope=worker_scope)
         self._queue_automatic_ocr_retries(limit=limit, worker_scope=worker_scope)
         for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
             result["requeued" if key in {"unmatched_requeued", "unstarted_requeued"} else key] += value

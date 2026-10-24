@@ -723,7 +723,7 @@
         "food_labelling",
         "tea_imports"
       ],
-      "title": "印度尼西亚 BPJPH 新版清真法律资料库",
+      "title": "印度尼西亚 BPJPH 法规首页（已归档）",
       "url": "https://jdih.halal.go.id/",
       "priority": 20,
       "kind": "catalogue",
@@ -752,10 +752,66 @@
         "body_sha256": "9e543958d6391fd9dcee133949c0aec52592f7e75282c5dca22004a413905bdc",
         "limitations": [
           "首页能访问，但本次页面明确显示 Belum Ada Peraturan / Tidak ada kategori tersedia；保持空目录记录，不计已取得任何法规正文。",
+          "2026-10-24 项目代理核验确认可用的法规检索列表位于同站 /cari；此首页仅作为历史入口保留，不再参与活动轮询。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
       },
       "empty_catalogue": true,
+      "status": "archived",
+      "transport": "proxy",
+      "group_id": "id-food-regulatory"
+    },
+    {
+      "id": "id-bpjph-jdih-cari",
+      "country": "ID",
+      "topics": [
+        "halal",
+        "food_labelling",
+        "tea_imports"
+      ],
+      "title": "印度尼西亚 BPJPH 官方法规检索目录",
+      "url": "https://jdih.halal.go.id/cari",
+      "priority": 82,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.halal.go.id"
+      ],
+      "discovery_keywords": [
+        "jaminan produk halal",
+        "peraturan",
+        "sertifikat halal",
+        "produk luar negeri",
+        "keputusan kepala bpjph"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.halal.go.id/cari",
+        "checked_at": "2026-10-24T14:27:58.022802+00:00",
+        "official_identity": "印度尼西亚 BPJPH 官方 JDIH 法规目录，页面标明由 BPJPH 提供并连接 JDIH Nasional。",
+        "business_use": "监测 BPJPH 清真法规、正式行政规则和原件链接，用于清真认证、食品标签及进口义务核对。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/official-source-probes/id-bpjph-jdih-cari-20261024/server-receipt.json",
+        "server_receipt_sha256": "c266b181c3d39bc971af3d78414b413a0018c8ff0656f76005a5a3ff8e5fcb9c",
+        "body_sha256": "98ebfa4869e5c8911a6ae963b7b9773713bebdafef3dd1791dd969f3702de8b0",
+        "limitations": [
+          "项目代理 HTTP 200；一次最多 4 个 GET 的受限采集周期发现 12 个候选链接（10 个详情页、2 个原件链接），不代表全目录已收齐。",
+          "仅官方目录与原件可达性已验证；法规效力、版本关系和业务适用性仍须按现有审核流程确认。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-24T14:27:58.022802+00:00",
+          "status": "success",
+          "http_status": 200,
+          "response_bytes": 174645,
+          "discovered_candidates": 12,
+          "detail_candidates": 10,
+          "document_candidates": 2,
+          "cycle_requests": 4
+        }
+      },
       "status": "active",
       "transport": "proxy",
       "group_id": "id-food-regulatory"
@@ -915,7 +971,8 @@
           "source_ids": [
             "id-bpom-regulations",
             "id-bpjph-nonhalal-regulation",
-            "id-bpjph-regulations"
+            "id-bpjph-regulations",
+            "id-bpjph-jdih-cari"
           ],
           "children": []
         },
@@ -1040,7 +1097,7 @@
   "source_relations": [
     {
       "source_id": "id-bpom-regulations",
-      "related_source_id": "id-bpjph-regulations",
+      "related_source_id": "id-bpjph-jdih-cari",
       "type": "complements",
       "checklist_items": [
         "ID-1.8",
@@ -1049,7 +1106,7 @@
       "reason": "BPOM 侧重食品安全与标签监管，BPJPH 提供清真制度来源；同一茶类问题需要并列核对适用范围。"
     },
     {
-      "source_id": "id-bpjph-regulations",
+      "source_id": "id-bpjph-jdih-cari",
       "related_source_id": "id-bpjph-nonhalal-regulation",
       "type": "publishes_original",
       "checklist_items": [

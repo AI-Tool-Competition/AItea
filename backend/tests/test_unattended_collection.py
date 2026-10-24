@@ -49,9 +49,17 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
         assert all(source["transport"] == "proxy" and source["status"] == "active" for source in active)
         if country == "ID":
             assert "id-bpk-regulations" not in {source["id"] for source in active}
+            assert "id-bpjph-regulations" not in {source["id"] for source in active}
+            assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
     archived_bpk = next(source for source in registry["sources"] if source["id"] == "id-bpk-regulations")
     assert archived_bpk["status"] == "archived"
     assert archived_bpk["verification"]["latest_probe"]["failure_code"] == "http_403"
+    archived_bpjph_home = next(source for source in registry["sources"] if source["id"] == "id-bpjph-regulations")
+    assert archived_bpjph_home["status"] == "archived"
+    assert archived_bpjph_home["empty_catalogue"] is True
+    bpjph_catalogue = next(source for source in registry["sources"] if source["id"] == "id-bpjph-jdih-cari")
+    assert bpjph_catalogue["url"] == "https://jdih.halal.go.id/cari"
+    assert bpjph_catalogue["verification"]["latest_probe"]["document_candidates"] == 2
 
     inaccessible = deepcopy(registry)
     next(source for source in inaccessible["sources"] if source["status"] == "active")["verification"][
@@ -812,7 +820,7 @@ def test_changed_known_parent_content_revalidates_original_before_its_normal_rec
 
 def test_explicit_empty_catalogue_has_low_frequency_recheck_and_retains_raw_response(environment):
     env = environment
-    configured = source(kind="catalogue", interval_seconds=7 * 86400)
+    configured = source(kind="catalogue", empty_catalogue=True, interval_seconds=7 * 86400)
     collector = env.make([configured])
     env.responses[configured["url"]] = html(text="Belum ada peraturan food")
     started = env.clock[0]
@@ -824,6 +832,22 @@ def test_explicit_empty_catalogue_has_low_frequency_recheck_and_retains_raw_resp
     raw = receipt["raw_response"]
     assert collection.valid_cached(collector.root, raw)
     assert not state["cache"]
+
+
+def test_empty_catalogue_banner_does_not_hide_discovered_originals(environment):
+    env = environment
+    configured = source(kind="catalogue", empty_catalogue=True, interval_seconds=7 * 86400)
+    original = "https://one.gov.sg/food/regulation.pdf"
+    collector = env.make([configured])
+    env.responses[configured["url"]] = html(original, text="Belum ada peraturan food")
+    env.responses[original] = pdf("available-original")
+
+    collector.tick()
+
+    state = collector.state["sources"][configured["id"]]
+    assert state["health"] == "healthy"
+    assert state["last_observation"]["status"] == "success"
+    assert original in state["cache"]
 
 
 SETNEG = "https://jdih.setneg.go.id/api/hukumproduk/"
@@ -932,9 +956,9 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 18
+    assert len(configured) == 19
     originals = [row for row in configured if row["id"] != "id-setneg-perpu"]
-    assert len(originals) == 17
+    assert len(originals) == 18
     for item in originals:
         recipe = collection.recipe(item)
         assert "setneg_type" not in recipe

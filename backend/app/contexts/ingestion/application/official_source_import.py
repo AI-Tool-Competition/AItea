@@ -25,6 +25,7 @@ _COUNTRIES = ("ID", "SG")
 _BATCH_SIZE = 4
 _INTERVAL_SECONDS = 30
 _MAX_EVENT_BYTES = 64 * 1024
+_MAX_SOURCE_POOL_BYTES = 1024 * 1024
 _MAX_ORIGINAL_BYTES = 8 * 1024 * 1024
 _SUPPORTED_MIME = {
     "text/html",
@@ -114,11 +115,48 @@ class OfficialSourceImporter:
         self.thread: threading.Thread | None = None
         self.health = service.collection.worker_health["official_source_import"]
         self._migrate()
+        self.pool: dict = {}
+        self.sources: dict[str, dict] = {}
+        self._refresh_sources()
+
+    def _refresh_sources(self) -> None:
+        """Reload the validated active source set so newly approved receipts can resume."""
         try:
-            self.pool = json.loads(self.config_path.read_text(encoding="utf-8"))
+            if (
+                self.config_path.is_symlink()
+                or not self.config_path.is_file()
+                or self.config_path.stat().st_size > _MAX_SOURCE_POOL_BYTES
+            ):
+                raise ValueError("invalid bounded source registry file")
+            pool = json.loads(self.config_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise RuntimeError("official source pool is unavailable") from error
-        self.sources = {item["id"]: item for item in self.pool.get("sources", [])}
+        if not isinstance(pool, dict) or not isinstance(pool.get("sources"), list):
+            raise RuntimeError("official source pool is invalid")
+        if pool.get("protocol") == "aitea-official-source-pool-v2":
+            from app.contexts.ingestion.application.source_catalog import active_sources
+            from app.shared.infrastructure.http.download import _validated_url
+
+            rows = [
+                *active_sources(pool, "ID", _validated_url),
+                *active_sources(pool, "SG", _validated_url),
+            ]
+        else:
+            rows = [
+                item
+                for item in pool["sources"]
+                if isinstance(item, dict)
+                and item.get("country") in _COUNTRIES
+                and item.get("status", "active") == "active"
+            ]
+        sources = {}
+        for item in rows:
+            identifier = item.get("id")
+            if not isinstance(identifier, str) or not identifier or identifier in sources:
+                raise RuntimeError("official source identifiers are invalid")
+            sources[identifier] = item
+        self.pool = pool
+        self.sources = sources
 
     def _migrate(self) -> None:
         with self.service.db.transaction() as conn:
@@ -298,8 +336,10 @@ class OfficialSourceImporter:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(event_key) DO UPDATE SET status=excluded.status,reason=excluded.reason,
                     mime_type=excluded.mime_type,updated_at=excluded.updated_at
-                WHERE official_source_imports.status='skipped'
-                    AND official_source_imports.reason='catalogue_page_not_document'""",
+                WHERE (official_source_imports.status='skipped'
+                    AND official_source_imports.reason='catalogue_page_not_document')
+                    OR (official_source_imports.status='blocked'
+                    AND official_source_imports.reason='source_not_in_approved_pool')""",
                 (
                     event_key,
                     source_id,
@@ -497,8 +537,10 @@ class OfficialSourceImporter:
                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'stored',NULL,?,?)
                     ON CONFLICT(event_key) DO UPDATE SET document_id=excluded.document_id,status='stored',
                         reason=NULL,mime_type=excluded.mime_type,updated_at=excluded.updated_at
-                    WHERE official_source_imports.status='skipped'
-                        AND official_source_imports.reason='catalogue_page_not_document'""",
+                    WHERE (official_source_imports.status='skipped'
+                        AND official_source_imports.reason='catalogue_page_not_document')
+                        OR (official_source_imports.status='blocked'
+                        AND official_source_imports.reason='source_not_in_approved_pool')""",
                     (
                         event_key,
                         source["id"],
@@ -532,6 +574,7 @@ class OfficialSourceImporter:
             return "blocked"
 
     def run_once(self) -> dict[str, int]:
+        self._refresh_sources()
         counts = {"stored": 0, "skipped": 0, "blocked": 0, "deferred": 0}
         for country in _COUNTRIES:
             state_path = self.root / "official-updates" / country / "state.json"
@@ -560,6 +603,16 @@ class OfficialSourceImporter:
                         (country,),
                     )
                 }
+                retryable.update(
+                    row["event_key"]
+                    for row in conn.execute(
+                        """SELECT event_key,source_id FROM official_source_imports
+                        WHERE country=? AND status='blocked' AND reason='source_not_in_approved_pool'""",
+                        (country,),
+                    )
+                    if (source := self.sources.get(row["source_id"])) is not None
+                    and source.get("country") == country
+                )
             processed = 0
             for path in self._event_files(country):
                 event_ns = self._event_timestamp(path)

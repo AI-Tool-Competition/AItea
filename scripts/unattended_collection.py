@@ -583,7 +583,13 @@ class Collector:
                         "links": [],
                         "parser_verification": "deferred_to_bounded_parser",
                     }
-                empty = source["kind"] == "catalogue" and b"belum ada peraturan" in content.lower()
+                empty = (
+                    source["kind"] == "catalogue"
+                    and source.get("empty_catalogue") is True
+                    and url == source["url"]
+                    and b"belum ada peraturan" in content.lower()
+                    and not any(link.get("purpose") == "document" for link in inspected.get("links", []))
+                )
                 if not inspected.get("matched") or empty:
                     outcome = {
                         "status": "content_invalid",

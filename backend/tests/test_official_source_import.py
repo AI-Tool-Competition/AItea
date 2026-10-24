@@ -220,6 +220,45 @@ def test_import_waits_for_collector_state_commit_before_advancing_cursor(tmp_pat
     assert importer.run_once()["stored"] == 1
 
 
+def test_newly_approved_source_replays_events_blocked_by_previous_pool(tmp_path):
+    service, config = _importer(tmp_path)
+    config.write_text(json.dumps({"sources": []}))
+    event_path = _write_version(tmp_path, content=b"<h1>Approved later</h1>", at_ns=time.time_ns())
+    importer = OfficialSourceImporter(service, config_path=config)
+
+    assert importer.run_once() == {"stored": 0, "skipped": 0, "blocked": 1, "deferred": 0}
+    with service.db.connect() as conn:
+        failed = conn.execute(
+            "SELECT status,reason FROM official_source_imports WHERE event_key=?",
+            (event_path.relative_to(tmp_path).as_posix(),),
+        ).fetchone()
+    assert failed["status"] == "blocked" and failed["reason"] == "source_not_in_approved_pool"
+
+    config.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "id": "id-bpom-regulations",
+                        "country": "ID",
+                        "kind": "catalogue",
+                        "status": "active",
+                        "allowed_hosts": ["jdih.pom.go.id"],
+                    }
+                ]
+            }
+        )
+    )
+
+    assert importer.run_once() == {"stored": 1, "skipped": 0, "blocked": 0, "deferred": 0}
+    with service.db.connect() as conn:
+        recovered = conn.execute(
+            "SELECT status,reason FROM official_source_imports WHERE event_key=?",
+            (event_path.relative_to(tmp_path).as_posix(),),
+        ).fetchone()
+    assert recovered["status"] == "stored" and recovered["reason"] is None
+
+
 def test_catalogue_page_and_out_of_scope_url_are_not_imported(tmp_path):
     service, config = _importer(tmp_path)
     event_path = _write_version(

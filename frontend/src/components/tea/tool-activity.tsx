@@ -16,7 +16,7 @@ import {
   TaskContent,
   TaskItem,
   TaskTrigger,
-} from "@/components/ai-elements/task";
+} from "@/components/ai-elements";
 import type { ToolCall } from "@/core/tea/types";
 
 const labels = {

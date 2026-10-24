@@ -3,7 +3,7 @@
 import { ArrowDownToLine } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import { ClipboardSafeStreamdown } from "@/components/ai-elements/streamdown";
+import { ClipboardSafeStreamdown } from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
 import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown/plugins";
 import {

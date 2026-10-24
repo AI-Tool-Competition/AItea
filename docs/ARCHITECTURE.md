@@ -21,7 +21,7 @@
 
 ### 前端组件路线
 
-- `components/ui` 管通用视觉基础，`components/ai-elements` 管流式对话、提示输入和工具状态等 AI 交互原语，`components/tea` 管茶业务视图；页面负责组合，不复制 API、权限或状态规则。
+- `components/ui` 管通用视觉基础，`components/ai-elements` 管流式对话、提示输入和工具状态等 AI 交互原语；跨业务组件从其 `index.ts` 公共导出进入，`components/tea` 管茶业务视图，页面负责组合而不复制 API、权限或状态规则。
 - 复用组件通过明确 props / 类型暴露能力；业务特化包在外层组合，不向通用组件注入业务服务。
 - 保留已有 AI Elements 实现并按实际用户旅程优化；不重复安装第二套组件库，也不为套用参考项目而替换已验证的输入、取消、草稿和流式行为。
 

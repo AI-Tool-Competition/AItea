@@ -26,7 +26,7 @@ import {
   ChainOfThoughtContent,
   ChainOfThoughtHeader,
   ChainOfThoughtStep,
-} from "@/components/ai-elements/chain-of-thought";
+} from "@/components/ai-elements";
 import {
   presentProcessStep,
   processStepLabels,

@@ -58,7 +58,7 @@ bootstrap 通过原有 `EMBEDDING_BASE_URL/API_KEY/MODEL` 注册 RAGFlow 模型�
 
 ## 索引与检索
 
-AItea 向 RAGFlow 登记原件，再通过 chunk API 导入已校验的结构化切片，不触发 RAGFlow 内置 PDF 解析或本地 ingestion worker。`RAGFLOW_CHUNK_CONCURRENCY` 控制每份文档一次写入的块数，默认 8；它与 MinerU 在途数是独立配置。
+AItea 在 RAGFlow 中登记资料身份，再通过 chunk API 导入已校验的结构化切片，不触发 RAGFlow 内置解析或本地 ingestion worker。原件不超过 128 MiB 时登记原件；超过上限时创建空白虚拟文档，避免重复上传 MinerU 已处理的原件。`RAGFLOW_CHUNK_CONCURRENCY` 控制每份文档一次写入的块数，默认 8；它与 MinerU 在途数是独立配置。
 
 结构版本 21 增加数据集、文档代次和切片回执表。代次绑定账号、原件、不可变版本、检索配置与本地索引修订。写入前保存意图，成功后保存远端 ID。响应丢失时先分页核对远端精确正文；RAGFlow 分块列表用 `content_with_weight` 返回正文、用 `chunk_id` 返回标识（兼容 `content`/`id` 形式）。常规任务可确认时直接归账；已进入待核验的未知结果由后台限量只读复核，只有所有未知切片都精确匹配才恢复剩余未发送任务，未匹配部分继续阻止重发。复核分页、请求超时和重查间隔均有上限。源文件或权限变化会使旧写入失效。
 

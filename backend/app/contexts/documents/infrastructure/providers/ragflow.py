@@ -489,7 +489,7 @@ class RAGFlowIndex:
             if chunk["chunk_id"] in states and states[chunk["chunk_id"]]["next_at"] <= time.time()
         ]
         # Only uncertain writes require a remote read. Page all bounded chunks
-        # so a request lost after commit cannot pay for the same chunk again.
+        # so a request lost after commit can be matched before it is repeated.
         unknown = any(states[c["chunk_id"]]["state"] == "intent" for c in due)
         existing = {}
         if unknown:
@@ -521,18 +521,8 @@ class RAGFlowIndex:
             raise ValueError("RAGFLOW_CHUNK_CONCURRENCY 必须在 1 至 32 之间。")
 
         def add(chunk):
-            state = states[chunk["chunk_id"]]
             content = chunk_content(chunk)
             known = existing.get(content)
-            if state["state"] == "intent" and not known:
-                # Confirm exact absence first and let the server insertion
-                # window settle before automatically repeating an unknown write.
-                age = time.time() - state["intent_at"]
-                if age < 900:
-                    return
-                # Automatic paid-result retries are enabled. A duplicate is
-                # still possible if remote indexing is stale, so keep the
-                # exact-content lookup and 15-minute grace period above.
             with self.db.transaction() as conn:
                 self._guard(conn, doc, claim, generation, fingerprint)
                 if not known:

@@ -284,7 +284,7 @@ def test_recovery_requeues_legacy_unknown_embedding_without_remote_write_ledger(
     assert job["status"] == "queued"
 
 
-def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(workspace, monkeypatch):
+def test_recovery_reconciles_partial_receipts_and_retries_unmatched_paid_intents(workspace, monkeypatch):
     remote, document, claim = prepared(workspace, monkeypatch, count=2)
     assert workspace.ragflow.step(document, claim) == 1
     remote.lose_response = True
@@ -310,18 +310,44 @@ def test_recovery_reconciles_partial_exact_receipts_and_keeps_unknowns_blocked(w
 
     result = workspace.collection.recovery.run_due()
 
-    assert result["partially_reconciled"] == 1
+    assert result["partially_reconciled"] == 0
+    assert result["requeued"] == 1
     assert result["reconciled"] == 0
     with closing(workspace.db.connect()) as conn:
         states = [row[0] for row in conn.execute("SELECT state FROM ragflow_chunks ORDER BY local_id")]
         job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
         recovery = conn.execute("SELECT status,reason,available_at FROM collection_recovery_jobs").fetchone()
     assert states == ["done", "intent"] or states == ["intent", "done"]
-    assert job == "failed"
-    assert recovery["status"] == "blocked" and recovery["reason"] == "paid_result_unknown"
-    assert time.time() < recovery["available_at"] <= time.time() + 900
+    assert job == "queued"
+    assert recovery["status"] == "queued" and recovery["reason"] == "unmatched_intents_retry"
     posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
     assert posts_after == posts_before
+
+
+def test_recent_unmatched_intent_is_retried_after_exact_remote_check(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch)
+    assert workspace.ragflow.step(document, claim) == 1
+    assert workspace.ragflow.step(document, claim) == 0
+    with closing(workspace.db.connect()) as conn:
+        _row, _chunks, generation = workspace.ragflow.binding(
+            conn, document["id"], workspace.embedding_fingerprint()
+        )
+    remote.chunks.clear()
+    with workspace.db.transaction() as conn:
+        conn.execute(
+            "UPDATE ragflow_chunks SET state='intent',intent_at=?,next_at=0 WHERE generation=?",
+            (time.time() - 1, generation),
+        )
+
+    posts_before = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
+    assert workspace.ragflow.step(document, claim) == 0
+
+    posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
+    assert posts_after == posts_before + 1
+    with closing(workspace.db.connect()) as conn:
+        assert conn.execute(
+            "SELECT state FROM ragflow_chunks WHERE generation=?", (generation,)
+        ).fetchone()[0] == "done"
 
 
 def test_queue_recovers_lost_embedding_response_without_repeating_the_write(workspace, monkeypatch):

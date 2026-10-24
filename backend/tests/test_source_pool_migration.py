@@ -92,6 +92,42 @@ def test_migration_refuses_scope_changes_and_active_requests(tmp_path):
         migration.migrate(old_path, new_path, root, "ID")
 
 
+def test_migration_records_new_unavailable_source_without_activating_it(tmp_path):
+    new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    old_pool = copy.deepcopy(new_pool)
+    old_pool["sources"] = [row for row in old_pool["sources"] if row["id"] != "id-bpk-regulations"]
+    for group in old_pool["groups"]:
+        group["children"] = [child for child in group["children"] if child["id"] != "id-general-law-archived"]
+    old_pool["source_relations"] = [
+        relation for relation in old_pool["source_relations"] if relation["source_id"] != "id-bpk-regulations"
+    ]
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    root = tmp_path / "collector"
+    root.mkdir()
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "binding": {"pool_sha256": old_hash, "country": "ID", "root": str(root.resolve())},
+                "active_sources": [],
+                "sources": {},
+            }
+        )
+    )
+
+    result = migration.migrate(old_path, new_path, root, "ID")
+
+    assert result["added_source_ids"] == ["id-bpk-regulations"]
+    assert result["archived_source_ids"] == []
+    assert "id-bpk-regulations" not in {
+        row["id"] for row in migration.source_pool(new_path, "ID")
+    }
+    state = json.loads((root / "state.json").read_text())
+    assert state["binding"]["pool_sha256"] == result["new_pool_sha256"]
+
+
 def test_migration_accepts_receipt_verified_additions_and_archives(tmp_path, monkeypatch):
     old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     new_pool = copy.deepcopy(old_pool)

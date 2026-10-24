@@ -47,6 +47,11 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
         active = collection.source_pool(registry_path, country)
         assert active
         assert all(source["transport"] == "proxy" and source["status"] == "active" for source in active)
+        if country == "ID":
+            assert "id-bpk-regulations" not in {source["id"] for source in active}
+    archived_bpk = next(source for source in registry["sources"] if source["id"] == "id-bpk-regulations")
+    assert archived_bpk["status"] == "archived"
+    assert archived_bpk["verification"]["latest_probe"]["failure_code"] == "http_403"
 
     inaccessible = deepcopy(registry)
     next(source for source in inaccessible["sources"] if source["status"] == "active")["verification"][
@@ -927,9 +932,9 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 17
+    assert len(configured) == 18
     originals = [row for row in configured if row["id"] != "id-setneg-perpu"]
-    assert len(originals) == 16
+    assert len(originals) == 17
     for item in originals:
         recipe = collection.recipe(item)
         assert "setneg_type" not in recipe

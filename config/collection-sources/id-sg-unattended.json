@@ -816,6 +816,59 @@
         },
         "note": "经现有采集回执反复返回 404，移出活动轮询；保留稳定来源编号、清单关联和历史证据。恢复时须校正官方入口并重新启用。"
       }
+    },
+    {
+      "id": "id-bpk-regulations",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚 BPK 法规数据库",
+      "url": "https://peraturan.bpk.go.id/",
+      "priority": 92,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "peraturan.bpk.go.id"
+      ],
+      "discovery_keywords": [
+        "undang-undang",
+        "peraturan pemerintah",
+        "peraturan daerah"
+      ],
+      "verification": {
+        "official_evidence_url": "https://peraturan.bpk.go.id/",
+        "checked_at": "2026-10-24T14:06:09+00:00",
+        "official_identity": "印度尼西亚审计委员会（BPK）官方 JDIH 法规数据库。",
+        "business_use": "原定用于补充核对国家与地方正式法规目录、正文元数据和版本关系。",
+        "checklist_items": [
+          "ID-1.2",
+          "ID-1.3",
+          "ID-1.4",
+          "ID-1.5",
+          "ID-1.6",
+          "ID-1.7",
+          "ID-1.8",
+          "ID-1.10"
+        ],
+        "server_status": "access_unavailable",
+        "limitations": [
+          "2026-10-24 经项目采集代理对首页、搜索目录和法规详情进行 4 次有界请求，均返回 HTTP 403；已从活动抓取清单归档。",
+          "这只表示当前采集网络无法读取该站，不表示相关法规不存在或失效；ID-1.3 至 ID-1.6 保留 Setneg 官方入口，其余类别仍需可访问的官方替代来源。",
+          "只有代理复测取得正式页面内容后才恢复活动状态。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-24T14:06:09+00:00",
+          "status": "http_error",
+          "failure_code": "http_403",
+          "consecutive_failures": 4
+        }
+      },
+      "status": "archived",
+      "transport": "proxy",
+      "group_id": "id-general-law-archived"
     }
   ],
   "schema_version": 2,
@@ -890,6 +943,26 @@
           "checklist_items": [],
           "source_ids": [
             "id-setneg-perpu"
+          ],
+          "children": []
+        },
+        {
+          "id": "id-general-law-archived",
+          "country": "ID",
+          "title": "已归档的全国及地方法规来源",
+          "parent_id": "id",
+          "checklist_items": [
+            "ID-1.2",
+            "ID-1.3",
+            "ID-1.4",
+            "ID-1.5",
+            "ID-1.6",
+            "ID-1.7",
+            "ID-1.8",
+            "ID-1.10"
+          ],
+          "source_ids": [
+            "id-bpk-regulations"
           ],
           "children": []
         }
@@ -1064,6 +1137,18 @@
         "SG-3.1"
       ],
       "reason": "印尼出口侧海关规范与新加坡进口许可及通关要求共同覆盖跨境交易两端；两国规则分别适用，不能相互替代。"
+    },
+    {
+      "source_id": "id-bpk-regulations",
+      "related_source_id": "id-setneg-perpu",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.3",
+        "ID-1.4",
+        "ID-1.5",
+        "ID-1.6"
+      ],
+      "reason": "BPK 全国目录不可经当前采集代理读取；Setneg 是部分中央法规的官方补充入口，不代表 BPK 原有全国及地方覆盖。"
     }
   ]
 }

@@ -37,7 +37,7 @@ def _verified_addition(source: dict) -> None:
     verification = source.get("verification", {})
     receipt_value = verification.get("server_receipt_path", "")
     if not isinstance(receipt_value, str):
-        raise ValueError("New sources require a private, project-local server receipt")
+        raise TypeError("New sources require a private, project-local server receipt")
     relative = Path(receipt_value)
     if relative.is_absolute() or not relative.parts or relative.parts[0] != ".dev" or ".." in relative.parts:
         raise ValueError("New sources require a private, project-local server receipt")
@@ -67,7 +67,7 @@ def _verified_addition(source: dict) -> None:
             raise ValueError("New source receipt checksum does not match")
         proof = json.loads(raw)
         observation = proof.get("last_observation", {})
-        checked = datetime.fromisoformat(verification["checked_at"].replace("Z", "+00:00"))
+        checked = datetime.fromisoformat(verification["checked_at"])
     except (OSError, KeyError, TypeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError("New source needs a valid successful collection receipt") from error
     age = datetime.now(UTC) - checked.astimezone(UTC)
@@ -230,9 +230,17 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
     expanded_source_hosts = {}
     for source_id in added_source_ids:
         source = new_sources[source_id]
-        if source.get("status") != "active" or source.get("verification", {}).get("server_status") != "reachable_content":
-            raise ValueError("Only verified active sources can be added to the pool")
-        _verified_addition(source)
+        verification_status = source.get("verification", {}).get("server_status")
+        if source.get("status") == "active":
+            if verification_status != "reachable_content":
+                raise ValueError("Only verified active sources can be added to the pool")
+            _verified_addition(source)
+        elif source.get("status") != "archived" or verification_status not in {
+            "access_unavailable",
+            "http_404_pending_spaced_recheck",
+            "http_410_resource_removed",
+        }:
+            raise ValueError("New archived sources must record why they are unavailable")
     protected = (
         "country",
         "url",

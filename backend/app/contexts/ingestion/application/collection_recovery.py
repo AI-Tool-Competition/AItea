@@ -3,7 +3,8 @@
 Each processing attempt remains bounded. Eligible uncertain or incomplete OCR
 results can start another attempt after backoff, while permanent provider errors,
 source changes, and quality issues without a retryable OCR result stay held. Unknown
-RAGFlow writes are checked by exact receipt before they are automatically repeated.
+RAGFlow writes are checked by exact receipt before they are automatically repeated;
+unmatched writes resume after the provider backoff expires.
 """
 
 import hashlib
@@ -886,7 +887,7 @@ class CollectionRecovery:
         return scheduled
 
     def _reconcile_unknown_ragflow(self, *, limit, worker_scope):
-        """Reconcile unknown writes and retry old intents only after exact absence checks."""
+        """Reconcile unknown writes and retry unmatched intents after provider backoff."""
         from app.contexts.documents.infrastructure.providers.ragflow import configured, profile
 
         result = {
@@ -925,7 +926,7 @@ class CollectionRecovery:
                     )"""
                     + scope
                     + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
-                    (fingerprint, timestamp, timestamp - 900, timestamp, *arguments, limit),
+                    (fingerprint, timestamp, timestamp, timestamp, *arguments, limit),
                 )
             ]
         for identifier in identifiers:
@@ -1071,7 +1072,7 @@ class CollectionRecovery:
                     retryable_intents = conn.execute(
                         """SELECT count(*) FROM ragflow_chunks
                         WHERE generation=? AND state='intent' AND intent_at<=? AND next_at<=?""",
-                        (audit["generation"], time.time() - 900, time.time()),
+                        (audit["generation"], time.time(), time.time()),
                     ).fetchone()[0]
                     if retryable_intents:
                         if (
@@ -1117,7 +1118,7 @@ class CollectionRecovery:
                             {
                                 **detail,
                                 "retryable_intents": retryable_intents,
-                                "absence_confirmed_after_seconds": 900,
+                                "absence_confirmed_after_seconds": 0,
                             },
                         )
                         self.collection._refresh_document(conn, document_id)

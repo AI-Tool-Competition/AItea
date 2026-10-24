@@ -36,7 +36,11 @@ export function ErrorNotice({
     <div className="tea-error" role="alert">
       <AlertCircle size={17} />
       <span>{message}</span>
-      {onRetry && <button onClick={onRetry}>重试</button>}
+      {onRetry && (
+        <button type="button" onClick={onRetry}>
+          重试
+        </button>
+      )}
     </div>
   );
 }

@@ -250,6 +250,96 @@ def test_catalogue_page_and_out_of_scope_url_are_not_imported(tmp_path):
         assert tuple(blocked) == ("skipped", "url_outside_source_scope")
 
 
+def test_extensionless_detail_is_imported_only_after_pdf_signature_verification(tmp_path):
+    service, config = _importer(tmp_path)
+    content = b"%PDF-1.7\nverified official PDF bytes"
+    _write_version(
+        tmp_path,
+        content=content,
+        at_ns=time.time_ns(),
+        purpose="detail",
+        url="https://jdih.pom.go.id/api/peraturan?id=123",
+        mime_type="application/pdf",
+    )
+    importer = OfficialSourceImporter(service, config_path=config)
+
+    assert importer.run_once()["stored"] == 1
+    with service.db.connect() as conn:
+        doc = conn.execute(
+            "SELECT mime_type,status FROM documents WHERE owner_id=?",
+            (SYSTEM_OWNER_ID,),
+        ).fetchone()
+        receipt = conn.execute(
+            "SELECT discovery_purpose,mime_type,status FROM official_source_imports"
+        ).fetchone()
+    assert tuple(doc) == ("application/pdf", "processing")
+    assert tuple(receipt) == ("detail", "application/pdf", "stored")
+
+
+def test_extensionless_detail_html_remains_a_catalogue_page(tmp_path):
+    service, config = _importer(tmp_path)
+    _write_version(
+        tmp_path,
+        content=b"<html><body><h1>Detail page</h1></body></html>",
+        at_ns=time.time_ns(),
+        purpose="detail",
+        url="https://jdih.pom.go.id/document/detail",
+        mime_type="text/html",
+    )
+    importer = OfficialSourceImporter(service, config_path=config)
+
+    assert importer.run_once()["skipped"] == 1
+    with service.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0] == 0
+        receipt = conn.execute("SELECT status,reason FROM official_source_imports").fetchone()
+    assert tuple(receipt) == ("skipped", "catalogue_page_not_document")
+
+
+def test_rechecks_older_skipped_detail_when_verified_mime_is_a_document(tmp_path):
+    service, config = _importer(tmp_path)
+    at_ns = time.time_ns()
+    url = "https://jdih.pom.go.id/api/peraturan?id=456"
+    _write_version(
+        tmp_path,
+        content=b"%PDF-1.7\nverified official PDF bytes",
+        at_ns=at_ns,
+        purpose="detail",
+        url=url,
+        mime_type="application/pdf",
+    )
+    importer = OfficialSourceImporter(service, config_path=config)
+    event_key = f"official-updates/ID/events/2026-10-24/{at_ns}-receipt.json"
+    with service.db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO official_source_imports(
+                event_key,source_id,country,source_url,content_hash,source_kind,mime_type,
+                discovery_purpose,status,reason,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'catalogue','application/pdf','detail','skipped',
+                'catalogue_page_not_document',?,?)""",
+            (
+                event_key,
+                "id-bpom-regulations",
+                "ID",
+                url,
+                hashlib.sha256(b"%PDF-1.7\nverified official PDF bytes").hexdigest(),
+                "2026-10-24T00:00:00+00:00",
+                "2026-10-24T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "UPDATE official_source_import_cursor SET event_ns=? WHERE country='ID'", (at_ns + 1,)
+        )
+
+    assert importer.run_once()["stored"] == 1
+    with service.db.connect() as conn:
+        receipt = conn.execute(
+            "SELECT status,reason,document_id FROM official_source_imports WHERE event_key=?", (event_key,)
+        ).fetchone()
+        doc = conn.execute("SELECT mime_type,status FROM documents WHERE id=?", (receipt["document_id"],)).fetchone()
+    assert tuple(receipt[:2]) == ("stored", None)
+    assert tuple(doc) == ("application/pdf", "processing")
+
+
 def test_api_health_exposes_official_import_cycle_and_shutdown(tmp_path, monkeypatch):
     from app import collection, scheduler
     from fastapi.testclient import TestClient

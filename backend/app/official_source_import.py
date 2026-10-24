@@ -210,7 +210,9 @@ class OfficialSourceImporter:
                 (event_ns, country),
             )
 
-    def _eligible(self, country: str, source: dict, event: dict, state: dict) -> tuple[bool, str | None]:
+    def _eligible(
+        self, country: str, source: dict, event: dict, state: dict, *, verified_mime_type: str | None = None
+    ) -> tuple[bool, str | None]:
         if event.get("kind") != "content_version":
             return False, "not_content_version"
         try:
@@ -262,6 +264,8 @@ class OfficialSourceImporter:
         suffix = Path(parsed.path).suffix.lower()
         if suffix in {".pdf", ".doc", ".docx"}:
             return True, None
+        if purpose == "detail" and verified_mime_type in _SUPPORTED_MIME - {"text/html"}:
+            return True, None
         return False, "catalogue_page_not_document"
 
     def _record(
@@ -277,7 +281,11 @@ class OfficialSourceImporter:
                     source_kind,declared_mime_type,mime_type,
                     discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,
                     source_root,document_id,status,reason,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(event_key) DO NOTHING""",
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(event_key) DO UPDATE SET status=excluded.status,reason=excluded.reason,
+                    mime_type=excluded.mime_type,updated_at=excluded.updated_at
+                WHERE official_source_imports.status='skipped'
+                    AND official_source_imports.reason='catalogue_page_not_document'""",
                 (
                     event_key,
                     source_id,
@@ -368,7 +376,8 @@ class OfficialSourceImporter:
         eligible, reason = self._eligible(country, source, event, state)
         if reason == "cache_not_committed":
             return "deferred"
-        if not eligible:
+        detail_candidate = event.get("discovery_purpose") == "detail"
+        if not eligible and not detail_candidate:
             self._record(
                 event_key, source["id"], country, str(url or ""), digest, status="skipped", reason=reason,
                 event=event,
@@ -408,6 +417,16 @@ class OfficialSourceImporter:
             return "deferred"
         mime_type = _content_mime(original, mime_type, url)
         event["mime_type"] = mime_type
+        if not eligible:
+            eligible, reason = self._eligible(
+                country, source, event, state, verified_mime_type=mime_type
+            )
+            if not eligible:
+                self._record(
+                    event_key, source["id"], country, url, digest, status="skipped",
+                    reason=reason or "catalogue_page_not_document", event=event,
+                )
+                return "skipped"
         if mime_type not in _SUPPORTED_MIME:
             self._record(
                 event_key, source["id"], country, url, digest, status="skipped", reason="unsupported_mime",
@@ -439,7 +458,11 @@ class OfficialSourceImporter:
                         source_kind,declared_mime_type,mime_type,
                         discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,
                         source_root,document_id,status,reason,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'stored',NULL,?,?) ON CONFLICT(event_key) DO NOTHING""",
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'stored',NULL,?,?)
+                    ON CONFLICT(event_key) DO UPDATE SET document_id=excluded.document_id,status='stored',
+                        reason=NULL,mime_type=excluded.mime_type,updated_at=excluded.updated_at
+                    WHERE official_source_imports.status='skipped'
+                        AND official_source_imports.reason='catalogue_page_not_document'""",
                     (
                         event_key, source["id"], country, url, digest, *self._evidence(event),
                         doc["id"], now(), now(),
@@ -483,12 +506,24 @@ class OfficialSourceImporter:
                 cursor = conn.execute(
                     "SELECT event_ns FROM official_source_import_cursor WHERE country=?", (country,)
                 ).fetchone()[0]
+                retryable = {
+                    row["event_key"]
+                    for row in conn.execute(
+                        """SELECT event_key FROM official_source_imports
+                        WHERE country=? AND status='skipped' AND reason='catalogue_page_not_document'
+                            AND discovery_purpose='detail'
+                            AND mime_type IN ('application/pdf','application/msword',
+                                'application/vnd.openxmlformats-officedocument.wordprocessingml.document')""",
+                        (country,),
+                    )
+                }
             processed = 0
             for path in self._event_files(country):
                 event_ns = self._event_timestamp(path)
-                if event_ns <= cursor:
-                    continue
                 event_key = path.relative_to(self.root).as_posix()
+                is_recheck = event_key in retryable
+                if event_ns <= cursor and not is_recheck:
+                    continue
                 try:
                     info = path.stat()
                     if info.st_size > _MAX_EVENT_BYTES:
@@ -520,11 +555,14 @@ class OfficialSourceImporter:
                 if event.get("kind") != "content_version":
                     self._advance_cursor(country, event_ns)
                     continue
-                with closing(self.service.db.connect()) as conn:
-                    seen = conn.execute(
-                        "SELECT 1 FROM official_source_imports WHERE event_key=?", (event_key,)
-                    ).fetchone()
-                if seen:
+                if is_recheck:
+                    seen = True
+                else:
+                    with closing(self.service.db.connect()) as conn:
+                        seen = conn.execute(
+                            "SELECT 1 FROM official_source_imports WHERE event_key=?", (event_key,)
+                        ).fetchone()
+                if seen and not is_recheck:
                     self._advance_cursor(country, event_ns)
                     continue
                 source = self.sources.get(event.get("source_id"))

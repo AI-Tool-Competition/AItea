@@ -180,7 +180,12 @@ def recipe(source):
         "adapter": "html_links",
         "allowed_hosts": source["allowed_hosts"],
         "catalog_patterns": [root_pattern] if source["kind"] == "catalogue" else [],
-        "html_document_patterns": [] if source["kind"] == "catalogue" else [root_pattern],
+        "html_document_patterns": (
+            []
+            if source["kind"] == "catalogue"
+            else [root_pattern]
+            + ["^" + re.escape(path) + "$" for path in source.get("html_document_paths", [])]
+        ),
         "document_patterns": [
             r"\.(?:pdf|docx?)(?:$|\?)",
             r"/(?:download|storage|uploads)/",
@@ -394,7 +399,7 @@ class Collector:
             host
             for source in self.sources
             if source.get("transport") == "proxy"
-            for host in source["allowed_hosts"]
+            for host in (*source["allowed_hosts"], *source.get("html_asset_hosts", []))
         }
         if len(hosts) > 64:
             raise ValueError("Collection proxy scope exceeds 64 hosts")
@@ -414,7 +419,7 @@ class Collector:
             ):
                 raise PoolMigrationRequired("Source pool changes require an explicit ledger migration and restart")
             candidate = active_sources(revision.payload, self.country, _validated_url)
-            if len({h for s in candidate for h in s["allowed_hosts"]}) > 64:
+            if len({h for s in candidate for h in (*s["allowed_hosts"], *s.get("html_asset_hosts", []))}) > 64:
                 raise ValueError("Collection proxy scope exceeds 64 hosts")
             before = {s["id"]: s for s in self.sources}
             after = {s["id"]: s for s in candidate}

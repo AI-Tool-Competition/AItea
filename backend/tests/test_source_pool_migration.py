@@ -92,6 +92,184 @@ def test_migration_refuses_scope_changes_and_active_requests(tmp_path):
         migration.migrate(old_path, new_path, root, "ID")
 
 
+def test_migration_refuses_unreviewed_html_document_path_changes(tmp_path):
+    old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    new_pool = copy.deepcopy(old_pool)
+    ccs = next(row for row in new_pool["sources"] if row["id"] == "sg-ccs-fair-trading")
+    ccs["html_document_paths"].append("/consumer-protection/unreviewed/")
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    root = tmp_path / "collector"
+    root.mkdir()
+    (root / "state.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="network/document scope"):
+        migration.migrate(old_path, new_path, root, "SG")
+
+
+def test_migration_accepts_html_paths_linked_by_verified_cached_source_pages(tmp_path):
+    old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    new_pool = copy.deepcopy(old_pool)
+    source = next(row for row in new_pool["sources"] if row["id"] == "sg-ccs-fair-trading")
+    parent_url = source["url"]
+    new_path = "/consumer-protection/fair-trading-practices/new-guidance/"
+    source["html_document_paths"].append(new_path)
+    target_url = f"https://www.ccs.gov.sg{new_path}"
+    parent_body = f'<html><body><a href="{new_path}">New guidance</a></body></html>'.encode()
+    target_body = b"<html><body><h1>New guidance</h1></body></html>"
+    parent_hash = hashlib.sha256(parent_body).hexdigest()
+    target_hash = hashlib.sha256(target_body).hexdigest()
+    root = tmp_path / "collector"
+    files = root / "files"
+    files.mkdir(parents=True)
+    parent_file, target_file = files / "parent.html", files / "detail.html"
+    parent_file.write_bytes(parent_body)
+    target_file.write_bytes(target_body)
+    events = root / "events" / "2026-10-24"
+    events.mkdir(parents=True)
+    (events / "1-parent.json").write_text(
+        json.dumps(
+            {
+                "kind": "content_version",
+                "source_id": source["id"],
+                "url": parent_url,
+                "content_hash": parent_hash,
+                "path": "files/parent.html",
+            }
+        )
+    )
+    (events / "2-detail.json").write_text(
+        json.dumps(
+            {
+                "kind": "content_version",
+                "source_id": source["id"],
+                "url": target_url,
+                "content_hash": target_hash,
+                "path": "files/detail.html",
+            }
+        )
+    )
+    old_path, new_pool_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_pool_path.write_text(json.dumps(new_pool))
+    old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "binding": {
+                    "pool_sha256": old_hash,
+                    "country": "SG",
+                    "root": str(root.resolve()),
+                },
+                "active_sources": [],
+                "sources": {
+                    source["id"]: {
+                        "cache": {
+                            parent_url: {
+                                "content_hash": parent_hash,
+                                "path": "files/parent.html",
+                                "mime_type": "text/html",
+                            },
+                            target_url: {
+                                "content_hash": target_hash,
+                                "path": "files/detail.html",
+                                "mime_type": "text/html",
+                            },
+                        }
+                    }
+                },
+            }
+        )
+    )
+
+    result = migration.migrate(old_path, new_pool_path, root, "SG")
+
+    proofs = result["expanded_html_document_paths"][source["id"]]
+    assert proofs[0]["url"] == target_url
+    assert proofs[0]["parent_url"] == parent_url
+    assert proofs[0]["content_sha256"] == target_hash
+    assert proofs[0]["parent_sha256"] == parent_hash
+
+
+def test_migration_accepts_asset_host_only_when_cached_approved_html_references_it(tmp_path):
+    old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    new_pool = copy.deepcopy(old_pool)
+    source = next(row for row in new_pool["sources"] if row["id"] == "sg-ccs-fair-trading")
+    next(row for row in old_pool["sources"] if row["id"] == source["id"]).pop("html_asset_hosts")
+    page_url = f"https://www.ccs.gov.sg{source['html_document_paths'][0]}"
+    body = (
+        b'<html><body><main><img src="https://isomer-user-content.by.gov.sg/images/example.png">'
+        b"</main></body></html>"
+    )
+    body_hash = hashlib.sha256(body).hexdigest()
+    root = tmp_path / "collector"
+    cached = root / "files" / "ccs.html"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(body)
+    events = root / "events" / "2026-10-24"
+    events.mkdir(parents=True)
+    (events / "1-content.json").write_text(
+        json.dumps(
+            {
+                "kind": "content_version",
+                "source_id": source["id"],
+                "url": page_url,
+                "content_hash": body_hash,
+                "path": "files/ccs.html",
+            }
+        )
+    )
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    root.mkdir(exist_ok=True)
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "binding": {"pool_sha256": old_hash, "country": "SG", "root": str(root.resolve())},
+                "active_sources": [],
+                "sources": {
+                    source["id"]: {
+                        "cache": {
+                            page_url: {
+                                "content_hash": body_hash,
+                                "path": "files/ccs.html",
+                                "mime_type": "text/html",
+                            }
+                        }
+                    }
+                },
+            }
+        )
+    )
+
+    result = migration.migrate(old_path, new_path, root, "SG")
+
+    proof = result["expanded_html_asset_hosts"][source["id"]][0]
+    assert proof["host"] == "isomer-user-content.by.gov.sg"
+    assert proof["page_url"] == page_url
+    assert proof["page_sha256"] == body_hash
+    assert proof["image_path"] == "/images/example.png"
+
+
+def test_migration_rejects_asset_host_without_cached_official_image_reference(tmp_path):
+    old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    new_pool = copy.deepcopy(old_pool)
+    source = next(row for row in new_pool["sources"] if row["id"] == "sg-ccs-fair-trading")
+    next(row for row in old_pool["sources"] if row["id"] == source["id"]).pop("html_asset_hosts")
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    root = tmp_path / "collector"
+    root.mkdir()
+    (root / "state.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="network/document scope"):
+        migration.migrate(old_path, new_path, root, "SG")
+
+
 def test_migration_records_new_unavailable_source_without_activating_it(tmp_path):
     new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     old_pool = copy.deepcopy(new_pool)

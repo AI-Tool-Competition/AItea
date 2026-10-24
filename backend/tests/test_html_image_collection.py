@@ -31,7 +31,7 @@ def service(tmp_path, monkeypatch):
     return service
 
 
-def document(service, *, owner="owner", level="primary", name="law", html=None):
+def document(service, *, owner="owner", level="primary", name="law", html=None, source_url=None):
     content = (
         html or '<main><nav><img src="logo.png"></nav><p>Keep records.</p><img src="/body.png"></main>'
     ).encode()
@@ -44,7 +44,7 @@ def document(service, *, owner="owner", level="primary", name="law", html=None):
                 blob,
                 name + ".html",
                 "text/html",
-                "https://example.org/" + name,
+                source_url or "https://example.org/" + name,
                 collection="country:SG",
                 level=level,
                 tags=[],
@@ -129,6 +129,159 @@ def test_body_images_use_protected_leases_then_existing_worker_and_resume_skips_
     assert (
         len(requests) == before and resumed["already_bound_images"] == 1 and not resumed["queue_processing"]
     )
+
+
+def test_official_html_assets_bind_inside_the_active_parse_lease_through_exact_proxy_host(
+    service, monkeypatch
+):
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    doc = document(
+        service,
+        owner=SYSTEM_OWNER_ID,
+        name="ccs-guidance",
+        source_url="https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/",
+        html=(
+            '<main><h1>Consumer guidance</h1><p>Visible image:</p>'
+            '<img src="https://isomer-user-content.by.gov.sg/images/price.png"></main>'
+        ),
+    )
+    with service.db.transaction() as conn:
+        conn.execute("CREATE TABLE official_source_imports(document_id TEXT,status TEXT)")
+        conn.execute(
+            "INSERT INTO official_source_imports VALUES(?,'stored')",
+            (doc["id"],),
+        )
+        service.collection.queue_processing(conn, doc["id"], SYSTEM_OWNER_ID)
+    claim = service.collection.claim_processing(owner_id=SYSTEM_OWNER_ID, document_ids=[doc["id"]])
+    assert claim and claim["document_id"] == doc["id"]
+
+    monkeypatch.setenv("COLLECTION_PROXY_URL", "http://127.0.0.1:8030")
+    monkeypatch.setenv(
+        "COLLECTION_PROXY_HOSTS", "www.ccs.gov.sg,isomer-user-content.by.gov.sg"
+    )
+    requests = []
+
+    def download(url, *, required_host, deadline, connection_slot, consume, max_bytes, **_options):
+        requests.append((url, required_host))
+        assert deadline > time.monotonic() and max_bytes == 8 * 1024 * 1024
+        with connection_slot(required_host):
+            blob = consume([image()])
+        return {
+            "url": url,
+            "blob": blob,
+            "mime_type": "image/png",
+            "response_status": 200,
+            "request_method": "GET",
+        }
+
+    monkeypatch.setattr(ingestion_download, "_download", download)
+    result = HtmlImageCollector(service).prepare(
+        SYSTEM_OWNER_ID,
+        doc["id"],
+        deadline=time.monotonic() + 60,
+        official_source=True,
+        active_claim=claim,
+        allowed_asset_hosts=["isomer-user-content.by.gov.sg"],
+    )
+
+    assert requests == [
+        (
+            "https://isomer-user-content.by.gov.sg/images/price.png",
+            "isomer-user-content.by.gov.sg",
+        )
+    ]
+    assert len(result["bound_images"]) == 1 and result["queue_processing"] is False
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0])
+        job = conn.execute(
+            "SELECT status,lease_token FROM processing_jobs WHERE document_id=?", (doc["id"],)
+        ).fetchone()
+        assert job["status"] == "processing" and job["lease_token"] == claim["lease_token"]
+    assert len(saved["html_source"]["linked_images"]) == 1
+
+
+def test_official_html_assets_fail_closed_without_configured_proxy(service, monkeypatch):
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    doc = document(
+        service,
+        owner=SYSTEM_OWNER_ID,
+        name="ccs-guidance-no-proxy",
+        source_url="https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/",
+        html=(
+            '<main><p>Guidance</p><img '
+            'src="https://isomer-user-content.by.gov.sg/images/price.png"></main>'
+        ),
+    )
+    with service.db.transaction() as conn:
+        conn.execute("CREATE TABLE official_source_imports(document_id TEXT,status TEXT)")
+        conn.execute("INSERT INTO official_source_imports VALUES(?,'stored')", (doc["id"],))
+        service.collection.queue_processing(conn, doc["id"], SYSTEM_OWNER_ID)
+    claim = service.collection.claim_processing(owner_id=SYSTEM_OWNER_ID, document_ids=[doc["id"]])
+    assert claim
+    monkeypatch.delenv("COLLECTION_PROXY_URL", raising=False)
+    monkeypatch.delenv("COLLECTION_PROXY_HOSTS", raising=False)
+    monkeypatch.setattr(
+        ingestion_download, "_download", lambda *_args, **_kwargs: pytest.fail("proxy-free image request")
+    )
+
+    result = HtmlImageCollector(service).prepare(
+        SYSTEM_OWNER_ID,
+        doc["id"],
+        deadline=time.monotonic() + 60,
+        official_source=True,
+        active_claim=claim,
+        allowed_asset_hosts=["isomer-user-content.by.gov.sg"],
+    )
+
+    assert result["errors"][0]["error_type"] == "ValueError"
+    assert not result["bound_images"]
+
+
+def test_official_source_parse_automatically_uses_its_approved_asset_hosts(service, monkeypatch):
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+    from app.contexts.documents.infrastructure.providers import vision
+    from app.contexts.ingestion.application import html_image_collection
+
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    doc = document(
+        service,
+        owner=SYSTEM_OWNER_ID,
+        name="ccs-guidance-auto-assets",
+        source_url="https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/",
+        html="<main><h1>Consumer guidance</h1><p>Text only in this test.</p></main>",
+    )
+    with service.db.transaction() as conn:
+        conn.execute(
+            "CREATE TABLE official_source_imports(document_id TEXT,status TEXT,source_id TEXT,country TEXT,updated_at TEXT,source_url TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO official_source_imports VALUES(?,'stored','sg-ccs-fair-trading','SG','2026-10-25',?)",
+            (doc["id"], "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/"),
+        )
+        service.collection.queue_processing(conn, doc["id"], SYSTEM_OWNER_ID)
+
+    observed = {}
+
+    def prepare(self, owner, identifier, **kwargs):
+        observed.update(owner=owner, document_id=identifier, **kwargs)
+        return {"bound_images": [], "errors": [], "model_calls": 0}
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    monkeypatch.setattr(html_image_collection.HtmlImageCollector, "prepare", prepare)
+    claim = service.collection.claim_processing(owner_id=SYSTEM_OWNER_ID, document_ids=[doc["id"]])
+    service.collection.process_item(claim)
+
+    assert observed["official_source"] is True
+    assert observed["owner"] == SYSTEM_OWNER_ID
+    assert observed["active_claim"]["lease_token"] == claim["lease_token"]
+    assert observed["allowed_asset_hosts"] == ["isomer-user-content.by.gov.sg"]
 
 
 def test_download_checkpoint_survives_stale_manifest_and_reuses_cas_without_new_http(service, monkeypatch):

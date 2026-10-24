@@ -51,6 +51,8 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert "id-bpk-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
+        if country == "SG":
+            assert "sg-ccs-fair-trading" in {source["id"] for source in active}
     archived_bpk = next(source for source in registry["sources"] if source["id"] == "id-bpk-regulations")
     assert archived_bpk["status"] == "archived"
     assert archived_bpk["verification"]["latest_probe"]["failure_code"] == "http_403"
@@ -60,6 +62,23 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     bpjph_catalogue = next(source for source in registry["sources"] if source["id"] == "id-bpjph-jdih-cari")
     assert bpjph_catalogue["url"] == "https://jdih.halal.go.id/cari"
     assert bpjph_catalogue["verification"]["latest_probe"]["document_candidates"] == 2
+    ccs = next(source for source in registry["sources"] if source["id"] == "sg-ccs-fair-trading")
+    assert ccs["url"] == "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/"
+    assert ccs["allowed_hosts"] == ["www.ccs.gov.sg"]
+    assert ccs["html_asset_hosts"] == ["isomer-user-content.by.gov.sg"]
+    assert len(ccs["html_document_paths"]) == 7
+    assert "/consumer-protection/fair-trading-practices/know-more-about-dark-patterns/" in ccs[
+        "html_document_paths"
+    ]
+    assert ccs["group_id"] == "sg-consumer-protection"
+    assert ccs["verification"]["checklist_items"] == ["SG-3.5"]
+    assert ccs["verification"]["server_status"] == "reachable_content"
+    assert any(
+        row["source_id"] == "sg-ccs-fair-trading"
+        and row["related_source_id"] == "sg-sfa-labelling"
+        and row["type"] == "complements"
+        for row in registry["source_relations"]
+    )
 
     inaccessible = deepcopy(registry)
     next(source for source in inaccessible["sources"] if source["status"] == "active")["verification"][
@@ -69,6 +88,22 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     rejected.write_text(json.dumps(inaccessible))
     with pytest.raises(ValueError, match="successful bounded content probe"):
         collection.source_pool(rejected, "ID")
+
+    traversal = deepcopy(registry)
+    next(source for source in traversal["sources"] if source["id"] == "sg-ccs-fair-trading")[
+        "html_document_paths"
+    ][0] = "/consumer-protection/%2e%2e%2funapproved/"
+    rejected.write_text(json.dumps(traversal))
+    with pytest.raises(ValueError, match="HTML document paths"):
+        collection.source_pool(rejected, "SG")
+
+    asset_host = deepcopy(registry)
+    next(source for source in asset_host["sources"] if source["id"] == "sg-ccs-fair-trading")[
+        "html_asset_hosts"
+    ] = ["unreviewed.example"]
+    rejected.write_text(json.dumps(asset_host))
+    with pytest.raises(ValueError, match="HTML asset hosts"):
+        collection.source_pool(rejected, "SG")
 
     archived_id = "id-setneg-perpu"
     next(source for source in registry["sources"] if source["id"] == archived_id)["status"] = "archived"
@@ -956,9 +991,9 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 19
+    assert len(configured) == 20
     originals = [row for row in configured if row["id"] != "id-setneg-perpu"]
-    assert len(originals) == 18
+    assert len(originals) == 19
     for item in originals:
         recipe = collection.recipe(item)
         assert "setneg_type" not in recipe

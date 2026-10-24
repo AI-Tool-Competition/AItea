@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime
+from urllib.parse import unquote, urlsplit
 
 SETNEG_ID = "id-setneg-perpu"
 SETNEG_URL = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0"
@@ -19,6 +20,70 @@ SERVER_STATUSES = {
     "http_410_resource_removed",
 }
 SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+
+
+def _validate_html_document_paths(source: dict) -> None:
+    """Bound explicitly approved HTML detail pages to exact path matches."""
+    if "html_document_paths" not in source:
+        return
+    paths = source["html_document_paths"]
+    if source.get("kind") != "guidance" or not isinstance(paths, list) or len(paths) > 32:
+        raise ValueError("HTML document paths are only valid as a bounded guidance scope")
+    seen = set()
+    for path in paths:
+        if (
+            not isinstance(path, str)
+            or not 2 <= len(path) <= 512
+            or not path.startswith("/")
+            or path.startswith("//")
+            or "\\" in path
+            or re.search(r"%(?![a-fA-F0-9]{2})", path)
+        ):
+            raise ValueError("HTML document paths must be exact absolute paths")
+        parsed = urlsplit(path)
+        decoded_path = unquote(parsed.path)
+        decoded_segments = decoded_path.split("/")
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+            or parsed.path != path
+            or "//" in path
+            or "//" in decoded_path
+            or "\\" in decoded_path
+            or "?" in decoded_path
+            or "#" in decoded_path
+            or any(segment in {".", ".."} for segment in decoded_segments)
+            or path in seen
+        ):
+            raise ValueError("HTML document paths must not contain URL components or traversal")
+        seen.add(path)
+
+
+def _validate_html_asset_hosts(source: dict, country: str, validate_url) -> None:
+    """Bound cross-host image assets to exact official government domains."""
+    if "html_asset_hosts" not in source:
+        return
+    hosts = source["html_asset_hosts"]
+    if source.get("kind") != "guidance" or not isinstance(hosts, list) or len(hosts) > 16:
+        raise ValueError("HTML asset hosts are only valid as a bounded guidance scope")
+    seen = set()
+    for host in hosts:
+        if not isinstance(host, str) or not host or len(host) > 253 or host in seen:
+            raise ValueError("HTML asset hosts must be unique exact official domains")
+        try:
+            normalized, parsed_host = validate_url(f"https://{host}/")
+        except (TypeError, ValueError) as error:
+            raise ValueError("HTML asset hosts must be exact public HTTPS domains") from error
+        if (
+            normalized != f"https://{host}/"
+            or parsed_host != host
+            or not official_host(host, country)
+            or host in source["allowed_hosts"]
+        ):
+            raise ValueError("HTML asset hosts must be separate exact government domains")
+        seen.add(host)
 
 
 def _validate_verification(source: dict, country: str, hosts: list[str], validate_url) -> None:
@@ -149,6 +214,8 @@ def validate_source_registry(
             )
         ):
             raise ValueError("Invalid official source scope or bounds")
+        _validate_html_document_paths(source)
+        _validate_html_asset_hosts(source, scope, validate_url)
         if protocol == "aitea-official-source-pool-v2":
             if source.get("status") not in {"active", "archived"} or source.get("transport") != "proxy":
                 raise ValueError("Every v2 source needs an explicit status and proxy transport")

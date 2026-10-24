@@ -691,10 +691,11 @@ class CollectionService:
                 AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
                 AND json_extract({metadata},'$.review_status')='draft'
                 AND json_extract({manifest},'$.parser')='html-basic'
-                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9')
-                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9')
-                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+','html-source-mapping-v8+','html-source-mapping-v9+'))
-                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9')
+                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9','10')
+                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+','html-source-mapping-v8+','html-source-mapping-v9+')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v10+')
+                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10')
                 AND json_extract({manifest},'$.source_hash')=d.content_hash
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""
@@ -712,6 +713,51 @@ class CollectionService:
             "storage_path": str(blob.path.relative_to(self.db.data_dir.resolve())),
             "mime_type": "image/png",
         }
+
+    def _official_html_asset_hosts(self, document):
+        """Return the current source-pool asset scope for an imported official HTML page."""
+        from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+        if document["owner_id"] != SYSTEM_OWNER_ID or document["mime_type"] != "text/html":
+            return None
+        with closing(self.db.connect()) as conn:
+            imported = conn.execute(
+                """SELECT source_id,country,source_url FROM official_source_imports
+                WHERE document_id=? AND status='stored' ORDER BY updated_at DESC LIMIT 1""",
+                (document["id"],),
+            ).fetchone()
+        if not imported:
+            return None
+        from app.configuration.paths import InstancePaths
+        from app.contexts.ingestion.application.source_catalog import active_sources
+        from app.shared.infrastructure.http.download import _validated_url
+
+        path = InstancePaths.resolve().source_pool
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError("官方图片处理无法读取受限来源清单。")
+        try:
+            pool = json.loads(path.read_text(encoding="utf-8"))
+            sources = active_sources(pool, imported["country"], _validated_url)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise ValueError("官方图片处理无法验证当前来源清单。") from error
+        source = next((row for row in sources if row["id"] == imported["source_id"]), None)
+        if source is None or source.get("kind") != "guidance":
+            return None
+        if not isinstance(document["source_url"], str) or not document["source_url"]:
+            return None
+        normalized, host = _validated_url(document["source_url"])
+        page = urlsplit(normalized)
+        root = urlsplit(source["url"])
+        approved_paths = {root.path or "/", *source.get("html_document_paths", [])}
+        if (
+            normalized != imported["source_url"]
+            or host not in source["allowed_hosts"]
+            or page.query
+            or page.fragment
+            or page.path not in approved_paths
+        ):
+            return None
+        return list(source.get("html_asset_hosts", []))
 
     def claim_processing(
         self,
@@ -1265,6 +1311,7 @@ class CollectionService:
             )
             stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
             stored_html_source = deepcopy(manifest.get("html_source"))
+            html_assets_remaining = False
 
             def preserve_import_origin(result):
                 # Keep stored source evidence and already mapped CAS paths when
@@ -1315,6 +1362,55 @@ class CollectionService:
                     manifest = preserve_import_origin(
                         parse_bounded(doc["filename"], content, doc["mime_type"])
                     )
+                    asset_hosts = self._official_html_asset_hosts(doc)
+                    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+                    if (
+                        manifest.get("parser") == "html-basic"
+                        and asset_hosts
+                        and claim["owner_id"] == SYSTEM_OWNER_ID
+                    ):
+                        from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
+
+                        if vision_ocr_configured():
+                            # Save the exact structural map before remote image
+                            # requests. The image collector updates this active
+                            # lease in place and never queues a competing job.
+                            with self.db.transaction() as conn:
+                                if not self._valid_claim(conn, claim, True):
+                                    raise RuntimeError("官方 HTML 处理租约已失效，停止图片采集。")
+                                conn.execute(
+                                    "UPDATE documents SET manifest=?,status='processing' WHERE id=?",
+                                    (dump(manifest), doc["id"]),
+                                )
+                            from app.contexts.ingestion.application.html_image_collection import (
+                                HtmlImageCollector,
+                            )
+
+                            prepared_html_images = HtmlImageCollector(self.service, max_requests=2).prepare(
+                                SYSTEM_OWNER_ID,
+                                doc["id"],
+                                deadline=time.monotonic() + 100,
+                                max_images=2,
+                                official_source=True,
+                                active_claim=claim,
+                                allowed_asset_hosts=asset_hosts,
+                            )
+                            html_assets_remaining = bool(
+                                prepared_html_images["remaining_eligible_images"]
+                                and (
+                                    prepared_html_images["bound_images"]
+                                    or prepared_html_images["already_bound_images"]
+                                )
+                            )
+                            with closing(self.db.connect()) as conn:
+                                saved = conn.execute(
+                                    "SELECT manifest FROM documents WHERE id=? AND owner_id=?",
+                                    (doc["id"], SYSTEM_OWNER_ID),
+                                ).fetchone()
+                            if not saved:
+                                raise ValueError("官方 HTML 图片处理后找不到原资料。")
+                            manifest = json.loads(saved["manifest"])
                     if manifest.get("parser") == "html-basic" and manifest.get("html_source", {}).get(
                         "linked_images"
                     ):
@@ -1325,13 +1421,23 @@ class CollectionService:
                             apply_asset_checkpoint,
                             ocr_native_assets_bounded,
                         )
+                        from app.contexts.documents.infrastructure.providers.vision import (
+                            vision_ocr_configured,
+                            vision_ocr_request_worker_limit,
+                        )
+
+                        html_ocr_batch = (
+                            min(20, vision_ocr_request_worker_limit())
+                            if asset_hosts and vision_ocr_configured()
+                            else 4
+                        )
 
                         image_contents = read_linked_images(
                             self.db.data_dir,
                             claim["owner_id"],
                             manifest,
                             pending_only=True,
-                            max_assets=4,
+                            max_assets=html_ocr_batch,
                         )
 
                         def checkpoint_asset(value):
@@ -1365,7 +1471,7 @@ class CollectionService:
                             manifest,
                             on_asset=checkpoint_asset,
                             on_image=store_rendered_image,
-                            max_assets=4,
+                            max_assets=html_ocr_batch,
                             image_contents=image_contents,
                         )
                 if (
@@ -1466,6 +1572,11 @@ class CollectionService:
                     # the recognizer is configured; otherwise keep the exact
                     # pending state visible instead of spinning forever.
                     needs_parse = needs_parse or (vision_ocr_configured() and bool(pending_assets(manifest)))
+                    # Official HTML sources can have more body images than a
+                    # single bounded acquisition lease. Keep advancing only
+                    # after at least one verified binding exists, so a failed
+                    # image download cannot create an unbounded retry loop.
+                    needs_parse = needs_parse or html_assets_remaining
                 deferred = needs_parse
                 index_delay = (
                     self.service.ragflow.retry_delay(conn, doc["id"], current_fingerprint)

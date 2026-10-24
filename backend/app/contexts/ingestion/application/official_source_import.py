@@ -155,6 +155,22 @@ class OfficialSourceImporter:
             if not isinstance(identifier, str) or not identifier or identifier in sources:
                 raise RuntimeError("official source identifiers are invalid")
             sources[identifier] = item
+        asset_hosts = {
+            host
+            for item in rows
+            if item.get("transport") == "proxy"
+            for host in item.get("html_asset_hosts", [])
+        }
+        if asset_hosts:
+            proxy_hosts = {
+                host.strip().lower()
+                for host in os.getenv("COLLECTION_PROXY_HOSTS", "").split(",")
+                if host.strip()
+            }
+            proxy_hosts.update(asset_hosts)
+            if len(proxy_hosts) > 64:
+                raise RuntimeError("official HTML asset proxy scope exceeds 64 exact hosts")
+            os.environ["COLLECTION_PROXY_HOSTS"] = ",".join(sorted(proxy_hosts))
         self.pool = pool
         self.sources = sources
 
@@ -301,6 +317,13 @@ class OfficialSourceImporter:
         matched = event.get("discovery_matched", discovery.get("matched"))
         if matched is True and purpose == "document":
             return True, None
+        if (
+            source["kind"] == "guidance"
+            and matched is True
+            and purpose == "detail"
+            and self._approved_html_detail(source, url)
+        ):
+            return True, None
         # Older receipts lack a stored discovery purpose. Recognize only direct,
         # typed document URLs; ambiguous HTML catalogue/detail pages stay raw.
         suffix = Path(parsed.path).suffix.lower()
@@ -335,7 +358,8 @@ class OfficialSourceImporter:
                     source_root,document_id,status,reason,created_at,updated_at
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(event_key) DO UPDATE SET status=excluded.status,reason=excluded.reason,
-                    mime_type=excluded.mime_type,updated_at=excluded.updated_at
+                    mime_type=excluded.mime_type,document_id=excluded.document_id,
+                    updated_at=excluded.updated_at
                 WHERE (official_source_imports.status='skipped'
                     AND official_source_imports.reason='catalogue_page_not_document')
                     OR (official_source_imports.status='blocked'
@@ -595,12 +619,22 @@ class OfficialSourceImporter:
                 retryable = {
                     row["event_key"]
                     for row in conn.execute(
-                        """SELECT event_key FROM official_source_imports
+                        """SELECT event_key,source_id,source_url,mime_type FROM official_source_imports
                         WHERE country=? AND status='skipped' AND reason='catalogue_page_not_document'
-                            AND discovery_purpose='detail'
-                            AND mime_type IN ('application/pdf','application/msword',
-                                'application/vnd.openxmlformats-officedocument.wordprocessingml.document')""",
+                            AND discovery_purpose='detail'""",
                         (country,),
+                    )
+                    if row["mime_type"] in {
+                        "application/pdf",
+                        "application/msword",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                    or (
+                        row["mime_type"] == "text/html"
+                        and (source := self.sources.get(row["source_id"])) is not None
+                        and source.get("country") == country
+                        and source.get("kind") == "guidance"
+                        and self._approved_html_detail(source, row["source_url"])
                     )
                 }
                 retryable.update(
@@ -692,3 +726,25 @@ class OfficialSourceImporter:
         if any(counts.values()):
             logger.info("official_source_import_cycle_finished", extra=counts)
         return counts
+
+    @staticmethod
+    def _approved_html_detail(source: dict, url: str | None) -> bool:
+        if not isinstance(url, str) or not isinstance(source.get("html_document_paths", []), list):
+            return False
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname in source.get("allowed_hosts", [])
+            and parsed.username is None
+            and parsed.password is None
+            and port in (None, 443)
+            and "?" not in url
+            and "#" not in url
+            and not parsed.query
+            and not parsed.fragment
+            and parsed.path in source.get("html_document_paths", [])
+        )

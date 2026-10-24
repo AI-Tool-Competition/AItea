@@ -66,12 +66,29 @@ class HtmlImageCollector:
             self.state = candidate
             self.checkpoint(deepcopy(self.state))
 
-    def _snapshot(self, owner, document, *, allow_processing=False):
+    def _snapshot(
+        self, owner, document, *, allow_processing=False, official_source=False, active_claim=None
+    ):
         with closing(self.service.db.connect()) as conn:
             row = dict(self.service.own_document(conn, owner, document))
             enriched = self.service.document_dict(row, conn=conn)
-            if row["role"] != "primary" or enriched["metadata"].get("review_status") != "draft":
+            if official_source:
+                from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+                imported = conn.execute(
+                    "SELECT 1 FROM official_source_imports WHERE document_id=? AND status='stored' LIMIT 1",
+                    (document,),
+                ).fetchone()
+                if owner != SYSTEM_OWNER_ID or row["role"] != "primary" or not imported:
+                    raise ValueError("官方图片采集只允许已入库的系统主资料。")
+            elif row["role"] != "primary" or enriched["metadata"].get("review_status") != "draft":
                 raise ValueError("网页图片采集只允许账号内未审核的主资料，不处理普通附件。")
+            if active_claim is not None and (
+                active_claim.get("owner_id") != owner
+                or active_claim.get("document_id") != document
+                or not self.service.collection._valid_claim(conn, active_claim, True)
+            ):
+                raise ValueError("官方图片采集处理租约已失效。")
             if (
                 not allow_processing
                 and conn.execute(
@@ -87,10 +104,12 @@ class HtmlImageCollector:
                     (document, owner),
                 )
             ]
+            if official_source:
+                aliases = [row["source_url"]] if row["source_url"] else []
         manifest = json.loads(row["manifest"])
         if (
             manifest.get("parser") != "html-basic"
-            or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9"}
+            or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9", "10"}
             or not row["source_url"]
         ):
             raise ValueError("需要有实际来源网址的当前 HTML 原件映射。")
@@ -160,10 +179,19 @@ class HtmlImageCollector:
                     del self.state["images"][key]
                 self.checkpoint(deepcopy(self.state))
 
-    def _image(self, owner, row, source_url, obj, deadline):
+    def _image(self, owner, row, source_url, obj, deadline, *, allowed_hosts=None):
         from app.shared.infrastructure.http import download as ingestion_download
 
         request = resolved_url(source_url, obj["url_attributes"][0]["decoded_value"])
+        required_host = None
+        if allowed_hosts is not None:
+            required_host = ingestion_download._validated_url(request)[1]
+            if required_host not in allowed_hosts:
+                raise ValueError("HTML 图片不属于来源清单批准的精确主机。")
+            from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host
+
+            if proxy_for_host(required_host) is None:
+                raise ValueError("官方 HTML 图片主机未配置项目采集代理。")
         identity = {
             "owner_id": owner,
             "document_id": row["id"],
@@ -216,6 +244,7 @@ class HtmlImageCollector:
             fetched = ingestion_download._download(
                 request,
                 deadline=request_deadline,
+                required_host=required_host,
                 max_bytes=MAX_IMAGE_BYTES,
                 consume=lambda chunks: self.service.archive.blobs.put(owner, chunks),
                 connection_slot=lambda host: self.service.collection.network_slot(host, request_deadline),
@@ -275,12 +304,63 @@ class HtmlImageCollector:
         self._save(key, receipt)
         return {**receipt, "reused_transfer": False}
 
-    def prepare(self, owner, document, *, deadline, max_images=4):
+    def prepare(
+        self,
+        owner,
+        document,
+        *,
+        deadline,
+        max_images=4,
+        official_source=False,
+        active_claim=None,
+        allowed_asset_hosts=None,
+    ):
         if type(max_images) is not int or not 1 <= max_images <= 20:
             raise ValueError("每份网页一次采集一至二十张正文图。")
+        if active_claim is not None and not official_source:
+            raise ValueError("活动处理租约只能用于受限的官方来源图片采集。")
+        if allowed_asset_hosts is not None and (
+            not isinstance(allowed_asset_hosts, (list, tuple, set, frozenset))
+            or len(allowed_asset_hosts) > 16
+            or any(not isinstance(host, str) or not host for host in allowed_asset_hosts)
+        ):
+            raise ValueError("官方 HTML 图片主机清单无效。")
         if time.monotonic() >= deadline:
             raise ValueError("网页图片采集预算已耗尽。")
-        row, enriched, manifest, raw, source_url, aliases = self._snapshot(owner, document)
+        row, enriched, manifest, raw, source_url, aliases = self._snapshot(
+            owner,
+            document,
+            allow_processing=active_claim is not None,
+            official_source=official_source,
+            active_claim=active_claim,
+        )
+        approved_hosts = None
+        if allowed_asset_hosts is not None:
+            from app.shared.infrastructure.http.download import _validated_url
+
+            approved_hosts = set()
+            parent_host = _validated_url(source_url)[1]
+            for host in allowed_asset_hosts:
+                normalized, parsed_host = _validated_url(f"https://{host}/")
+                if (
+                    normalized != f"https://{host}/"
+                    or parsed_host != host
+                    or not host.endswith((".gov.sg", ".go.id"))
+                    or host == parent_host
+                ):
+                    raise ValueError("官方 HTML 图片主机必须是与正文主机分离的精确政府域名。")
+                approved_hosts.add(parsed_host)
+            approved_hosts.add(parent_host)
+            if allowed_asset_hosts and os.getenv("COLLECTION_PROXY_URL"):
+                proxy_hosts = {
+                    host.strip().lower()
+                    for host in os.getenv("COLLECTION_PROXY_HOSTS", "").split(",")
+                    if host.strip()
+                }
+                proxy_hosts.update(allowed_asset_hosts)
+                if len(proxy_hosts) > 64:
+                    raise ValueError("官方 HTML 图片代理范围超过 64 个精确主机。")
+                os.environ["COLLECTION_PROXY_HOSTS"] = ",".join(sorted(proxy_hosts))
         candidates = image_candidates_bounded(raw, manifest)
         bound = linked_image_references(
             manifest,
@@ -293,14 +373,37 @@ class HtmlImageCollector:
                 read_image_blob(self.service.db.data_dir, owner, value["download_receipt_blob"])
         self._prune_bound_receipts(bound, owner, document)
         existing = {value["object_key"] for value in manifest.get("html_source", {}).get("linked_images", [])}
-        selected = [obj for obj in candidates["eligible"] if obj["object_key"] not in existing][:max_images]
-        results, errors = [], []
+        eligible = [obj for obj in candidates["eligible"] if obj["object_key"] not in existing]
+        errors = []
+        if approved_hosts is not None:
+            from app.shared.infrastructure.http.download import _validated_url
+
+            permitted = []
+            for obj in eligible:
+                request = resolved_url(source_url, obj["url_attributes"][0]["decoded_value"])
+                host = _validated_url(request)[1]
+                if host in approved_hosts:
+                    permitted.append(obj)
+                else:
+                    errors.append({"object_key": obj["object_key"], "error_type": "HostNotApproved"})
+            eligible = permitted
+        selected = eligible[:max_images]
+        results = []
         if selected:
             with ThreadPoolExecutor(
                 max_workers=min(2, len(selected)), thread_name_prefix="html-image-download"
             ) as pool:
                 futures = [
-                    pool.submit(self._image, owner, row, source_url, obj, deadline) for obj in selected
+                    pool.submit(
+                        self._image,
+                        owner,
+                        row,
+                        source_url,
+                        obj,
+                        deadline,
+                        allowed_hosts=approved_hosts,
+                    )
+                    for obj in selected
                 ]
                 for obj, future in zip(selected, futures, strict=True):
                     try:
@@ -348,6 +451,9 @@ class HtmlImageCollector:
             )
         if bindings:
             with self.service.db.transaction() as conn:
+                if active_claim is not None:
+                    if not self.service.collection._valid_claim(conn, active_claim, True):
+                        raise ValueError("图片下载期间官方处理租约已变化；原图片检查点已保留。")
                 current = dict(self.service.own_document(conn, owner, document))
                 current_enriched = self.service.document_dict(current, conn=conn)
                 if (
@@ -357,22 +463,29 @@ class HtmlImageCollector:
                     )
                     or current_enriched["metadata_revision"] != enriched["metadata_revision"]
                     or current_enriched["classifications"] != enriched["classifications"]
-                    or current_enriched["metadata"].get("review_status") != "draft"
-                    or conn.execute(
-                        "SELECT 1 FROM processing_jobs WHERE document_id=? AND status IN ('queued','processing')",
-                        (document,),
-                    ).fetchone()
+                    or (
+                        not official_source
+                        and current_enriched["metadata"].get("review_status") != "draft"
+                    )
+                    or (
+                        active_claim is None
+                        and conn.execute(
+                            "SELECT 1 FROM processing_jobs WHERE document_id=? AND status IN ('queued','processing')",
+                            (document,),
+                        ).fetchone()
+                    )
                 ):
                     raise ValueError("图片下载期间文档或任务已变化；原图片检查点已保留，未覆盖当前正文。")
                 conn.execute(
                     "UPDATE documents SET manifest=?,status='processing' WHERE id=? AND owner_id=?",
                     (dump(updated), document, owner),
                 )
-                self.service.collection.queue_processing(conn, document, owner)
-                conn.execute(
-                    "UPDATE processing_jobs SET phase='parse' WHERE document_id=? AND owner_id=? AND status='queued'",
-                    (document, owner),
-                )
+                if active_claim is None:
+                    self.service.collection.queue_processing(conn, document, owner)
+                    conn.execute(
+                        "UPDATE processing_jobs SET phase='parse' WHERE document_id=? AND owner_id=? AND status='queued'",
+                        (document, owner),
+                    )
             self._prune_bound_receipts(updated["html_source"]["linked_images"], owner, document)
         remaining = len(candidates["eligible"]) - len(existing) - len(bindings)
         return {
@@ -385,6 +498,6 @@ class HtmlImageCollector:
             "unresolved_objects": candidates["unresolved"],
             "errors": errors,
             "model_calls": 0,
-            "queue_processing": bool(bindings),
+            "queue_processing": bool(bindings) and active_claim is None,
             "formal_rag_enabled": False,
         }

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from app.shared.infrastructure.vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v9"
+VERSION = "html-source-mapping-v10"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -72,8 +72,15 @@ def _youtube_id(url):
     return match[1] if match else None
 
 
-def _decorative_ui_image(tag, references, metadata, parent_classes):
+def _decorative_ui_image(tag, references, metadata, parent_classes, parent_frames=()):
     """Recognize only explicit SVG icon labels, never infer from image appearance."""
+    if tag == "svg" and not references:
+        for ancestor in reversed(parent_frames):
+            if ancestor.get("tag") == "button" and ancestor.get("aria_label", "").casefold() in {
+                "previous image",
+                "next image",
+            }:
+                return "svg_image_carousel_navigation_control"
     if tag != "img" or len(references) != 1 or references[0].get("attribute") != "src":
         return None
     label = str(metadata.get("alt", "")).strip().casefold()
@@ -929,6 +936,7 @@ class HTMLDocument(HTMLParser):
         frame = {
             "tag": tag,
             "classes": str(values.get("class", ""))[:4096].split()[:32],
+            "aria_label": str(values.get("aria-label", ""))[:256].strip().casefold(),
             "hidden": hidden,
             "main": in_main,
             "path": path,
@@ -1041,7 +1049,7 @@ class HTMLDocument(HTMLParser):
             parent_classes = {
                 class_name for ancestor in self._stack for class_name in ancestor.get("classes", [])
             }
-            exclusion_reason = _decorative_ui_image(tag, references, metadata, parent_classes)
+            exclusion_reason = _decorative_ui_image(tag, references, metadata, parent_classes, self._stack)
             if exclusion_reason:
                 record["visual_role"] = "decorative_ui"
                 record["visual_exclusion_reason"] = exclusion_reason
@@ -1276,7 +1284,7 @@ class HTMLDocument(HTMLParser):
         }
         return HTMLParsedDocument(
             "html-basic",
-            "9",
+            "10",
             VERSION,
             self.elements,
             [],

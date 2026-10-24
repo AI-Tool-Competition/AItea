@@ -300,7 +300,7 @@ def model_free_environment(project, task, token):
                 host
                 for source in pool.get("sources", [])
                 if source.get("status") == "active" and source.get("transport") == "proxy"
-                for host in source.get("allowed_hosts", [])
+                for host in (*source.get("allowed_hosts", []), *source.get("html_asset_hosts", []))
             }
             if len(proxy_hosts) > 64:
                 raise ValueError("Active collection proxy host scope exceeds 64 exact hosts")

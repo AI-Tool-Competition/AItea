@@ -187,7 +187,7 @@ def test_unknown_second_object_keeps_fulltext_gate_even_after_actual_image_succe
     assert result["quality"]["pending_objects"] == ["html-object-000002"]
 
 
-def test_partial_vision_and_multiframe_sources_are_never_complete(tmp_path, enabled, monkeypatch):
+def test_partial_vision_stays_incomplete_and_every_html_gif_frame_is_mapped(tmp_path, enabled, monkeypatch):
     body, manifest, raw = binding(tmp_path)
     key = native.assets(manifest)[0]["asset_key"]
     monkeypatch.setattr(vision, "transcribe_image", lambda *_: transcript(uncertain=True))
@@ -196,9 +196,19 @@ def test_partial_vision_and_multiframe_sources_are_never_complete(tmp_path, enab
     other = tmp_path / "multiframe"
     body, manifest, raw = binding(other, raw=raster(multi=True))
     key = native.assets(manifest)[0]["asset_key"]
-    monkeypatch.setattr(vision, "transcribe_image", lambda *_: pytest.fail("Unmapped second frame was sent"))
+
+    def recognize(rendered):
+        assert rendered["frame_count"] == 2
+        assert rendered["frame_basis"] == "all_unique_gif_frames_contact_sheet_v1"
+        assert [frame["frame_numbers"] for frame in rendered["frame_map"]] == [[1], [2]]
+        return transcript()
+
+    monkeypatch.setattr(vision, "transcribe_image", recognize)
     result = native.ocr_native_assets_bounded(body, manifest, image_contents={key: raw})
-    assert native.assets(result)[0]["asset_status"] == "ocr_failed" and not text_complete(result)
+    asset = native.assets(result)[0]
+    assert asset["asset_status"] == "ocr_complete" and text_complete(result)
+    assert asset["ocr"]["frame_count"] == 2
+    assert [frame["frame_numbers"] for frame in asset["ocr"]["frame_map"]] == [[1], [2]]
 
 
 def test_explicit_native_asset_retry_preserves_previous_transcript(tmp_path, enabled, monkeypatch):

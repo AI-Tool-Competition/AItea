@@ -556,6 +556,63 @@
       "group_id": "sg-digital-brand"
     },
     {
+      "id": "sg-ccs-fair-trading",
+      "country": "SG",
+      "topics": [
+        "consumer_protection",
+        "fair_trading",
+        "price_transparency",
+        "marketing"
+      ],
+      "title": "新加坡竞争与消费者委员会公平交易指引",
+      "url": "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/",
+      "priority": 89,
+      "kind": "guidance",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.ccs.gov.sg"
+      ],
+      "html_asset_hosts": [
+        "isomer-user-content.by.gov.sg"
+      ],
+      "html_document_paths": [
+        "/consumer-protection/fair-trading-practices/about-fair-trading-practices/",
+        "/consumer-protection/fair-trading-practices/know-more-about-dark-patterns/",
+        "/consumer-protection/legislation-and-guidelines/consumer-protection--fair-trading--act-guidelines/",
+        "/consumer-protection/legislation-and-guidelines/fair-trading-practices-for-beauty-industry/",
+        "/consumer-protection/legislation-and-guidelines/fair-trading-practices-for-the-renovation-industry/",
+        "/consumer-protection/legislation-and-guidelines/guidelines-on-price-transparency/",
+        "/consumer-protection/legislation-and-guidelines/overview-of-the-consumer-protection--fair-trading--act/"
+      ],
+      "discovery_keywords": [
+        "consumer protection",
+        "fair trading",
+        "unfair practice",
+        "price transparency",
+        "dark patterns"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/",
+        "checked_at": "2026-10-24T15:57:04+00:00",
+        "official_identity": "新加坡政府机构 Competition and Consumer Commission of Singapore（CCS）官方网站。",
+        "business_use": "补充商品销售公平交易、误导性宣传、价格透明和暗黑模式指引，对应 SG-3.5；指引不替代 Consumer Protection (Fair Trading) Act 正文。",
+        "checklist_items": [
+          "SG-3.5"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-source-validation-20261024-ccs-1792857419275869076/SG/events/2026-10-24/1792857424682364994-5d9ff8d3328c43fb8b8cbe00966c6f59.json",
+        "server_receipt_sha256": "f9d5adcca1f65110ab817e80988205a0bca631bf8efab2c2b39537e3fba83d42",
+        "body_sha256": "afaee45d26e577e05bd1b0b5f6fafbdb43a150647cd9aa251852a4a9470c3a4f",
+        "limitations": [
+          "旧 cccs.gov.sg 入口会跨主机跳转；配置使用项目代理实际通过的规范地址，不扩大既有来源的主机范围。",
+          "页面正文标注内容更新于 2025-09-26，页脚标注网站更新于 2026-10-23；保留轮询和不可变版本记录。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-consumer-protection"
+    },
+    {
       "id": "id-kemenkeu-www-regulations",
       "country": "ID",
       "topics": [
@@ -1090,6 +1147,19 @@
             "sg-ipos-trademark-guides"
           ],
           "children": []
+        },
+        {
+          "id": "sg-consumer-protection",
+          "country": "SG",
+          "title": "消费者公平交易与销售宣传",
+          "parent_id": "sg",
+          "checklist_items": [
+            "SG-3.5"
+          ],
+          "source_ids": [
+            "sg-ccs-fair-trading"
+          ],
+          "children": []
         }
       ]
     }
@@ -1206,6 +1276,16 @@
         "ID-1.6"
       ],
       "reason": "BPK 全国目录不可经当前采集代理读取；Setneg 是部分中央法规的官方补充入口，不代表 BPK 原有全国及地方覆盖。"
+    },
+    {
+      "source_id": "sg-ccs-fair-trading",
+      "related_source_id": "sg-sfa-labelling",
+      "type": "complements",
+      "checklist_items": [
+        "SG-3.2",
+        "SG-3.5"
+      ],
+      "reason": "食品标签和产品声称由 SFA 指引，公平交易、误导宣传与价格透明由 CCS 指引补充；按具体义务并列核对。"
     }
   ]
 }

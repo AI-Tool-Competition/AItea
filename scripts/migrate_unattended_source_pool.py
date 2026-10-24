@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -25,6 +25,7 @@ from unattended_collection import source_pool  # noqa: E402
 
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 _MAX_RECEIPT_BYTES = 64 * 1024
+_MAX_CACHED_HTML_BYTES = 8 * 1024 * 1024
 
 
 def digest(path: Path) -> str:
@@ -177,6 +178,221 @@ def _verified_host_expansion(source: dict, added_hosts: set[str], root: Path) ->
     return sorted(proven)
 
 
+def _verified_content_event(root: Path, source_id: str, url: str, body_hash: str, path: str) -> str:
+    events = root / "events"
+    if events.is_symlink() or not events.is_dir():
+        raise ValueError("Cached official HTML is missing its immutable content event")
+    for day in sorted(events.iterdir()):
+        if day.is_symlink() or not day.is_dir():
+            continue
+        for candidate in day.glob("*.json"):
+            try:
+                info = candidate.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_RECEIPT_BYTES:
+                    continue
+                event = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(event, dict)
+                and event.get("kind") == "content_version"
+                and event.get("source_id") == source_id
+                and event.get("url") == url
+                and event.get("content_hash") == body_hash
+                and event.get("path") == path
+            ):
+                return candidate.relative_to(root).as_posix()
+    raise ValueError("Cached official HTML is missing its matching content event")
+
+
+def _cached_html(root: Path, source_id: str, cache: dict, url: str) -> tuple[bytes, str, str]:
+    """Read one source-bound cached HTML response without following symlinks."""
+    entry = cache.get(url)
+    if not isinstance(entry, dict) or entry.get("mime_type") != "text/html":
+        raise ValueError("HTML path expansion requires cached official HTML evidence")
+    body_hash = entry.get("content_hash")
+    relative = Path(entry.get("path", ""))
+    if (
+        not isinstance(body_hash, str)
+        or not _SHA256.fullmatch(body_hash)
+        or relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+    ):
+        raise ValueError("Invalid cached official HTML evidence")
+    candidate = root
+    try:
+        for part in relative.parts:
+            candidate = candidate / part
+            info = candidate.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("Cached official HTML cannot traverse symlinks")
+        info = candidate.lstat()
+        if not stat.S_ISREG(info.st_mode) or not 1 <= info.st_size <= _MAX_CACHED_HTML_BYTES:
+            raise ValueError("Cached official HTML is not a bounded regular file")
+        body = candidate.read_bytes()
+    except OSError as error:
+        raise ValueError("Cached official HTML is unavailable") from error
+    if hashlib.sha256(body).hexdigest() != body_hash:
+        raise ValueError("Cached official HTML checksum does not match")
+    event_path = _verified_content_event(root, source_id, url, body_hash, entry["path"])
+    return body, body_hash, event_path
+
+
+def _verified_html_path_expansion(source: dict, added_paths: set[str], root: Path) -> list[dict]:
+    """Require each new exact HTML path to be linked by cached same-host HTML."""
+    root_url = urlsplit(source["url"])
+    host = root_url.hostname
+    if root_url.scheme != "https" or host not in source.get("allowed_hosts", []):
+        raise ValueError("HTML path expansion must stay on the reviewed HTTPS host")
+    state_path = root / "state.json"
+    info = state_path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024 * 1024:
+        raise ValueError("Invalid collector state for HTML path expansion")
+    state = load(state_path)
+    source_state = state.get("sources", {}).get(source["id"], {})
+    cache = source_state.get("cache", {})
+    if not isinstance(cache, dict):
+        raise TypeError("HTML path expansion needs the source's cached pages")
+    proofs = []
+
+    class Anchors(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.hrefs = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag.casefold() == "a":
+                href = dict(attrs).get("href")
+                if isinstance(href, str) and len(href) <= 2048:
+                    self.hrefs.append(href)
+
+    for path in sorted(added_paths):
+        target_url = f"https://{host}{path}"
+        if target_url not in cache:
+            raise ValueError("New HTML document path has no successful cached source page")
+        _, target_hash, target_event = _cached_html(root, source["id"], cache, target_url)
+        proof = None
+        for parent_url, parent_entry in cache.items():
+            if not isinstance(parent_entry, dict) or parent_entry.get("mime_type") != "text/html":
+                continue
+            try:
+                parent = urlsplit(parent_url)
+            except (TypeError, ValueError):
+                continue
+            if parent.scheme != "https" or parent.hostname != host:
+                continue
+            body, parent_hash, parent_event = _cached_html(root, source["id"], cache, parent_url)
+            anchors = Anchors()
+            anchors.feed(body.decode("utf-8-sig"))
+            anchors.close()
+            linked = False
+            for href in anchors.hrefs:
+                try:
+                    resolved = urljoin(parent_url, href)
+                    parsed = urlsplit(resolved)
+                    port = parsed.port
+                except ValueError:
+                    continue
+                if (
+                    parsed.scheme == "https"
+                    and parsed.hostname == host
+                    and parsed.username is None
+                    and parsed.password is None
+                    and port in (None, 443)
+                    and not parsed.query
+                    and not parsed.fragment
+                    and "?" not in resolved
+                    and "#" not in resolved
+                    and parsed.path == path
+                ):
+                    linked = True
+                    break
+            if linked:
+                proof = {
+                    "url": target_url,
+                    "content_sha256": target_hash,
+                    "event": target_event,
+                    "parent_url": parent_url,
+                    "parent_sha256": parent_hash,
+                    "parent_event": parent_event,
+                }
+                break
+        if proof is None:
+            raise ValueError("New HTML document path is not linked by cached official HTML")
+        proofs.append(proof)
+    return proofs
+
+
+def _verified_html_asset_host_expansion(source: dict, added_hosts: set[str], root: Path) -> list[dict]:
+    """Require exact approved cached HTML pages to reference each added asset host."""
+    if not added_hosts:
+        return []
+    from app.contexts.documents.infrastructure.parsers.document_parser import parse_bounded
+    from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import (
+        image_candidates_bounded,
+        resolved_url,
+    )
+    from app.shared.infrastructure.http.download import _validated_url
+
+    root_url = urlsplit(source["url"])
+    source_host = root_url.hostname
+    if root_url.scheme != "https" or source_host not in source.get("allowed_hosts", []):
+        raise ValueError("HTML asset expansion must retain the reviewed HTTPS source host")
+    state_path = root / "state.json"
+    info = state_path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024 * 1024:
+        raise ValueError("Invalid collector state for HTML asset expansion")
+    state = load(state_path)
+    cache = state.get("sources", {}).get(source["id"], {}).get("cache", {})
+    if not isinstance(cache, dict):
+        raise TypeError("HTML asset expansion needs cached official pages")
+
+    paths = set(source.get("html_document_paths", []))
+    if not paths:
+        raise ValueError("HTML asset expansion needs exact approved detail pages")
+    proofs = []
+    for host in sorted(added_hosts):
+        host_proof = None
+        for path in sorted(paths):
+            page_url = f"https://{source_host}{path}"
+            if page_url not in cache:
+                continue
+            body, body_hash, event = _cached_html(root, source["id"], cache, page_url)
+            try:
+                manifest = parse_bounded(Path(urlsplit(page_url).path).name or "source.html", body, "text/html")
+                candidates = image_candidates_bounded(body, manifest)
+            except (UnicodeDecodeError, ValueError) as error:
+                raise ValueError("Cached official HTML cannot prove a precise image reference") from error
+            for image in candidates["eligible"]:
+                literal = image["url_attributes"][0]["decoded_value"]
+                try:
+                    normalized, image_host = _validated_url(resolved_url(page_url, literal))
+                    parsed = urlsplit(normalized)
+                except ValueError:
+                    continue
+                if (
+                    image_host == host
+                    and not parsed.query
+                    and not parsed.fragment
+                    and parsed.path.casefold().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+                ):
+                    host_proof = {
+                        "host": host,
+                        "page_url": page_url,
+                        "page_sha256": body_hash,
+                        "page_event": event,
+                        "image_path": parsed.path,
+                    }
+                    break
+            if host_proof:
+                break
+        if host_proof is None:
+            raise ValueError("No cached approved official page references the added image host")
+        proofs.append(host_proof)
+    return proofs
+
+
 def _has_reload_transition(root: Path, old_hash: str, new_hash: str) -> bool:
     """Recognize a recent legacy hot reload so its scope can be audited safely."""
     cutoff = time.time() - 30 * 86400
@@ -228,6 +444,8 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
         if prior.get("status") == "active" and new_sources[source_id].get("status") == "archived"
     )
     expanded_source_hosts = {}
+    expanded_html_document_paths = {}
+    expanded_html_asset_hosts = {}
     for source_id in added_source_ids:
         source = new_sources[source_id]
         verification_status = source.get("verification", {}).get("server_status")
@@ -255,6 +473,34 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             "checklist_items", []
         ) != updated.get("verification", {}).get("checklist_items", []):
             raise ValueError("Pool migration cannot change a source's reviewed network/document scope")
+        prior_paths = set(prior.get("html_document_paths", []))
+        updated_paths = set(updated.get("html_document_paths", []))
+        if not prior_paths <= updated_paths:
+            raise ValueError("Pool migration cannot remove a source's approved HTML document paths")
+        added_paths = updated_paths - prior_paths
+        if added_paths:
+            try:
+                expanded_html_document_paths[source_id] = _verified_html_path_expansion(
+                    updated, added_paths, root
+                )
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "Pool migration cannot change a source's reviewed network/document scope"
+                ) from error
+        prior_asset_hosts = set(prior.get("html_asset_hosts", []))
+        updated_asset_hosts = set(updated.get("html_asset_hosts", []))
+        if not prior_asset_hosts <= updated_asset_hosts:
+            raise ValueError("Pool migration cannot remove an approved HTML asset host")
+        added_asset_hosts = updated_asset_hosts - prior_asset_hosts
+        if added_asset_hosts:
+            try:
+                expanded_html_asset_hosts[source_id] = _verified_html_asset_host_expansion(
+                    updated, added_asset_hosts, root
+                )
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "Pool migration cannot change a source's reviewed network/document scope"
+                ) from error
         prior_hosts = set(prior.get("allowed_hosts", []))
         updated_hosts = set(updated.get("allowed_hosts", []))
         if not prior_hosts <= updated_hosts:
@@ -291,6 +537,8 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             "added_source_ids": added_source_ids,
             "archived_source_ids": archived_source_ids,
             "expanded_source_hosts": expanded_source_hosts,
+            "expanded_html_document_paths": expanded_html_document_paths,
+            "expanded_html_asset_hosts": expanded_html_asset_hosts,
             "binding_reconciled": already_reloaded,
             "prior_state_sha256": hashlib.sha256(
                 json.dumps(original, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
@@ -324,6 +572,8 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
         "added_source_ids": added_source_ids,
         "archived_source_ids": archived_source_ids,
         "expanded_source_hosts": expanded_source_hosts,
+        "expanded_html_document_paths": expanded_html_document_paths,
+        "expanded_html_asset_hosts": expanded_html_asset_hosts,
         "binding_reconciled": already_reloaded,
     }
 

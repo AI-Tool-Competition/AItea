@@ -42,6 +42,10 @@ def isolated_providers(monkeypatch):
     monkeypatch.setenv("TEA_PROCESS_WORKERS", "2")
     monkeypatch.setenv("TEA_PARSE_WORKERS", "2")
     monkeypatch.setenv("TEA_EMBED_WORKERS", "2")
+    # Collection transport tests use local mock servers and set proxy policy
+    # explicitly; never inherit a developer's real source allowlist.
+    for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"):
+        monkeypatch.setenv(key, "")
     from app.contexts.documents.infrastructure.parsers import document_parser as parsing
 
     monkeypatch.setattr(

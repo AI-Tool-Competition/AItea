@@ -66,6 +66,8 @@ class SourceCatalog:
                 "kind",
                 "topics",
                 "discovery_keywords",
+                "html_document_paths",
+                "html_asset_hosts",
                 "setneg_type",
             )
             for source_id, before in previous.items():

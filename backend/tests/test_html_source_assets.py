@@ -14,8 +14,8 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
     url = "https://isomer-user-content.by.gov.sg/174/420282d6-4bf3-4200-ac0b-0f9f4ee31d99/how-to-import-ur-goods.jpg"
     body = f'<html><nav><img src="site-logo.png"></nav><main id="main-content"><nav><svg><path/></svg></nav><h1>Import Operations Overview</h1><p>Import pathways from a Free Trade Zone.</p><img src="{url}" alt="A flowchart illustrating import pathways." width="100%" height="auto"></main></html>'.encode()
     result = parse_file("customs.html", body, "text/html")
-    assert result["parser"] == "html-basic" and result["parser_version"] == "9"
-    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v9"
+    assert result["parser"] == "html-basic" and result["parser_version"] == "10"
+    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v10"
     assert result["html_source"]["source_hash"] == digest(body)
     assert not result["quality"]["complete"]
     objects = result["html_source"]["objects"]
@@ -39,7 +39,7 @@ def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_
     </main>"""
     result = parse_file("sfa.html", body, "text/html")
 
-    assert result["parser_version"] == "9"
+    assert result["parser_version"] == "10"
     assert result["quality"]["complete"] is True
     assert result["quality"]["pending_objects"] == []
     assert result["quality"]["decorative_ui_object_keys"] == [
@@ -83,6 +83,32 @@ def test_caution_icon_without_matching_container_remains_pending():
     body = b"""<main><h1>Food label changes</h1><p>Review the cited notice.</p>
     <img src="/assets/images/icons/icon-info-circle.svg" alt="Icon Caution"></main>"""
     result = parse_file("sfa.html", body, "text/html")
+
+    assert result["html_source"]["objects"][0].get("visual_role") is None
+    assert result["quality"]["pending_objects"] == ["html-object-000001"]
+    assert result["quality"]["complete"] is False
+
+
+@pytest.mark.parametrize("label", ["Previous image", "Next image"])
+def test_explicit_carousel_button_svg_controls_do_not_block_text_completeness(label):
+    body = f'''<main><h1>Review warning signs</h1><p>Check the contract carefully.</p>
+    <button aria-label="{label}"><svg viewBox="0 0 16 16"><path d="M1 8h14"/></svg></button>
+    </main>'''.encode()
+    result = parse_file("ccs.html", body, "text/html")
+
+    assert result["html_source"]["objects"][0]["tag"] == "svg"
+    assert result["html_source"]["objects"][0]["visual_role"] == "decorative_ui"
+    assert result["html_source"]["objects"][0]["visual_exclusion_reason"] == "svg_image_carousel_navigation_control"
+    assert result["quality"]["pending_objects"] == []
+    assert result["quality"]["complete"] is True
+    assert text_complete(result) is True
+
+
+def test_unlabelled_svg_inside_button_remains_pending():
+    body = b'''<main><h1>Review warning signs</h1><p>Check the contract carefully.</p>
+    <button aria-label="Open details"><svg viewBox="0 0 16 16"><text>Warning</text></svg></button>
+    </main>'''
+    result = parse_file("ccs.html", body, "text/html")
 
     assert result["html_source"]["objects"][0].get("visual_role") is None
     assert result["quality"]["pending_objects"] == ["html-object-000001"]
@@ -194,7 +220,7 @@ def test_long_style_metadata_keeps_source_proof_without_blocking_complete_body()
     locator = paragraph["locator"]
     start_tag = raw[locator["start_tag_char_start"] : locator["start_tag_char_end"]]
 
-    assert result["parser_version"] == "9"
+    assert result["parser_version"] == "10"
     assert result["quality"]["complete"] is True
     assert text_complete(result) is True
     assert locator["class_attribute_length"] == len(classes)
@@ -212,7 +238,7 @@ def test_v5_html_completeness_remains_compatible_after_v7_structured_table_evide
     result = parse_file("law.html", b"<main><p>Keep this legal text.</p></main>")
     legacy = dict(result)
     legacy["parser_version"] = "5"
-    legacy["pipeline_version"] = result["pipeline_version"].replace("v9", "v5")
+    legacy["pipeline_version"] = result["pipeline_version"].replace("v10", "v5")
     legacy["html_source"] = dict(result["html_source"])
     legacy["html_source"]["mapping_version"] = "html-source-mapping-v5"
 

@@ -19,6 +19,7 @@ MAX_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_PIXELS = 6_000_000
 MAX_HTML_PIXELS = 12_000_000
+MAX_HTML_GIF_FRAMES = 64
 MAX_ASSETS = 2000
 MAX_MANIFEST_BYTES = 40 * 1024 * 1024
 PROTOCOL = "native-asset-ocr-v1"
@@ -79,6 +80,48 @@ def _identity(value, source_hash, source_format, pointer):
     return _digest(json.dumps(fields, ensure_ascii=False, sort_keys=True, allow_nan=False).encode())
 
 
+def _frame_evidence_valid(ocr, source_format):
+    count, basis = ocr.get("frame_count"), ocr.get("frame_basis")
+    if count == 1:
+        return basis == "all_frames_verified_single_frame" and "frame_map" not in ocr
+    if (
+        source_format != "html"
+        or type(count) is not int
+        or not 1 < count <= MAX_HTML_GIF_FRAMES
+        or basis != "all_unique_gif_frames_contact_sheet_v1"
+    ):
+        return False
+    rows = ocr.get("frame_map")
+    if not isinstance(rows, list) or not 1 < len(rows) <= count:
+        return False
+    indices = []
+    width, height = ocr.get("width"), ocr.get("height")
+    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+        return False
+    for index, row in enumerate(rows, 1):
+        frame_numbers = row.get("frame_numbers") if isinstance(row, dict) else None
+        if (
+            not isinstance(row, dict)
+            or row.get("panel_index") != index
+            or not isinstance(frame_numbers, list)
+            or not frame_numbers
+            or any(type(frame) is not int or not 1 <= frame <= count for frame in frame_numbers)
+            or frame_numbers != sorted(set(frame_numbers))
+            or not isinstance(row.get("pixel_sha256"), str)
+            or not _HASH.fullmatch(row["pixel_sha256"])
+            or any(type(row.get(key)) is not int for key in ("x", "y", "width", "height"))
+            or row["x"] < 0
+            or row["y"] < 0
+            or row["width"] <= 0
+            or row["height"] <= 0
+            or row["x"] + row["width"] > width
+            or row["y"] + row["height"] > height
+        ):
+            return False
+        indices.extend(frame_numbers)
+    return sorted(indices) == list(range(1, count + 1))
+
+
 def assets(manifest: dict) -> list[dict]:
     """Return stable mapped assets without reading files or calling a model."""
     if manifest.get("parser") == "docx-basic" and manifest.get("parser_version") == "2":
@@ -91,6 +134,7 @@ def assets(manifest: dict) -> list[dict]:
         "7",
         "8",
         "9",
+        "10",
     }:
         html = manifest.get("html_source") or {}
         if not isinstance(html, dict):
@@ -214,8 +258,7 @@ def assets(manifest: dict) -> list[dict]:
                 or not 0 < ocr["width"] <= 10000
                 or not 0 < ocr["height"] <= 10000
                 or ocr["width"] * ocr["height"] > _pixels_limit(source_format)
-                or ocr.get("frame_count") != 1
-                or ocr.get("frame_basis") != "all_frames_verified_single_frame"
+                or not _frame_evidence_valid(ocr, source_format)
                 or type(ocr.get("image_size")) is not int
                 or not 0 < ocr["image_size"] <= MAX_IMAGE_BYTES
                 or not isinstance(ocr.get("model"), str)
@@ -461,6 +504,71 @@ def _extract(content, manifest, value, *, max_bytes=MAX_BYTES, image_content=Non
     return raw
 
 
+def _gif_frame_contact_sheet(image):
+    """Preserve every unique, full-resolution HTML GIF frame in source order."""
+    from PIL import Image, ImageDraw
+
+    frame_count = getattr(image, "n_frames", 1)
+    if not 1 < frame_count <= MAX_HTML_GIF_FRAMES:
+        raise ValueError("HTML 动态 GIF 帧数超过完整识别限制。")
+    unique = {}
+    frame_width, frame_height = image.size
+    if (
+        not 0 < frame_width <= 10000
+        or not 0 < frame_height <= 10000
+        or frame_width * frame_height > MAX_HTML_PIXELS
+    ):
+        raise ValueError("HTML 动态 GIF 单帧像素超过限制。")
+    for index in range(frame_count):
+        image.seek(index)
+        image.load()
+        rgba = image.convert("RGBA")
+        canvas = Image.new("RGB", rgba.size, "white")
+        canvas.paste(rgba, mask=rgba.getchannel("A"))
+        pixels = canvas.tobytes()
+        digest = _digest(pixels)
+        entry = unique.get(digest)
+        if entry is None:
+            entry = {"frame_numbers": [], "image": canvas}
+            unique[digest] = entry
+        else:
+            canvas.close()
+        entry["frame_numbers"].append(index + 1)
+
+    columns = min(4, len(unique))
+    rows = (len(unique) + columns - 1) // columns
+    padding, label_height = 8, 24
+    cell_width = frame_width + padding * 2
+    cell_height = frame_height + label_height + padding * 2
+    sheet_width, sheet_height = columns * cell_width, rows * cell_height
+    if sheet_width * sheet_height > MAX_HTML_PIXELS:
+        raise ValueError("HTML 动态 GIF 完整帧图超过像素限制。")
+    sheet = Image.new("RGB", (sheet_width, sheet_height), "white")
+    draw = ImageDraw.Draw(sheet)
+    frame_map = []
+    for panel_index, (digest, entry) in enumerate(unique.items(), 1):
+        column, row = (panel_index - 1) % columns, (panel_index - 1) // columns
+        x, y = column * cell_width + padding, row * cell_height + label_height + padding
+        frame_numbers = entry["frame_numbers"]
+        labels = ",".join(str(value) for value in frame_numbers)
+        draw.text((x, row * cell_height + padding), f"F{labels}", fill="black")
+        sheet.paste(entry["image"], (x, y))
+        draw.rectangle((x - 1, y - 1, x + frame_width, y + frame_height), outline="#666666")
+        frame_map.append(
+            {
+                "panel_index": panel_index,
+                "frame_numbers": frame_numbers,
+                "pixel_sha256": digest,
+                "x": x,
+                "y": y,
+                "width": frame_width,
+                "height": frame_height,
+            }
+        )
+        entry["image"].close()
+    return sheet, frame_count, frame_map
+
+
 def _render(content, manifest, value, archive_path=None, archive_size=None, image_content=None):
     from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -477,6 +585,9 @@ def _render(content, manifest, value, archive_path=None, archive_size=None, imag
     if not mineru_chart_mode and (not isinstance(content, bytes) or _digest(content) != value["source_hash"]):
         raise ValueError("原生图片父原件 hash 不匹配。")
     raw = _extract(content, manifest, value, max_bytes=max_bytes, image_content=image_content)
+    frame_map = None
+    frame_basis = "all_frames_verified_single_frame"
+    pixel_transform = "exif_orientation_then_white_alpha_composite_no_resize"
     try:
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
@@ -484,25 +595,40 @@ def _render(content, manifest, value, archive_path=None, archive_size=None, imag
             if image.format not in {"PNG", "JPEG", "GIF", "WEBP"}:
                 raise ValueError("原生图片光栅格式不受支持。")
             if frames != 1:
-                raise ValueError("多帧原生图片需要逐帧映射，不能只识别首帧。")
-            if (
-                not 0 < width <= 10000
-                or not 0 < height <= 10000
-                or width * height > _pixels_limit(value["source_format"])
-            ):
-                raise ValueError("原生图片像素超过限制。")
-            image.verify()
-        with Image.open(io.BytesIO(raw)) as image:
-            image.load()
-            orientation = image.getexif().get(274, 1)
-            oriented = ImageOps.exif_transpose(image)
-            rgba = oriented.convert("RGBA")
-            canvas = Image.new("RGB", oriented.size, "white")
-            canvas.paste(rgba, mask=rgba.getchannel("A"))
-            output = io.BytesIO()
-            canvas.save(output, format="PNG")
-            png = output.getvalue()
-            rendered_width, rendered_height = canvas.size
+                if value["source_format"] != "html" or image.format != "GIF":
+                    raise ValueError("非 HTML 动态 GIF 需要逐帧映射，不能只识别首帧。")
+                canvas, frames, frame_map = _gif_frame_contact_sheet(image)
+                if canvas.size[0] > 10000 or canvas.size[1] > 10000:
+                    raise ValueError("HTML 动态 GIF 完整帧图尺寸超过限制。")
+                frame_basis = "all_unique_gif_frames_contact_sheet_v1"
+                pixel_transform = "gif_frames_white_composite_deduplicated_contact_sheet_no_resize"
+                output = io.BytesIO()
+                canvas.save(output, format="PNG")
+                png = output.getvalue()
+                rendered_width, rendered_height = canvas.size
+                canvas.close()
+            else:
+                if (
+                    not 0 < width <= 10000
+                    or not 0 < height <= 10000
+                    or width * height > _pixels_limit(value["source_format"])
+                ):
+                    raise ValueError("原生图片像素超过限制。")
+                image.verify()
+        if frame_map is None:
+            with Image.open(io.BytesIO(raw)) as image:
+                image.load()
+                orientation = image.getexif().get(274, 1)
+                oriented = ImageOps.exif_transpose(image)
+                rgba = oriented.convert("RGBA")
+                canvas = Image.new("RGB", oriented.size, "white")
+                canvas.paste(rgba, mask=rgba.getchannel("A"))
+                output = io.BytesIO()
+                canvas.save(output, format="PNG")
+                png = output.getvalue()
+                rendered_width, rendered_height = canvas.size
+        else:
+            orientation = 1
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
         raise ValueError("原生图片完整光栅解码失败。") from exc
     if len(png) > MAX_IMAGE_BYTES:
@@ -525,11 +651,11 @@ def _render(content, manifest, value, archive_path=None, archive_size=None, imag
         "original_width": width,
         "original_height": height,
         "frame_count": 1,
-        "frame_basis": "all_frames_verified_single_frame",
-        "pixel_transform": "exif_orientation_then_white_alpha_composite_no_resize",
+        "frame_basis": frame_basis,
+        "pixel_transform": pixel_transform,
         "exif_orientation": orientation,
         "physical_pages_known": False,
-    }
+    } | ({"frame_count": frames, "frame_map": frame_map} if frame_map is not None else {})
 
 
 def render_native_asset_bounded(manifest, asset, archive_path, archive_size):

@@ -50,7 +50,7 @@ def _object(manifest, object_key):
     if (
         not isinstance(source, dict)
         or manifest.get("parser") != "html-basic"
-        or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9"}
+        or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9", "10"}
         or source.get("mapping_version") != f"html-source-mapping-v{manifest.get('parser_version')}"
         or source.get("source_hash") != manifest.get("source_hash")
     ):
@@ -225,21 +225,22 @@ def _bind(content, manifest, object_key, source_url, image, reference, fetched_u
         # Use the same full-frame decoder and pixel limits as OCR, in this
         # bounded child. Acquisition never accepts an octet-stream by MIME alone.
         rendered = _render(content, result, assets(result)[-1], image_content=image)
+        pixel_fields = (
+            "original_image_sha256",
+            "original_image_size",
+            "width",
+            "height",
+            "original_width",
+            "original_height",
+            "frame_count",
+            "frame_basis",
+            "frame_map",
+            "pixel_transform",
+            "image_sha256",
+            "image_size",
+        )
         rows[-1]["pixel_verification"] = {
-            key: rendered[key]
-            for key in (
-                "original_image_sha256",
-                "original_image_size",
-                "width",
-                "height",
-                "original_width",
-                "original_height",
-                "frame_count",
-                "frame_basis",
-                "pixel_transform",
-                "image_sha256",
-                "image_size",
-            )
+            key: rendered[key] for key in pixel_fields if key in rendered
         }
     return result
 

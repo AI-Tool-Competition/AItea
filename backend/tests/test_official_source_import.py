@@ -134,6 +134,106 @@ def test_new_official_html_version_is_saved_once_and_queued_for_bounded_parse(tm
     assert inventory["summary"]["official_source_import_statuses"] == {"stored": 1}
 
 
+def test_official_html_image_parse_continues_across_bounded_asset_batches(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    from app.contexts.documents.application.system_library import ensure_principal
+    from app.contexts.documents.infrastructure.providers import vision
+    from app.shared.domain.values import now
+    from app.shared.infrastructure.http import download as ingestion_download
+    from test_html_image_collection import document, image
+    from test_html_linked_asset_ocr import transcript
+
+    service, config = _importer(tmp_path)
+    OfficialSourceImporter(service, config_path=config)
+    source_url = "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/"
+    asset_host = "isomer-user-content.by.gov.sg"
+    body = (
+        "<main><h1>Official image guidance</h1><p>Review each example.</p>"
+        + "".join(f'<img src="https://{asset_host}/assets/example-{index}.png">' for index in range(5))
+        + "</main>"
+    )
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    doc = document(
+        service,
+        owner=SYSTEM_OWNER_ID,
+        name="ccs-batched-images",
+        source_url=source_url,
+        html=body,
+    )
+    with service.db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO official_source_imports(
+            event_key,source_id,country,source_url,content_hash,mime_type,document_id,status,created_at,updated_at
+            ) VALUES(?,?,?,?,?,? ,?,'stored',?,?)""",
+            (
+                "ccs-batched-images",
+                "sg-ccs-fair-trading",
+                "SG",
+                source_url,
+                doc["content_hash"],
+                "text/html",
+                doc["id"],
+                now(),
+                now(),
+            ),
+        )
+        service.collection.queue_processing(conn, doc["id"], SYSTEM_OWNER_ID)
+    monkeypatch.setattr(
+        service.collection,
+        "_official_html_asset_hosts",
+        lambda _document: [asset_host],
+    )
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    calls, downloads = [], []
+    monkeypatch.setattr(vision, "transcribe_image", lambda value: (calls.append(value), transcript())[1])
+    monkeypatch.setenv("COLLECTION_PROXY_URL", "http://127.0.0.1:8030")
+    monkeypatch.setenv("COLLECTION_PROXY_HOSTS", f"www.ccs.gov.sg,{asset_host}")
+
+    def download(url, *, required_host, deadline, connection_slot, consume, max_bytes, **_options):
+        downloads.append((url, required_host))
+        assert required_host == asset_host and deadline > time.monotonic() and max_bytes == 8 * 1024 * 1024
+        with connection_slot(required_host):
+            blob = consume([image()])
+        return {
+            "url": url,
+            "blob": blob,
+            "mime_type": "image/png",
+            "response_status": 200,
+            "request_method": "GET",
+        }
+
+    monkeypatch.setattr(ingestion_download, "_download", download)
+    for index, expected_batch in enumerate((2, 2, 1)):
+        if index:
+            with service.db.transaction() as conn:
+                conn.execute("UPDATE processing_jobs SET available_at=0 WHERE document_id=?", (doc["id"],))
+        claim = service.collection.claim_processing(
+            owner_id=SYSTEM_OWNER_ID,
+            document_ids=[doc["id"]],
+        )
+        assert claim and claim["phase"] == "parse"
+        before = len(calls)
+        service.collection.process_item(claim)
+        assert len(calls) - before == expected_batch
+        with closing(service.db.connect()) as conn:
+            job = conn.execute(
+                "SELECT status FROM processing_jobs WHERE document_id=?", (doc["id"],)
+            ).fetchone()
+        assert job["status"] == ("queued" if index < 2 else "completed")
+
+    with closing(service.db.connect()) as conn:
+        parsed = conn.execute(
+            "SELECT status,manifest FROM documents WHERE id=?", (doc["id"],)
+        ).fetchone()
+    manifest = json.loads(parsed["manifest"])
+    assert parsed["status"] == "ready"
+    assert len(downloads) == 5 and len(manifest["html_source"]["linked_images"]) == 5
+    assert all(value["asset_status"] == "ocr_complete" for value in manifest["html_source"]["linked_images"])
+    assert manifest["quality"]["complete"] is True
+
+
 def test_first_import_replays_all_retained_version_history(tmp_path):
     service, config = _importer(tmp_path)
     _write_version(tmp_path, content=b"<h1>Historical regulation</h1>", at_ns=1)
@@ -338,6 +438,90 @@ def test_extensionless_detail_html_remains_a_catalogue_page(tmp_path):
         )
         receipt = conn.execute("SELECT status,reason FROM official_source_imports").fetchone()
     assert tuple(receipt) == ("skipped", "catalogue_page_not_document")
+
+
+def test_only_exactly_configured_guidance_html_detail_is_imported(tmp_path):
+    service, config = _importer(tmp_path)
+    detail_url = "https://jdih.pom.go.id/document/approved-guidance"
+    _write_version(
+        tmp_path,
+        content=b"<html><body><h1>Approved detail</h1><p>Exact approved path.</p></body></html>",
+        at_ns=time.time_ns(),
+        purpose="detail",
+        url=detail_url,
+    )
+    pool = json.loads(config.read_text())
+    pool["sources"][0].update(
+        kind="guidance",
+        html_document_paths=["/document/approved-guidance"],
+    )
+    config.write_text(json.dumps(pool))
+
+    assert OfficialSourceImporter(service, config_path=config).run_once()["stored"] == 1
+    with service.db.connect() as conn:
+        receipt = conn.execute("SELECT status,reason FROM official_source_imports").fetchone()
+        document = conn.execute(
+            "SELECT source_url,status FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)
+        ).fetchone()
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=(SELECT id FROM documents WHERE owner_id=?)",
+            (SYSTEM_OWNER_ID,),
+        ).fetchone()
+    assert tuple(receipt) == ("stored", None)
+    assert tuple(document) == (detail_url, "processing")
+    assert tuple(job) == ("parse", "queued")
+
+
+def test_automatically_rechecks_previously_skipped_approved_html_detail(tmp_path):
+    service, config = _importer(tmp_path)
+    at_ns = time.time_ns()
+    detail_url = "https://jdih.pom.go.id/document/approved-guidance"
+    event_path = _write_version(
+        tmp_path,
+        content=b"<html><body><h1>Previously skipped</h1></body></html>",
+        at_ns=at_ns,
+        purpose="detail",
+        url=detail_url,
+    )
+    importer = OfficialSourceImporter(service, config_path=config)
+    assert importer.run_once()["skipped"] == 1
+    with service.db.connect() as conn:
+        conn.execute(
+            "UPDATE official_source_import_cursor SET event_ns=? WHERE country='ID'", (at_ns + 1,)
+        )
+    pool = json.loads(config.read_text())
+    pool["sources"][0].update(kind="guidance", html_document_paths=["/document/approved-guidance"])
+    config.write_text(json.dumps(pool))
+
+    assert importer.run_once()["stored"] == 1
+    with service.db.connect() as conn:
+        receipt = conn.execute(
+            "SELECT status,reason,document_id FROM official_source_imports WHERE event_key=?",
+            (event_path.relative_to(tmp_path).as_posix(),),
+        ).fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0]
+    assert tuple(receipt[:2]) == ("stored", None)
+    assert receipt["document_id"] is not None
+    assert count == 1
+
+
+def test_unknown_html_path_remains_skipped_when_neighbor_is_approved(tmp_path):
+    service, config = _importer(tmp_path)
+    detail_url = "https://jdih.pom.go.id/document/not-approved"
+    _write_version(
+        tmp_path,
+        content=b"<html><body><h1>Not approved</h1></body></html>",
+        at_ns=time.time_ns(),
+        purpose="detail",
+        url=detail_url,
+    )
+    pool = json.loads(config.read_text())
+    pool["sources"][0].update(kind="guidance", html_document_paths=["/document/approved-guidance"])
+    config.write_text(json.dumps(pool))
+
+    assert OfficialSourceImporter(service, config_path=config).run_once()["skipped"] == 1
+    with service.db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0] == 0
 
 
 def test_rechecks_older_skipped_detail_when_verified_mime_is_a_document(tmp_path):

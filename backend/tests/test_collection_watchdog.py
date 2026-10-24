@@ -334,7 +334,7 @@ def test_worker_loads_only_explicit_proxy_settings_and_active_source_hosts(monke
         host
         for source in pool["sources"]
         if source["status"] == "active" and source["transport"] == "proxy"
-        for host in source["allowed_hosts"]
+        for host in (*source["allowed_hosts"], *source.get("html_asset_hosts", []))
     }
     assert env["COLLECTION_PROXY_URL"] == "http://127.0.0.1:17777"
     assert set(env["COLLECTION_PROXY_HOSTS"].split(",")) == expected_hosts | {

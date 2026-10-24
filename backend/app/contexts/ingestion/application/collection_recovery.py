@@ -1,8 +1,8 @@
-"""Durable, bounded recovery of proven transient failures; paid ambiguity is held.
+"""Durable OCR recovery with preserved evidence and progressively delayed retries.
 
-Queue retries remain three-attempt bursts. This ledger retains every burst and
-reschedules eligible exhausted work after a longer delay, without rewriting
-originals, legal metadata, completed pages, or historical request receipts.
+Each processing attempt remains bounded. Eligible uncertain or incomplete OCR
+results can start another attempt after backoff, while permanent provider errors,
+source changes, and quality issues without a retryable OCR result stay held.
 """
 
 import hashlib
@@ -21,7 +21,6 @@ SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
 MAX_BATCH = 32
-MAX_AUTOMATIC_OCR_RECOVERIES = 3
 MAX_AUTOMATIC_OCR_TARGETS = 20
 
 
@@ -138,7 +137,6 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         return Decision("mineru_chart_refresh", True)
 
     retry_pages, retry_assets = [], []
-    retry_budget_exhausted = False
     unknown_outcome = False
     if phase == "parse":
         for page in pages:
@@ -169,9 +167,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             cycles = page.get("ocr_retry_cycles", [])
             if not isinstance(cycles, list):
                 return Decision("invalid_checkpoint")
-            if len(cycles) >= MAX_AUTOMATIC_OCR_RECOVERIES:
-                retry_budget_exhausted = True
-            elif len(retry_pages) < MAX_AUTOMATIC_OCR_TARGETS:
+            if len(retry_pages) < MAX_AUTOMATIC_OCR_TARGETS:
                 retry_pages.append(page["page"])
 
         for asset in images:
@@ -191,9 +187,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             history = asset.get("ocr_attempt_history", [])
             if not isinstance(history, list):
                 return Decision("invalid_checkpoint")
-            if len(history) >= MAX_AUTOMATIC_OCR_RECOVERIES:
-                retry_budget_exhausted = True
-            elif len(retry_assets) < MAX_AUTOMATIC_OCR_TARGETS:
+            if len(retry_assets) < MAX_AUTOMATIC_OCR_TARGETS:
                 retry_assets.append(asset["asset_key"])
 
         if retry_pages or retry_assets:
@@ -206,9 +200,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 tuple(retry_assets),
             )
         if unknown_outcome:
-            return Decision("ocr_retry_budget_review" if retry_budget_exhausted else "paid_result_unknown")
-        if retry_budget_exhausted:
-            return Decision("ocr_retry_budget_review")
+            return Decision("paid_result_unknown")
     elif any(_unknown(record) for record in [*pages, *images]):
         return Decision("paid_result_unknown")
 
@@ -226,12 +218,8 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     if failed:
         if len(failed) > 20:
             return Decision("ocr_retry_scope_review")
-        if any(
-            not isinstance(page.get("ocr_retry_cycles", []), list)
-            or len(page.get("ocr_retry_cycles", [])) >= MAX_AUTOMATIC_OCR_RECOVERIES
-            for page in failed
-        ):
-            return Decision("ocr_retry_budget_review")
+        if any(not isinstance(page.get("ocr_retry_cycles", []), list) for page in failed):
+            return Decision("invalid_checkpoint")
         if all(
             type(page.get("page")) is int
             and page["page"] > 0
@@ -463,11 +451,7 @@ class CollectionRecovery:
                 )
             )
             cycles = page.get("ocr_retry_cycles", [])
-            if (
-                not retryable_page
-                or not isinstance(cycles, list)
-                or len(cycles) >= MAX_AUTOMATIC_OCR_RECOVERIES
-            ):
+            if not retryable_page or not isinstance(cycles, list):
                 raise ValueError("retry_page_checkpoint_not_eligible")
             envelope = metadata.get("error_response")
             if metadata.get("http_status") == 429 and isinstance(envelope, dict):
@@ -479,6 +463,10 @@ class CollectionRecovery:
                 ):
                     raise ValueError("retry_requires_bound_429_receipt")
             previous = deepcopy(page)
+            # Keep every previous checkpoint addressable from the current page,
+            # but don't recursively duplicate all earlier cycles into each new
+            # checkpoint. That keeps the manifest growth linear over retries.
+            previous.pop("ocr_retry_cycles", None)
             payload = {
                 "protocol": "ocr-automatic-retry-checkpoint-v1",
                 "owner_id": row["owner_id"],
@@ -501,8 +489,8 @@ class CollectionRecovery:
                 "storage_path": str(blob.path.relative_to(self.db.data_dir)),
                 "mime_type": "application/json",
             }
-            # Keep bounded inline history as well as CAS. Existing import and
-            # backup walkers can still discover every old image/error blob.
+            # Keep the prior output inline so import and backup walkers continue
+            # to discover nested image and error-response blobs.
             page["ocr_retry_cycles"] = [
                 *page.get("ocr_retry_cycles", []),
                 {
@@ -542,7 +530,7 @@ class CollectionRecovery:
         selected = [asset for asset in assets(manifest) if asset["asset_key"] in decision.asset_keys]
         if len(selected) != len(decision.asset_keys) or any(
             asset["asset_status"] not in {"ocr_failed", "ocr_uncertain", "pending_vision"}
-            or len(asset.get("ocr_attempt_history", [])) >= MAX_AUTOMATIC_OCR_RECOVERIES
+            or not isinstance(asset.get("ocr_attempt_history", []), list)
             for asset in selected
         ):
             raise ValueError("retry_asset_checkpoint_not_eligible")
@@ -835,7 +823,8 @@ class CollectionRecovery:
                     JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
                     WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
                         AND r.reason IN ('quality_review','processing_review','paid_result_unknown',
-                            'ocr_failure_review','image_failure_review','ocr_retry_scope_review')
+                            'ocr_failure_review','image_failure_review','ocr_retry_scope_review',
+                            'ocr_retry_budget_review')
                         AND j.phase='parse' AND j.status='failed'"""
                     + scope
                     + " ORDER BY r.updated_at,r.id LIMIT ?",

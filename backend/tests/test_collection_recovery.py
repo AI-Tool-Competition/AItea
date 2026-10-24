@@ -1,4 +1,4 @@
-"""Recovery is durable, source-fenced, bounded, and preserves paid evidence."""
+"""Recovery is durable, source-fenced, and preserves paid evidence."""
 
 import hashlib
 import json
@@ -15,8 +15,15 @@ from app.contexts.ingestion.application.collection_recovery import (
     Decision,
     classify_processing,
 )
-from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
+from app.contexts.documents.infrastructure.parsers.native_parser import (
+    _parse_pdf,
+    _parsed_result,
+    parse_file,
+)
 from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
+from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
+    preserve_previous_asset_attempt,
+)
 from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import bind_linked_image_bounded
 from app.shared.domain.values import dump, now
 from app.shared.infrastructure.http.download import DownloadError
@@ -188,20 +195,78 @@ def test_processing_unknown_ocr_outcomes_are_retried_with_paid_attempt_history(m
     assert decision.retryable and decision.pages == (1,)
 
 
-def test_unknown_ocr_outcome_stops_after_three_preserved_retry_cycles():
+def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
     manifest = {
         "pages": [
             {
                 "page": 1,
                 "status": "ocr_failed",
                 "ocr": {"attempts": 1, "request_outcome": "unknown_transport_result"},
-                "ocr_retry_cycles": [{"previous_page": {}} for _ in range(3)],
+                "ocr_retry_cycles": [{"previous_page": {}} for _ in range(5)],
             }
         ]
     }
     decision = classify_processing(manifest, phase="parse")
-    assert decision.reason == "ocr_retry_budget_review"
-    assert not decision.retryable
+    assert decision.reason == "paid_ocr_retry"
+    assert decision.retryable and decision.pages == (1,)
+
+
+def test_native_asset_retry_history_has_no_three_cycle_stop():
+    asset = {
+        "asset_status": "ocr_uncertain",
+        "asset_key": "chart-1",
+        "input_identity": "identity",
+        "source_hash": "a" * 64,
+    }
+    for attempt in range(5):
+        asset["ocr"] = {"attempts": 1, "request_id": f"request-{attempt}"}
+        preserve_previous_asset_attempt(asset)
+    assert len(asset["ocr_attempt_history"]) == 5
+    assert all("ocr_attempt_history" not in item["previous_asset"] for item in asset["ocr_attempt_history"])
+
+
+def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(service):
+    content = make_pdf([("Official text", False)])
+    original = service.archive.blobs.put_bytes("owner", content)
+    manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_uncertain",
+        text="Previous OCR output",
+        ocr={"attempts": 1, "request_outcome": "unknown_transport_result"},
+        ocr_retry_cycles=[{"protocol": "old", "previous_page": {"text": "older output"}} for _ in range(5)],
+    )
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.pdf",
+            "application/pdf",
+            "https://official.invalid/law.pdf",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="retry-history-compaction",
+            kind_hint="law",
+        )
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document["id"]))
+        service.collection.recovery._retry_pages(
+            conn,
+            {"owner_id": "owner", "id": "recovery", "recovery_count": 5},
+            {"id": document["id"], "version": 1, "content_hash": original.digest},
+            manifest,
+            Decision("paid_ocr_retry", True, pages=(1,)),
+        )
+    with closing(service.db.connect()) as conn:
+        stored_manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+    cycles = stored_manifest["pages"][0]["ocr_retry_cycles"]
+    assert len(cycles) == 6
+    assert cycles[-1]["previous_page"]["text"] == "Previous OCR output"
+    assert "ocr_retry_cycles" not in cycles[-1]["previous_page"]
+    assert stored_manifest["pages"][0]["status"] == "pending_ocr"
 
 
 def test_incomplete_vision_page_is_retried_but_mineru_table_review_is_not():
@@ -243,7 +308,9 @@ def test_permanent_ocr_http_rejections_are_not_retried(status):
     assert decision.reason == "ocr_failure_review" and not decision.retryable
 
 
-def test_blocked_incomplete_image_is_automatically_retried_with_its_old_result_preserved(service, monkeypatch):
+def test_budget_review_incomplete_image_is_automatically_retried_with_its_old_result_preserved(
+    service, monkeypatch
+):
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
     body = b'<main><p>Official terms.</p><img src="/figure.png"></main>'
     raw = raster()
@@ -307,7 +374,7 @@ def test_blocked_incomplete_image_is_automatically_retried_with_its_old_result_p
             conn,
             {"document_id": doc["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
             processing=True,
-            decision=Decision("quality_review"),
+            decision=Decision("ocr_retry_budget_review"),
             exhausted=True,
             error_type="incomplete_checkpoint",
         )

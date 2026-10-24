@@ -39,8 +39,8 @@ def preserve_previous_asset_attempt(asset):
     ) not in {"ocr_failed", "ocr_uncertain"}:
         return
     history = asset.get("ocr_attempt_history", [])
-    if not isinstance(history, list) or len(history) >= 3:
-        raise ValueError("原生图片识别尝试历史已达到上限或格式无效")
+    if not isinstance(history, list):
+        raise ValueError("原生图片识别尝试历史格式无效")
     previous = {key: deepcopy(value) for key, value in asset.items() if key != "ocr_attempt_history"}
     raw = json.dumps(
         previous, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False

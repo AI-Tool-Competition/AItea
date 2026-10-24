@@ -1,17 +1,19 @@
 """Real raw storage and state transitions, with only the HTTPS boundary faked."""
 
-from copy import deepcopy
-from datetime import UTC, datetime
 import hashlib
 import importlib
 import io
 import json
-from pathlib import Path
+import socket
+import ssl
 import sys
 import threading
+import zipfile
+from copy import deepcopy
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
-import zipfile
 
 import pytest
 
@@ -494,6 +496,63 @@ def test_repeated_pre_response_network_failures_do_not_exhaust_byte_budget(envir
     ]
     assert fifth["status"] == "issued"
     assert path.exists()
+
+
+@pytest.mark.parametrize(
+    ("cause", "expected"),
+    [
+        (socket.gaierror(-2, "resolver detail"), "dns_resolution_failed"),
+        (socket.timeout("socket detail"), "network_timeout"),
+        (ssl.SSLCertVerificationError("certificate detail"), "tls_certificate_verification_failed"),
+        (ssl.SSLError("handshake detail"), "tls_handshake_failed"),
+        (ConnectionRefusedError("peer detail"), "connection_refused"),
+        (ConnectionResetError("peer detail"), "connection_interrupted"),
+    ],
+)
+def test_network_failures_have_stable_codes_without_persisting_exception_text(
+    environment, cause, expected
+):
+    collector = environment.make()
+    origin = source()["url"]
+
+    def fail_with_cause(*_):
+        try:
+            raise cause
+        except OSError as exc:
+            raise collection.DownloadError(
+                "抓取连接失败或超时，请检查来源后重试。", retryable=True
+            ) from exc
+
+    environment.responses[origin] = fail_with_cause
+    receipt = collector.fetch(source(), origin)
+
+    assert receipt["outcome"]["status"] == "network_error"
+    assert receipt["outcome"]["failure_code"] == expected
+    assert "detail" not in json.dumps(receipt["outcome"], ensure_ascii=False)
+
+
+def test_nonretryable_scope_rejection_is_not_reported_as_network_failure(environment):
+    collector = environment.make()
+    origin = source()["url"]
+    environment.responses[origin] = lambda *_: collection.DownloadError(
+        "Redirect host is outside the reviewed official source scope"
+    )
+
+    receipt = collector.fetch(source(), origin)
+
+    assert receipt["outcome"]["status"] == "content_invalid"
+    assert receipt["outcome"]["failure_code"] == "redirect_scope_rejected"
+
+
+def test_http_error_has_stable_status_code(environment):
+    collector = environment.make()
+    origin = source()["url"]
+    environment.responses[origin] = lambda *_: collection.DownloadError("HTTP 403 Forbidden")
+
+    receipt = collector.fetch(source(), origin)
+
+    assert receipt["outcome"]["status"] == "http_error"
+    assert receipt["outcome"]["failure_code"] == "http_403"
 
 
 def test_per_host_slot_bound_is_enforced_for_concurrent_source_workers(environment):

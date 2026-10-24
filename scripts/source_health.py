@@ -8,11 +8,11 @@ a domain registration expired: HTTP 404 requires spaced confirmations, HTTP
 
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import math
+import re
+from copy import deepcopy
 from urllib.parse import urlsplit, urlunsplit
-
 
 PROTOCOL = "source-health-v1"
 DEFAULT_POLICY = {
@@ -38,6 +38,24 @@ OUTCOMES = {
     "content_invalid",
     "storage_wait",
     "budget_wait",
+}
+FAILURE_CODES = {
+    "connection_interrupted",
+    "connection_refused",
+    "dns_no_addresses",
+    "dns_resolution_failed",
+    "dns_timeout",
+    "dns_timeout_or_capacity",
+    "http_protocol_error",
+    "network_timeout",
+    "network_transport_error",
+    "public_address_policy_rejected",
+    "redirect_scope_rejected",
+    "request_deadline_exceeded",
+    "request_rejected",
+    "tls_certificate_verification_failed",
+    "tls_handshake_failed",
+    "transient_network_error",
 }
 
 
@@ -100,6 +118,14 @@ def _observation(outcome, now):
             if not isinstance(outcome[name], str) or len(outcome[name]) > limit:
                 raise ValueError(f"invalid observation {name}")
             result[name] = outcome[name]
+    failure_code = outcome.get("failure_code")
+    if failure_code is not None:
+        if not isinstance(failure_code, str) or not (
+            re.fullmatch(r"http_[1-5][0-9]{2}", failure_code)
+            or failure_code in FAILURE_CODES
+        ):
+            raise ValueError("invalid observation failure_code")
+        result["failure_code"] = failure_code
     if outcome.get("url") is not None:
         url = outcome["url"]
         if not isinstance(url, str) or len(url) > 8192:

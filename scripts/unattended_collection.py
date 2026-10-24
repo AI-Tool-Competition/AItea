@@ -7,23 +7,26 @@ This collector never constructs Service, imports laws, or approves their force.
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import copy
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
-from datetime import UTC, datetime
 import hashlib
+import http.client
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import signal
+import socket
+import ssl
 import sys
 import threading
 import time
-from urllib.parse import unquote, urlsplit
 import uuid
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
@@ -31,7 +34,7 @@ sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
 from app.blob_store import BlobStore  # noqa: E402
 from app.discovery import discover_page  # noqa: E402
 from app.ingestion import DownloadError, _download, _validated_url  # noqa: E402
-from official_source_supervisor_recovery import lock, load, write  # noqa: E402
+from official_source_supervisor_recovery import load, lock, write  # noqa: E402
 from source_health import choose_sources, due, observe, replacement_decisions  # noqa: E402
 
 PROTOCOL = "aitea-unattended-collection-v1"
@@ -52,6 +55,47 @@ LIMITS = {
     "min_free_bytes": 8 * 1024**3,
     "tick_seconds": 30,
 }
+
+
+def download_failure_code(error):
+    """Return a bounded diagnostic code, never persist exception text or secrets."""
+    status = re.search(r"HTTP (\d{3})(?!\d)", str(error))
+    if status:
+        return f"http_{status[1]}"
+
+    cause = error
+    seen = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            return "tls_certificate_verification_failed"
+        if isinstance(cause, ssl.SSLError):
+            return "tls_handshake_failed"
+        if isinstance(cause, socket.gaierror):
+            return "dns_resolution_failed"
+        if isinstance(cause, (socket.timeout, TimeoutError)):
+            return "network_timeout"
+        if isinstance(cause, ConnectionRefusedError):
+            return "connection_refused"
+        if isinstance(cause, (ConnectionResetError, BrokenPipeError)):
+            return "connection_interrupted"
+        if isinstance(cause, http.client.HTTPException):
+            return "http_protocol_error"
+        cause = cause.__cause__
+
+    message_codes = {
+        "DNS 解析超过时间限制或队列已满。": "dns_timeout_or_capacity",
+        "DNS 解析超过时间限制。": "dns_timeout",
+        "抓取来源域名无法解析。": "dns_resolution_failed",
+        "抓取来源没有可用地址。": "dns_no_addresses",
+        "抓取超过总时间限制。": "request_deadline_exceeded",
+        "抓取连接失败或超时，请检查来源后重试。": "network_transport_error",
+        "抓取来源的所有 DNS 地址必须是 public 公网地址。": "public_address_policy_rejected",
+        "抓取地址必须是 public 公网地址。": "public_address_policy_rejected",
+        "Redirect host is outside the reviewed official source scope": "redirect_scope_rejected",
+    }
+    default_code = "transient_network_error" if error.retryable else "request_rejected"
+    return message_codes.get(str(error), default_code)
 
 
 RCEP_SOURCE_ID = "sg-enterprisesg-rcep"
@@ -415,10 +459,33 @@ class Collector:
             if error.bytes_received is not None:
                 receipt["charged_bytes"] = error.bytes_received
             status = re.search(r"HTTP (\d{3})(?!\d)", str(error))
+            failure_code = download_failure_code(error)
+            network_failure = error.retryable or failure_code in {
+                "dns_resolution_failed",
+                "dns_no_addresses",
+                "dns_timeout",
+                "dns_timeout_or_capacity",
+                "network_timeout",
+                "network_transport_error",
+                "request_deadline_exceeded",
+                "connection_refused",
+                "connection_interrupted",
+                "http_protocol_error",
+                "tls_certificate_verification_failed",
+                "tls_handshake_failed",
+                "transient_network_error",
+            }
             outcome = {
-                "status": "http_error" if status else "network_error",
+                "status": (
+                    "http_error"
+                    if status
+                    else "network_error"
+                    if network_failure
+                    else "content_invalid"
+                ),
                 "http_status": int(status[1]) if status else None,
                 "error_type": type(error).__name__,
+                "failure_code": failure_code,
                 "retry_after_seconds": error.retry_after,
                 "url": url,
             }

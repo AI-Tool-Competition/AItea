@@ -12,7 +12,7 @@
 
 ## BKPM 被错误标注为 PDF 的表单响应
 
-BKPM 的个别公开文件实际返回完整的 multipart/form-data 上传实体，HTTP 类型却是 application/pdf。来源验证器只对已通过当前方案 URL 校验的 BKPM 官方原件启用适配，保留完整 HTTP 实体，再提取唯一 PDF 部件。
+BKPM 的个别公开文件实际返回完整的 multipart/form-data 上传实体，HTTP 类型却是 application/pdf。来源验证器和正式采集器只对已通过当前方案 URL 校验的 BKPM 官方原件启用适配，保留完整 HTTP 实体，再提取唯一 PDF 部件。采集器将提取后的 PDF 作为法规原件送入解析和索引；原始响应的 CAS 路径、哈希、大小、类型及提取证明随文档的 `source_response` 一并保留。由于缓存正文已转换为 PDF，采集器不复用该响应的 ETag/Last-Modified，后续轮询会重新验证原始响应。
 
 适配按 [RFC 2046 的 multipart 边界规则](https://www.rfc-editor.org/rfc/rfc2046#section-5.1) 验证起止边界、部件头及内容边界；当前仅支持实际观察到的 WebKit 边界、一个 `file` 和可选 `customPath` 字段。响应最多 4 MiB、每个头最多 8 KiB，拒绝截断、重复文件、未知字段、编码变换和不明尾部。普通前缀后出现 `%PDF` 不构成恢复依据。
 

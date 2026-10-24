@@ -1142,8 +1142,16 @@ class CollectionService:
             attachments = []
             blob = fetched["blob"]
             checklist_result = (
-                self.service.checklists.inspect(plan, fetched) if plan.get("checklist") else None
+                self.service.checklists.inspect(
+                    plan,
+                    fetched,
+                    owner=claim["owner_id"],
+                    archive=self.service.archive,
+                )
+                if plan.get("checklist")
+                else None
             )
+            blob = fetched["blob"]
             kind_hint = plan.get("checklist", {}).get("definition", {}).get("item", {}).get("kind")
             if plan.get("checklist", {}).get("kind") == "discovery":
                 with self.db.transaction() as conn:
@@ -1180,6 +1188,7 @@ class CollectionService:
                     if claim["level"] == "secondary" and not plan.get("checklist", {}).get("defer_relations")
                     else [],
                     kind_hint="law" if kind_hint == "treaty" else kind_hint,
+                    source_response=fetched.get("source_response"),
                 )
                 conn.execute(
                     """UPDATE collection_items SET status='stored',document_id=?,final_url=?,fetched_at=?,error=NULL,lease_token=NULL,lease_until=NULL WHERE id=?""",
@@ -1252,6 +1261,7 @@ class CollectionService:
                 "collection_evidence",
                 "gazette_publication",
                 "native_page_recovery",
+                "source_response",
             )
             stored_provenance = {key: deepcopy(manifest[key]) for key in provenance_keys if key in manifest}
             stored_html_source = deepcopy(manifest.get("html_source"))

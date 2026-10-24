@@ -21,6 +21,10 @@ from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import
     normalized_seeds_for,
     recipe_for,
 )
+from app.contexts.ingestion.infrastructure.source_adapters.source_envelopes import (
+    MAX_ENVELOPE_BYTES,
+    extract_bkpm_multipart_pdf,
+)
 from app.configuration.paths import InstancePaths
 from app.shared.domain.values import dump, now, uid
 
@@ -934,7 +938,7 @@ class ChecklistService:
             )
 
     @staticmethod
-    def inspect(plan, fetched):
+    def inspect(plan, fetched, *, owner=None, archive=None):
         # The full blob is already streamed/hashed with the global size bound.
         # Catalog JSON/HTML have their own bound; neither becomes legal text.
         blob = fetched["blob"]
@@ -946,7 +950,43 @@ class ChecklistService:
             raise ValueError("目录或详情页超过 4 MiB 解析上限")
         with blob.path.open("rb") as stream:
             body = stream.read(MAX_HTML_BYTES)
-        result = discover_page(fetched["url"], body, fetched["mime_type"], plan["checklist"]["recipe"])
+        recipe = plan["checklist"]["recipe"]
+        result = discover_page(fetched["url"], body, fetched["mime_type"], recipe)
+        if not result["matched"]:
+            # BKPM has returned a small set of official PDF URLs as complete
+            # multipart entities mislabeled application/pdf. Recover only when
+            # the immutable recipe independently admits this URL as a PDF.
+            allowed = discover_page(fetched["url"], b"%PDF-", "application/pdf", recipe)
+            if (
+                plan["checklist"]["kind"] == "collection"
+                and allowed["matched"]
+                and allowed["purpose"] == "document"
+                and blob.size <= MAX_ENVELOPE_BYTES
+            ):
+                with blob.path.open("rb") as stream:
+                    envelope = stream.read(MAX_ENVELOPE_BYTES + 1)
+                recovered = extract_bkpm_multipart_pdf(fetched["url"], envelope)
+                if recovered:
+                    pdf, extraction = recovered
+                    if owner is None or archive is None:
+                        raise ValueError("BKPM PDF envelope recovery requires the account archive")
+                    source_mime = fetched["mime_type"]
+                    fetched["source_response"] = {
+                        "cas_path": str(blob.path),
+                        "sha256": blob.digest,
+                        "size": blob.size,
+                        "mime_type": source_mime,
+                        "extraction": extraction,
+                    }
+                    fetched["blob"] = archive.blobs.put_bytes(owner, pdf)
+                    fetched["mime_type"] = "application/pdf"
+                    # The cached document is now the extracted PDF, not the
+                    # original HTTP entity. Do not pair its hash with the
+                    # envelope's validators or reuse it after a 304.
+                    fetched["etag"] = None
+                    fetched["last_modified"] = None
+                    blob = fetched["blob"]
+                    result = discover_page(fetched["url"], pdf[:8], "application/pdf", recipe)
         if not result["matched"]:
             raise ValueError(result.get("reason") or "页面不符合当前清单范围")
         if plan["checklist"]["kind"] == "collection" and result["purpose"] != "document":

@@ -443,6 +443,7 @@ class LegalArchive:
         parent_id=None,
         primary_document_ids=(),
         kind_hint=None,
+        source_response=None,
     ):
         from app.shared.domain.errors import fail
 
@@ -476,6 +477,9 @@ class LegalArchive:
                 (owner, family),
             ).fetchone()[0]
             id = uid()
+            manifest = {"elements": [], "chunks": []}
+            if source_response is not None:
+                manifest["source_response"] = source_response
             conn.execute(
                 """INSERT INTO documents(id,owner_id,case_id,parent_id,title,filename,role,status,mime_type,size,version,
                 content_hash,storage_path,tags,source_url,error,manifest,created_at,family_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -496,7 +500,7 @@ class LegalArchive:
                     dump(tags),
                     source_url,
                     None,
-                    dump({"elements": [], "chunks": []}),
+                    dump(manifest),
                     now(),
                     family,
                 ),

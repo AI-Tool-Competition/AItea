@@ -451,6 +451,90 @@ def test_selected_candidates_retain_country_tier_and_immutable_run_snapshot(clie
     )
 
 
+def test_bkpm_multipart_original_is_recovered_during_collection(client, monkeypatch):
+    import hashlib
+
+    configure(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    url = "https://jdih-storage.bkpm.go.id/jdih/jdih/2026Kepdepinvesthil15.S-.pdf"
+    pdf = b"%PDF-1.7\nverified official original\n%%EOF\r\n"
+    boundary = b"----WebKitFormBoundaryAbc123"
+    envelope = (
+        b"--" + boundary + b'\r\nContent-Disposition: form-data; name="file"; filename="law.pdf"'
+        b"\r\nContent-Type: application/pdf\r\n\r\n"
+        + pdf
+        + b"\r\n--"
+        + boundary
+        + b'\r\nContent-Disposition: form-data; name="customPath"\r\n\r\noriginal/archive'
+        b"\r\n--"
+        + boundary
+        + b"--\r\n"
+    )
+    with service.db.transaction() as conn:
+        binding = conn.execute(
+            "SELECT id FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='4.1'",
+            (owner, PLAN),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,identity_key,discovered_from,status,created_at)
+            VALUES('bkpm-multipart-candidate',?,?,?,NULL,?,'pending',?)""",
+            (
+                binding["id"],
+                url,
+                "Investment regulation",
+                "https://jdih.bkpm.go.id/id/search",
+                now(),
+            ),
+        )
+    response = client.post(
+        BASE + "/items/4.1/collect",
+        json={
+            "client_request_id": "bkpm-multipart-original",
+            "candidate_ids": ["bkpm-multipart-candidate"],
+            "level": "primary",
+            "primary_document_ids": [],
+        },
+    )
+    assert response.status_code == 202, response.text
+
+    def download(source_url, *, consume, **kwargs):
+        return {
+            "url": source_url,
+            "filename": source_url.rsplit("/", 1)[-1],
+            "mime_type": "application/pdf",
+            "blob": consume(iter([envelope])),
+            "etag": '"envelope-v1"',
+            "last_modified": "Sat, 24 Oct 2026 00:00:00 GMT",
+        }
+
+    monkeypatch.setattr(ingestion_download, "_download", download)
+    claim = service.collection.claim_fetch()
+    assert claim and claim["url"] == url
+    service.collection.fetch_item(claim)
+
+    with closing(service.db.connect()) as conn:
+        item = conn.execute(
+            "SELECT status,document_id FROM collection_items WHERE id=?", (claim["id"],)
+        ).fetchone()
+        doc = conn.execute(
+            "SELECT * FROM documents WHERE id=?", (item["document_id"],)
+        ).fetchone()
+        cached = conn.execute(
+            "SELECT etag,last_modified FROM collection_http_cache WHERE owner_id=? AND url=?",
+            (owner, url),
+        ).fetchone()
+    assert item["status"] == "stored"
+    assert doc["mime_type"] == "application/pdf" and Path(doc["storage_path"]).read_bytes() == pdf
+    manifest = json.loads(doc["manifest"])
+    source_response = manifest["source_response"]
+    assert source_response["sha256"] == hashlib.sha256(envelope).hexdigest()
+    assert Path(source_response["cas_path"]).read_bytes() == envelope
+    assert source_response["extraction"]["protocol"] == "bkpm-multipart-pdf-v1"
+    assert cached["etag"] is None and cached["last_modified"] is None
+
+
 def test_candidates_are_private_and_require_revision_and_country_anchors(client, monkeypatch):
     fake_web(monkeypatch)
     discover(client)

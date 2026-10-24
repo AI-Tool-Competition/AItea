@@ -394,11 +394,19 @@ def test_main_injects_mode_in_both_workers_and_keeps_upload_and_shared_search(tm
     monkeypatch.setattr(collection, "CollectionWorkers", Workers)
     app = create_app(data_dir=tmp_path / "api", enable_scheduler=True)
     with TestClient(app) as client:
-        assert client.get("/api/tea/health").json()["collector"] == {
+        collector = client.get("/api/tea/health").json()["collector"]
+        assert collector == {
             "status": "stopped",
             "last_error_at": None,
             "shared_library_workers": "external",
+            "official_source_import": {
+                "status": "running",
+                "last_cycle_at": collector["official_source_import"]["last_cycle_at"],
+                "last_cycle_counts": {"stored": 0, "skipped": 0, "blocked": 0, "deferred": 0},
+                "last_error_at": None,
+            },
         }
+        assert collector["official_source_import"]["last_cycle_at"]
         assert captured["workers"] == captured["scheduler"] == EXTERNAL
         alice = client.post("/api/tea/auth/demo", json={}).json()["id"]
         uploaded = client.post(

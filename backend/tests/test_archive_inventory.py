@@ -214,7 +214,7 @@ def test_retrieval_inventory_reports_current_inputs_and_models_without_vector_by
         for secret in ("PRIVATE_INDEX_TEXT", "PRIVATE_INDEX_CONTEXT", "PRIVATE_OTHER_MODEL")
     )
     assert '"vector"' not in content and '"retrieval_eligible":true' not in content
-    assert report["summary"]["format_version"] == 7
+    assert report["summary"]["format_version"] == 8
     assert (
         report["summary"]["retrieval_scope"]
         == "stored_index_and_input_hash_matching_vectors_not_rag_eligibility"
@@ -944,7 +944,7 @@ def test_large_treaty_page_exports_all_bounded_records_and_scalar_provenance_wit
         assert row["source_url"] == page_record["final_url"]
         assert row["source_original"] == page_record["original"]
         assert row["retrieval_eligible"] is False and row["export_status"] == "exported"
-    assert report["summary"]["format_version"] == 7
+    assert report["summary"]["format_version"] == 8
     assert report["summary"]["catalog_documents"] == 40
     assert report["summary"]["catalog_document_gaps"] == report["summary"]["anomalies"] == 0
     assert report["summary"]["countries"]["ID"]["catalog_documents"] == 40

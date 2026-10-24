@@ -22,14 +22,15 @@ make collection-catalog COUNTRY=SG
 | inventory 中的 `ocr-pages.jsonl`、`ocr-regions.jsonl` | 用页码、区域和源哈希定位扫描件与识别依据 |
 | inventory 中的 `source-mapping.jsonl` | 查格式与结构定位；保留不支持格式的显式缺口 |
 | `sources.csv` | 查来源健康、失败原因、下次复查 UTC 时间；额度等待是可恢复状态 |
-| `raw-latest-versions.csv` | 原始仓最新缓存的 URL、摘要和路径；不等于已入库、解析或审核 |
+| `raw-latest-versions.csv` | 原始仓最新缓存的 URL、摘要和路径；原件被采集不等于解析或审核完成 |
+| inventory 内的 `official-source-imports.jsonl` | 每个新内容版本被自动排入解析、跳过或阻止的原因与正式资料版本 ID，同一数据库快照读取 |
 | `summary.json`、`COMPLETE.json` | 观察时间、统计、缺口和本目录文件的大小、SHA-256 |
 
 `original_path` 相对于数据根，不能直接移走原件。CSV 使用 UTF-8 BOM，危险公式前缀转义，可用电子表格筛选；原始字段保留在 JSONL。正文、网址及文件名始终作为数据处理。
 
 ## 完成度与边界
 
-`text_complete` 表示解析完整性，未知和未完成保持可见。独立二级法规文本化，普通附件只保留原件。一级资料的 `indexed_chunk_count`、`source_hash_matches`、`index_complete` 和 `matching_vector_count` 描述索引现状；`fingerprint_counts` 列明模型指纹。匹配向量只表示与当前切片输入哈希一致，不证明它通过当前模型、有效版本、适用期及审核。正式 RAG 准入仍由 [共享总库规则](SYSTEM_LIBRARY.md) 判断。
+`text_complete` 表示解析完整性，未知和未完成保持可见。独立二级法规文本化，普通附件只保留原件。自动采集的新法规和指引会先建立带哈希的系统资料版本并排入解析；来源采集回执、解析队列与法律审核状态分别核对。一级资料的 `indexed_chunk_count`、`source_hash_matches`、`index_complete` 和 `matching_vector_count` 描述索引现状；`fingerprint_counts` 列明模型指纹。匹配向量只表示与当前切片输入哈希一致，不证明它通过当前模型、有效版本、适用期及审核。正式 RAG 准入仍由 [共享总库规则](SYSTEM_LIBRARY.md) 判断。
 
 `gaps` 中 `legal_review_not_published` 是审核待办，不等于文件损坏。`text_incomplete_or_unknown`、`index_incomplete_or_stale`、`vectors_incomplete_or_unknown` 分别指向文本、索引、向量待办。原件异常见 inventory 的 `anomalies`。统计只覆盖本库现有记录，不证明外部法规清单全部采齐。
 

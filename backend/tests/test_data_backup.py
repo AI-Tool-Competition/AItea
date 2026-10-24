@@ -11,6 +11,7 @@ import pytest
 
 from app import data_backup as module
 from app.db import Database, dump, now
+from app.official_source_import import OfficialSourceImporter
 from app.service import AppError, Service
 from app.system_library import SYSTEM_OWNER_ID, ensure_principal
 
@@ -124,6 +125,23 @@ def populated(tmp_path):
         conn.execute(
             "INSERT INTO collection_network_leases VALUES(?,?,?)", ("old-net", "example.test", 9999999999)
         )
+    OfficialSourceImporter(service)
+    with service.db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO official_source_imports(
+                event_key,source_id,country,source_url,content_hash,document_id,status,reason,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,'stored',NULL,?,?)""",
+            (
+                "official-updates/ID/events/2026-10-24/receipt.json",
+                "id-bpom-regulations",
+                "ID",
+                "https://www.bi.go.id/regulation",
+                documents[SYSTEM_OWNER_ID]["content_hash"],
+                documents[SYSTEM_OWNER_ID]["id"],
+                now(),
+                now(),
+            ),
+        )
     return service, documents, proof
 
 
@@ -184,6 +202,8 @@ def test_complete_backup_restores_private_and_shared_without_reinterpreting_proo
             "retrieval_vectors",
             "retrieval_chunks",
             "checklist_candidate_source_records",
+            "official_source_imports",
+            "official_source_import_cursor",
         )
     }
     manifests = {

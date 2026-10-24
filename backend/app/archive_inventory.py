@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–22 without opening originals.
+"""Export a private, read-only inventory of schema 7–23 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -25,14 +25,16 @@ from uuid import uuid4
 from .blob_store import _sync_directory
 from .ingestion_quality import text_complete
 from .native_mapping_inventory import MAX_MANIFEST_BYTES, MAX_RECORD_BYTES, mappings, validate_mapping
+from .system_library import SYSTEM_OWNER_ID
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)
+SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
     "candidate-source-records.jsonl",
     "catalog-documents.jsonl",
+    "official-source-imports.jsonl",
     "relations.jsonl",
     "ocr-pages.jsonl",
     "ocr-regions.jsonl",
@@ -103,7 +105,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–22; use the matching application version"
+                "archive inventory requires schema 7–23; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -142,9 +144,14 @@ def _validate_schema(conn):
             conn.execute(
                 "SELECT candidate_id,source_record,source_page_url,source_page_sha256,created_at FROM checklist_candidate_source_records LIMIT 0"
             )
+        if version >= 23:
+            conn.execute(
+                "SELECT event_key,source_id,country,source_url,content_hash,previous_content_hash,source_event_at,source_kind,declared_mime_type,mime_type,discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,source_root,document_id,status,reason,created_at,updated_at FROM official_source_imports LIMIT 0"
+            )
+            conn.execute("SELECT country,event_ns FROM official_source_import_cursor LIMIT 0")
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–22 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–23 database") from exc
 
 
 class _Originals:
@@ -1832,6 +1839,28 @@ def _relations(conn, partitions, summary, owner, country):
         _count(summary, "relations", row["source_country"], anomalies)
 
 
+def _official_source_imports(conn, partitions, summary, owner, country):
+    """Expose system-only source-to-document import receipts in the same DB snapshot."""
+    if owner not in (None, SYSTEM_OWNER_ID):
+        return
+    where, params = _where(None, country, "country", "country")
+    cursor = conn.execute(
+        f"""SELECT event_key,source_id,country,source_url,content_hash,previous_content_hash,source_event_at,
+            source_kind,declared_mime_type,mime_type,
+            discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,source_root,
+            document_id,status,reason,created_at,updated_at
+        FROM official_source_imports WHERE {where} ORDER BY country,event_key""",
+        params,
+    )
+    for row in _rows(cursor):
+        record = dict(row)
+        _write_jsonl(
+            partitions.file(SYSTEM_OWNER_ID, row["country"], "official-source-imports.jsonl"), record
+        )
+        summary["official_source_imports"] += 1
+        summary["official_source_import_statuses"][row["status"]] += 1
+
+
 def _texts(conn, partitions, summary, owner, country):
     """One immutable original at a time; secondary legal text stays outside RAG."""
     where, params = _where(owner, country)
@@ -2017,7 +2046,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 7,
+                "format_version": 8,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -2026,6 +2055,8 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 "documents": 0,
                 "discovery_pages": 0,
                 "candidate_source_records": 0,
+                "official_source_imports": 0,
+                "official_source_import_statuses": Counter(),
                 "catalog_documents": 0,
                 "catalog_document_gaps": 0,
                 "relations": 0,
@@ -2072,6 +2103,8 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 _pages(conn, partitions, originals, summary, owner, country)
                 if schema_version >= 22:
                     _candidate_source_records(conn, partitions, summary, owner, country)
+                if schema_version >= 23:
+                    _official_source_imports(conn, partitions, summary, owner, country)
                 _relations(conn, partitions, summary, owner, country)
                 if include_text:
                     _texts(conn, partitions, summary, owner, country)
@@ -2081,6 +2114,9 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
         summary.update(completed=True, completed_at=_now())
         summary["anomaly_counts"] = dict(sorted(summary["anomaly_counts"].items()))
         summary["countries"] = dict(sorted(summary["countries"].items()))
+        summary["official_source_import_statuses"] = dict(
+            sorted(summary["official_source_import_statuses"].items())
+        )
         _private_file(temporary / "summary.json", summary)
         _private_file(
             temporary / "COMPLETE", {"snapshot_id": snapshot_id, "completed_at": summary["completed_at"]}
@@ -2107,7 +2143,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–22)"
+        description="Export a read-only catalog of stored originals (schema 7–23)"
     )
     parser.add_argument(
         "--data-dir", default=os.getenv("TEA_DATA_DIR") or str(Path(__file__).resolve().parents[2] / "data")

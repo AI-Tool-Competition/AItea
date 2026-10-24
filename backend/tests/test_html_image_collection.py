@@ -285,7 +285,53 @@ def test_official_source_parse_automatically_uses_its_approved_asset_hosts(servi
     assert observed["official_source"] is True
     assert observed["owner"] == SYSTEM_OWNER_ID
     assert observed["active_claim"]["lease_token"] == claim["lease_token"]
-    assert observed["allowed_asset_hosts"] == ["www.ccs.gov.sg", "isomer-user-content.by.gov.sg"]
+    assert observed["allowed_asset_hosts"] == ["isomer-user-content.by.gov.sg"]
+
+
+def test_official_html_images_allow_the_page_host_with_no_extra_asset_hosts(service, monkeypatch):
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+
+    source_url = "https://www.enterprisesg.gov.sg/guidance/regulation"
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    doc = document(
+        service,
+        owner=SYSTEM_OWNER_ID,
+        name="same-origin-guidance",
+        source_url=source_url,
+        html="<main><h1>Official guidance</h1><p>Read the source text.</p><img src='/assets/chart.png'></main>",
+    )
+    with service.db.transaction() as conn:
+        conn.execute(
+            "CREATE TABLE official_source_imports(document_id TEXT,status TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO official_source_imports VALUES(?,'stored')",
+            (doc["id"],),
+        )
+    monkeypatch.setenv("COLLECTION_PROXY_URL", "http://127.0.0.1:8030")
+    monkeypatch.setenv("COLLECTION_PROXY_HOSTS", "www.enterprisesg.gov.sg")
+    requests = []
+
+    def download(url, *, deadline, required_host, connection_slot, consume, max_bytes, **_options):
+        requests.append(url)
+        assert required_host == "www.enterprisesg.gov.sg"
+        assert deadline > time.monotonic() and max_bytes == 8 * 1024 * 1024
+        with connection_slot(required_host):
+            blob = consume([image()])
+        return {"url": url, "blob": blob, "mime_type": "image/png", "response_status": 200}
+
+    monkeypatch.setattr(ingestion_download, "_download", download)
+    result = HtmlImageCollector(service).prepare(
+        SYSTEM_OWNER_ID,
+        doc["id"],
+        deadline=time.monotonic() + 60,
+        official_source=True,
+        allowed_asset_hosts=[],
+    )
+
+    assert requests == ["https://www.enterprisesg.gov.sg/assets/chart.png"]
+    assert len(result["bound_images"]) == 1 and result["errors"] == []
 
 
 def test_download_checkpoint_survives_stale_manifest_and_reuses_cas_without_new_http(service, monkeypatch):

@@ -73,7 +73,7 @@ def test_official_html_context_includes_the_imported_page_hash(tmp_path, monkeyp
     assert context[1]["content_hash"] == blob.digest
 
 
-def test_official_html_assets_allow_same_origin_and_explicit_asset_hosts(monkeypatch, tmp_path):
+def test_official_html_assets_return_only_explicit_cross_origin_hosts(monkeypatch, tmp_path):
     service = Service(tmp_path)
     source = {
         "url": "https://www.enterprisesg.gov.sg/guidance/regulation",
@@ -82,10 +82,9 @@ def test_official_html_assets_allow_same_origin_and_explicit_asset_hosts(monkeyp
     }
     monkeypatch.setattr(service.collection, "_official_html_source", lambda _document: (source, {}))
 
-    assert service.collection._official_html_asset_hosts({}) == [
-        "www.enterprisesg.gov.sg",
-        "assets.gov.sg",
-    ]
+    assert service.collection._official_html_asset_hosts({}) == ["assets.gov.sg"]
+    source["html_asset_hosts"] = []
+    assert service.collection._official_html_asset_hosts({}) == []
 
 
 def test_iframe_binds_only_to_same_source_pdf_version_with_ready_index(tmp_path):

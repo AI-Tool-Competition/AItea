@@ -761,18 +761,11 @@ class CollectionService:
         return source, dict(imported)
 
     def _official_html_asset_hosts(self, document):
-        """Return same-origin and explicitly approved asset hosts for official HTML."""
+        """Return explicitly approved cross-origin assets; the page host is implicit."""
         context = self._official_html_source(document)
         if not context:
             return None
-        from app.shared.infrastructure.http.download import _validated_url
-
-        source = context[0]
-        _, page_host = _validated_url(source["url"])
-        approved = [*source.get("html_asset_hosts", [])]
-        if page_host in source.get("allowed_hosts", []):
-            approved.insert(0, page_host)
-        return list(dict.fromkeys(approved))
+        return list(context[0].get("html_asset_hosts", []))
 
     def claim_processing(
         self,
@@ -1397,7 +1390,7 @@ class CollectionService:
 
                     if (
                         manifest.get("parser") == "html-basic"
-                        and asset_hosts
+                        and asset_hosts is not None
                         and claim["owner_id"] == SYSTEM_OWNER_ID
                     ):
                         from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
@@ -1458,7 +1451,7 @@ class CollectionService:
 
                         html_ocr_batch = (
                             min(20, vision_ocr_request_worker_limit())
-                            if asset_hosts and vision_ocr_configured()
+                            if asset_hosts is not None and vision_ocr_configured()
                             else 4
                         )
 

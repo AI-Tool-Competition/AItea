@@ -695,6 +695,185 @@ def test_blocked_mineru_download_resumes_existing_batch_without_resubmitting(ser
     assert tuple(task) == ("uploaded", batch_id, 0)
 
 
+def test_confirmed_mineru_failure_retries_in_fresh_generation_and_reuses_other_parts(service):
+    from app.contexts.documents.infrastructure.providers.mineru import (
+        MinerUParser,
+        parse_profile_hash,
+        pending_manifest,
+    )
+
+    content = make_pdf([("Part one", False), ("Part two", False), ("Part three", False)])
+    document = register(service, content, key="mineru-terminal-auto-retry")
+    profile = MinerUParser.profile()
+    profile_hash = parse_profile_hash(profile)
+    manifest = pending_manifest("official.pdf", document["content_hash"])
+    manifest["remote_parse"].update(state="pending", profile=profile, profile_hash=profile_hash, page_count=3)
+    part_blob = dump(
+        {
+            "content_hash": document["content_hash"],
+            "size": document["size"],
+            "storage_path": document["storage_path"],
+            "mime_type": document["mime_type"],
+        }
+    )
+    done_blob = dump({"content_hash": "a" * 64, "size": 1, "storage_path": "files/result.zip"})
+    live_upload = dump({"upload_url": "https://upload.example.org/signed"})
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        for index, (state, batch, private, result, error) in enumerate(
+            [
+                ("blocked", "failed-batch-0001", "{}", None, "remote_failed"),
+                ("done", "done-batch-0002", "{}", done_blob, None),
+                ("uploaded", "live-batch-0003", live_upload, None, None),
+            ]
+        ):
+            conn.execute(
+                """INSERT INTO document_parse_tasks(
+                id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,
+                part_blob,state,batch_id,private_data,result_blob,progress,attempts,next_at,error_code,
+                created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    f"task-{index}",
+                    document["id"],
+                    "owner",
+                    document["content_hash"],
+                    profile_hash,
+                    index,
+                    index + 1,
+                    index + 1,
+                    part_blob,
+                    state,
+                    batch,
+                    private,
+                    result,
+                    "{}",
+                    0,
+                    0,
+                    error,
+                    now(),
+                    now(),
+                ),
+            )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision("processing_review"),
+            exhausted=True,
+            error_type="MinerUError",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        scheduled_results = list(
+            pool.map(lambda _: service.collection.recovery.run_due(limit=32), range(2))
+        )
+    assert all(result["requeued"] == 0 for result in scheduled_results)
+    with closing(service.db.connect()) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM collection_recovery_events WHERE event='terminal_mineru_failure_retry_scheduled'"
+        ).fetchone()[0] == 1
+        recovery = conn.execute(
+            "SELECT status,reason,retry_plan FROM collection_recovery_jobs WHERE item_id=?",
+            (document["id"],),
+        ).fetchone()
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0])
+        old_tasks = conn.execute(
+            "SELECT part_index,state,batch_id FROM document_parse_tasks WHERE document_id=? AND profile_hash=? ORDER BY part_index",
+            (document["id"], profile_hash),
+        ).fetchall()
+        retry_hash = saved["remote_parse"]["profile_hash"]
+        retry_tasks = conn.execute(
+            "SELECT part_index,state,batch_id,result_blob FROM document_parse_tasks WHERE document_id=? AND profile_hash=? ORDER BY part_index",
+            (document["id"], retry_hash),
+        ).fetchall()
+    assert recovery["status"] == "waiting" and recovery["reason"] == "mineru_terminal_retry"
+    assert saved["remote_parse"]["retry_generation"].startswith("auto-")
+    assert retry_hash != profile_hash
+    assert [(row["state"], row["batch_id"]) for row in old_tasks] == [
+        ("blocked", "failed-batch-0001"),
+        ("done", "done-batch-0002"),
+        ("superseded", "live-batch-0003"),
+    ]
+    assert [(row["state"], row["batch_id"]) for row in retry_tasks] == [
+        ("planned", None),
+        ("done", "done-batch-0002"),
+        ("uploaded", "live-batch-0003"),
+    ]
+    assert retry_tasks[1]["result_blob"] == done_blob
+
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0 WHERE item_id=?", (document["id"],))
+        conn.execute("UPDATE processing_jobs SET available_at=0 WHERE document_id=?", (document["id"],))
+    resumed = service.collection.recovery.run_due(limit=32)
+    assert resumed["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "mineru_terminal_retry")
+
+
+def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeypatch, service):
+    from app.contexts.documents.infrastructure.providers import mineru
+
+    content = make_pdf([("Terminal failure", False)])
+    document = register(service, content, key="mineru-terminal-state")
+    profile = mineru.MinerUParser.profile()
+    profile_hash = mineru.parse_profile_hash(profile)
+    manifest = mineru.pending_manifest("official.pdf", document["content_hash"])
+    manifest["remote_parse"].update(state="pending", profile=profile, profile_hash=profile_hash, page_count=1)
+    part_blob = dump(
+        {
+            "content_hash": document["content_hash"],
+            "size": document["size"],
+            "storage_path": document["storage_path"],
+            "mime_type": document["mime_type"],
+        }
+    )
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document["id"]))
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='queued',available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        conn.execute(
+            """INSERT INTO document_parse_tasks(
+            id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,
+            part_blob,state,batch_id,private_data,progress,attempts,next_at,created_at,updated_at
+            ) VALUES('remote-task',?,?,?,?,0,1,1,?,'uploaded','batch-12345678','{}','{}',0,0,?,?)""",
+            (document["id"], "owner", document["content_hash"], profile_hash, part_blob, now(), now()),
+        )
+    monkeypatch.setenv("MINERU_API_TOKEN", "test-token")
+    monkeypatch.setattr(mineru.MinerUClient, "api", lambda *_args, **_kwargs: {
+        "extract_result": [{"data_id": "remote-task", "state": "failed", "err_code": "remote_failed"}]
+    })
+    claim = service.collection.claim_processing(owner_id="owner", document_ids=[document["id"]])
+    assert claim
+    with closing(service.db.connect()) as conn:
+        current = dict(conn.execute("SELECT * FROM documents WHERE id=?", (document["id"],)).fetchone())
+        current["manifest"] = json.loads(current["manifest"])
+
+    with pytest.raises(mineru.MinerUError, match="remote_failed"):
+        mineru.MinerUParser(service.collection).step(current, claim, current["manifest"])
+
+    with closing(service.db.connect()) as conn:
+        task = conn.execute(
+            "SELECT state,error_code FROM document_parse_tasks WHERE id='remote-task'"
+        ).fetchone()
+    assert tuple(task) == ("failed", "remote_failed")
+
+
 @pytest.mark.parametrize("status", [400, 401, 403])
 def test_permanent_ocr_http_rejections_are_not_retried(status):
     page = {

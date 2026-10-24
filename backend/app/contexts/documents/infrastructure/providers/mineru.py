@@ -761,7 +761,11 @@ class MinerUParser:
             except MinerUWait as exc:
                 self._save(doc, claim, task, next_at=time.time() + exc.retry_after, error_code=exc.code)
             except MinerUError as exc:
-                self._save(doc, claim, task, state="blocked", error_code=exc.code)
+                # Preserve a confirmed provider-terminal failure as a distinct
+                # state. Recovery can submit a fresh generation for that part
+                # while reusing successful and still-live batches.
+                if task["state"] != "failed" or task["error_code"] != exc.code:
+                    self._save(doc, claim, task, state="blocked", error_code=exc.code)
                 raise
         tasks = self._tasks(doc, fingerprint)
         if all(task["state"] == "done" for task in tasks):

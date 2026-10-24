@@ -64,6 +64,10 @@ from source_health import (  # noqa: E402
 PROTOCOL = "aitea-unattended-collection-v1"
 SETNEG_ID = "id-setneg-perpu"
 SETNEG_URL = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0"
+
+
+class PoolMigrationRequired(ValueError):
+    """Raised when a v2 pool was edited without its ledger migration."""
 LIMITS = {
     "workers": 4,
     "sources_per_tick": 4,
@@ -192,6 +196,25 @@ def recipe(source):
         ],
         "max_links": 32,
     }
+    if source["id"] == "id-beacukai-regulations":
+        # The portal is a legacy query-routed directory: its shell and
+        # navigation are not regulation records. Keep category, detail and
+        # original-file paths distinct so daily request budget reaches laws.
+        result.update(
+            catalog_patterns=[
+                r"^/$",
+                r"^/index\.html\?page=jenis/[1-9][0-9]{0,3}/[a-z0-9-]{1,100}/[1-9][0-9]{0,5}\.html$",
+            ],
+            detail_patterns=[
+                r"^/index\.html\?page=detail/jenis/[1-9][0-9]{0,3}/[1-9][0-9]{0,7}/[a-z0-9-]{1,100}(?:/[a-z0-9-]{1,160}){1,8}\.html$",
+            ],
+            document_patterns=[
+                r"^/referensi/[0-9]{4}/(?:0[1-9]|1[0-2])/[a-f0-9]{12,64}-[^/?]+\.(?:pdf|docx?)$",
+            ],
+            exclude_patterns=[r"^/referensi/[0-9]{4}/[0-9]{2}/[a-f0-9]{12,64}-[^/?]*user-manual[^/?]*\.pdf$"],
+            include_terms=[],
+            max_links=200,
+        )
     if rcep_policy(source):
         result["exclude_patterns"] = [RCEP_OUTSIDE_SCOPE]
     if source["id"] == SETNEG_ID:
@@ -201,6 +224,77 @@ def recipe(source):
             max_links=51,
         )
     return result
+
+
+def _revalidate_beacukai_discovery(self):
+    """Reclassify this legacy catalogue from verified cached HTML without GETs."""
+    source = next((row for row in self.sources if row["id"] == "id-beacukai-regulations"), None)
+    if source is None:
+        return
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import _Recipe
+
+    current = self.state["sources"].setdefault(source["id"], {})
+    policy_hash = hashlib.sha256(
+        json.dumps(recipe(source), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    if current.get("discovery_policy_hash") == policy_hash:
+        return
+    cache = current.setdefault("cache", {})
+    frontier = current.setdefault("frontier", {})
+    rules = _Recipe(recipe(source))
+    archived = reclassified = 0
+    for url, item in list(frontier.items()):
+        purpose = rules.purpose(url)
+        if purpose is None:
+            self.event(
+                "frontier_archived",
+                source_id=source["id"],
+                url=url,
+                mapping=item,
+                reason="discovery_scope_revalidated",
+            )
+            del frontier[url]
+            archived += 1
+        elif item.get("purpose") != purpose:
+            item["purpose"] = purpose
+            reclassified += 1
+    cached = cache.get(source["url"])
+    replay_status, root_hash = "no_cached_root", None
+    if cached and valid_cached(self.root, cached):
+        raw = (self.root / cached["path"]).read_bytes()
+        inspected = discover_page(source["url"], raw, cached["mime_type"], recipe(source))
+        if inspected.get("matched"):
+            refreshed = {**cached, "discovery": inspected}
+            cache[source["url"]] = refreshed
+            self.map_links(source, source["url"], refreshed, cached, frontier, cache, deque())
+            replay_status, root_hash = "verified_cached_discovery", cached["content_hash"]
+        else:
+            replay_status = "cached_discovery_unmatched"
+    elif cached:
+        replay_status = "cached_integrity_failed"
+    before_hash = current.get("discovery_policy_hash")
+    current["discovery_policy_hash"] = policy_hash
+    # A changed policy may expose useful targets immediately. Their GETs still
+    # pass the original per-source, per-host and daily budgets.
+    if replay_status == "verified_cached_discovery" and current.get("health") == "healthy":
+        current["next_at"] = max(
+            time.time() + self.limits["tick_seconds"],
+            current.get("retry_not_before") or 0,
+            max((self.host_cooldowns.get(h, 0) for h in source["allowed_hosts"]), default=0),
+        )
+    self.event(
+        "discovery_policy_revalidated",
+        source_id=source["id"],
+        previous_policy_hash=before_hash,
+        policy_hash=policy_hash,
+        replay_status=replay_status,
+        root_hash=root_hash,
+        archived_frontier=archived,
+        reclassified_frontier=reclassified,
+        frontier_count=len(frontier),
+        network_requests=0,
+    )
+    self.save()
 
 
 def valid_cached(root, cached):
@@ -292,6 +386,7 @@ class Collector:
         self.state["active_sources"] = []
         self.reload_sources()
         self.apply_candidate_policy()
+        _revalidate_beacukai_discovery(self)
         self.save()
 
     def configure_transport(self):
@@ -313,6 +408,11 @@ class Collector:
             if revision is None:
                 self.state.pop("registry_error", None)
                 return
+            if (
+                revision.payload.get("protocol") == "aitea-official-source-pool-v2"
+                and revision.digest != self.binding["pool_sha256"]
+            ):
+                raise PoolMigrationRequired("Source pool changes require an explicit ledger migration and restart")
             candidate = active_sources(revision.payload, self.country, _validated_url)
             if len({h for s in candidate for h in s["allowed_hosts"]}) > 64:
                 raise ValueError("Collection proxy scope exceeds 64 hosts")
@@ -338,7 +438,9 @@ class Collector:
         except (OSError, ValueError, KeyError, TypeError) as error:
             # Last good revision and every receipt/budget remain intact; log no raw configuration.
             failure = {
-                "code": "invalid_source_registry",
+                "code": "source_pool_migration_required"
+                if isinstance(error, PoolMigrationRequired)
+                else "invalid_source_registry",
                 "error_type": type(error).__name__,
             }
             if self.state.get("registry_error") != failure:

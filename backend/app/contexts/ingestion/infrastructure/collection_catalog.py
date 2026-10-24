@@ -324,6 +324,22 @@ def _raw(root, output, countries, summary):
 
 def _readme(snapshot, summary):
     counts = summary["inventory"]
+    queue = counts.get("index_queue", {})
+    if queue.get("status") == "available":
+        generation_counts = "、".join(
+            f"{key} {value}" for key, value in queue.get("remote_generations", {}).items()
+        ) or "无"
+        chunk_counts = "、".join(f"{key} {value}" for key, value in queue.get("chunks", {}).items()) or "无"
+        job_counts = "、".join(
+            f"{key} {value}" for key, value in queue.get("processing_jobs", {}).items()
+        ) or "无"
+        queue_status = (
+            f"索引队列观察时间 {queue.get('as_of')}：远端代次 {generation_counts}；分块 {chunk_counts}；"
+            f"处理任务 {job_counts}；待只读核账的未知提交 {queue.get('blocked_paid_result_unknown_jobs', 0)}；"
+            f"超过 15 分钟未更新的待处理代次 {queue.get('stale_remote_generations_over_15m', 0)}。"
+        )
+    else:
+        queue_status = "索引队列状态未导出；请结合逐份资料的 index_status 和 gaps 核对。"
     return f"""# 法规资料目录
 
 生成于 {summary["generated_at"]}。只包含共享法规总库，不含个人上传。
@@ -351,6 +367,7 @@ source-mapping.jsonl 为来源映射。独立二级资料文本化；普通附�
 text_complete 是正文完整性；index_complete、source_hash_matches 和 matching_vector_count
 描述索引现状。matching_vector_count 只计与切片输入哈希匹配的真实向量；
 fingerprint_counts 列明模型指纹，有向量不等于通过当前模型、法规效力和审核门禁。
+{queue_status}该队列仅汇总共享资料的已记录代次，不含文档标识、正文或错误详情；旧代次仍在总数中，逐份资料的当前索引状态以 documents.csv 和正式快照为准。未知提交只进入只读回执核对，不等于可安全重发。
 只有一级资料按服务端审核、适用期、版本与索引规则进入 RAG；二级资料不建立向量。
 gaps 列保留未完成、未知、过期索引和审核状态，不伪造成功。
 

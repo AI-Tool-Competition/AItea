@@ -150,14 +150,22 @@ def _canonical(url: str, base: str | None = None) -> tuple[str, str]:
         # Encode only the resource path/query; credentials and authority remain
         # untouched for the same strict URL validation as a direct request.
         parsed = urlsplit(value)
-        # Bandung's official paginator emits HTTP links, but the exact same
-        # paths were verified over HTTPS. Never request the insecure URL, and
-        # never upgrade another origin, credentials or a nonstandard port.
+        # These exact official hosts have verified HTTPS counterparts despite
+        # emitting legacy HTTP links. Never upgrade another origin, credentials
+        # or a nonstandard port.
         scheme = parsed.scheme
         if (
             scheme == "http"
-            and parsed.netloc in {"jdih.bandung.go.id", "www.wto.org", "www.iras.gov.sg"}
-            and urlsplit(base).hostname == parsed.netloc
+            and (
+                (
+                    parsed.netloc in {"jdih.bandung.go.id", "www.wto.org", "www.iras.gov.sg"}
+                    and urlsplit(base).hostname == parsed.netloc
+                )
+                or (
+                    parsed.netloc == "repository.beacukai.go.id"
+                    and urlsplit(base).hostname == "peraturan.beacukai.go.id"
+                )
+            )
         ):
             scheme = "https"
         value = urlunsplit(

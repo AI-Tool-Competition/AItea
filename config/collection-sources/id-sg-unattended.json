@@ -320,6 +320,65 @@
       "group_id": "id-business-tax"
     },
     {
+      "id": "id-beacukai-regulations",
+      "country": "ID",
+      "topics": [
+        "customs",
+        "imports",
+        "exports",
+        "tariffs",
+        "excise"
+      ],
+      "title": "印度尼西亚海关总署官方法规目录",
+      "url": "https://peraturan.beacukai.go.id/",
+      "priority": 82,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "peraturan.beacukai.go.id",
+        "repository.beacukai.go.id"
+      ],
+      "discovery_keywords": [
+        "bea masuk",
+        "bea keluar",
+        "kepabeanan",
+        "ekspor",
+        "impor",
+        "cukai"
+      ],
+      "verification": {
+        "official_evidence_url": "https://peraturan.beacukai.go.id/",
+        "checked_at": "2026-10-24T09:19:54.961112+00:00",
+        "official_identity": "Direktorat Jenderal Bea dan Cukai 正式法规目录，页面署名与 peraturan.beacukai.go.id 官方域名一致；项目代理实际取得 HTTP 200 页面。",
+        "business_use": "发现海关、进出口、关税与消费税正式规范，补充印尼茶叶跨境贸易与进口成本核查；目录覆盖范围仍需逐项核对。",
+        "checklist_items": [
+          "ID-1.8",
+          "ID-4.2",
+          "ID-4.3"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-source-probe-beacukai-20261024/events/2026-10-24/1792833594961538569-539144ba139740a5a5f55ebdff1990ce.json",
+        "server_receipt_sha256": "9c46b956281704ec265d9e1a22ca578bc03e0aef5714bdda14abbdfd850f2b81",
+        "body_sha256": "ff73e332a092f81edce44c141fc915a9226e9068739c8ed94e6c63be3e86ed65",
+        "host_expansions": [
+          {
+            "host": "repository.beacukai.go.id",
+            "evidence_url": "https://peraturan.beacukai.go.id/",
+            "body_sha256": "ff73e332a092f81edce44c141fc915a9226e9068739c8ed94e6c63be3e86ed65",
+            "path_prefix": "/referensi/"
+          }
+        ],
+        "limitations": [
+          "单次有界代理轮询共记录 128 条来源引用、4 个内容版本事件和 3 个映射资源，原件仍需逐份核验。",
+          "官网说明目录数据库仍在持续更新；不作为全国法规全量证明，不替代财政部、税务总局或国家法规发布渠道。",
+          "网络可达和来源发现不等于法规现行有效或适用于具体茶产品；需核对原件、版本、适用期与修订关系。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-trade-origin"
+    },
+    {
       "id": "sg-enterprisesg-rcep",
       "country": "SG",
       "topics": [
@@ -522,7 +581,7 @@
       ],
       "verification": {
         "official_evidence_url": "https://www.jdih.kemenkeu.go.id/dok/144-pmk-04-2022/summary",
-        "checked_at": "2026-10-20T06:44:34.090818+00:00",
+        "checked_at": "2026-10-24T08:53:54.115588+00:00",
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "定位进口税费、估价、海关、税收及协定实施部长规章，保留修订/废止关系。",
         "checklist_items": [
@@ -535,10 +594,17 @@
         "body_sha256": null,
         "limitations": [
           "本机 www 与非 www 入口本次均 DNS 超时；官方网页仍可由检索核到，记为暂时访问失败，不认定网站已过期或法规失效。",
-          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。",
+          "2026-10-24T08:53:54.115588+00:00 项目代理复测仍连续失败（tls_certificate_verification_failed，10 次）；已从活动抓取队列归档，保留 ID、账本、原件和失败历史，网络恢复且取得正式内容回执后再评估恢复。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-24T08:53:54.115588+00:00",
+          "status": "network_error",
+          "failure_code": "tls_certificate_verification_failed",
+          "consecutive_failures": 10
+        }
       },
-      "status": "active",
+      "status": "archived",
       "transport": "proxy",
       "group_id": "id-trade-origin"
     },
@@ -567,7 +633,7 @@
       ],
       "verification": {
         "official_evidence_url": "https://pajak.go.id/id/peraturan",
-        "checked_at": "2026-10-20T06:43:56.052691+00:00",
+        "checked_at": "2026-10-24T04:22:17.605822+00:00",
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "核对经营主体税务、进口增值税和适用年度的正式法规及参数。",
         "checklist_items": [
@@ -579,10 +645,18 @@
         "body_sha256": null,
         "limitations": [
           "本机连接失败；检索仍列出 2026 年 10 月税务材料，不能据连接失败认定失效。动态税率与汇率必须保存适用时间。",
-          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。",
+          "2026-10-24T04:22:17.605822+00:00 项目代理复测仍连续失败（unverified_or_challenge_content，9 次）；已从活动抓取队列归档，保留 ID、账本、原件和失败历史，网络恢复且取得正式内容回执后再评估恢复。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-24T04:22:17.605822+00:00",
+          "status": "content_invalid",
+          "http_status": 200,
+          "failure_code": "unverified_or_challenge_content",
+          "consecutive_failures": 9
+        }
       },
-      "status": "active",
+      "status": "archived",
       "transport": "proxy",
       "group_id": "id-business-tax"
     },
@@ -611,7 +685,7 @@
       ],
       "verification": {
         "official_evidence_url": "https://peraturan.go.id/",
-        "checked_at": "2026-10-20T06:44:01.329577+00:00",
+        "checked_at": "2026-10-24T08:53:55.231568+00:00",
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "作为部委发布机关之外的正式法规核对来源，按文号及法律问题补原文与公布信息。",
         "checklist_items": [
@@ -627,10 +701,17 @@
         "body_sha256": null,
         "limitations": [
           "本机连接失败，暂作低优先级可复查候选；不替代各原件版本和法效核验。",
-          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。",
+          "2026-10-24T08:53:55.231568+00:00 项目代理复测仍连续失败（network_timeout，10 次）；已从活动抓取队列归档，保留 ID、账本、原件和失败历史，网络恢复且取得正式内容回执后再评估恢复。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-24T08:53:55.231568+00:00",
+          "status": "network_error",
+          "failure_code": "network_timeout",
+          "consecutive_failures": 10
+        }
       },
-      "status": "active",
+      "status": "archived",
       "transport": "proxy",
       "group_id": "id-trade-origin"
     },
@@ -763,6 +844,7 @@
           ],
           "source_ids": [
             "id-kemendag-regulations",
+            "id-beacukai-regulations",
             "id-kemenkeu-www-regulations",
             "id-ditjenpp-regulations"
           ],
@@ -962,6 +1044,26 @@
         "SG-3.7"
       ],
       "reason": "营销活动的个人信息处理与品牌、商标使用是并行的合规检查项，需分别回到主管机关规则。"
+    },
+    {
+      "source_id": "id-beacukai-regulations",
+      "related_source_id": "id-kemendag-regulations",
+      "type": "cross_checks",
+      "checklist_items": [
+        "ID-1.8",
+        "ID-4.2"
+      ],
+      "reason": "海关总署法规与贸易部进出口规则按同一交易事项交叉核对；一方目录不替代另一方正式规范。"
+    },
+    {
+      "source_id": "id-beacukai-regulations",
+      "related_source_id": "sg-customs-import",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.8",
+        "SG-3.1"
+      ],
+      "reason": "印尼出口侧海关规范与新加坡进口许可及通关要求共同覆盖跨境交易两端；两国规则分别适用，不能相互替代。"
     }
   ]
 }

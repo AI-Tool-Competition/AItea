@@ -52,6 +52,28 @@ class SourceCatalog:
         if revision.digest == self.current.digest:
             return None
         self.validate(revision)
+        if self.current.payload.get("protocol") == "aitea-official-source-pool-v2":
+            if revision.payload.get("protocol") != "aitea-official-source-pool-v2":
+                raise ValueError("A reviewed source pool cannot be downgraded")
+            previous = {row["id"]: row for row in self.current.payload["sources"]}
+            updated = {row["id"]: row for row in revision.payload["sources"]}
+            if not previous.keys() <= updated.keys():
+                raise ValueError("Source IDs are historical records; archive instead of deleting")
+            protected = (
+                "country",
+                "url",
+                "allowed_hosts",
+                "kind",
+                "topics",
+                "discovery_keywords",
+                "setneg_type",
+            )
+            for source_id, before in previous.items():
+                after = updated[source_id]
+                if any(before.get(key) != after.get(key) for key in protected) or before.get(
+                    "verification", {}
+                ).get("checklist_items", []) != after.get("verification", {}).get("checklist_items", []):
+                    raise ValueError("A source's reviewed network or document scope cannot change in place")
         for source in revision.payload["sources"]:
             if source["id"] in identities and identities[source["id"]] != source["country"]:
                 raise ValueError("A source ID cannot be rebound to another country")

@@ -38,6 +38,12 @@ def child(data_dir, output, options, models_env, state, time_budget):
     if hasattr(os, "setsid"):
         os.setsid()
     os.umask(0o077)
+    os.environ["TEA_DATA_DIR"] = str(Path(data_dir).resolve())
+    from app.configuration.environment import load_environment
+
+    # The image downloader uses the same exact-host proxy allowlist as the
+    # unattended collector; model credentials are then loaded separately.
+    load_environment(ROOT)
     configure_models(models_env)
     from app.bootstrap import Service
     from app.contexts.ingestion.application.collection_jobs import CollectionWorkers

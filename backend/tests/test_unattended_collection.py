@@ -48,6 +48,15 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
         assert active
         assert all(source["transport"] == "proxy" and source["status"] == "active" for source in active)
 
+    inaccessible = deepcopy(registry)
+    next(source for source in inaccessible["sources"] if source["status"] == "active")["verification"][
+        "server_status"
+    ] = "access_unavailable"
+    rejected = tmp_path / "unverified-active-source.json"
+    rejected.write_text(json.dumps(inaccessible))
+    with pytest.raises(ValueError, match="successful bounded content probe"):
+        collection.source_pool(rejected, "ID")
+
     archived_id = "id-setneg-perpu"
     next(source for source in registry["sources"] if source["id"] == archived_id)["status"] = "archived"
     migrated = tmp_path / "registry.json"
@@ -918,14 +927,14 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 16
+    assert len(configured) == 17
     originals = [row for row in configured if row["id"] != "id-setneg-perpu"]
-    assert len(originals) == 15
+    assert len(originals) == 16
     for item in originals:
         recipe = collection.recipe(item)
         assert "setneg_type" not in recipe
         assert "required_query_by_host" not in recipe
-        assert recipe["max_links"] == 32
+        assert recipe["max_links"] == (200 if item["id"] == "id-beacukai-regulations" else 32)
     collector = env.make(configured, country=country)
     env.responses.update({item["url"]: html() for item in collector.sources})
     env.responses.update(setneg_responses(count=1))
@@ -933,6 +942,86 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
         collector.fetch(item, item["url"])
     special = {item["url"] for item in collector.sources if item["id"] == "id-setneg-perpu"}
     assert all(row["accept_compressed_json"] == (row["url"] in special) for row in env.calls)
+
+
+def test_beacukai_policy_replays_verified_cache_without_requests_and_reclassifies_frontier(environment):
+    env = environment
+    pool_path = ROOT / "config/collection-sources/id-sg-unattended.json"
+    collector = env.make(pool_path=pool_path, country="ID")
+    source_row = next(row for row in collector.sources if row["id"] == "id-beacukai-regulations")
+    category = "https://peraturan.beacukai.go.id/index.html?page=jenis/12/peraturan-menteri-keuangan/1.html"
+    detail = (
+        "https://peraturan.beacukai.go.id/index.html?page=detail/jenis/12/576/"
+        "peraturan-menteri-keuangan/pmk-208-pmk-11-2013/tarif-bea-masuk.html"
+    )
+    original = (
+        "http://repository.beacukai.go.id/referensi/2026/10/"
+        "a5d5a7b56c24-pmk-208-2026.pdf"
+    )
+    body = (
+        '<html><head><title>Direktori Peraturan DJBC</title></head><body><h1>Official directory</h1>'
+        '<a href="index.html?page=about">About</a>'
+        f'<a href="{category}">Peraturan Menteri Keuangan</a>'
+        f'<a href="{detail}">PMK 208 tentang tarif bea masuk</a>'
+        f'<a href="{original}">PMK 208/2026 original PDF</a></body></html>'
+    ).encode()
+    body_hash = hashlib.sha256(body).hexdigest()
+    relative = "files/cached-homepage.html"
+    local = collector.root / relative
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(body)
+    current = collector.state["sources"].setdefault(source_row["id"], {})
+    current.update(
+        health="healthy",
+        discovery_policy_hash="old-policy",
+        cache={
+            source_row["url"]: {
+                "path": relative,
+                "size": len(body),
+                "content_hash": body_hash,
+                "mime_type": "text/html",
+            }
+        },
+        frontier={
+            "https://peraturan.beacukai.go.id/index.html?page=about": {
+                "parent_url": source_row["url"],
+                "parent_hash": body_hash,
+                "purpose": "detail",
+                "attempt_count": 0,
+                "discovered_at": env.clock[0],
+            },
+            category: {
+                "parent_url": source_row["url"],
+                "parent_hash": body_hash,
+                "purpose": "detail",
+                "attempt_count": 0,
+                "discovered_at": env.clock[0],
+            },
+            detail: {
+                "parent_url": source_row["url"],
+                "parent_hash": body_hash,
+                "purpose": "detail",
+                "attempt_count": 0,
+                "discovered_at": env.clock[0],
+            },
+        },
+    )
+    collector.save()
+
+    resumed = env.restart(collector)
+    frontier = resumed.state["sources"][source_row["id"]]["frontier"]
+    assert "https://peraturan.beacukai.go.id/index.html?page=about" not in frontier
+    assert frontier[category]["purpose"] == "catalog"
+    assert frontier[detail]["purpose"] == "detail"
+    assert "https://repository.beacukai.go.id/referensi/2026/10/a5d5a7b56c24-pmk-208-2026.pdf" in frontier
+    assert frontier[
+        "https://repository.beacukai.go.id/referensi/2026/10/a5d5a7b56c24-pmk-208-2026.pdf"
+    ]["purpose"] == "document"
+    policy_event = env.events(resumed, "discovery_policy_revalidated")[-1]
+    assert policy_event["replay_status"] == "verified_cached_discovery"
+    assert policy_event["archived_frontier"] == 1
+    assert policy_event["network_requests"] == 0
+    assert env.calls == []
 
 
 RCEP_ROOT = (

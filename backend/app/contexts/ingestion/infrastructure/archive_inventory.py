@@ -17,7 +17,7 @@ import sys
 import tempfile
 from collections import Counter
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
@@ -426,6 +426,77 @@ def _retrieval_metadata(conn, ids, available):
         record["matching_vector_count"] += row["vector_count"]
         record["fingerprint_counts"][row["fingerprint"]] = row["vector_count"]
     return result
+
+
+def _index_queue_summary(conn, owner, country):
+    """Aggregate shared-library indexing work without exposing document IDs or errors."""
+    if owner != SYSTEM_OWNER_ID:
+        return {"status": "outside_shared_library_scope"}
+    required = {"ragflow_documents", "ragflow_chunks", "collection_recovery_jobs", "processing_jobs"}
+    available = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?)",
+            tuple(sorted(required)),
+        )
+    }
+    if available != required:
+        return {"status": "unavailable_schema"}
+    filter_sql = "d.owner_id=?"
+    parameters = [owner]
+    if country:
+        filter_sql += " AND (EXISTS(SELECT 1 FROM document_countries c WHERE c.document_id=d.id AND c.country=?)"
+        filter_sql += " OR (d.role='secondary' AND EXISTS(SELECT 1 FROM document_countries c WHERE c.document_id=d.parent_id AND c.country=?)))"
+        parameters.extend((country, country))
+    generations = {
+        row["state"]: row["count"]
+        for row in conn.execute(
+            f"""SELECT r.state,COUNT(*) count FROM ragflow_documents r
+            JOIN documents d ON d.id=r.document_id WHERE {filter_sql} GROUP BY r.state""",
+            parameters,
+        )
+    }
+    chunks = {
+        row["state"]: row["count"]
+        for row in conn.execute(
+            f"""SELECT c.state,COUNT(*) count FROM ragflow_chunks c
+            JOIN ragflow_documents r ON r.generation=c.generation
+            JOIN documents d ON d.id=r.document_id WHERE {filter_sql} GROUP BY c.state""",
+            parameters,
+        )
+    }
+    jobs = {
+        f"{row['phase']}:{row['status']}": row["count"]
+        for row in conn.execute(
+            f"""SELECT j.phase,j.status,COUNT(*) count FROM processing_jobs j
+            JOIN documents d ON d.id=j.document_id WHERE {filter_sql} GROUP BY j.phase,j.status""",
+            parameters,
+        )
+    }
+    recovery = conn.execute(
+        f"""SELECT COUNT(*) FROM collection_recovery_jobs r
+        JOIN documents d ON d.id=r.item_id WHERE {filter_sql}
+        AND r.queue_kind='processing' AND r.phase='embed' AND r.status='blocked'
+        AND r.reason='paid_result_unknown'""",
+        parameters,
+    ).fetchone()[0]
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+    stale = conn.execute(
+        f"""SELECT COUNT(*) FROM ragflow_documents r
+        JOIN documents d ON d.id=r.document_id WHERE {filter_sql}
+        AND r.state IN ('planned','indexing') AND r.updated_at<=?""",
+        (*parameters, stale_cutoff),
+    ).fetchone()[0]
+    return {
+        "status": "available",
+        "scope": "shared_library_all_recorded_generations",
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "remote_generations": dict(sorted(generations.items())),
+        "chunks": dict(sorted(chunks.items())),
+        "processing_jobs": dict(sorted(jobs.items())),
+        "blocked_paid_result_unknown_jobs": recovery,
+        "stale_remote_generations_over_15m": stale,
+    }
 
 
 def _text_completeness(conn, ids):
@@ -2081,7 +2152,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
             schema_version = _validate_schema(conn)
             snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + uuid4().hex
             summary = {
-                "format_version": 8,
+                "format_version": 9,
                 "schema_version": schema_version,
                 "snapshot_id": snapshot_id,
                 "snapshot_started_at": _now(),
@@ -2105,6 +2176,7 @@ def export_inventory(data_dir, *, country=None, owner=None, include_text=False, 
                 "scope": "stored_records_only",
                 "retrieval_status": "available" if _retrieval_available(conn) else "unknown_schema",
                 "retrieval_scope": "stored_index_and_input_hash_matching_vectors_not_rag_eligibility",
+                "index_queue": _index_queue_summary(conn, owner, country),
             }
             if include_text:
                 summary.update(text_documents=0, complete_text_documents=0)

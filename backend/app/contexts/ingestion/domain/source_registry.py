@@ -4,12 +4,88 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import datetime
 
 SETNEG_ID = "id-setneg-perpu"
 SETNEG_URL = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0"
 SOURCE_ID = re.compile(r"[a-z0-9][a-z0-9-]{1,79}\Z")
 CHECKLIST_ITEM = re.compile(r"(?:ID|SG)-[0-9]+(?:\.[0-9]+)*\Z")
 RELATION_TYPES = {"complements", "cross_checks", "implements", "publishes_original"}
+SERVER_STATUSES = {
+    "reachable_content",
+    "reachable_empty_catalogue",
+    "access_unavailable",
+    "http_404_pending_spaced_recheck",
+    "http_410_resource_removed",
+}
+SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+
+
+def _validate_verification(source: dict, country: str, hosts: list[str], validate_url) -> None:
+    verification = source.get("verification")
+    if not isinstance(verification, dict):
+        raise ValueError("Every v2 source needs a verification record")
+    evidence_url = verification.get("official_evidence_url")
+    identity = verification.get("official_identity")
+    business_use = verification.get("business_use")
+    checked_at = verification.get("checked_at")
+    checklist_items = verification.get("checklist_items")
+    server_status = verification.get("server_status")
+    active = source["status"] == "active"
+    if (
+        not isinstance(evidence_url, str)
+        or not evidence_url.startswith("https://")
+        or not isinstance(checked_at, str)
+        or server_status not in SERVER_STATUSES
+    ):
+        raise ValueError("Source verification must identify its official evidence and business scope")
+    if active and (
+        not isinstance(identity, str)
+        or not 10 <= len(identity) <= 500
+        or not isinstance(business_use, str)
+        or not 10 <= len(business_use) <= 500
+        or not isinstance(checklist_items, list)
+        or len(checklist_items) > 40
+        or any(not isinstance(item, str) or not CHECKLIST_ITEM.fullmatch(item) for item in checklist_items)
+    ):
+        raise ValueError("Every active source needs an official identity, business use and checklist scope")
+    if not isinstance(checklist_items, list):
+        checklist_items = []
+    try:
+        checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("Source verification timestamp must be ISO 8601") from error
+    if checked.tzinfo is None:
+        raise ValueError("Source verification timestamp must include a timezone")
+    try:
+        normalized_evidence, evidence_host = validate_url(evidence_url)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Official evidence must be a valid public HTTPS page") from error
+    if normalized_evidence != evidence_url or not official_host(evidence_host, country):
+        raise ValueError("Official evidence must use an official host in the source country")
+
+    if active and server_status not in {"reachable_content", "reachable_empty_catalogue"}:
+        raise ValueError("An active source must have a successful bounded content probe")
+    if server_status == "reachable_empty_catalogue":
+        if source.get("empty_catalogue") is not True or source["interval_seconds"] < 7 * 86400:
+            raise ValueError("Empty catalogues must be explicitly marked and checked at most weekly")
+    elif source.get("empty_catalogue"):
+        raise ValueError("Only a verified empty catalogue may carry empty_catalogue")
+
+    if active:
+        receipt_path = verification.get("server_receipt_path")
+        receipt_hash = verification.get("server_receipt_sha256")
+        body_hash = verification.get("body_sha256")
+        if (
+            not isinstance(receipt_path, str)
+            or not receipt_path.startswith(".dev/")
+            or ".." in receipt_path.split("/")
+            or not isinstance(receipt_hash, str)
+            or not SHA256.fullmatch(receipt_hash)
+            or not isinstance(body_hash, str)
+            or not SHA256.fullmatch(body_hash)
+        ):
+            raise ValueError("An active source needs a bounded server receipt and body checksum")
 
 
 def validate_source_registry(
@@ -78,6 +154,7 @@ def validate_source_registry(
                 raise ValueError("Every v2 source needs an explicit status and proxy transport")
             if not isinstance(source.get("group_id"), str) or not SOURCE_ID.fullmatch(source["group_id"]):
                 raise ValueError("Every v2 source needs one stable primary group")
+            _validate_verification(source, scope, hosts, validate_url)
 
     if protocol == "aitea-official-source-pool-v2":
         groups = pool.get("groups")

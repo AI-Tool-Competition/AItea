@@ -88,6 +88,51 @@ def test_catalog_is_shared_only_filterable_and_verifiable(data):
     assert [row["document_id"] for row in rows(filtered["path"] / "documents.csv")] == ["sg-guidance"]
 
 
+def test_index_queue_summary_is_aggregate_and_shared_only(data):
+    service = Service(data)
+    stale = "2026-10-20T00:00:00+00:00"
+    with service.db.transaction() as conn:
+        for document_id, owner_id, generation in (
+            ("id-law", SYSTEM_OWNER_ID, "shared-generation"),
+            ("private", "personal", "private-generation"),
+        ):
+            conn.execute(
+                """INSERT INTO ragflow_documents(
+                generation,document_id,owner_id,profile,source_hash,source_version,index_revision,
+                name,state,chunk_count,created_at,updated_at
+                ) VALUES(?,?,?,'profile','hash',1,1,'stored-name','indexing',1,?,?)""",
+                (generation, document_id, owner_id, stale, stale),
+            )
+            conn.execute(
+                """INSERT INTO ragflow_chunks(
+                generation,local_id,input_hash,content_hash,state,attempts,intent_at,next_at
+                ) VALUES(?,?, 'input','content','intent',1,0,0)""",
+                (generation, document_id + '-chunk'),
+            )
+            conn.execute(
+                """INSERT INTO processing_jobs(document_id,owner_id,phase,status,updated_at)
+                VALUES(?,?,'embed','failed',?)""",
+                (document_id, owner_id, stale),
+            )
+            if owner_id == SYSTEM_OWNER_ID:
+                conn.execute(
+                    """INSERT INTO collection_recovery_jobs(
+                    id,owner_id,queue_kind,item_id,phase,status,reason,binding,binding_sha256,created_at,updated_at
+                    ) VALUES('shared-unknown',?,'processing',?,'embed','blocked','paid_result_unknown','{}','hash',?,?)""",
+                    (owner_id, document_id, stale, stale),
+                )
+
+    report = collection_catalog.export_materials(data)
+    queue = report["summary"]["inventory"]["index_queue"]
+    assert queue["status"] == "available"
+    assert queue["remote_generations"] == {"indexing": 1}
+    assert queue["chunks"] == {"intent": 1}
+    assert queue["processing_jobs"] == {"embed:failed": 1}
+    assert queue["blocked_paid_result_unknown_jobs"] == 1
+    assert queue["stale_remote_generations_over_15m"] == 1
+    assert "private" not in json.dumps(queue)
+
+
 @pytest.mark.parametrize("raw_path", ["files/raw-hash", "../escape", "/tmp/escape"])
 def test_raw_candidates_remain_unreviewed_and_distinct_from_formal_records(data, raw_path):
     directory = data / "official-updates/ID"

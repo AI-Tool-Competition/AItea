@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -38,6 +39,14 @@ def process_start(pid):
         return None if fields[0] == "Z" else fields[19]
     except (OSError, IndexError):
         return None
+
+
+def infinity_runtime_config(source, ports):
+    """Use Infinity's bounded rotating file logs, not unbounded captured stdout."""
+    text = Path(source).read_text().replace('"0.0.0.0"', '"127.0.0.1"')
+    for key, port in ports.items():
+        text = re.sub(r"(?m)^" + re.escape(key) + r"\s*=\s*\d+", f"{key} = {port}", text)
+    return text
 
 
 class UserRuntime:
@@ -385,15 +394,14 @@ class UserRuntime:
             )
             (conf / "private.pem").chmod(0o600)
             (self.runtime / "keys-created").touch(mode=0o600)
-        infinity = (
-            (self.source / "deploy/ragflow/infinity.toml").read_text().replace('"0.0.0.0"', '"127.0.0.1"')
+        infinity = infinity_runtime_config(
+            self.source / "deploy/ragflow/infinity.toml",
+            {
+                "postgres_port": self.ports["infinity_pg"],
+                "http_port": self.ports["infinity_http"],
+                "client_port": self.ports["infinity"],
+            },
         )
-        for key, port in (
-            ("postgres_port", self.ports["infinity_pg"]),
-            ("http_port", self.ports["infinity_http"]),
-            ("client_port", self.ports["infinity"]),
-        ):
-            infinity = __import__("re").sub(r"(?m)^" + key + r"\s*=\s*\d+", key + " = " + str(port), infinity)
         (self.runtime / "infinity.toml").write_text(infinity)
         (self.runtime / "kvrocks.conf").write_text(
             f"bind 127.0.0.1\nport {self.ports['kvrocks']}\ndir /var/lib/kvrocks\nrequirepass {values['REDIS_PASSWORD']}\ndaemonize no\nlog-level warning\n"

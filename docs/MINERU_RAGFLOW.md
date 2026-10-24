@@ -43,7 +43,7 @@ MINERU_POLL_SECONDS=15
 
 ## 本机服务
 
-RAGFlow 固定为 `v1.0.0-rc2`，使用 Go API 和外部 embedding。普通用户运行方式使用 Apptainer、独立用户/网络命名空间和 slirp4netns，不需要 sudo、uidmap 或系统 Docker。程序位于 `/home/wenbo/.local/opt/aitea/`；配置、进程身份和日志在项目 `.dev/ragflow/`；数据在 `data/ragflow/`。该方式要求 Linux 允许无特权用户及网络命名空间。
+RAGFlow 固定为 `v1.0.0-rc2`，使用 Go API 和外部 embedding。普通用户运行方式使用 Apptainer、独立用户/网络命名空间和 slirp4netns，不需要 sudo、uidmap 或系统 Docker。程序位于 `/home/wenbo/.local/opt/aitea/`；配置、进程身份和启动日志在项目 `.dev/ragflow/`；数据在 `data/ragflow/`。Infinity 运行日志写入 `data/ragflow/infinity/log/`，按 100 MiB、保留 10 份轮转；禁用重复写入未轮转的标准输出日志。该方式要求 Linux 允许无特权用户及网络命名空间。
 
 ```bash
 uv run --project backend --locked python scripts/ragflow.py prepare --runtime user

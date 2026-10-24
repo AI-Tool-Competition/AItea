@@ -11,7 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -20,8 +20,11 @@ watchdog = importlib.import_module("collection_watchdog")
 
 @pytest.fixture
 def fleet(tmp_path):
+    from support.project import copy_configuration
+
     project = tmp_path / "project"
     (project / "backend").mkdir(parents=True)
+    copy_configuration(project)
     (project / "backend/pyproject.toml").write_text(
         "[project]\nname='watchdog-local-fixture'\nversion='0.0.1'\n"
     )
@@ -294,13 +297,21 @@ def test_rolling_logs_are_bounded_without_modifying_request_ledger(tmp_path, mon
 def test_model_credentials_are_removed_from_worker_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("EMBEDDING_API_KEY", "private-not-for-collection")
     monkeypatch.setenv("VISION_MODEL", "paid-model")
+    monkeypatch.setenv("MINERU_API_TOKEN", "private-parser-token")
+    monkeypatch.setenv("RAGFLOW_API_KEY", "private-retrieval-token")
     env = watchdog.model_free_environment(tmp_path, {"id": "raw"}, "launch-token")
     assert env["EMBEDDING_API_KEY"] == env["VISION_MODEL"] == ""
+    assert env["MINERU_API_TOKEN"] == env["RAGFLOW_API_KEY"] == ""
     assert env["VISION_OCR_ENABLED"] == "false"
     assert env["AITEA_COLLECTION_LAUNCH_TOKEN"] == "launch-token"
 
 
-def test_worker_loads_only_explicit_proxy_settings_and_active_source_hosts(monkeypatch, tmp_path):
+@pytest.mark.parametrize("http_proxy", [None, "http://127.0.0.1:17778"])
+def test_worker_loads_only_explicit_proxy_settings_and_active_source_hosts(monkeypatch, tmp_path, http_proxy):
+    if http_proxy is None:
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+    else:
+        monkeypatch.setenv("HTTP_PROXY", http_proxy)
     project = tmp_path / "project"
     config = project / "config/collection-sources/id-sg-unattended.json"
     config.parent.mkdir(parents=True)
@@ -333,7 +344,7 @@ def test_worker_loads_only_explicit_proxy_settings_and_active_source_hosts(monke
     assert env["COLLECTION_DOH_HOSTS"] == "custom.gov.sg"
     assert env["EMBEDDING_API_KEY"] == ""
     assert "must-not-leak" not in env.values()
-    assert env["HTTP_PROXY"] == os.environ.get("HTTP_PROXY", "")
+    assert env.get("HTTP_PROXY") == http_proxy
 
 
 def test_systemd_unit_uses_explicit_paths_and_stop_status(fleet):
@@ -348,6 +359,7 @@ def test_systemd_unit_uses_explicit_paths_and_stop_status(fleet):
     assert str(fleet.project / "scripts/collection_watchdog.py") in text
     assert '"--no-sync" "python"' in text
     assert watchdog.unit_argument("/path/with % and $ and spaces") == '"/path/with %% and $$ and spaces"'
+    assert watchdog.unit_argument("ROOT=/path/%/$", environment=True) == '"ROOT=/path/%%/$"'
 
 
 def test_same_fleet_cannot_change_state_directory_after_parent_crash(fleet):

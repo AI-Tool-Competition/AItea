@@ -7,18 +7,18 @@ from urllib.parse import urlencode
 from xml.etree import ElementTree
 
 import pytest
-from app.contexts.collection.application.checklists import (
+from app.contexts.ingestion.application.checklists import (
     ChecklistService,
     load_blueprint_version,
     load_blueprints,
 )
-from app.contexts.collection.infrastructure.discovery.discovery import (
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     _Recipe,
     discover_page,
     recipe_for,
     request_parameters,
 )
-from app.contexts.collection.infrastructure.discovery.wto_discovery import (
+from app.contexts.ingestion.infrastructure.source_adapters.wto_discovery import (
     DOCS,
     GOODS,
     MEMBERS,
@@ -26,7 +26,7 @@ from app.contexts.collection.infrastructure.discovery.wto_discovery import (
     catalog_url,
     services_catalog_url,
 )
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 
 def item(member="ID", version=None):
@@ -300,7 +300,7 @@ def test_original_headers_reject_html_and_do_not_assert_parser_acceptance():
 
 
 def test_unknown_mdb_requires_the_exact_frozen_source_bytes_and_stays_unparsed(monkeypatch):
-    from app.contexts.collection.infrastructure.discovery import wto_discovery as wto_discovery
+    from app.contexts.ingestion.infrastructure.source_adapters import wto_discovery as wto_discovery
 
     url, known = next(iter(wto_discovery._UNVERIFIED_MDB.items()))
     body = b"\x01\x00\x00\x00unrecognized historical source bytes"
@@ -359,8 +359,8 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
 def test_generic_office_originals_stay_inside_the_frozen_public_legal_directory(
     member, item, version, extension, signature
 ):
-    from app.contexts.collection.application.checklists import load_blueprints
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.ingestion.application.checklists import load_blueprints
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     name = "indonesia-20261003" if member == "ID" else "singapore-demo-20261009"
     plan = load_blueprints()[name]

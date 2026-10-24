@@ -28,22 +28,24 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from app.contexts.collection.application.checklists import load_blueprints  # noqa: E402
-from app.contexts.collection.infrastructure.discovery.discovery import (  # noqa: E402
+from app.configuration.paths import InstancePaths  # noqa: E402
+
+from app.contexts.ingestion.application.checklists import load_blueprints  # noqa: E402
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     MAX_HTML_BYTES,
     discover_page,
     normalized_seeds_for,
     recipe_for,
     request_parameters,
 )
-from app.contexts.collection.infrastructure.discovery.indonesia_official import (  # noqa: E402
+from app.contexts.ingestion.infrastructure.source_adapters.indonesia_official import (  # noqa: E402
     SETNEG_ITEMS,
     ledger_record,
     original_file_relations,
     reconcile_catalogue,
     source_relation_claims,
 )
-from app.shared.infrastructure.blob_store import (  # noqa: E402
+from app.shared.infrastructure.persistence.blob_store import (  # noqa: E402
     Blob,
     BlobStore,
     _verify_existing,
@@ -137,7 +139,8 @@ def transient_original_retries(c, definitions, *, apply=False):
                 raise ValueError("original retry checkpoint changed")
             result["requeued"] += 1
     result["next_at"] = min(
-        (row["next_at"] for row in [*result["eligible"], *result["waiting"]]), default=None
+        (row["next_at"] for row in [*result["eligible"], *result["waiting"]]),
+        default=None,
     )
     return result
 
@@ -779,7 +782,7 @@ def prepare_library(output: Path, *, min_free_bytes=MIN_FREE_BYTES) -> dict:
 
 
 def run(args) -> int:
-    plan_path = ROOT / "config/collection-plans/indonesia-20261003.json"
+    plan_path = InstancePaths.resolve(ROOT).catalogs / "collection-plans/indonesia-20261003.json"
     digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
     plan = load_blueprints()["indonesia-20261003"]
     definitions = {row["id"]: row for row in plan["items"] if row["id"] in SETNEG_ITEMS}

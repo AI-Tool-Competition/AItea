@@ -1,10 +1,20 @@
 """Keep local provider credentials out of deterministic application tests."""
 
+import os
+from pathlib import Path
+
 import pytest
+
+# Factories and workflow defaults are imported during collection, before any
+# fixture can clear credentials. Never select the running instance's config.
+os.environ["TEA_ENV_FILE"] = str(Path(__file__).parent / "fixtures/environment.env")
 
 
 @pytest.fixture(autouse=True)
 def isolated_providers(monkeypatch):
+    # Individual path/config tests and their local subprocess fixtures select
+    # their own project. The app defaults have already loaded the empty file.
+    monkeypatch.delenv("TEA_ENV_FILE", raising=False)
     # Empty values also prevent load_dotenv from filling credentials on import.
     # Provider contract tests explicitly replace these with mocked settings.
     for prefix in ("LLM", "EMBEDDING", "RERANK", "VISION"):
@@ -29,7 +39,10 @@ def isolated_providers(monkeypatch):
     monkeypatch.setenv("EMBEDDING_HTTP_WORKERS", "2")
     monkeypatch.setenv("EMBEDDING_REQUEST_CONCURRENCY", "1")
     monkeypatch.setenv("TEA_REQUIRE_EXISTING_DATA", "false")
-    from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+    monkeypatch.setenv("TEA_PROCESS_WORKERS", "2")
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "2")
+    monkeypatch.setenv("TEA_EMBED_WORKERS", "2")
+    from app.contexts.documents.infrastructure.parsers import document_parser as parsing
 
     monkeypatch.setattr(
         parsing,
@@ -46,9 +59,9 @@ def sample_workflow(monkeypatch):
     import json
     from pathlib import Path
 
-    from app.contexts.identity.application import auth as auth
-    from app.contexts.workspace.application import configurations
-    from app.contexts.workspace.domain.models import Template
+    from app.contexts.accounts.application import auth as auth
+    from app.contexts.workflows.application import configurations
+    from app.contexts.workflows.domain.models import Template
 
     sample = Template.model_validate(
         json.loads((Path(__file__).parent / "fixtures/minimal-workflow.json").read_text())
@@ -60,7 +73,7 @@ def sample_workflow(monkeypatch):
 @pytest.fixture
 def ragflow_library(isolated_providers, monkeypatch):
     """Application policy tests run with an explicitly completed fake remote index."""
-    from app.contexts.knowledge.application.retrieval import RetrievalIndex
+    from app.contexts.documents.application.retrieval import RetrievalIndex
     from support.ragflow import MemoryRAGFlow, finish_indexes
 
     for key, value in {
@@ -71,7 +84,7 @@ def ragflow_library(isolated_providers, monkeypatch):
         monkeypatch.setenv(key, value)
     remote = MemoryRAGFlow()
     monkeypatch.setattr(
-        "app.contexts.knowledge.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
+        "app.contexts.documents.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
     )
     prepare = RetrievalIndex.prepare_scopes
 

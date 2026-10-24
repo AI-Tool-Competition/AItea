@@ -71,7 +71,7 @@ def main():
                 stream.write(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            from app.shared.infrastructure.blob_store import _sync_directory
+            from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
             _sync_directory(args.output.parent)
             result = {
@@ -85,7 +85,9 @@ def main():
                 "model_calls": 0,
             }
         else:
-            from app.shared.infrastructure.operations.system_corpus_merge import MAX_PLAN_BYTES
+            from app.shared.infrastructure.operations.system_corpus_merge import (
+                MAX_PLAN_BYTES,
+            )
 
             if args.alias_plan and args.alias_plan.stat().st_size > MAX_PLAN_BYTES:
                 raise SystemCorpusMigrationError("alias_plan_too_large")

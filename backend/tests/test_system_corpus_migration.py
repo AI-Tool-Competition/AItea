@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 from support.legacy_vectors import checkpoint_inputs, schema19_snapshot
-from app.contexts.collection.application.collection_import import _fingerprint
+from app.contexts.ingestion.application.collection_import import _fingerprint
 from app.bootstrap import Service
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
-from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.contexts.workflows.infrastructure.defaults import DEFAULT_TEMPLATE
 from app.shared.domain.values import dump, now
 from app.shared.infrastructure.operations import system_corpus_migration as module
 from PIL import Image
@@ -254,7 +254,7 @@ def snapshot(source, tmp_path):
 
 
 def test_subset_export_refuses_to_drop_system_recovery_history(pair, tmp_path):
-    from app.contexts.collection.application.collection_recovery import Decision
+    from app.contexts.ingestion.application.collection_recovery import Decision
 
     source, _target, docs = pair
     document = docs["a"]

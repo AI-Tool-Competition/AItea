@@ -121,7 +121,7 @@ def test_scope_search_preserves_legacy_country_gate(client):
 
 
 def fake_result(question, content="原始建议"):
-    from app.contexts.legal.domain.legal_models import LegalResult
+    from app.contexts.legal_analysis.domain.analysis_models import LegalResult
 
     return LegalResult.model_validate(
         {
@@ -358,7 +358,7 @@ def test_demo_runs_real_engine_without_inventing_sources(client):
 
 
 def test_empty_proposal_is_saved_without_self_confirmation(client, monkeypatch):
-    from app.contexts.legal.domain.legal_models import LegalFact
+    from app.contexts.legal_analysis.domain.analysis_models import LegalFact
 
     case, url = workspace(client)
     assert (
@@ -396,7 +396,7 @@ def test_empty_proposal_is_saved_without_self_confirmation(client, monkeypatch):
 
 
 def test_task_fact_does_not_overwrite_a_model_fact_from_another_source(client, monkeypatch):
-    from app.contexts.legal.domain.legal_models import LegalFact
+    from app.contexts.legal_analysis.domain.analysis_models import LegalFact
     from app.shared.domain.values import dump, now
 
     case, url = workspace(client)
@@ -466,7 +466,7 @@ def test_reclassified_issue_never_relabels_manual_paragraph(client):
 
 
 def test_scoped_sources_and_revoked_evidence_need_review(client):
-    from app.contexts.knowledge.domain.metadata import MetadataPatch
+    from app.contexts.documents.domain.metadata import MetadataPatch
     from test_country_isolation import publish, stored
 
     case, url = workspace(client)
@@ -537,7 +537,7 @@ def test_migration_from_version_eight_preserves_case_and_facts(client, tmp_path)
 
 
 def test_enabled_chat_uses_versioned_legal_analysis_and_sse_text(client):
-    from app.contexts.legal.domain.legal_models import default_legal_policy
+    from app.contexts.legal_analysis.domain.analysis_models import default_legal_policy
     from app.shared.domain.values import dump
 
     case, url = workspace(client)

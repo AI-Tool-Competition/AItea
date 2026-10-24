@@ -9,7 +9,7 @@ from urllib.parse import quote, urlsplit
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.application.system_library import (
+from app.contexts.documents.application.system_library import (
     SYSTEM_OWNER_ID,
     ensure_principal,
     official_source_allowed,

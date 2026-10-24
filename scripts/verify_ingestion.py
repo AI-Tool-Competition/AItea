@@ -27,7 +27,14 @@ from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVIDER_PREFIXES = ("LLM_", "EMBEDDING_", "RERANK_", "VISION_OCR_", "MINERU_", "RAGFLOW_")
+PROVIDER_PREFIXES = (
+    "LLM_",
+    "EMBEDDING_",
+    "RERANK_",
+    "VISION_OCR_",
+    "MINERU_",
+    "RAGFLOW_",
+)
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
@@ -150,10 +157,12 @@ def run_verification(plan, output, models_env):
     sys.path.insert(0, str(ROOT / "backend"))
     configure_models(models_env)
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection import CollectionWorkers
-    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
-    from app.contexts.knowledge.domain.metadata import MetadataPatch
-    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+    from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+    from app.contexts.ingestion.infrastructure.archive_inventory import export_inventory
+    from app.contexts.documents.domain.metadata import MetadataPatch
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import (
+        text_complete,
+    )
     from app.shared.domain.values import now, uid
 
     started = time.monotonic()
@@ -170,7 +179,7 @@ def run_verification(plan, output, models_env):
         "started_at": now(),
     }
     if models_env:
-        from app.contexts.knowledge.infrastructure.providers.ragflow import configured
+        from app.contexts.documents.infrastructure.providers.ragflow import configured
 
         if not configured():
             raise ValueError("live verification requires explicit RAGFlow configuration")
@@ -330,7 +339,12 @@ def run_verification(plan, output, models_env):
                 JOIN retrieval_documents r ON r.document_id=d.document_id
                 WHERE d.document_id=? AND d.profile=? AND d.source_hash=? AND d.source_version=?
                 AND d.index_revision=r.revision AND c.state='done'""",
-                (identifier, service.embedding_fingerprint(), document["content_hash"], document["version"]),
+                (
+                    identifier,
+                    service.embedding_fingerprint(),
+                    document["content_hash"],
+                    document["version"],
+                ),
             ).fetchone()[0]
             relation_targets = conn.execute(
                 "SELECT source_document_id FROM legal_relations WHERE target_document_id=? AND owner_id=? AND collection=?",

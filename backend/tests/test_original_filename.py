@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.application.archive import family_key, sanitize_filename
+from app.contexts.documents.application.archive import family_key, sanitize_filename
 from support.archive_parsing import pdf_file
 
 
@@ -65,7 +65,7 @@ def test_archive_long_original_reaches_mineru_with_preserved_name(service, tmp_p
     claim = service.collection.claim_processing(owner_id="owner", document_ids=[doc["id"]])
     assert claim
     calls = []
-    from app.contexts.knowledge.infrastructure.parsing.native import parse_file
+    from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
 
     def parsed(document, lease, manifest):
         calls.append((document["filename"], document["content_hash"], lease["document_id"]))

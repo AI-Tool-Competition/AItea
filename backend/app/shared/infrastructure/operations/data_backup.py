@@ -21,7 +21,7 @@ from contextlib import closing
 from pathlib import Path, PurePosixPath
 
 from app.shared.domain.values import now, uid
-from app.shared.infrastructure.blob_store import _sync_directory
+from app.shared.infrastructure.persistence.blob_store import _sync_directory
 from app.shared.infrastructure.operations.system_corpus_migration import (
     SystemCorpusMigrationError,
     _cas_reference,
@@ -335,7 +335,7 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
                 for page in value.get("pages", []):
                     if not isinstance(page.get("ocr"), dict) or "reuse_import" not in page["ocr"]:
                         continue
-                    from app.contexts.knowledge.infrastructure.recovery.pdf_ocr_reuse_import import (
+                    from app.contexts.documents.infrastructure.recovery.pdf_ocr_reuse_import import (
                         _page,
                         validate_imported,
                     )
@@ -383,7 +383,7 @@ def _primary_references(database, source_root, files, *, prefix=Path()):
                 continue
             if not isinstance(locator, dict) or "collection_relation_import" not in locator:
                 continue
-            from app.contexts.collection.application.collection_import import validate_relation_import
+            from app.contexts.ingestion.application.collection_import import validate_relation_import
 
             endpoints = [
                 conn.execute(
@@ -434,7 +434,7 @@ def _publish(stage, destination):
     _sync_directory(destination.parent)
 
 
-def create_backup(source_dir, backup_dir, *, timeout=300):
+def create_backup(source_dir, backup_dir, *, timeout=300, configuration_dir=None, project_root=None):
     """Back up every user's rows and files; source remains read-only."""
     source, destination = _safe_absolute(source_dir), _safe_absolute(backup_dir, exists=False)
     _require(source.is_dir() and (source / "tea.sqlite3").is_file(), "source_database_required")
@@ -473,6 +473,11 @@ def create_backup(source_dir, backup_dir, *, timeout=300):
             for name in sorted(names):
                 path = base / name
                 relative = (relative_base / name).as_posix()
+                # MySQL's local socket is process state, never a database file.
+                # Keep this exact allowlist; all other symlinks still fail shut.
+                if relative == "ragflow/mysql/mysql.sock":
+                    excluded.append({"path": relative, "reason": "ragflow_process_socket"})
+                    continue
                 suffix = next((s for s in ("-wal", "-shm", "-journal") if name.endswith(s)), None)
                 original = path.with_name(name.removesuffix(suffix)) if suffix else None
                 if original is not None and original.relative_to(source).as_posix() in online_databases:
@@ -549,6 +554,30 @@ def create_backup(source_dir, backup_dir, *, timeout=300):
                 if kind == "sqlite":
                     online_databases.add(relative)
                 _require(len(files) <= MAX_FILES, "too_many_files")
+        if configuration_dir is not None:
+            configuration = _safe_absolute(configuration_dir)
+            prefix = Path("config/catalogs")
+            bundled = source / prefix
+            _require(not bundled.exists() or bundled == configuration, "conflicting_configuration_catalogs")
+            if configuration != bundled:
+                for directory, subdirs, names in os.walk(configuration, followlinks=False):
+                    base = _safe_absolute(directory)
+                    for name in subdirs:
+                        _safe_absolute(base / name)
+                    relative = prefix / base.relative_to(configuration)
+                    (payload / relative).mkdir(parents=True, exist_ok=True, mode=0o700)
+                    for parent in (prefix.parent, relative):
+                        if parent.as_posix() not in directories:
+                            directories.append(parent.as_posix())
+                    for name in sorted(names):
+                        original = _safe_absolute(base / name)
+                        _require(stat.S_ISREG(original.stat().st_mode), "regular_file_required")
+                        target = relative / name
+                        digest, size = _copy_file(original, payload / target)
+                        files.append(
+                            {"path": target.as_posix(), "sha256": digest, "bytes": size, "kind": "file"}
+                        )
+                        _require(len(files) <= MAX_FILES, "too_many_files")
         files.sort(key=lambda row: row["path"])
         indexed = {row["path"]: row for row in files}
         references = _primary_references(payload / "tea.sqlite3", source, indexed)
@@ -571,7 +600,8 @@ def create_backup(source_dir, backup_dir, *, timeout=300):
             "cold_archive_anomalies": cold_anomalies,
             "referenced_originals": references,
             "source_writes": 0,
-            "configuration_included": False,
+            "configuration_included": configuration_dir is not None,
+            "instance_project_root": str(Path(project_root).resolve()) if project_root is not None else None,
         }
         _write_json(stage / "manifest.json", report)
         _require((stage / "manifest.json").stat().st_size <= MAX_MANIFEST_BYTES, "backup_manifest_too_large")

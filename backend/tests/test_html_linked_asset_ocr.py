@@ -8,17 +8,17 @@ from contextlib import closing
 from copy import deepcopy
 
 import pytest
-from app.contexts.knowledge.infrastructure.parsing.html_parsing import VISUAL_PENDING_WARNING
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import ocr_work_pending, text_complete
-from app.contexts.knowledge.infrastructure.parsing.native import parse_file
-from app.contexts.knowledge.infrastructure.parsing.native_mapping_inventory import mappings, validate_mapping
-from app.contexts.knowledge.infrastructure.providers import native_asset_ocr as native
-from app.contexts.knowledge.infrastructure.providers import vision as vision
-from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import (
+from app.contexts.documents.infrastructure.parsers.html_parsing import VISUAL_PENDING_WARNING
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import ocr_work_pending, text_complete
+from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
+from app.contexts.documents.infrastructure.parsers.native_mapping_inventory import mappings, validate_mapping
+from app.contexts.documents.infrastructure.providers import native_asset_ocr as native
+from app.contexts.documents.infrastructure.providers import vision as vision
+from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import (
     bind_linked_image_bounded,
     read_linked_images,
 )
-from app.shared.infrastructure.blob_store import BlobStore
+from app.shared.infrastructure.persistence.blob_store import BlobStore
 from PIL import Image
 
 
@@ -275,7 +275,7 @@ def test_existing_worker_textualizes_only_main_files_and_secondary_laws_never_ge
     tmp_path, monkeypatch, level, redirected
 ):
     from app.bootstrap import Service
-    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+    from app.contexts.documents.infrastructure.providers import embedding as ingestion_embedding
 
     service = Service(tmp_path / "business")
     with service.db.transaction() as conn:

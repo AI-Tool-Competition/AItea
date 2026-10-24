@@ -4,12 +4,16 @@ import json
 from copy import deepcopy
 
 import pytest
-from app.contexts.collection.infrastructure.discovery.discovery import _Recipe, discover_page, recipe_for
-from app.contexts.collection.infrastructure.discovery.official_source_recovery import (
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
+    _Recipe,
+    discover_page,
+    recipe_for,
+)
+from app.contexts.ingestion.infrastructure.source_adapters.official_source_recovery import (
     recover_official_recipe,
     request_headers_for,
 )
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 PLAN = PROJECT_ROOT / "config/collection-plans/indonesia-20261003.json"
 

@@ -6,8 +6,8 @@ import io
 import json
 
 import pytest
-from app.contexts.collection.infrastructure.discovery import singapore_cases as cases
-from app.shared.infrastructure.blob_store import BlobIntegrityError
+from app.contexts.ingestion.infrastructure.source_adapters import singapore_cases as cases
+from app.shared.infrastructure.persistence.blob_store import BlobIntegrityError
 from app.shared.infrastructure.http.download import DownloadError
 
 HEADER = [

@@ -1,9 +1,9 @@
 import hashlib
 
 import pytest
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
-from app.contexts.knowledge.infrastructure.parsing.native import _decode, parse_file
-from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+from app.contexts.documents.infrastructure.parsers.native_parser import _decode, parse_file
+from app.contexts.documents.infrastructure.parsers.document_parser import parse_bounded
 
 
 def digest(value):
@@ -29,7 +29,7 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
 
 
 def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_inputs():
-    from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import image_candidates_bounded
+    from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import image_candidates_bounded
 
     body = b"""<main><h1>Food labelling</h1><p>Imported food must carry the required label.</p>
     <img src="/ResourcePackages/SFA/assets/images/icons/icon-share.svg" alt="icon-share">

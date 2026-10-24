@@ -2,9 +2,9 @@
 
 import io
 
-from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
-from app.contexts.knowledge.infrastructure.parsing.docx_parsing import parse_docx
-from app.contexts.knowledge.infrastructure.providers import vision as vision
+from app.contexts.documents.infrastructure.parsers import document_parser as parsing  # noqa: F401 -- fixture module export
+from app.contexts.documents.infrastructure.parsers.docx_parsing import parse_docx
+from app.contexts.documents.infrastructure.providers import vision as vision
 from PIL import Image
 
 from support.docx_parsing import _p, _package

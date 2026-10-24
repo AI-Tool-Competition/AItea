@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 
 ROOT = PROJECT_ROOT
@@ -311,8 +311,8 @@ def test_acquired_original_stages_idempotent_parse_job_and_transferable_source_e
     tmp_path, monkeypatch
 ):
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection_import import import_collected_resources
-    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+    from app.contexts.ingestion.application.collection_import import import_collected_resources
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 
     source = tmp_path / "source"
     source.mkdir()

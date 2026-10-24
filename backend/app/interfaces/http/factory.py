@@ -2,17 +2,17 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Request
 from starlette.concurrency import run_in_threadpool
 
 from app.bootstrap import Service
-from app.contexts.identity.application.auth import COOKIE, Auth
-from app.contexts.knowledge.application.system_library import BackgroundWorkerScope
-from app.paths import PROJECT_ROOT
+from app.contexts.accounts.application.auth import COOKIE, Auth
+from app.contexts.documents.application.system_library import BackgroundWorkerScope
+from app.configuration.environment import load_environment
+from app.configuration.paths import InstancePaths
 from app.shared.domain.errors import fail
 
-load_dotenv(PROJECT_ROOT / ".env")
+load_environment()
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +23,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     if existing_data not in {"true", "false"}:
         raise ValueError("TEA_REQUIRE_EXISTING_DATA 必须为 true 或 false。")
     service = Service(
-        data_dir or os.getenv("TEA_DATA_DIR", str(PROJECT_ROOT / "data")),
+        data_dir or InstancePaths.resolve().data,
         require_existing=existing_data == "true",
     )
     auth = Auth(service)
@@ -36,10 +36,10 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         if not is_test:
             os.environ.setdefault(
                 "EMBEDDING_ADMISSION_PATH",
-                str(PROJECT_ROOT / ".dev" / "embedding-admission.sqlite3"),
+                str(InstancePaths.resolve().embedding_admission),
             )
-        from app.contexts.collection.application.collection import CollectionWorkers
-        from app.contexts.collection.application.official_source_import import OfficialSourceImporter
+        from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+        from app.contexts.ingestion.application.official_source_import import OfficialSourceImporter
         from app.shared.infrastructure.operations.scheduler import start_scheduler, stop_scheduler
 
         enabled = enable_scheduler if enable_scheduler is not None else not is_test

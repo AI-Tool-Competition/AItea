@@ -17,7 +17,7 @@ uv run --project /absolute/project/backend python \
   --handoff-root /absolute/private/ocr-embedding-handoffs \
   --exclusions /absolute/private/exclusions.json \
   --models-env /absolute/project/.env \
-  --admission-path /absolute/project/.dev/embedding-admission.sqlite3
+  --admission-path /absolute/project/restores/current-library/control/embedding-admission.sqlite3
 ```
 
 以上命令准备并持久预留合格输入；复查 `latest-prepare.json`、批次 `selection-proof.json` 后，在同一命令末尾加 `--apply` 执行。不提供 `--output` 或 retry-unresolved 选项。重复启动必须使用原 handoff 根、排除证据、模型文件和固定源码；新目录不能替代遗失账本。
@@ -35,7 +35,7 @@ uv run --project /absolute/project/backend python \
   "data_dir": "/absolute/project/restores/current-library",
   "owner": "aitea-system-legal-library",
   "fingerprint": "已验证的模型 fingerprint",
-  "admission_path": "/absolute/project/.dev/embedding-admission.sqlite3",
+  "admission_path": "/absolute/project/restores/current-library/control/embedding-admission.sqlite3",
   "admission_scope": "已验证的 provider/model scope",
   "embedding_plans": [
     {
@@ -59,7 +59,7 @@ uv run --project /absolute/project/backend python \
 
 必须提供一个 `legacy_fixed` 和至少一个 `prior_handoff`。每份 plan 沿用 `fixed-embedding-continuation-v1`，文档附实际 `chunk_count`。输入清单协议为 `fixed-embedding-input-inventory-v1`，包含 `plan_sha256`、`plan_digest`、`documents`（ID 到完整 chunk 列表）及 `unique_inputs_sha256`。每个 chunk 至少有连续从 0 开始的 `ordinal` 和实际 `input_hash`；生成的交接清单还保留 `chunk_id`、retrieval text SHA、locator SHA。`plan_digest` 和输入集合摘要均用现有 `complete_embeddings.digest` 计算，输入集合先去重再排序。
 
-旧计划输入清单必须是全部固定输入，不是当前缺失行、成功缓存或未知集合的子集。运维生成清单时须核对原计划文档、manifest/retrieval chunks 及 `app.contexts.knowledge.application.retrieval.input_hash`；脚本检查完整文档集合、逐文档行数/顺序、绑定摘要，缺证据就阻挡。现有未版本化的摘要报告不能直接冒充这份完整清单。
+旧计划输入清单必须是全部固定输入，不是当前缺失行、成功缓存或未知集合的子集。运维生成清单时须核对原计划文档、manifest/retrieval chunks 及 `app.contexts.documents.application.retrieval.input_hash`；脚本检查完整文档集合、逐文档行数/顺序、绑定摘要，缺证据就阻挡。现有未版本化的摘要报告不能直接冒充这份完整清单。
 
 OCR holds/history 复用已有报告结构：合并 current_records、historical_records、historical_paid_missing_records、historical_paid_missing_document_ids、additional_document_holds，并核对预期唯一 ID 数。正文当前看似完整不能清除历史未知或缺失付费结果。所有旧计划文档、全部旧输入和 holds 都排除；单个输入冲突时整份候选 deferred。
 
@@ -81,4 +81,4 @@ OCR holds/history 复用已有报告结构：合并 current_records、historical
 
 查看 handoff 根的 `handoff-state.json`，再看其唯一批次 output 的 `supervisor-state.json`、`progress.json`、`report.json` 和请求日志。先核对 PID 与记录的进程启动身份，再对本次外层进程发送 SIGTERM；它转发到自己创建的 child，并等待既有监督器排空。若父进程已丢失，用 handoff 状态中的 wrapper PID/start_identity 定位，勿按进程名批量终止。当前没有另加 STOP 文件语义；停止使用受归属校验的进程信号。
 
-所有执行产物、成功缓存与原日志必须纳入相应数据备份证据；准入数据库仅协调活动进程，不能复制旧 PID/租约作为恢复数据。本功能未自动安装任务或启动生产模型。
+所有执行产物、成功缓存与原日志必须纳入相应数据备份证据；准入数据库在成套实例恢复时保留额度和供应商冷却时间，释放旧 PID/租约。本功能未自动安装任务或启动生产模型。

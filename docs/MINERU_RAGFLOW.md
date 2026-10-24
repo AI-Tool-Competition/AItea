@@ -4,7 +4,7 @@ PDF、Office 与图片原件使用：保存并校验原件 → MinerU 精准解�
 
 ## 解析与原文证据
 
-`MINERU_API_TOKEN` 只放在后端 `.env`。PDF 使用 v4 精准解析、`model_version=vlm`，开启表格、公式和 OCR。上传前核验原件 SHA-256、大小和账号归属；超过 200 页机械分段，每段保留原件物理页范围。本地分段不提取文字或执行 OCR。
+`MINERU_API_TOKEN` 只放在后端 `data/config/application.env`。PDF 使用 v4 精准解析、`model_version=vlm`，开启表格、公式和 OCR。上传前核验原件 SHA-256、大小和账号归属；超过 200 页机械分段，每段保留原件物理页范围。本地分段不提取文字或执行 OCR。
 
 `document_parse_tasks`（结构版本 20）持久保存原件、解析配置、分段、批次、进度、上传回执和结果对象。上传结果不确定时先查询已有批次；不会创建新批次来重放已上传的文件。断点续跑保留已完成的分段。
 
@@ -43,7 +43,7 @@ MINERU_POLL_SECONDS=15
 
 ## 本机服务
 
-RAGFlow 固定为 `v1.0.0-rc2`，使用 Go API 和外部 embedding。普通用户运行方式使用 Apptainer、独立用户/网络命名空间和 slirp4netns，不需要 sudo、uidmap 或系统 Docker。程序位于 `/home/wenbo/.local/opt/aitea/`；配置、进程身份和启动日志在项目 `.dev/ragflow/`；数据在 `data/ragflow/`。Infinity 运行日志写入 `data/ragflow/infinity/log/`，按 100 MiB、保留 10 份轮转；禁用重复写入未轮转的标准输出日志。该方式要求 Linux 允许无特权用户及网络命名空间。
+RAGFlow 固定为 `v1.0.0-rc2`，使用 Go API 和外部 embedding。普通用户运行方式使用 Apptainer、独立用户/网络命名空间和 slirp4netns，不需要 sudo、uidmap 或系统 Docker。程序位于 `/home/wenbo/.local/opt/aitea/`；私有凭据、密钥和服务配置在 `data/config/ragflow/`，进程身份和启动日志在 `.dev/ragflow/`，数据库和索引在 `data/ragflow/`；统一位置与迁移入口见 [实例管理](INSTANCE_MANAGEMENT.md)。Infinity 运行日志写入 `data/ragflow/infinity/log/`，按 100 MiB、保留 10 份轮转；禁用重复写入未轮转的标准输出日志。该方式要求 Linux 允许无特权用户及网络命名空间。
 
 ```bash
 uv run --project backend --locked python scripts/ragflow.py prepare --runtime user

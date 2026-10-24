@@ -3,7 +3,7 @@
 import hashlib
 from contextlib import closing
 
-from app.contexts.knowledge.domain.text import _terms
+from app.contexts.documents.domain.text import _terms
 
 
 class MemoryRAGFlow:

@@ -156,7 +156,9 @@ def decide(state, report, *, timestamp, retry_after=0):
 
 
 def supervise(args, runner: Path, arguments, initial_documents, *, inherited_fds=()):
-    from app.contexts.knowledge.infrastructure.providers.embedding_admission import process_identity
+    from app.contexts.documents.infrastructure.providers.embedding_admission import (
+        process_identity,
+    )
     from complete_embeddings import digest, document_worker_limit
 
     output = args.output.resolve()
@@ -301,7 +303,10 @@ def supervise(args, runner: Path, arguments, initial_documents, *, inherited_fds
                 with log.open("w") as stream:
                     os.chmod(log, 0o600)
                     child = subprocess.Popen(
-                        command, stdout=stream, stderr=subprocess.STDOUT, pass_fds=inherited_fds
+                        command,
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        pass_fds=inherited_fds,
                     )
                 state.update(
                     status="running",

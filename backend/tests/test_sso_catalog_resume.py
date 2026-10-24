@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 spec = importlib.util.spec_from_file_location("collect_sso_catalog", ROOT / "scripts/collect_sso_catalog.py")

@@ -8,9 +8,9 @@ from threading import Event
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.collection import CollectionWorkers
-from app.contexts.collection.application.collection_recovery import Decision
-from app.contexts.knowledge.application.system_library import (
+from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+from app.contexts.ingestion.application.collection_recovery import Decision
+from app.contexts.documents.application.system_library import (
     SYSTEM_OWNER_ID,
     BackgroundWorkerScope,
     ensure_principal,
@@ -393,7 +393,7 @@ def test_external_worker_picks_new_private_owner_after_start_and_never_processes
 
 
 def test_main_injects_mode_in_both_workers_and_keeps_upload_and_shared_search(tmp_path, monkeypatch):
-    from app.contexts.collection.application import collection as collection
+    from app.contexts.ingestion.application import collection_jobs as collection
     from app.shared.infrastructure.operations import scheduler as scheduler
 
     monkeypatch.setenv("TEA_SHARED_LIBRARY_WORKERS", "external")

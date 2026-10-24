@@ -5,8 +5,8 @@ from __future__ import annotations
 import io
 import zipfile
 
-from app.contexts.knowledge.infrastructure.parsing import docx_parsing as docx_parsing
-from app.contexts.knowledge.infrastructure.parsing.docx_parsing import PR, R, W
+from app.contexts.documents.infrastructure.parsers import docx_parsing as docx_parsing
+from app.contexts.documents.infrastructure.parsers.docx_parsing import PR, R, W
 
 
 def _p(text):

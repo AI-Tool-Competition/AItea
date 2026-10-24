@@ -27,7 +27,12 @@ from dotenv import dotenv_values
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+from app.configuration.paths import InstancePaths  # noqa: E402
+
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
+    discover_page,
+    recipe_for,
+)
 from app.shared.infrastructure.http.download import _download
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -294,7 +299,11 @@ def main():
                 parser.error("resume cannot change the frozen catalogue list or page size")
             plan = frozen["plan"]
         else:
-            plan = json.loads((ROOT / "config/collection-plans/singapore-demo-20261009.json").read_text())
+            plan = json.loads(
+                (
+                    InstancePaths.resolve(ROOT).catalogs / "collection-plans/singapore-demo-20261009.json"
+                ).read_text()
+            )
             write_json(snapshot, {"plan": plan, "catalogs": names, "page_size": args.page_size})
         report = CatalogCollector(
             args.output,

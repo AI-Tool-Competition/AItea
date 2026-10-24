@@ -9,7 +9,7 @@ from dataclasses import replace
 from hashlib import sha256
 
 import pytest
-from app.contexts.collection.infrastructure.discovery.egazette import (
+from app.contexts.ingestion.infrastructure.source_adapters.egazette import (
     inspect_search_response,
     original_url,
     public_search_from_html,

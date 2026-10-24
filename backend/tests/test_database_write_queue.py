@@ -10,8 +10,8 @@ from threading import Barrier, Event
 import pytest
 from app.bootstrap import Service
 from app.shared.domain.values import now
-from app.shared.infrastructure import db as module
-from app.shared.infrastructure.db import Database
+from app.shared.infrastructure.persistence import database as module
+from app.shared.infrastructure.persistence.database import Database
 
 
 def quick_connections(database, monkeypatch):

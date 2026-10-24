@@ -22,7 +22,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
-from app.contexts.knowledge.infrastructure.parsing.html_parsing import HTMLDocument as _HTMLDocument
+from app.contexts.documents.infrastructure.parsers.html_parsing import HTMLDocument as _HTMLDocument
 from app.shared.domain.content import MAX_TEXT, _decode
 from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 
@@ -320,7 +320,7 @@ def _download(
             os.getenv(key)
             for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS")
         ):
-            from app.contexts.collection.infrastructure.collection_proxy import (
+            from app.contexts.ingestion.infrastructure.collection_proxy import (
                 PinnedProxyHTTPSConnection,
                 proxy_for_host,
                 resolve_addresses,
@@ -376,7 +376,7 @@ def _download(
                     "Accept": "application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,*/*;q=0.5",
                 }
                 if os.getenv("COLLECTION_BROWSER_HEADERS_HOSTS"):
-                    from app.contexts.collection.infrastructure.discovery.official_source_recovery import (
+                    from app.contexts.ingestion.infrastructure.source_adapters.official_source_recovery import (
                         request_headers_for,
                     )
 

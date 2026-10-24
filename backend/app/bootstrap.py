@@ -4,18 +4,18 @@ import os
 import threading
 from pathlib import Path
 
-from app.contexts.knowledge.infrastructure.catalog import LegalCatalog
+from app.contexts.documents.infrastructure.catalog import LegalCatalog
 from app.shared.domain.values import dump
-from app.shared.infrastructure.db import Database
+from app.shared.infrastructure.persistence.database import Database
 
 logger = logging.getLogger(__name__)
 
 
 class Service:
     def __init__(self, data_dir, *, require_existing=False):
-        from app.contexts.collection.application.collection import CollectionService
-        from app.contexts.knowledge.application.archive import LegalArchive
-        from app.contexts.workspace.application.studio import AdminStudio
+        from app.contexts.ingestion.application.collection_jobs import CollectionService
+        from app.contexts.documents.application.archive import LegalArchive
+        from app.contexts.workflows.application.workflow_studio import AdminStudio
 
         self.db = Database(Path(data_dir), require_existing=require_existing)
         self.catalog = LegalCatalog(self.db)
@@ -24,37 +24,37 @@ class Service:
         self._active_chats = set()
         self.archive = LegalArchive(self)
         self.collection = CollectionService(self)
-        from app.contexts.collection.application.checklists import ChecklistService
+        from app.contexts.ingestion.application.checklists import ChecklistService
 
         self.checklists = ChecklistService(self)
-        from app.contexts.legal.application.legal import LegalService
+        from app.contexts.legal_analysis.application.analysis_service import LegalService
 
         self.legal = LegalService(self)
-        from app.contexts.knowledge.application.retrieval import RetrievalIndex
+        from app.contexts.documents.application.retrieval import RetrievalIndex
 
         self.index = RetrievalIndex(self)
-        from app.contexts.knowledge.infrastructure.providers.ragflow import RAGFlowIndex
+        from app.contexts.documents.infrastructure.providers.ragflow import RAGFlowIndex
 
         self.ragflow = RAGFlowIndex(self)
-        from app.contexts.conversation.application.node_workspace import NodeWorkspace
+        from app.contexts.conversations.application.node_workspace import NodeWorkspace
 
         self.node_workspace = NodeWorkspace(self)
-        from app.contexts.workspace.application.configurations import TemplateService
+        from app.contexts.workflows.application.configurations import TemplateService
 
         self.configurations = TemplateService(self)
-        from app.contexts.workspace.application.workspaces import WorkspaceService
+        from app.contexts.workflows.application.workspaces import WorkspaceService
 
         self.workspaces = WorkspaceService(self)
-        from app.contexts.knowledge.application.library import DocumentService
+        from app.contexts.documents.application.library import DocumentService
 
         self.library = DocumentService(self)
-        from app.contexts.conversation.application.conversations import ConversationService
+        from app.contexts.conversations.application.conversations import ConversationService
 
         self.conversations = ConversationService(self)
         from app.contexts.drafting.application.drafting import ArtifactService
 
         self.artifacts = ArtifactService(self)
-        from app.contexts.collection.application.source_management import SourceService
+        from app.contexts.ingestion.application.source_management import SourceService
 
         self.source_management = SourceService(self)
 
@@ -68,7 +68,7 @@ class Service:
         }
 
     def embedding_fingerprint(self):
-        from app.contexts.knowledge.infrastructure.providers.ragflow import profile
+        from app.contexts.documents.infrastructure.providers.ragflow import profile
 
         return profile()
 

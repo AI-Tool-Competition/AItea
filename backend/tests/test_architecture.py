@@ -2,7 +2,7 @@
 
 import ast
 
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 APP = PROJECT_ROOT / "backend/app"
 
@@ -43,13 +43,13 @@ def test_http_routes_delegate_persistence_to_application_services():
 
 
 def test_top_level_is_only_composition_and_stable_entrypoints():
-    assert {path.name for path in APP.glob("*.py")} == {"__init__.py", "main.py", "bootstrap.py", "paths.py"}
-    assert {p.name for p in (APP / "contexts").iterdir() if p.is_dir() and p.name != "__pycache__"} == {
-        "identity",
-        "workspace",
-        "conversation",
-        "knowledge",
-        "collection",
-        "legal",
+    assert {path.name for path in APP.glob("*.py")} == {"__init__.py", "main.py", "bootstrap.py"}
+    assert {p.name for p in (APP / "contexts").iterdir() if (p / "__init__.py").is_file()} == {
+        "accounts",
+        "workflows",
+        "conversations",
+        "documents",
+        "ingestion",
+        "legal_analysis",
         "drafting",
     }

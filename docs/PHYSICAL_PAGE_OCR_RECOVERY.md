@@ -2,7 +2,7 @@
 
 `legal-page-transcription-v3` 将完整性范围明确为当前物理页可见的全部内容。正常跨页的句子、条款、表格或断词不构成缺页；必须保留末尾实际可见的文字，不能补写下一页。真实裁切、难以识别或尚未转录的可见内容仍返回不完整。提示版本、提示摘要和请求 recipe 同时进入复用指纹，因此旧请求不能冒充新策略的结果。
 
-旧 `complete=false` 不会自动转成成功。`app.contexts.knowledge.infrastructure.recovery.ocr_page_retry.prepare_physical_page_retry` 仅对显式选择的 1 至 20 个物理页准备一次新策略：旧提示必须是 v2、存在 `model_reported_incomplete`、原件摘要和整份物理页映射一致。已有重试历史、已成功页、其他错误和未知来源均拒绝。完整旧页保存在单层 `ocr_retry_history`，保留旧恢复冲突，不允许嵌套历史反复付费重试。单页旧记录限 2 MiB，准备前后整份 manifest 限 40 MiB。
+旧 `complete=false` 不会自动转成成功。`app.contexts.documents.infrastructure.recovery.ocr_page_retry.prepare_physical_page_retry` 仅对显式选择的 1 至 20 个物理页准备一次新策略：旧提示必须是 v2、存在 `model_reported_incomplete`、原件摘要和整份物理页映射一致。已有重试历史、已成功页、其他错误和未知来源均拒绝。完整旧页保存在单层 `ocr_retry_history`，保留旧恢复冲突，不允许嵌套历史反复付费重试。单页旧记录限 2 MiB，准备前后整份 manifest 限 40 MiB。
 
 先通过 `scripts/import_collected_resources.py --document-id …` 把目标资料及其关系依赖导入隔离目录。恢复入口拒绝工作树及上级项目默认的 `data/`，不更新正式总库、法律审核状态或来源版本。数据放在项目目录；只有存在明确的额外磁盘授权时，才使用已登记的临时溢出目录，并由最终导入流程把成果归回项目。
 

@@ -37,7 +37,7 @@ def main():
         from verify_ingestion import configure_models
 
         configure_models(args.models_env)
-    from app.contexts.collection.application.collection_import import (
+    from app.contexts.ingestion.application.collection_import import (
         CollectionImportError,
         import_collected_resources,
     )

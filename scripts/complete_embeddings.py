@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
+from app.configuration.paths import InstancePaths  # noqa: E402
 
 
 def digest(value):
@@ -180,10 +181,14 @@ class Observations:
             self.append("runtime-errors.jsonl", record)
 
     def install(self):
-        from app.contexts.knowledge.application.retrieval import input_hash
-        from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
-        from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
-        from app.contexts.knowledge.infrastructure.providers import vision as vision
+        from app.contexts.documents.application.retrieval import input_hash
+        from app.contexts.documents.infrastructure.parsers import (
+            document_parser as parsing,
+        )
+        from app.contexts.documents.infrastructure.providers import (
+            embedding as ingestion_embedding,
+        )
+        from app.contexts.documents.infrastructure.providers import vision as vision
         from app.shared.infrastructure.http import download as ingestion_download
 
         original = ingestion_embedding._embedding_response
@@ -481,16 +486,22 @@ def main():
     )
 
     from app.bootstrap import Service
-    from app.contexts.knowledge.application.retrieval import embedding_text, input_hash
-    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
-    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
-    from app.contexts.knowledge.infrastructure.recovery.embedding_reuse import InputCheckpointCache
+    from app.contexts.documents.application.retrieval import embedding_text, input_hash
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import (
+        text_complete,
+    )
+    from app.contexts.documents.infrastructure.providers import (
+        embedding as ingestion_embedding,
+    )
+    from app.contexts.documents.infrastructure.recovery.embedding_reuse import (
+        InputCheckpointCache,
+    )
 
     plan = json.loads(args.plan.read_text())
     os.environ["EMBEDDING_ADMISSION_PATH"] = str(
         args.admission_path
         or os.getenv("EMBEDDING_ADMISSION_PATH")
-        or ROOT / ".dev" / "embedding-admission.sqlite3"
+        or InstancePaths.resolve().embedding_admission
     )
     ids = [d["id"] for d in plan["documents"]]
     assert ids and len(ids) == len(set(ids))

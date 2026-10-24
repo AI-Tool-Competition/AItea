@@ -5,16 +5,16 @@ import json
 
 import pytest
 from admin_helpers import grant_admin
-from app.contexts.legal.domain.legal_models import MAX_CASE_FACTS
-from app.contexts.workspace.domain.models import FieldDefinition
-from app.contexts.workspace.infrastructure.defaults import (
+from app.contexts.legal_analysis.domain.analysis_models import MAX_CASE_FACTS
+from app.contexts.workflows.domain.models import FieldDefinition
+from app.contexts.workflows.infrastructure.defaults import (
     BUILTIN_TEMPLATES,
     RETIRED_TEMPLATE_ID,
     load_template,
 )
-from app.contexts.workspace.infrastructure.workflow_catalog import load_workflow_catalog
+from app.contexts.workflows.infrastructure.workflow_catalog import load_workflow_catalog
 from app.interfaces.http.factory import create_app
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 from app.shared.domain.values import now
 from fastapi.testclient import TestClient
 

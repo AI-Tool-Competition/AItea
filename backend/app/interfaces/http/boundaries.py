@@ -9,12 +9,12 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.contexts.knowledge.domain.documents import MAX_UPLOAD
+from app.contexts.documents.domain.documents import MAX_UPLOAD
 from app.interfaces.http.request_limits import RequestLimitMiddleware
 from app.shared.application import models as models
 from app.shared.domain.errors import AppError
 from app.shared.domain.values import uid
-from app.shared.infrastructure.db import DatabaseUnavailable
+from app.shared.infrastructure.persistence.database import DatabaseUnavailable
 
 logger = logging.getLogger(__name__)
 

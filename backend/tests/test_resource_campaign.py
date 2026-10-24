@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.resource_campaign import ResourceCampaign
-from app.paths import PROJECT_ROOT
+from app.contexts.ingestion.application.resource_campaign import ResourceCampaign
+from app.configuration.paths import PROJECT_ROOT
 from app.shared.infrastructure.http import download as ingestion_download
 
 PLAN = "indonesia-20261003"

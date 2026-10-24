@@ -1,7 +1,11 @@
 import hashlib
 
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import quality_warning
-from app.contexts.knowledge.infrastructure.parsing.native import _parse_html, _parsed_result, parse_file
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import quality_warning
+from app.contexts.documents.infrastructure.parsers.native_parser import (
+    _parse_html,
+    _parsed_result,
+    parse_file,
+)
 
 
 def test_lexbor_validates_recoverable_html5_without_rewriting_citation_source():

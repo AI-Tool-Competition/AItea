@@ -23,10 +23,10 @@ def main():
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        from app.contexts.knowledge.infrastructure.parsing.archive_page_recovery import (
+        from app.contexts.documents.infrastructure.parsers.archive_page_recovery import (
             recover_native_page_shards,
         )
-        from app.contexts.knowledge.infrastructure.recovery.page_checkpoint_recovery import (
+        from app.contexts.documents.infrastructure.recovery.page_checkpoint_recovery import (
             isolated_directory,
             readonly_service,
         )

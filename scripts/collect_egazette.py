@@ -28,7 +28,9 @@ from dotenv import dotenv_values
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.contexts.collection.infrastructure.discovery.egazette import (
+from app.configuration.paths import InstancePaths  # noqa: E402
+
+from app.contexts.ingestion.infrastructure.source_adapters.egazette import (
     LEGISLATIVE_CATEGORIES,
     MAX_SOURCE_BYTES,
     SOURCE_ROLE,
@@ -38,7 +40,7 @@ from app.contexts.collection.infrastructure.discovery.egazette import (
     publication_classification,
     search_body,
 )
-from app.shared.infrastructure.blob_store import Blob, BlobStore
+from app.shared.infrastructure.persistence.blob_store import Blob, BlobStore
 from app.shared.infrastructure.http.download import DownloadError, _download
 from app.shared.infrastructure.http.public_search import (
     EGAZETTE_ORIGIN,
@@ -919,7 +921,7 @@ class GazetteCollector:
     def stage_originals(self, rows, *, reuse_roots=()):
         """Queue verified originals and transferable source evidence, without workers."""
         from app.bootstrap import Service
-        from app.contexts.knowledge.domain.metadata import MetadataPatch
+        from app.contexts.documents.domain.metadata import MetadataPatch
         from app.shared.domain.values import dump, now
 
         indexed = {row["download_url"]: row for row in rows}
@@ -1222,7 +1224,11 @@ def main():
             frozen.update(
                 frontend_sha256=sha256(raw).hexdigest(),
                 frontend_response=response,
-                plan=json.loads((ROOT / "config/collection-plans/singapore-demo-20261009.json").read_text()),
+                plan=json.loads(
+                    (
+                        InstancePaths.resolve(ROOT).catalogs / "collection-plans/singapore-demo-20261009.json"
+                    ).read_text()
+                ),
             )
             write_json(plan_path, frozen)
         request, proof = public_search_from_html(EGAZETTE_ORIGIN, raw)

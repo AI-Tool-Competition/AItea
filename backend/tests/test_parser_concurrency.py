@@ -14,9 +14,9 @@ from threading import Lock
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.infrastructure.parsing import archive_parsing as archive_parsing
-from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
-from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+from app.contexts.documents.infrastructure.parsers import archive_parsing as archive_parsing
+from app.contexts.documents.infrastructure.parsers import document_parser as parsing
+from app.contexts.documents.infrastructure.providers import embedding as ingestion_embedding
 from app.shared.domain.values import now
 from support.archive_parsing import pdf_file
 

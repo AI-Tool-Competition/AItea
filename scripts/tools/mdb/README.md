@@ -1,6 +1,6 @@
 # 只读 MDB 解析工具
 
-`mdb-reader.c` 使用 libmdb 1.0.0 的公开只读 API，按原始 JET4 表行导出数据，不执行 SQL 查询、Access 宏、报表脚本或外部连接。Python 接线位于 `backend/app/contexts/knowledge/infrastructure/parsing/mdb_parsing.py`，必须由现有 `parse_bounded` 工作进程调用；普通 secondary 附件仍只保存原件。
+`mdb-reader.c` 使用 libmdb 1.0.0 的公开只读 API，按原始 JET4 表行导出数据，不执行 SQL 查询、Access 宏、报表脚本或外部连接。Python 接线位于 `backend/app/contexts/documents/infrastructure/parsers/mdb_parsing.py`，必须由现有 `parse_bounded` 工作进程调用；普通 secondary 附件仍只保存原件。
 
 服务器通过 `TEA_MDB_READER_PATH` 指定已审核的绝对辅助程序路径。未配置、无法创建 Linux user/network namespace、工具版本不符、原件或行/Memo 链不完整时明确失败，不使用有网络的替代命令。工具启动时绑定实际父进程 PID，设置 parent-death `SIGKILL`；namespace 用户映射后再次设置，避免 Linux 清除该设置。Python 创建独立进程组，执行时间最多 25 秒，边读边限制输出为 32 MiB。C 同时限制内存、CPU 和墙钟时间。
 

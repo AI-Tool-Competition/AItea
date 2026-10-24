@@ -43,9 +43,13 @@ make dev WEB_PORT=3001 API_PORT=8001
 
 资料页分为所有登录用户可读的“法规总库”和账号隔离的“我的资料”，业务内可查看本业务上传及对应国家法规。上传只归当前账号所有。资料统一保存在实例的 `data/`，可用 `make archive-inventory COUNTRY=ID` 导出按账号、国家和版本整理的原件目录。权限及数据分层见 [数据体系](docs/DATA_PLATFORM.md)，完整实例备份与异地路径恢复见 [备份操作](docs/DATA_BACKUP.md)。
 
+## 实例存储与迁移
+
+数据库、原件、采集状态、RAGFlow 数据和私有配置统一纳入 `data/`。运行 `make instance-paths` 查看实际位置；使用 `make instance-backup`、`make instance-verify`、`make instance-restore` 成套备份和恢复，保留历史版本与来源证据。命令、停服步骤及配置优先级见 [实例管理](docs/INSTANCE_MANAGEMENT.md)。后端模块职责见 [后端目录说明](backend/README.md)。
+
 ## 连接模型与真实资料
 
-复制 `.env.example` 为 `.env`，设置后端模型接口、密钥和模型名称，然后重启。所有模型凭据只在后端使用，不能放进 `NEXT_PUBLIC_*`。
+创建私有目录 `data/config/`，将 `.env.example` 复制为 `data/config/application.env`（目录权限 700、文件权限 600），设置后端模型接口、密钥和模型名称，然后重启。已有实例停服后运行 `make instance-adopt` 归集旧配置。所有模型凭据只在后端使用，不能放进 `NEXT_PUBLIC_*`。
 
 - `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`：OpenAI-compatible 生成接口；示例默认使用 Aerisun 的 `deepseek-v4.1-flash`，需填写该网关密钥。聊天将稳定案情放在提示前缀供网关自动缓存，并记录供应商返回的缓存命中/未命中 token 数。
 - `MINERU_API_TOKEN`：MinerU 云端精准解析；本机不运行 OCR 或 MinerU 模型。

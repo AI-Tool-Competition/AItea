@@ -4,7 +4,7 @@ from contextlib import closing
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.application.document_processing import processing_details
+from app.contexts.documents.application.document_processing import processing_details
 from app.shared.domain.errors import AppError
 from app.shared.domain.values import dump, now
 
@@ -55,7 +55,7 @@ def document(service, *, manifest=None, status="processing", phase="parse", job=
     ],
 )
 def test_only_current_lease_reports_running(service, monkeypatch, status, job, lease, expected):
-    monkeypatch.setattr("app.contexts.knowledge.application.document_processing.time.time", lambda: 1000)
+    monkeypatch.setattr("app.contexts.documents.application.document_processing.time.time", lambda: 1000)
     identifier = document(service, status=status, job=job, lease=lease)
     result = service.document_detail("alice", identifier)
     detail = result["document"]["processing_detail"]

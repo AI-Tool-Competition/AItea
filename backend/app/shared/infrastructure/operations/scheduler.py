@@ -6,7 +6,7 @@ import logging
 from threading import Event, Lock, Thread
 from typing import Protocol
 
-from app.contexts.knowledge.application.system_library import BackgroundWorkerScope
+from app.contexts.documents.application.system_library import BackgroundWorkerScope
 
 logger = logging.getLogger(__name__)
 

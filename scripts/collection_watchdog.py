@@ -23,6 +23,10 @@ import threading
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.configuration.paths import InstancePaths  # noqa: E402
+from app.configuration.environment import read_environment  # noqa: E402
+
 from official_source_supervisor_recovery import (
     RecoveryDeferred,
     identity,
@@ -259,26 +263,36 @@ def model_free_environment(project, task, token):
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(("LLM_", "VISION_", "EMBEDDING_", "RERANK_"))
+        if not key.startswith(("LLM_", "VISION_", "EMBEDDING_", "RERANK_", "MINERU_", "RAGFLOW_"))
     }
     for prefix in ("LLM", "VISION", "EMBEDDING", "RERANK"):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             env[f"{prefix}_{field}"] = ""
+    for key in (
+        "MINERU_API_TOKEN",
+        "RAGFLOW_BASE_URL",
+        "RAGFLOW_API_KEY",
+        "RAGFLOW_EMBEDDING_MODEL",
+        "RAGFLOW_RERANK_MODEL",
+    ):
+        env[key] = ""
     proxy_config = {}
-    dotenv = Path(project) / ".env"
-    if dotenv.is_file() and dotenv.stat().st_size <= 64 * 1024:
-        for line in dotenv.read_text(encoding="utf-8").splitlines():
-            key, separator, value = line.partition("=")
-            key = key.removeprefix("export ").strip()
-            if separator and key in {"COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"}:
-                value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                    value = value[1:-1]
-                proxy_config[key] = value
-    for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"):
+    values = read_environment(project)
+    for key in (
+        "COLLECTION_PROXY_URL",
+        "COLLECTION_PROXY_HOSTS",
+        "COLLECTION_DOH_HOSTS",
+    ):
+        if key in values:
+            proxy_config[key] = values[key]
+    for key in (
+        "COLLECTION_PROXY_URL",
+        "COLLECTION_PROXY_HOSTS",
+        "COLLECTION_DOH_HOSTS",
+    ):
         if key in os.environ:
             proxy_config[key] = os.environ[key]
-    pool_path = Path(project) / "config/collection-sources/id-sg-unattended.json"
+    pool_path = InstancePaths.resolve(project).source_pool
     if pool_path.is_file() and pool_path.stat().st_size <= 2 * 1024**2:
         pool = json.loads(pool_path.read_text(encoding="utf-8"))
         if pool.get("protocol") == "aitea-official-source-pool-v2":
@@ -345,7 +359,7 @@ def run(config_path, state_dir, *, poll_seconds=0.2):
     config = read_config(config_path)
     project = Path(config["project_root"]).resolve()
     state_dir = local_path(state_dir, project, exists=False)
-    registry = local_path(project / ".dev/collection-watchdog", project, exists=False)
+    registry = local_path(InstancePaths.resolve(project).collection_registry, project, exists=False)
     registry.mkdir(mode=0o700, parents=True, exist_ok=True)
     # One reviewed fleet cannot accidentally move its state directory after a
     # crash and bypass the inherited locks of children in its original location.
@@ -532,7 +546,7 @@ def resume_task(config_path, state_dir, task_id):
     config = read_config(config_path)
     project = Path(config["project_root"]).resolve()
     directory = local_path(state_dir, project)
-    registry = local_path(project / ".dev/collection-watchdog", project)
+    registry = local_path(InstancePaths.resolve(project).collection_registry, project)
     if task_id not in {task["id"] for task in config["tasks"]}:
         raise ValueError("unknown task id")
     with (
@@ -550,10 +564,12 @@ def resume_task(config_path, state_dir, task_id):
     return state
 
 
-def unit_argument(value):
+def unit_argument(value, *, environment=False):
     if any(character in value for character in "\n\r\0"):
         raise ValueError("invalid systemd argument")
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
+    value = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    # Environment= does not perform ExecStart's dollar-variable expansion.
+    return '"' + (value if environment else value.replace("$", "$$")) + '"'
 
 
 def unit_directory(value):
@@ -590,8 +606,17 @@ def render_unit(config_path, state_dir, uv):
         "--state-dir",
         str(state_dir),
     ]
-    return text.replace("@WORKING_DIRECTORY@", unit_directory(str(project))).replace(
-        "@EXEC_START@", " ".join(unit_argument(item) for item in command)
+    paths = InstancePaths.resolve(project)
+    selectors = {"TEA_DATA_DIR": paths.data, "TEA_CONFIG_DIR": paths.catalogs}
+    if os.getenv("TEA_ENV_FILE"):
+        selectors["TEA_ENV_FILE"] = paths.env_file
+    environment = "\n".join(
+        "Environment=" + unit_argument(f"{key}={value}", environment=True) for key, value in selectors.items()
+    )
+    return (
+        text.replace("[Service]", "[Service]\n" + environment)
+        .replace("@WORKING_DIRECTORY@", unit_directory(str(project)))
+        .replace("@EXEC_START@", " ".join(unit_argument(item) for item in command))
     )
 
 

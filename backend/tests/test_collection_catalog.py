@@ -7,8 +7,8 @@ import stat
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.infrastructure import collection_catalog as collection_catalog
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
+from app.contexts.ingestion.infrastructure import collection_catalog as collection_catalog
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 
 
 @pytest.fixture

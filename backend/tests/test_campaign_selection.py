@@ -7,9 +7,9 @@ from copy import deepcopy
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.checklists import load_blueprints
-from app.contexts.collection.application.resource_campaign import ResourceCampaign, validate_extension
-from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+from app.contexts.ingestion.application.checklists import load_blueprints
+from app.contexts.ingestion.application.resource_campaign import ResourceCampaign, validate_extension
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -145,7 +145,7 @@ def pdf(text):
 
 
 def run_selected(tmp_path, monkeypatch, *, shared=True, assert_pipeline=False, primary_pdf=None):
-    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+    from app.contexts.documents.infrastructure.providers import embedding as ingestion_embedding
     from app.shared.infrastructure.http import download as ingestion_download
 
     for key, value in {
@@ -263,7 +263,7 @@ def test_singapore_source_recipes_keep_china_treaty_and_member_commitments_scope
 
 
 def test_html_main_text_drops_navigation_and_preserves_original_line_locators():
-    from app.contexts.knowledge.infrastructure.parsing.native import parse_file
+    from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
 
     body = b'<html>\n<nav>OUTSIDE_MENU</nav>\n<main>\n<nav>INNER_MENU</nav>\n<h1 id="law">Legal requirements</h1>\n<p>Businesses must retain the original evidence.</p>\n</main>\n<footer>FOOTER</footer></html>'
     manifest = parse_file("guide.html", body, "text/html")

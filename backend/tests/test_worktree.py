@@ -4,7 +4,7 @@ import importlib.util
 import subprocess
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 SPEC = importlib.util.spec_from_file_location("tea_worktree", PROJECT_ROOT / "scripts/worktree.py")
 worktree = importlib.util.module_from_spec(SPEC)

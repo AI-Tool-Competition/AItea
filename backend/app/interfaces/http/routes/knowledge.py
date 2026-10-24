@@ -7,8 +7,8 @@ from fastapi import Depends, File, Form, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from app.contexts.knowledge.domain.documents import MAX_UPLOAD
-from app.contexts.knowledge.domain.metadata import MetadataPatch
+from app.contexts.documents.domain.documents import MAX_UPLOAD
+from app.contexts.documents.domain.metadata import MetadataPatch
 from app.shared.application import models as models
 from app.shared.domain.errors import fail
 

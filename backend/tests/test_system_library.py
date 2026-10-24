@@ -8,14 +8,14 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from admin_helpers import login_admin
 from app.bootstrap import Service
-from app.contexts.identity.application.auth import COOKIE, Auth
-from app.contexts.knowledge.application.contracts import ClassificationPatch, LegalRelationInput
-from app.contexts.knowledge.application.system_library import (
+from app.contexts.accounts.application.auth import COOKIE, Auth
+from app.contexts.documents.application.contracts import ClassificationPatch, LegalRelationInput
+from app.contexts.documents.application.system_library import (
     SYSTEM_OWNER_ID,
     ensure_principal,
     official_source_allowed,
 )
-from app.contexts.knowledge.domain.metadata import MetadataPatch
+from app.contexts.documents.domain.metadata import MetadataPatch
 from app.interfaces.http.factory import create_app
 from app.shared.domain.errors import AppError
 from app.shared.domain.values import dump, now
@@ -430,7 +430,7 @@ def test_attachment_country_is_immutable_and_parent_scope_is_preserved(service):
 
 
 def test_shared_selection_and_snapshots_follow_case_country_and_review_changes(service):
-    from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE
+    from app.contexts.workflows.infrastructure.defaults import DEFAULT_TEMPLATE
 
     case = service.create_case(
         "alice",
@@ -516,7 +516,7 @@ def test_http_authenticated_reads_download_and_anonymous_boundary(tmp_path):
 
 
 def test_personal_inventory_includes_all_own_countries_and_case_uploads(service, tmp_path):
-    from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE
+    from app.contexts.workflows.infrastructure.defaults import DEFAULT_TEMPLATE
 
     def make_case(owner, title):
         return service.create_case(

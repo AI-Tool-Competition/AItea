@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application import collection as module
+from app.contexts.ingestion.application import collection_jobs as module
 from app.shared.domain.values import now
 
 

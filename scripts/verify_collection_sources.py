@@ -22,17 +22,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.contexts.collection.application.checklists import load_blueprints
-from app.contexts.collection.infrastructure.discovery.discovery import (
+from app.configuration.paths import InstancePaths  # noqa: E402
+
+from app.contexts.ingestion.application.checklists import load_blueprints
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     MAX_HTML_BYTES,
     discover_page,
     normalized_seeds_for,
     recipe_for,
     request_parameters,
 )
-from app.contexts.collection.infrastructure.discovery.source_envelopes import extract_bkpm_multipart_pdf
+from app.contexts.ingestion.infrastructure.source_adapters.source_envelopes import (
+    extract_bkpm_multipart_pdf,
+)
 from app.shared.domain.values import now
-from app.shared.infrastructure.blob_store import BlobStore
+from app.shared.infrastructure.persistence.blob_store import BlobStore
 from app.shared.infrastructure.http.download import DownloadError, _download
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +72,7 @@ def new_output(path: Path) -> Path:
 def source_rows(plans: dict, include_conditional: bool) -> list[dict]:
     rows = []
     for plan in plans.values():
-        definition_path = ROOT / "config" / "collection-plans" / f"{plan['id']}.json"
+        definition_path = InstancePaths.resolve(ROOT).catalogs / "collection-plans" / f"{plan['id']}.json"
         definition_hash = hashlib.sha256(definition_path.read_bytes()).hexdigest()
         for item in plan["items"]:
             conditional = item["conditional"] and not include_conditional
@@ -88,7 +92,13 @@ def source_rows(plans: dict, include_conditional: bool) -> list[dict]:
                     "state": "conditional_not_triggered" if conditional else "pending",
                     "requirements": {
                         key: item[key]
-                        for key in ("scope_include", "scope_exclude", "steps", "acceptance", "limits")
+                        for key in (
+                            "scope_include",
+                            "scope_exclude",
+                            "steps",
+                            "acceptance",
+                            "limits",
+                        )
                     },
                     "reference_only_entries": [
                         entry for entry in item["entries"] if entry["purpose"] == "reference"
@@ -148,7 +158,11 @@ class SourceVerifier:
 
     def probe(self, row: dict, seed: dict, definition: dict, *, parent: dict | None = None) -> dict:
         started = time.monotonic()
-        result = {"requested_url": seed["url"], "configured_purpose": seed["purpose"], "started_at": now()}
+        result = {
+            "requested_url": seed["url"],
+            "configured_purpose": seed["purpose"],
+            "started_at": now(),
+        }
         if parent:
             result["discovered_from"] = {
                 key: parent[key] for key in ("final_url", "content_hash", "evidence_path")
@@ -292,7 +306,9 @@ def update_coverage(row: dict) -> None:
         for probe in originals
     ]
     row["coverage"].update(
-        root_reachable=reachable, scope_discovery_supported=supported, original_acquired=bool(originals)
+        root_reachable=reachable,
+        scope_discovery_supported=supported,
+        original_acquired=bool(originals),
     )
     row["state"] = (
         "dataset_manual_review_required"
@@ -338,7 +354,12 @@ def verify(plans: dict, output: Path, *, include_conditional=False, follow_limit
             report["updated_at"] = now()
             write_report(output, report)
         futures = {
-            pool.submit(runner.follow, row, definitions[row["plan_id"], row["item_id"]], follow_limit): row
+            pool.submit(
+                runner.follow,
+                row,
+                definitions[row["plan_id"], row["item_id"]],
+                follow_limit,
+            ): row
             for row in rows
             if row["state"] != "conditional_not_triggered"
         }
@@ -366,7 +387,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--plan-id", action="append", help="Repeat to select plans; default is every checked-in plan"
+        "--plan-id",
+        action="append",
+        help="Repeat to select plans; default is every checked-in plan",
     )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--per-host", type=int, default=2)
@@ -401,7 +424,12 @@ def main() -> int:
         )
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
-    print(json.dumps({"report": str(output / "report.json"), **report["summary"]}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"report": str(output / "report.json"), **report["summary"]},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

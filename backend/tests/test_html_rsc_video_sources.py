@@ -5,11 +5,11 @@ import json
 from copy import deepcopy
 
 import pytest
-from app.contexts.knowledge.infrastructure.parsing.html_parsing import RSC_VIDEO_SCAN_VERSION
-from app.contexts.knowledge.infrastructure.parsing.native import _decode, parse_file
-from app.contexts.knowledge.infrastructure.parsing.native_mapping_inventory import mappings, validate_mapping
-from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
-from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import (
+from app.contexts.documents.infrastructure.parsers.html_parsing import RSC_VIDEO_SCAN_VERSION
+from app.contexts.documents.infrastructure.parsers.native_parser import _decode, parse_file
+from app.contexts.documents.infrastructure.parsers.native_mapping_inventory import mappings, validate_mapping
+from app.contexts.documents.infrastructure.parsers.document_parser import parse_bounded
+from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import (
     image_candidates_bounded,
     update_quality,
 )

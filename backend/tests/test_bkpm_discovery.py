@@ -5,8 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from app.contexts.collection.application.checklists import load_blueprints
-from app.contexts.collection.infrastructure.discovery.discovery import (
+from app.contexts.ingestion.application.checklists import load_blueprints
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     discover_page,
     recipe_for,
     request_parameters,

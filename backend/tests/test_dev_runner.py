@@ -13,7 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
+from support.project import copy_configuration
 
 SCRIPT = PROJECT_ROOT / "scripts/dev.py"
 spec = importlib.util.spec_from_file_location("tea_dev_runner", SCRIPT)
@@ -208,6 +209,7 @@ def test_supervisor_rolls_back_when_second_service_fails(tmp_path):
     scripts.mkdir()
     # Use the actual runner functions with only the child commands replaced. This
     # exercises Popen, /proc identity, failure cleanup, and persisted failed state.
+    copy_configuration(tmp_path)
     source = SCRIPT.read_text()
     source = source[: source.rfind('if __name__ == "__main__":')]
     source += """
@@ -356,6 +358,7 @@ def test_production_build_rejects_wrong_api_rewrite(tmp_path):
 def test_launcher_sigterm_reaps_detached_services(tmp_path, ready):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
+    copy_configuration(tmp_path)
     source = SCRIPT.read_text()
     source = source[: source.rfind('if __name__ == "__main__":')]
     source += "\ndef sync_dependencies(*args, **kwargs): pass\n"
@@ -412,6 +415,7 @@ def test_stop_cancels_in_progress_dependency_install(tmp_path, start_command, st
     """A separate stop CLI must cancel the locked installer and its descendants."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
+    copy_configuration(tmp_path)
     source = SCRIPT.read_text()
     source = source[: source.rfind('if __name__ == "__main__":')]
     worker_file = tmp_path / "installer-worker.pid"
@@ -506,6 +510,7 @@ def fixture_runner(tmp_path: Path, overrides: str) -> Path:
     """Keep lifecycle code real while replacing only this fixture's services."""
     script = tmp_path / "scripts/dev.py"
     script.parent.mkdir()
+    copy_configuration(tmp_path)
     source = SCRIPT.read_text()
     source = source[: source.rfind('if __name__ == "__main__":')]
     source += "\ndef sync_dependencies(*args, **kwargs): pass\n"

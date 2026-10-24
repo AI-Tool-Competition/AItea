@@ -353,7 +353,7 @@ def test_upstream_change_invalidates_downstream_completion_and_artifact(client):
 
 
 def test_failed_parse_can_be_retried_with_same_bytes(client, monkeypatch):
-    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
+    import app.contexts.documents.infrastructure.parsers.document_parser as parsing
 
     case = demo(client)
 
@@ -607,7 +607,7 @@ def test_partial_source_collection_preserves_original_and_exposes_warnings(clien
 
 
 def test_partial_parse_warnings_are_visible_on_document(client, monkeypatch):
-    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
+    import app.contexts.documents.infrastructure.parsers.document_parser as parsing
 
     case = demo(client)
     monkeypatch.setattr(

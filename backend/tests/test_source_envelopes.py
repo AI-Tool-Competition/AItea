@@ -1,7 +1,7 @@
 import hashlib
 
 import pytest
-from app.contexts.collection.infrastructure.discovery.source_envelopes import (
+from app.contexts.ingestion.infrastructure.source_adapters.source_envelopes import (
     MAX_ENVELOPE_BYTES,
     extract_bkpm_multipart_pdf,
 )

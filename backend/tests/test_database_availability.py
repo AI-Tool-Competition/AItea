@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
 import pytest
-from app.shared.infrastructure.db import SCHEMA, Database, DatabaseUnavailable
+from app.shared.infrastructure.persistence.database import SCHEMA, Database, DatabaseUnavailable
 from fastapi.testclient import TestClient
 
 

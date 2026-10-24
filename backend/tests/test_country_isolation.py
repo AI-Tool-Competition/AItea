@@ -58,7 +58,7 @@ def classify(workspace, document_id, collection, *, level="primary", revision=0)
 
 
 def publish(workspace, document_id, start="2020-01-01", end=None):
-    from app.contexts.knowledge.domain.metadata import MetadataPatch
+    from app.contexts.documents.domain.metadata import MetadataPatch
 
     service, owner, _ = workspace
     # Process the same durable queue used by the live collector.
@@ -314,7 +314,7 @@ def test_first_country_assignment_resets_default_business_approval(workspace):
 def test_country_assignment_keeps_legal_kind_and_resets_existing_review(workspace, kind, expected):
     import json
 
-    from app.contexts.knowledge.domain.metadata import MetadataPatch
+    from app.contexts.documents.domain.metadata import MetadataPatch
 
     service, owner, _ = workspace
     old = service.store_document(owner, "reviewed-law.txt", b"tea reviewed v1", "text/plain")
@@ -362,7 +362,7 @@ def test_repeated_country_membership_does_not_revoke_approval_but_new_version_st
 
 @pytest.mark.parametrize("kind", ["case", "guidance"])
 def test_trusted_kind_hint_initializes_country_document_without_overwriting_review(workspace, kind):
-    from app.contexts.knowledge.domain.metadata import MetadataPatch
+    from app.contexts.documents.domain.metadata import MetadataPatch
 
     service, owner, _ = workspace
     doc = stored(workspace, "ID", kind_hint=kind)

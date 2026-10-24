@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 from support.legacy_vectors import checkpoint_inputs, schema19_snapshot
-from app.contexts.collection.application.collection_import import _fingerprint
+from app.contexts.ingestion.application.collection_import import _fingerprint
 from app.bootstrap import Service
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 from app.shared.domain.values import dump, now
 from app.shared.infrastructure.operations import system_corpus_merge as merge
 from app.shared.infrastructure.operations import system_corpus_migration as migration

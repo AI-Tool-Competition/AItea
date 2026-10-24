@@ -7,10 +7,10 @@ from contextlib import closing
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
-from app.contexts.knowledge.infrastructure.parsing.native import parse_file
-from app.contexts.knowledge.infrastructure.providers import vision as vision
-from app.contexts.knowledge.infrastructure.recovery import pdf_ocr_reuse as pdf_ocr_reuse
+from app.contexts.documents.infrastructure.parsers import document_parser as parsing  # noqa: F401 -- fixture module export
+from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
+from app.contexts.documents.infrastructure.providers import vision as vision
+from app.contexts.documents.infrastructure.recovery import pdf_ocr_reuse as pdf_ocr_reuse
 from app.shared.domain.values import dump, now
 
 SOURCE = "https://official.invalid/acfta/full-original.pdf"

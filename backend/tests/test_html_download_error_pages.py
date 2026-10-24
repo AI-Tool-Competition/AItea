@@ -1,9 +1,9 @@
 import hashlib
 
 import pytest
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
-from app.contexts.knowledge.infrastructure.parsing.native import _parse_html, parse_file
-from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+from app.contexts.documents.infrastructure.parsers.native_parser import _parse_html, parse_file
+from app.contexts.documents.infrastructure.parsers.document_parser import parse_bounded
 
 
 @pytest.mark.parametrize(

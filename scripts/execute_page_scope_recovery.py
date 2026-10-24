@@ -22,11 +22,14 @@ def main():
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        from app.contexts.knowledge.infrastructure.recovery.page_checkpoint_recovery import (
+        from app.contexts.documents.infrastructure.recovery.page_checkpoint_recovery import (
             isolated_directory,
             readonly_service,
         )
-        from app.contexts.knowledge.infrastructure.recovery.page_scope_execution import execute, preflight
+        from app.contexts.documents.infrastructure.recovery.page_scope_execution import (
+            execute,
+            preflight,
+        )
 
         if not 0 < args.plan.stat().st_size <= 2 * 1024 * 1024:
             raise ValueError("execution_plan_exceeds_2MiB")

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 import pytest
-from app.contexts.collection.application.checklists import load_blueprints
-from app.paths import PROJECT_ROOT
+from app.contexts.ingestion.application.checklists import load_blueprints
+from app.configuration.paths import PROJECT_ROOT
 from app.shared.infrastructure.http.download import DownloadError
 
 ROOT = PROJECT_ROOT

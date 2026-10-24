@@ -3,7 +3,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from app.contexts.conversation.application import assistant as assistant
+from app.contexts.conversations.application import assistant as assistant
 from app.interfaces.http.factory import create_app
 from app.shared.domain.errors import AppError
 from fastapi.testclient import TestClient
@@ -131,7 +131,7 @@ def test_chat_stream_reuses_opaque_openai_cache_key_and_logs_usage(chat, monkeyp
 
     client, case, payload, owner = chat
     monkeypatch.setenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    caplog.set_level(logging.INFO, logger="app.contexts.conversation.application.assistant")
+    caplog.set_level(logging.INFO, logger="app.contexts.conversations.application.assistant")
 
     usage = {
         "choices": [],
@@ -192,7 +192,7 @@ def test_aerisun_deepseek_requests_usage_and_keeps_case_context_in_cache_prefix(
     import logging
 
     monkeypatch.setenv("LLM_BASE_URL", "https://aerisun.top/sub2api")
-    caplog.set_level(logging.INFO, logger="app.contexts.conversation.application.assistant")
+    caplog.set_level(logging.INFO, logger="app.contexts.conversations.application.assistant")
     usage = {
         "choices": [],
         "usage": {

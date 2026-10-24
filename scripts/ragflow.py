@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import secrets
 import shutil
 import subprocess
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.configuration.paths import InstancePaths  # noqa: E402
+from app.configuration.environment import read_environment  # noqa: E402
 
 from dotenv import dotenv_values
 
@@ -17,11 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def prepare(root=ROOT):
     root = Path(root).resolve()
-    runtime = root / ".dev" / "ragflow"
+    paths = InstancePaths.resolve(root)
+    runtime = paths.ragflow_config
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = runtime / ".env"
-    existing = dotenv_values(path) if path.exists() else {}
-    application = dotenv_values(root / ".env")
+    existing = dotenv_values(path, interpolate=False) if path.exists() else {}
+    application = read_environment(root)
     values = {
         **{
             key: existing.get(key) or secrets.token_hex(24)
@@ -36,7 +42,7 @@ def prepare(root=ROOT):
         "RAGFLOW_SERVICE_EMAIL": existing.get("RAGFLOW_SERVICE_EMAIL") or "aitea-service@localhost.invalid",
         "AITEA_RAGFLOW_ENV_FILE": str(path),
         "AITEA_RAGFLOW_RUNTIME": str(runtime),
-        "AITEA_RAGFLOW_DATA": str(root / "data" / "ragflow"),
+        "AITEA_RAGFLOW_DATA": str(paths.ragflow_data),
         "AITEA_RAGFLOW_API_PORT": application.get("RAGFLOW_API_PORT") or "19380",
         "AITEA_RAGFLOW_WEB_PORT": application.get("RAGFLOW_WEB_PORT") or "18080",
         "AITEA_EMBEDDING_API_KEY": application.get("EMBEDDING_API_KEY")
@@ -58,7 +64,7 @@ def prepare(root=ROOT):
         runtime / "service_conf.yaml.template",
     )
     for name in ("mysql", "minio", "kvrocks", "nats", "infinity", "logs"):
-        (root / "data/ragflow" / name).mkdir(parents=True, exist_ok=True)
+        (paths.ragflow_data / name).mkdir(parents=True, exist_ok=True)
     print("RAGFlow 私有配置已准备，embedding 沿用后端接口和密钥。")
     return path
 
@@ -68,7 +74,7 @@ def compose(action, root=ROOT, runtime="auto"):
     if action in {"up", "config"}:
         env_file = prepare(root)
     else:
-        env_file = root / ".dev/ragflow/.env"
+        env_file = InstancePaths.resolve(root).ragflow_config / ".env"
         if not env_file.exists():
             print("当前项目尚未启动 RAGFlow。")
             return 0

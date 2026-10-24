@@ -34,7 +34,10 @@ def digest(value):
 
 
 def document_progress(manifest):
-    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import (
+        pdf_page_status,
+        text_complete,
+    )
 
     pages = manifest.get("pages", [])
     return {
@@ -141,7 +144,7 @@ def hold_previous_ambiguous_page(page):
     metadata = page.get("ocr", {})
     if page.get("status") != "pending_ocr" or not ambiguous_http_outcome(metadata.get("http_status")):
         return None
-    from app.contexts.knowledge.infrastructure.recovery.ocr_error_evidence import (
+    from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
         preserve_previous_page_attempt,
     )
 
@@ -250,7 +253,12 @@ def main():
     os.umask(0o077)
     args.data_dir = args.data_dir.resolve()
     args.snapshot = args.snapshot.resolve(strict=True)
-    from frozen_parse_supervisor import acquire_parse_lock, classify_document, supervise, verify_child_binding
+    from frozen_parse_supervisor import (
+        acquire_parse_lock,
+        classify_document,
+        supervise,
+        verify_child_binding,
+    )
 
     if args.supervise:
         return supervise(args, Path(__file__))
@@ -273,10 +281,15 @@ def main():
         TEA_PARSE_WORKERS="8",
     )
     from app.bootstrap import Service
-    from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
-    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
-    from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
-    from app.contexts.knowledge.infrastructure.providers import vision as vision
+    from app.contexts.documents.infrastructure.parsers import document_parser as parsing
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import (
+        pdf_page_status,
+        text_complete,
+    )
+    from app.contexts.documents.infrastructure.providers import (
+        embedding as ingestion_embedding,
+    )
+    from app.contexts.documents.infrastructure.providers import vision as vision
     from app.shared.infrastructure.http import download as ingestion_download
 
     parsing._OCR_SLOTS = parsing._VisionSlots(initial_target=args.ocr_start_workers)

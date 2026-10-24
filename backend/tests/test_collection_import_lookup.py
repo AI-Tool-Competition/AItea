@@ -8,13 +8,13 @@ from contextlib import closing
 import pytest
 import test_collection_import as import_fixtures
 from app.bootstrap import Service
-from app.contexts.collection.application.collection_import import (
+from app.contexts.ingestion.application.collection_import import (
     CollectionImportError,
     _target_import_ids,
     import_collected_resources,
 )
 from app.shared.domain.values import dump, now
-from app.shared.infrastructure.db import Database
+from app.shared.infrastructure.persistence.database import Database
 from test_collection_import import facts, original, transfer
 
 pair = import_fixtures.pair
@@ -81,7 +81,7 @@ def test_same_document_id_from_distinct_sources_creates_independent_imports(pair
     other = Service(tmp_path / "other-source")
     blob = other.archive.blobs.put_bytes("different-source", b"Independent original with the same source ID")
     with monkeypatch.context() as patch:
-        patch.setattr("app.contexts.knowledge.application.archive.uid", lambda: doc["id"])
+        patch.setattr("app.contexts.documents.application.archive.uid", lambda: doc["id"])
         with other.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO users VALUES(?,?,?,?,?,?)",

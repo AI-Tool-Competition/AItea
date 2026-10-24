@@ -5,8 +5,8 @@ import json
 import time
 
 from app.bootstrap import Service
-from app.contexts.collection.application.official_source_import import OfficialSourceImporter
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
+from app.contexts.ingestion.application.official_source_import import OfficialSourceImporter
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 from app.interfaces.http.factory import create_app
 
 
@@ -117,7 +117,7 @@ def test_new_official_html_version_is_saved_once_and_queued_for_bounded_parse(tm
     assert "Food packaging rules" in " ".join(
         element.get("content_text", "") for element in parsed_manifest["elements"]
     )
-    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
+    from app.contexts.ingestion.infrastructure.archive_inventory import export_inventory
 
     inventory = export_inventory(tmp_path, country="ID", owner=SYSTEM_OWNER_ID)
     receipt_file = next(inventory["path"].rglob("official-source-imports.jsonl"))
@@ -347,7 +347,7 @@ def test_rechecks_older_skipped_detail_when_verified_mime_is_a_document(tmp_path
 
 
 def test_api_health_exposes_official_import_cycle_and_shutdown(tmp_path, monkeypatch):
-    from app.contexts.collection.application import collection as collection
+    from app.contexts.ingestion.application import collection_jobs as collection
     from app.shared.infrastructure.operations import scheduler as scheduler
     from fastapi.testclient import TestClient
 

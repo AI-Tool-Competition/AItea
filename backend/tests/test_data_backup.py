@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.official_source_import import OfficialSourceImporter
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.contexts.ingestion.application.official_source_import import OfficialSourceImporter
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 from app.shared.domain.errors import AppError
 from app.shared.domain.values import dump, now
-from app.shared.infrastructure.db import Database
+from app.shared.infrastructure.persistence.database import Database
 from app.shared.infrastructure.operations import data_backup as module
 
 
@@ -413,12 +413,12 @@ def test_empty_and_legacy_schema_snapshots_are_preserved_without_upgrade(tmp_pat
         # number over newer tables; upgrade remains the normal service's job.
         from types import SimpleNamespace
 
-        from app.contexts.collection.application.checklists import ChecklistService
-        from app.contexts.collection.application.collection import CollectionService
-        from app.contexts.knowledge.application.archive import LegalArchive
-        from app.contexts.knowledge.infrastructure.catalog import LegalCatalog
-        from app.contexts.legal.application.legal import LegalService
-        from app.contexts.workspace.application.studio import AdminStudio
+        from app.contexts.ingestion.application.checklists import ChecklistService
+        from app.contexts.ingestion.application.collection_jobs import CollectionService
+        from app.contexts.documents.application.archive import LegalArchive
+        from app.contexts.documents.infrastructure.catalog import LegalCatalog
+        from app.contexts.legal_analysis.application.analysis_service import LegalService
+        from app.contexts.workflows.application.workflow_studio import AdminStudio
 
         old = SimpleNamespace(db=Database(source))
         old.catalog = LegalCatalog(old.db)

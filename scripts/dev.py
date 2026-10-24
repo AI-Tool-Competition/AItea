@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Own this checkout's local API/frontend lifecycle; never stop port holders."""
+
 from __future__ import annotations
 
 import argparse
@@ -20,11 +21,22 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.configuration.paths import InstancePaths  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 PNPM_VERSION = "10.26.2"
 START_TIMEOUT = 120
 STATE_NAME = "dev.json"
-RUNTIME_FILES = ("startup.json", STATE_NAME, "api.log", "web.log", "supervisor.log", "setup-api.log", "setup-web.log")
+RUNTIME_FILES = (
+    "startup.json",
+    STATE_NAME,
+    "api.log",
+    "web.log",
+    "supervisor.log",
+    "setup-api.log",
+    "setup-web.log",
+)
 
 
 class DevError(RuntimeError):
@@ -65,7 +77,9 @@ def control_lock(root: Path = ROOT, *, timeout: float = 0):
                 break
             except BlockingIOError as exc:
                 if time.monotonic() >= deadline:
-                    raise DevError("当前工作目录正在启动或安装依赖；可用 make dev-stop 取消，然后重试。") from exc
+                    raise DevError(
+                        "当前工作目录正在启动或安装依赖；可用 make dev-stop 取消，然后重试。"
+                    ) from exc
                 time.sleep(0.1)
         try:
             yield
@@ -79,7 +93,7 @@ def process_identity(pid: int) -> dict | None:
         base = Path("/proc") / str(pid)
         for attempt in range(5):
             stat = (base / "stat").read_text()
-            fields = stat[stat.rfind(")") + 2:].split()
+            fields = stat[stat.rfind(")") + 2 :].split()
             if fields[0] in {"Z", "X"}:
                 return None
             environment = dict(
@@ -132,9 +146,14 @@ def owns_process(record: dict, root: Path = ROOT) -> bool:
 
 def owned_group(record: dict, root: Path = ROOT) -> bool:
     """A surviving descendant can prove ownership after its group leader exited."""
-    if (record.get("owner") != str(root) or not record.get("token")
-            or not isinstance(record.get("pid"), int) or record["pid"] <= 1
-            or record.get("pgid") != record["pid"] or record.get("sid") != record["pid"]):
+    if (
+        record.get("owner") != str(root)
+        or not record.get("token")
+        or not isinstance(record.get("pid"), int)
+        or record["pid"] <= 1
+        or record.get("pgid") != record["pid"]
+        or record.get("sid") != record["pid"]
+    ):
         return False
     current_leader = process_identity(record["pid"])
     if current_leader and current_leader.get("start") != record.get("start"):
@@ -148,7 +167,7 @@ def owned_group(record: dict, root: Path = ROOT) -> bool:
             continue
         try:
             stat = (path / "stat").read_text()
-            fields = stat[stat.rfind(")") + 2:].split()
+            fields = stat[stat.rfind(")") + 2 :].split()
             if (int(fields[2]), int(fields[3])) != (record["pgid"], record["sid"]):
                 continue
         except (OSError, ValueError, IndexError):
@@ -197,7 +216,6 @@ def terminate(records: list[dict], root: Path = ROOT) -> None:
         time.sleep(0.02)
 
 
-
 def startup_path(root: Path = ROOT) -> Path:
     return root / ".dev/startup.json"
 
@@ -211,8 +229,9 @@ def owns_launcher(state: dict, root: Path = ROOT) -> bool:
     if not isinstance(pid, int) or pid <= 1:
         return False
     current = process_identity(pid)
-    if not current or any(current.get(key) != record.get(key)
-                          for key in ("pid", "start", "pgid", "sid", "cwd", "cmdline")):
+    if not current or any(
+        current.get(key) != record.get(key) for key in ("pid", "start", "pgid", "sid", "cwd", "cmdline")
+    ):
         return False
     arguments = current["cmdline"].rstrip("\0").split("\0")
     for index, argument in enumerate(arguments[1:], 1):
@@ -220,7 +239,15 @@ def owns_launcher(state: dict, root: Path = ROOT) -> bool:
         if not script.is_absolute():
             script = Path(current["cwd"]) / script
         if script.resolve() == root / "scripts/dev.py":
-            commands = set(arguments[index + 1:]) & {"start", "setup", "serve", "stop", "clean", "status", "list"}
+            commands = set(arguments[index + 1 :]) & {
+                "start",
+                "setup",
+                "serve",
+                "stop",
+                "clean",
+                "status",
+                "list",
+            }
             return not commands or commands <= {"start", "setup"}
     return False
 
@@ -230,8 +257,17 @@ def begin_startup(root: Path = ROOT) -> str:
     if identity is None:
         raise DevError("无法读取启动器进程身份，拒绝启动。")
     token = secrets.token_hex(24)
-    write_json(startup_path(root), {"owner": str(root), "token": token, "launcher": identity,
-                                   "installer": {}, "status": "preparing", "started_at": time.time()})
+    write_json(
+        startup_path(root),
+        {
+            "owner": str(root),
+            "token": token,
+            "launcher": identity,
+            "installer": {},
+            "status": "preparing",
+            "started_at": time.time(),
+        },
+    )
     return token
 
 
@@ -271,8 +307,15 @@ def run_install(command: list[str], cwd: Path, env: dict, log: Path, root: Path 
     token = state.get("token") or secrets.token_hex(24)
     launch_env = {**env, "TEA_DEV_ROOT": str(root), "TEA_DEV_TOKEN": token}
     with log.open("wb") as handle:
-        process = subprocess.Popen(command, cwd=cwd, env=launch_env, stdout=handle,
-                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=launch_env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         record = launched_identity(process, token, root)
         try:
             if not record:
@@ -290,7 +333,10 @@ def run_install(command: list[str], cwd: Path, env: dict, log: Path, root: Path 
                         print(f"    {line}", flush=True)
                         last_line = line
                     elif now - last_update >= 15:
-                        print(f"    依赖仍在下载或安装，可用 make dev-stop 取消；日志：{log}", flush=True)
+                        print(
+                            f"    依赖仍在下载或安装，可用 make dev-stop 取消；日志：{log}",
+                            flush=True,
+                        )
                     else:
                         time.sleep(0.1)
                         continue
@@ -326,7 +372,9 @@ def default_ports(root: Path = ROOT) -> tuple[int, int]:
     if (root / ".git").is_file():
         result = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--git-dir", "--git-common-dir"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         lines = result.stdout.splitlines()
         if result.returncode == 0 and len(lines) == 2 and lines[0] != lines[1]:
@@ -337,21 +385,26 @@ def default_ports(root: Path = ROOT) -> tuple[int, int]:
 def local_env(root: Path = ROOT) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
-    env.update({
-        "UV_CACHE_DIR": str(root / ".dev/uv-cache"),
-        "UV_PROJECT_ENVIRONMENT": str(root / "backend/.venv"),
-        "UV_PYTHON_INSTALL_DIR": str(root / ".dev/python"),
-        "npm_config_cache": str(root / ".dev/npm-cache"),
-        "NEXT_TELEMETRY_DISABLED": "1",
-        "SKIP_ENV_VALIDATION": "1",
-    })
+    env.update(
+        {
+            "UV_CACHE_DIR": str(root / ".dev/uv-cache"),
+            "UV_PROJECT_ENVIRONMENT": str(root / "backend/.venv"),
+            "UV_PYTHON_INSTALL_DIR": str(root / ".dev/python"),
+            "npm_config_cache": str(root / ".dev/npm-cache"),
+            "NEXT_TELEMETRY_DISABLED": "1",
+            "SKIP_ENV_VALIDATION": "1",
+        }
+    )
     return env
 
 
 def node_option_names(value: str) -> set[str] | None:
     try:
-        return {argument.split("=", 1)[0].replace("_", "-")
-                for argument in shlex.split(value) if argument.startswith("--")}
+        return {
+            argument.split("=", 1)[0].replace("_", "-")
+            for argument in shlex.split(value)
+            if argument.startswith("--")
+        }
     except ValueError:
         # Let Node report malformed user options without rewriting them.
         return None
@@ -360,7 +413,11 @@ def node_option_names(value: str) -> set[str] | None:
 def development_node_options(env: dict[str, str]) -> str:
     value = env.get("NODE_OPTIONS", "")
     options = node_option_names(value)
-    heap_options = {"--max-old-space-size", "--max-old-space-size-percentage", "--max-heap-size"}
+    heap_options = {
+        "--max-old-space-size",
+        "--max-old-space-size-percentage",
+        "--max-heap-size",
+    }
     if options is None or options & heap_options:
         return value
     # Leaving the flag unset still gives V8 a roughly 4 GiB default heap on a
@@ -373,7 +430,11 @@ def development_node_options(env: dict[str, str]) -> str:
     try:
         probe = subprocess.run(
             [node, "-p", "Math.floor(process.availableMemory() / 1024 / 1024)"],
-            env=probe_env, capture_output=True, text=True, timeout=10, check=False,
+            env=probe_env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
         size = int(probe.stdout.strip())
         if probe.returncode or size <= 0:
@@ -384,8 +445,15 @@ def development_node_options(env: dict[str, str]) -> str:
 
 
 def dependency_fingerprint(component: str, root: Path = ROOT) -> str:
-    names = ("backend/pyproject.toml", "backend/uv.lock") if component == "api" else (
-        "frontend/package.json", "frontend/pnpm-lock.yaml", "frontend/pnpm-workspace.yaml", "frontend/.npmrc",
+    names = (
+        ("backend/pyproject.toml", "backend/uv.lock")
+        if component == "api"
+        else (
+            "frontend/package.json",
+            "frontend/pnpm-lock.yaml",
+            "frontend/pnpm-workspace.yaml",
+            "frontend/.npmrc",
+        )
     )
     digest = hashlib.sha256(f"tea-dev-v2:{sys.platform}:{PNPM_VERSION}".encode())
     for name in names:
@@ -396,8 +464,13 @@ def dependency_fingerprint(component: str, root: Path = ROOT) -> str:
 
 
 def installed(component: str, root: Path = ROOT) -> bool:
-    paths = ("backend/.venv/bin/python", "backend/.venv/bin/uvicorn") if component == "api" else (
-        "frontend/node_modules/next/dist/bin/next", "frontend/node_modules/.modules.yaml",
+    paths = (
+        ("backend/.venv/bin/python", "backend/.venv/bin/uvicorn")
+        if component == "api"
+        else (
+            "frontend/node_modules/next/dist/bin/next",
+            "frontend/node_modules/.modules.yaml",
+        )
     )
     return all((root / name).is_file() for name in paths)
 
@@ -408,15 +481,24 @@ def needs_sync(component: str, mode: str, root: Path = ROOT) -> bool:
             raise DevError(f"{component} 依赖尚未安装；请运行 make setup 或使用 --sync auto。")
         return False
     stamp = read_json(root / ".dev/dependencies.json")
-    return mode == "force" or not installed(component, root) or stamp.get(component) != dependency_fingerprint(
-        component, root
+    return (
+        mode == "force"
+        or not installed(component, root)
+        or stamp.get(component) != dependency_fingerprint(component, root)
     )
 
 
 def pnpm_command(env: dict) -> list[str]:
     executable = shutil.which("pnpm")
     if executable:
-        version = subprocess.run([executable, "--version"], env=env, capture_output=True, text=True, timeout=15, check=False)
+        version = subprocess.run(
+            [executable, "--version"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
         if version.returncode == 0 and version.stdout.strip() == PNPM_VERSION:
             return [executable]
     npm = shutil.which("npm")
@@ -456,13 +538,28 @@ def sync_dependencies(mode: str, root: Path = ROOT) -> None:
         if not needs_sync(component, mode, root):
             print(f"  {label}：依赖已就绪（跳过同步）", flush=True)
             continue
-        command = [uv, "sync", "--project", str(root / "backend"), "--locked", "--dev"] if component == "api" else (
-            pnpm_command(env) + ["install", "--frozen-lockfile", "--store-dir", str(root / ".dev/pnpm-store")]
+        command = (
+            [uv, "sync", "--project", str(root / "backend"), "--locked", "--dev"]
+            if component == "api"
+            else (
+                pnpm_command(env)
+                + [
+                    "install",
+                    "--frozen-lockfile",
+                    "--store-dir",
+                    str(root / ".dev/pnpm-store"),
+                ]
+            )
         )
         path = runtime(root) / f"setup-{component}.log"
         print(f"  {label}：同步锁定依赖…", flush=True)
-        code = run_install(command, root / ("backend" if component == "api" else "frontend"),
-                           {**env, "CI": "true"}, path, root)
+        code = run_install(
+            command,
+            root / ("backend" if component == "api" else "frontend"),
+            {**env, "CI": "true"},
+            path,
+            root,
+        )
         if code:
             raise DevError(f"{label} 同步失败；详见 {path}\n{log_tail(path)}")
         stamp = read_json(runtime(root) / "dependencies.json")
@@ -484,7 +581,9 @@ def health_ready(url: str, *, api: bool = False) -> bool:
 
 
 def readiness_diagnostics(api_ok: bool, web_ok: bool) -> str:
-    lines = [f"API 健康检查：{'已就绪' if api_ok else '未就绪'}；前端 /tea 及 API 转发：{'已就绪' if web_ok else '未就绪'}。"]
+    lines = [
+        f"API 健康检查：{'已就绪' if api_ok else '未就绪'}；前端 /tea 及 API 转发：{'已就绪' if web_ok else '未就绪'}。"
+    ]
     for name in ("api", "web"):
         summary = log_tail(runtime() / f"{name}.log", limit=8)[-3500:]
         lines.append(f"{name}.log（末尾摘要）：\n{summary or '暂无输出。'}")
@@ -539,12 +638,33 @@ def state_path(root: Path = ROOT) -> Path:
 
 def service_commands(args: argparse.Namespace, root: Path = ROOT) -> list[tuple[str, Path, list[str]]]:
     uv, node = require_tools()
-    api = [uv, "run", "--project", str(root / "backend"), "--locked", "--no-sync", "python", "-m", "uvicorn",
-           "app.main:app", "--host", "127.0.0.1", "--port", str(args.api_port)]
+    api = [
+        uv,
+        "run",
+        "--project",
+        str(root / "backend"),
+        "--locked",
+        "--no-sync",
+        "python",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(args.api_port),
+    ]
     if not args.production:
         api += ["--reload", "--reload-dir", str(root / "backend/app")]
-    web = [node, str(root / "frontend/node_modules/next/dist/bin/next"), "start" if args.production else "dev",
-           "--hostname", "127.0.0.1", "--port", str(args.web_port)]
+    web = [
+        node,
+        str(root / "frontend/node_modules/next/dist/bin/next"),
+        "start" if args.production else "dev",
+        "--hostname",
+        "127.0.0.1",
+        "--port",
+        str(args.web_port),
+    ]
     if not args.production:
         web += ["--webpack"]
         options = node_option_names(os.environ.get("NODE_OPTIONS", ""))
@@ -561,12 +681,23 @@ def serve(args: argparse.Namespace) -> int:
     if supervisor is None:
         raise DevError("无法读取 Linux /proc 进程身份，拒绝启动无法安全管理的服务。")
     env = local_env()
-    env.setdefault("TEA_DATA_DIR", str(ROOT / "data"))
+    env.setdefault("TEA_DATA_DIR", str(InstancePaths.resolve(ROOT).data))
     env["TEA_API_URL"] = f"http://127.0.0.1:{args.api_port}"
-    env.setdefault("TEA_ALLOWED_ORIGINS", f"http://127.0.0.1:{args.web_port},http://localhost:{args.web_port}")
-    state = {"owner": str(ROOT), "token": token, "status": "starting", "supervisor": supervisor,
-             "services": [], "api_port": args.api_port, "web_port": args.web_port,
-             "production": args.production, "started_at": time.time()}
+    env.setdefault(
+        "TEA_ALLOWED_ORIGINS",
+        f"http://127.0.0.1:{args.web_port},http://localhost:{args.web_port}",
+    )
+    state = {
+        "owner": str(ROOT),
+        "token": token,
+        "status": "starting",
+        "supervisor": supervisor,
+        "services": [],
+        "api_port": args.api_port,
+        "web_port": args.web_port,
+        "production": args.production,
+        "started_at": time.time(),
+    }
     write_json(state_path(), state)
     processes: list[tuple[str, subprocess.Popen]] = []
     handles = []
@@ -591,11 +722,21 @@ def serve(args: argparse.Namespace) -> int:
             if name == "web" and not args.production:
                 # Next's config/directory watcher is separate from webpack's
                 # watcher. The process-local setting covers both instances.
-                service_env = {**env, "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000"),
-                               "NEXT_DISABLE_MEM_OVERRIDE": "1",
-                               "NODE_OPTIONS": development_node_options(env)}
-            process = subprocess.Popen(command, cwd=cwd, env=service_env, stdin=subprocess.DEVNULL,
-                                       stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
+                service_env = {
+                    **env,
+                    "WATCHPACK_POLLING": env.get("WATCHPACK_POLLING", "1000"),
+                    "NEXT_DISABLE_MEM_OVERRIDE": "1",
+                    "NODE_OPTIONS": development_node_options(env),
+                }
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=service_env,
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
             processes.append((name, process))
             record = launched_identity(process, token)
             if not record:
@@ -611,11 +752,14 @@ def serve(args: argparse.Namespace) -> int:
                     raise DevError(f"{name} 服务退出，退出码 {process.returncode}。")
             if state["status"] == "starting":
                 api_ok = health_ready(f"http://127.0.0.1:{args.api_port}/api/tea/health", api=True)
-                web_ok = (health_ready(f"http://127.0.0.1:{args.web_port}/tea")
-                          and health_ready(f"http://127.0.0.1:{args.web_port}/api/tea/health", api=True))
+                web_ok = health_ready(f"http://127.0.0.1:{args.web_port}/tea") and health_ready(
+                    f"http://127.0.0.1:{args.web_port}/api/tea/health", api=True
+                )
                 if web_log_check.scan():
-                    raise DevError("前端文件监听资源不足（ENOSPC），无法可靠热更新；已停止本次启动。"
-                                   "请检查 WATCHPACK_POLLING 是否禁用了文件轮询。")
+                    raise DevError(
+                        "前端文件监听资源不足（ENOSPC），无法可靠热更新；已停止本次启动。"
+                        "请检查 WATCHPACK_POLLING 是否禁用了文件轮询。"
+                    )
                 if api_ok and web_ok and web_log_check.complete:
                     # Record the stable executable identity after uv/node bootstrap.
                     records = [process_identity(process.pid) for _, process in processes]
@@ -626,7 +770,9 @@ def serve(args: argparse.Namespace) -> int:
                     write_json(state_path(), state)
                     print("前后端已就绪。", flush=True)
                 elif time.monotonic() >= deadline:
-                    raise DevError(f"服务未在 {START_TIMEOUT:g} 秒内就绪。请查看 .dev/api.log 和 .dev/web.log。")
+                    raise DevError(
+                        f"服务未在 {START_TIMEOUT:g} 秒内就绪。请查看 .dev/api.log 和 .dev/web.log。"
+                    )
             time.sleep(0.25)
     except (DevError, OSError) as exc:
         state["error"] = f"{exc}\n{readiness_diagnostics(api_ok, web_ok)}"
@@ -676,7 +822,6 @@ def stop_locked(root: Path = ROOT) -> None:
     print("当前工作目录的服务已停止；业务数据与依赖已保留。", flush=True)
 
 
-
 def check_production_build(api_port: int, root: Path = ROOT) -> None:
     if not (root / "frontend/.next/BUILD_ID").is_file():
         raise DevError("生产前端尚未构建，请先运行 make build。")
@@ -685,8 +830,9 @@ def check_production_build(api_port: int, root: Path = ROOT) -> None:
     if isinstance(rewrites, dict):
         rewrites = [rule for phase in rewrites.values() for rule in phase if isinstance(phase, list)]
     expected = f"http://127.0.0.1:{api_port}/api/tea/:path*"
-    if manifest and not any(rule.get("source") == "/api/tea/:path*" and rule.get("destination") == expected
-                            for rule in rewrites):
+    if manifest and not any(
+        rule.get("source") == "/api/tea/:path*" and rule.get("destination") == expected for rule in rewrites
+    ):
         raise DevError(f"前端构建的 API 地址与当前端口不一致；请先 make build API_PORT={api_port}。")
 
 
@@ -703,19 +849,40 @@ def launch(args: argparse.Namespace) -> subprocess.Popen:
     sync_dependencies(args.sync)
     token = secrets.token_hex(24)
     env = {**local_env(), "TEA_DEV_TOKEN": token, "TEA_DEV_ROOT": str(ROOT)}
-    command = [sys.executable, str(ROOT / "scripts/dev.py"), "serve", "--token", token,
-               "--api-port", str(args.api_port), "--web-port", str(args.web_port)]
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/dev.py"),
+        "serve",
+        "--token",
+        token,
+        "--api-port",
+        str(args.api_port),
+        "--web-port",
+        str(args.web_port),
+    ]
     if args.production:
         command.append("--production")
     with (runtime() / "supervisor.log").open("wb") as handle:
-        process = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     supervisor = launched_identity(process, token)
     if not args.production:
         polling = env.get("WATCHPACK_POLLING")
-        mode = "文件轮询（每 1000 毫秒）" if polling is None else (
-            "系统文件监听（沿用 WATCHPACK_POLLING 设置）" if polling in {"", "false", "0"}
-            else "文件轮询（沿用 WATCHPACK_POLLING 设置）"
+        mode = (
+            "文件轮询（每 1000 毫秒）"
+            if polling is None
+            else (
+                "系统文件监听（沿用 WATCHPACK_POLLING 设置）"
+                if polling in {"", "false", "0"}
+                else "文件轮询（沿用 WATCHPACK_POLLING 设置）"
+            )
         )
         print(f"  前端监听：{mode}。", flush=True)
     print("  启动并检查前后端服务…", flush=True)
@@ -723,11 +890,17 @@ def launch(args: argparse.Namespace) -> subprocess.Popen:
         deadline = time.monotonic() + START_TIMEOUT + 15
         while time.monotonic() < deadline:
             state = read_json(state_path())
-            if state.get("token") == token and state.get("status") == "ready" and len(live_records(state)) == 3:
+            if (
+                state.get("token") == token
+                and state.get("status") == "ready"
+                and len(live_records(state)) == 3
+            ):
                 print(f"茶渡工作台：http://127.0.0.1:{args.web_port}/tea", flush=True)
                 print(f"日志：{ROOT / '.dev'}；停止：make dev-stop", flush=True)
                 return process
-            if process.poll() is not None or (state.get("token") == token and state.get("status") == "failed"):
+            if process.poll() is not None or (
+                state.get("token") == token and state.get("status") == "failed"
+            ):
                 error = state.get("error") if state.get("token") == token else None
                 raise DevError(f"启动失败。\n{error or log_tail(runtime() / 'supervisor.log')}")
             time.sleep(0.2)
@@ -752,20 +925,36 @@ def status(root: Path = ROOT) -> dict:
     live = live_records(state, root)
     running = state.get("status") == "ready" and len(live) == 3
     preparing = owns_launcher(read_json(startup_path(root)), root)
-    return {"root": str(root), "status": "preparing" if preparing else "running" if running else "partial" if live else "stopped",
-            "url": f"http://127.0.0.1:{state['web_port']}/tea" if state.get("web_port") else None,
-            "api_port": state.get("api_port"), "web_port": state.get("web_port"),
-            "pids": [record["pid"] for record in live], "error": state.get("error")}
+    return {
+        "root": str(root),
+        "status": "preparing" if preparing else "running" if running else "partial" if live else "stopped",
+        "url": f"http://127.0.0.1:{state['web_port']}/tea" if state.get("web_port") else None,
+        "api_port": state.get("api_port"),
+        "web_port": state.get("web_port"),
+        "pids": [record["pid"] for record in live],
+        "error": state.get("error"),
+    }
 
 
 def list_worktrees() -> None:
-    result = subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
-                            capture_output=True, text=True, check=False)
-    roots = [Path(line.removeprefix("worktree ")) for line in result.stdout.splitlines()
-             if line.startswith("worktree ")] if result.returncode == 0 else [ROOT]
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    roots = (
+        [
+            Path(line.removeprefix("worktree "))
+            for line in result.stdout.splitlines()
+            if line.startswith("worktree ")
+        ]
+        if result.returncode == 0
+        else [ROOT]
+    )
     for root in roots:
         info = status(root.resolve())
-        print(f"{info['status']:8} {info['root']}" + (f"  {info['url']}" if info['url'] else ""))
+        print(f"{info['status']:8} {info['root']}" + (f"  {info['url']}" if info["url"] else ""))
 
 
 def clean_locked(root: Path = ROOT) -> None:
@@ -782,7 +971,12 @@ def clean_locked(root: Path = ROOT) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="茶渡本地开发：按工作目录隔离的 uv + DeerFlow 服务")
-    parser.add_argument("command", nargs="?", default="start", choices=("start", "stop", "status", "list", "clean", "setup", "serve"))
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="start",
+        choices=("start", "stop", "status", "list", "clean", "setup", "serve"),
+    )
     parser.add_argument("--api-port", type=int)
     parser.add_argument("--web-port", type=int)
     parser.add_argument("--production", action="store_true", help="运行已构建的前端，并关闭后端自动重载")
@@ -794,8 +988,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("SYNC 必须是 auto、force 或 skip。")
     default_api, default_web = default_ports()
     try:
-        args.api_port = args.api_port if args.api_port is not None else int(os.getenv("TEA_API_PORT", default_api))
-        args.web_port = args.web_port if args.web_port is not None else int(os.getenv("TEA_WEB_PORT", default_web))
+        args.api_port = (
+            args.api_port if args.api_port is not None else int(os.getenv("TEA_API_PORT", default_api))
+        )
+        args.web_port = (
+            args.web_port if args.web_port is not None else int(os.getenv("TEA_WEB_PORT", default_web))
+        )
     except ValueError:
         parser.error("TEA_API_PORT 和 TEA_WEB_PORT 必须为整数。")
     if not all(1 <= port <= 65535 for port in (args.api_port, args.web_port)):

@@ -222,9 +222,9 @@ def test_document_filters_and_paginated_structure_do_not_expose_embeddings(clien
 
 
 def test_studio_migration_preserves_existing_database(tmp_path):
-    from app.contexts.knowledge.infrastructure.catalog import LegalCatalog
+    from app.contexts.documents.infrastructure.catalog import LegalCatalog
     from app.shared.domain.values import now
-    from app.shared.infrastructure.db import Database
+    from app.shared.infrastructure.persistence.database import Database
 
     db = Database(tmp_path)
     LegalCatalog(db)
@@ -529,7 +529,7 @@ def test_debug_rejects_numbers_outside_finite_range(client):
 def test_slow_stream_cannot_extend_model_generation_indefinitely(client, monkeypatch):
     import asyncio
 
-    import app.contexts.conversation.application.assistant as assistant
+    import app.contexts.conversations.application.assistant as assistant
     import httpx
 
     value = template(client)

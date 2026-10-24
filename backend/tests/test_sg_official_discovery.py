@@ -6,8 +6,8 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-from app.contexts.collection.application.checklists import load_blueprint_version
-from app.contexts.collection.infrastructure.discovery.discovery import (
+from app.contexts.ingestion.application.checklists import load_blueprint_version
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     _CUSTOMS_TEXT_PATHS,
     discover_page,
     recipe_for,
@@ -203,7 +203,7 @@ def test_literal_push_never_evaluates_scripts_or_reads_module_links():
 
 
 def test_next_record_node_and_byte_limits_fail_closed(monkeypatch):
-    import app.contexts.collection.infrastructure.discovery.discovery as discovery
+    import app.contexts.ingestion.infrastructure.source_adapters.link_discovery as discovery
 
     recipe = recipe_for(item("3.6"))
     monkeypatch.setattr(discovery, "_PDPC_FLIGHT_RECORDS", 2)
@@ -237,7 +237,7 @@ def test_pdpc_next_links_do_not_extend_unrelated_country_or_agency_rules():
 
 
 def test_pdpc_next_one_record_and_link_total_are_bounded(monkeypatch):
-    import app.contexts.collection.infrastructure.discovery.discovery as discovery
+    import app.contexts.ingestion.infrastructure.source_adapters.link_discovery as discovery
 
     recipe = recipe_for(item("3.6"))
     monkeypatch.setattr(discovery, "_PDPC_FLIGHT_RECORD_BYTES", 10)

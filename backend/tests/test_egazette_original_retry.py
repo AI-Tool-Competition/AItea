@@ -195,8 +195,8 @@ def test_corrupt_retry_history_is_rejected_without_network(tmp_path, monkeypatch
 
 def test_failed_attempt_cas_survives_offline_staging_and_formal_import(tmp_path, monkeypatch):
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection_import import import_collected_resources
-    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+    from app.contexts.ingestion.application.collection_import import import_collected_resources
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 
     source = tmp_path / "source"
     source.mkdir()
@@ -362,8 +362,8 @@ def test_extended_attempt_chain_rejects_reordered_or_changed_history(tmp_path, m
 
 def test_all_extended_failure_cas_are_mapped_by_offline_formal_import(tmp_path, monkeypatch):
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection_import import import_collected_resources
-    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+    from app.contexts.ingestion.application.collection_import import import_collected_resources
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 
     source = tmp_path / "source"
     source.mkdir()

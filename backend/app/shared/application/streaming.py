@@ -5,8 +5,8 @@ import logging
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
 
-from app.contexts.conversation.application.contracts import MessageStreamEvent
-from app.contexts.workspace.application.contracts import DebugStreamEvent
+from app.contexts.conversations.application.contracts import MessageStreamEvent
+from app.contexts.workflows.application.contracts import DebugStreamEvent
 
 logger = logging.getLogger(__name__)
 

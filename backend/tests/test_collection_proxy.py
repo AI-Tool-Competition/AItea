@@ -8,7 +8,7 @@ import ssl
 import time
 
 import pytest
-from app.contexts.collection.infrastructure import collection_proxy as transport
+from app.contexts.ingestion.infrastructure import collection_proxy as transport
 from app.shared.infrastructure.http.download import DownloadError
 
 

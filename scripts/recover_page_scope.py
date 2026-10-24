@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        from app.contexts.knowledge.infrastructure.recovery.page_checkpoint_recovery import (
+        from app.contexts.documents.infrastructure.recovery.page_checkpoint_recovery import (
             _document,
             apply_page_checkpoint,
             isolated_directory,
@@ -41,7 +41,7 @@ def main():
         if args.action == "prepare":
             if args.apply:
                 raise ValueError("prepare_returns_checkpoint_only_no_database_writes")
-            from app.contexts.knowledge.infrastructure.recovery.ocr_page_retry import (
+            from app.contexts.documents.infrastructure.recovery.ocr_page_retry import (
                 prepare_physical_page_retry,
             )
 

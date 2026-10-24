@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from app.contexts.collection.infrastructure.discovery.discovery import (
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     discover_page,
     normalized_seeds_for,
     recipe_for,
@@ -76,7 +76,7 @@ def test_setneg_catalog_uses_verified_type_total_and_replayable_next_page():
 
 
 def test_setneg_request_body_is_derived_only_from_trusted_item_and_fixed_api():
-    from app.contexts.collection.infrastructure.discovery.discovery import request_parameters
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import request_parameters
 
     definition = {"country": "ID", "item": setneg_item()}
     params = request_parameters(SETNEG + "produkhukum?jns=UU&length=5&start=5", definition)

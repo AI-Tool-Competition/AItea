@@ -12,20 +12,20 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
-from app.contexts.collection.application.collection_import import (
+from app.contexts.ingestion.application.collection_import import (
     _blob,
     _fingerprint,
     _path_key,
     _validate_registry,
 )
-from app.contexts.knowledge.application.retrieval import embedding_text, input_hash, stored_vector
-from app.contexts.knowledge.application.system_library import (
+from app.contexts.documents.application.retrieval import embedding_text, input_hash, stored_vector
+from app.contexts.documents.application.system_library import (
     SYSTEM_OWNER_ID,
     SYSTEM_OWNER_NAME,
     ensure_principal,
     official_source_allowed,
 )
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
 from app.shared.domain.values import dump, now
 
 PROTOCOL = "system-corpus-migration-v1"
@@ -450,7 +450,7 @@ def export_system_corpus(source_dir, snapshot_dir):
         stream.flush()
         os.fsync(stream.fileno())
     (snapshot_dir / "snapshot.json").chmod(0o400)
-    from app.shared.infrastructure.blob_store import _sync_directory
+    from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
     _sync_directory(snapshot_dir)
     _sync_directory(snapshot_dir.parent)
@@ -466,7 +466,7 @@ def _cas_reference(value, source_dir, paths):
             _cas_reference(item, source_dir, paths)
     elif isinstance(value, dict):
         if isinstance(value.get("ocr"), dict) and "reuse_import" in value["ocr"]:
-            from app.contexts.knowledge.infrastructure.recovery.pdf_ocr_reuse_import import validate_archive
+            from app.contexts.documents.infrastructure.recovery.pdf_ocr_reuse_import import validate_archive
 
             try:
                 validate_archive(value, paths, source_dir)
@@ -475,8 +475,10 @@ def _cas_reference(value, source_dir, paths):
         for key, item in value.items():
             if key == "image_blob" and isinstance(item, dict):
                 digest = item.get("content_hash")
+                mime = item.get("mime_type")
                 _require(
-                    digest in paths and item.get("mime_type") == "image/png", "invalid_PNG_CAS_reference"
+                    digest in paths and mime in {"image/png", "image/jpeg", "image/webp"},
+                    "invalid_image_CAS_reference",
                 )
                 expected = str(paths[digest].relative_to(source_dir))
                 _require(
@@ -486,7 +488,15 @@ def _cas_reference(value, source_dir, paths):
                     "PNG_storage_path_or_size_mismatch",
                 )
                 with paths[digest].open("rb") as stream:
-                    _require(stream.read(8) == b"\x89PNG\r\n\x1a\n", "PNG_signature_mismatch")
+                    header = stream.read(12)
+                    valid = {
+                        "image/png": header.startswith(b"\x89PNG\r\n\x1a\n"),
+                        "image/jpeg": header.startswith(b"\xff\xd8\xff"),
+                        "image/webp": header[:4] == b"RIFF" and header[8:12] == b"WEBP",
+                    }[mime]
+                    _require(
+                        valid, "PNG_signature_mismatch" if mime == "image/png" else "image_signature_mismatch"
+                    )
             if _path_key(key) and isinstance(item, str) and "files/blobs/" in item:
                 _require(not Path(item).is_absolute(), "absolute_manifest_CAS_path_not_portable")
                 digest = Path(item).name
@@ -651,7 +661,7 @@ def _validate_source(scope, source_dir, inventory, *, paths=None, lookup=None, v
                 "same_owner_OCR_checkpoint_mismatch",
             )
             if "reuse_import" in page["ocr"]:
-                from app.contexts.knowledge.infrastructure.recovery.pdf_ocr_reuse_import import (
+                from app.contexts.documents.infrastructure.recovery.pdf_ocr_reuse_import import (
                     validate_imported,
                 )
 
@@ -767,7 +777,7 @@ def _validate_source(scope, source_dir, inventory, *, paths=None, lookup=None, v
         except (TypeError, json.JSONDecodeError):
             locator = {}
         if isinstance(locator, dict) and "collection_relation_import" in locator:
-            from app.contexts.collection.application.collection_import import validate_relation_import
+            from app.contexts.ingestion.application.collection_import import validate_relation_import
 
             try:
                 _cas_reference(locator, source_dir, paths)
@@ -1014,7 +1024,7 @@ def _stream_target_guard(conn, source_ids):
 
 
 def _progress(path, value):
-    from app.shared.infrastructure.blob_store import _sync_directory
+    from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
     pending = path.with_name(path.name + ".new")
     with pending.open("w") as stream:
@@ -1028,7 +1038,7 @@ def _progress(path, value):
 def _migrate_streaming(snapshot_dir, target_dir, receipt, *, apply, source_stopped, backup_dir):
     """Resume from exact committed document batches, never from a mutable cursor."""
     from app.bootstrap import Service
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     source_dir = Path(receipt["source_data_dir"]).resolve()
     _require(target_dir not in {source_dir, snapshot_dir}, "source_snapshot_target_must_differ")
@@ -1419,7 +1429,7 @@ def migrate_system_corpus(
         )
         stream.flush()
         os.fsync(stream.fileno())
-    from app.shared.infrastructure.blob_store import _sync_directory
+    from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
     _sync_directory(backup_dir)
     _sync_directory(backup_dir.parent)
@@ -1430,7 +1440,7 @@ def migrate_system_corpus(
     with closing(service.db.connect()) as conn:
         upgraded = _scope(conn)
         _check_target(conn, source, expected, upgraded)
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     blobs = BlobStore(target_dir / "files", max_bytes=128 * 1024 * 1024)
     for digest, path in paths.items():

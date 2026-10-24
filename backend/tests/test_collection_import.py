@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.collection_import import (
+from app.contexts.ingestion.application.collection_import import (
     CollectionImportError,
     import_collected_resources,
 )
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID, ensure_principal
-from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+from app.contexts.documents.infrastructure.parsers.document_parser import parse_bounded
 from app.shared.domain.values import dump, now
 
 
@@ -82,8 +82,8 @@ def facts(service):
 
 
 def test_mineru_chart_checkpoint_identity_survives_owner_cas_rebinding():
-    from app.contexts.collection.application.collection_import import _rewrite_manifest
-    from app.contexts.knowledge.infrastructure.providers.native_asset_ocr import assets
+    from app.contexts.ingestion.application.collection_import import _rewrite_manifest
+    from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
 
     source_hash = hashlib.sha256(b"pdf source").hexdigest()
     image = b"chart source image"
@@ -309,7 +309,7 @@ def test_failure_late_in_relation_import_rolls_back_every_document(pair, monkeyp
             "locator": "source association",
         },
     )
-    from app.contexts.knowledge.application.archive import LegalArchive
+    from app.contexts.documents.application.archive import LegalArchive
 
     def fail(*args, **kwargs):
         raise RuntimeError("injected transaction failure")

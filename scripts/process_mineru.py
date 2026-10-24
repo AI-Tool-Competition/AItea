@@ -15,25 +15,27 @@ from contextlib import closing
 from pathlib import Path
 from threading import Event
 
-from dotenv import load_dotenv
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
+from app.configuration.environment import load_environment  # noqa: E402
+from app.configuration.paths import InstancePaths  # noqa: E402
+
 STOP = Event()
 
 
 def main():
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection import CollectionWorkers
-    from app.contexts.knowledge.infrastructure.providers.mineru import Admission
+    from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+    from app.contexts.documents.infrastructure.providers.mineru import Admission
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--scope", type=Path, required=True)
-    parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
+    parser.add_argument("--env-file", type=Path, default=InstancePaths.resolve().env_file)
     parser.add_argument("--parse-only", action="store_true")
     args = parser.parse_args()
-    load_dotenv(args.env_file, override=True)
+    os.environ["TEA_ENV_FILE"] = str(args.env_file)
+    load_environment()
     if args.parse_only:
         os.environ["RAGFLOW_API_KEY"] = ""
         os.environ["RAGFLOW_EMBEDDING_MODEL"] = ""

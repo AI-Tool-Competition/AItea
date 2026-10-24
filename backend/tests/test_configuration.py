@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from app.contexts.workspace.infrastructure.defaults import DEFAULT_TEMPLATE, load_template
+from app.contexts.workflows.infrastructure.defaults import DEFAULT_TEMPLATE, load_template
 
 
 def test_local_configuration_is_read_and_validated(tmp_path):

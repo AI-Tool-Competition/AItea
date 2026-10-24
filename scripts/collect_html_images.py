@@ -40,12 +40,14 @@ def child(data_dir, output, options, models_env, state, time_budget):
     os.umask(0o077)
     configure_models(models_env)
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection import CollectionWorkers
-    from app.contexts.collection.application.html_image_collection import (
+    from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+    from app.contexts.ingestion.application.html_image_collection import (
         HtmlImageCollector,
         HtmlProcessingPending,
     )
-    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import (
+        text_complete,
+    )
 
     started = time.monotonic()
     deadline = started + time_budget
@@ -210,7 +212,7 @@ def main():
         if not (data_dir / "tea.sqlite3").is_file() or (data_dir / "tea.sqlite3").is_symlink():
             raise ValueError("data-dir 必须是已有资料库。")
         documents = args.document_ids.split(",")
-        from app.contexts.collection.application.collection import CollectionService
+        from app.contexts.ingestion.application.collection_jobs import CollectionService
 
         CollectionService._processing_scope(args.owner, documents)
         if args.models_env and not args.live_models:

@@ -1,7 +1,7 @@
 from datetime import date
 
 import pytest
-from app.contexts.knowledge.domain.metadata import DocumentMetadata, MetadataPatch, eligible
+from app.contexts.documents.domain.metadata import DocumentMetadata, MetadataPatch, eligible
 from pydantic import ValidationError
 
 

@@ -40,7 +40,15 @@ from process_frozen_parse import (  # noqa: E402
 )
 
 PROTOCOL = "ocr-embedding-handoff-v1"
-SOURCE_FIELDS = ("id", "owner_id", "version", "content_hash", "source_url", "size", "storage_path")
+SOURCE_FIELDS = (
+    "id",
+    "owner_id",
+    "version",
+    "content_hash",
+    "source_url",
+    "size",
+    "storage_path",
+)
 INTEGRITY = {
     "selected_originals_and_all_text_unchanged",
     "all_old_vectors_exact_bytes",
@@ -102,7 +110,7 @@ def owned_lock(path, inherited_fd=None):
 
 
 def exclusions(args):
-    from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 
     policy = read_json(args.exclusions)
     if (
@@ -152,9 +160,16 @@ def exclusions(args):
             raise ValueError("Excluded input set digest mismatch")
         documents.update(docs)
         inputs.update(hashes)
-    holds, historical = referenced(policy["ocr_holds"]), referenced(policy["ocr_history"])
+    holds, historical = (
+        referenced(policy["ocr_holds"]),
+        referenced(policy["ocr_history"]),
+    )
     held = set(holds["historical_paid_missing_document_ids"]) | set(historical["additional_document_holds"])
-    for key in ("current_records", "historical_records", "historical_paid_missing_records"):
+    for key in (
+        "current_records",
+        "historical_records",
+        "historical_paid_missing_records",
+    ):
         held.update(row["document_id"] for row in holds[key])
     if len(held) != policy["expected_held_documents"]:
         raise ValueError("Historical OCR hold evidence is incomplete")
@@ -164,7 +179,9 @@ def exclusions(args):
 
 def configured_model(args, policy):
     from app.bootstrap import Service
-    from app.contexts.knowledge.infrastructure.providers.embedding_admission import model_scope
+    from app.contexts.documents.infrastructure.providers.embedding_admission import (
+        model_scope,
+    )
     from verify_ingestion import configure_models
 
     configure_models(args.models_env)
@@ -207,7 +224,11 @@ def ocr_terminal(args, policy):
     ):
         raise ValueError("OCR scope is not a trusted, fully drained terminal scope")
     for name, expected in binding["snapshot_sha256"].items():
-        if name not in {"initial-report.json", "initial-parse-ids.json", "initial-parse-documents.json"}:
+        if name not in {
+            "initial-report.json",
+            "initial-parse-ids.json",
+            "initial-parse-documents.json",
+        }:
             raise ValueError("Unexpected OCR snapshot evidence path")
         if sha(args.ocr_snapshot / name) != expected:
             raise ValueError("Frozen OCR evidence changed")
@@ -303,9 +324,12 @@ def audit_ocr_events(path, report, selected):
 
 
 def inspect_document(conn, data, initial, success, identifier, fingerprint):
-    from app.contexts.knowledge.application.archive import LegalArchive
-    from app.contexts.knowledge.application.retrieval import embedding_text, input_hash
-    from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
+    from app.contexts.documents.application.archive import LegalArchive
+    from app.contexts.documents.application.retrieval import embedding_text, input_hash
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import (
+        pdf_page_status,
+        text_complete,
+    )
     from app.shared.domain.countries import document_country
 
     checked, manifest = inspect_frozen_document(
@@ -324,7 +348,11 @@ def inspect_document(conn, data, initial, success, identifier, fingerprint):
     if original.stat().st_size != row["size"] or sha(original) != row["content_hash"]:
         raise ValueError("Original bytes differ from the frozen OCR source")
     accepted = [
-        {"page": page["page"], "validated_status": pdf_page_status(page), "sha256": digest(page)}
+        {
+            "page": page["page"],
+            "validated_status": pdf_page_status(page),
+            "sha256": digest(page),
+        }
         for page in manifest.get("pages", [])
         if pdf_page_status(page) in {"native", "ocr_complete"}
     ]
@@ -464,7 +492,12 @@ def capture_candidates(args, policy, excluded_docs, excluded_inputs):
                 if reason:
                     deferred[identifier] = reason
                     continue
-                documents.append({**{key: row[key] for key in SOURCE_FIELDS}, "chunk_count": len(inputs)})
+                documents.append(
+                    {
+                        **{key: row[key] for key in SOURCE_FIELDS},
+                        "chunk_count": len(inputs),
+                    }
+                )
                 evidence[identifier], inventory[identifier] = proof, inputs
                 missing_rows += missing
         return {
@@ -484,11 +517,19 @@ def validate_batch(root, entry):
     if len(entry["batch_id"]) != 64 or any(c not in "0123456789abcdef" for c in entry["batch_id"]):
         raise ValueError("Invalid batch reservation")
     for name, expected in entry["files"].items():
-        if name not in {"selection.json", "selection-proof.json", "input-inventory.json"}:
+        if name not in {
+            "selection.json",
+            "selection-proof.json",
+            "input-inventory.json",
+        }:
             raise ValueError("Unexpected reserved evidence filename")
         if sha(batch / name) != expected:
             raise ValueError("Reserved batch evidence changed or disappeared")
-    if set(entry["files"]) != {"selection.json", "selection-proof.json", "input-inventory.json"}:
+    if set(entry["files"]) != {
+        "selection.json",
+        "selection-proof.json",
+        "input-inventory.json",
+    }:
         raise ValueError("Incomplete batch reservation")
     if str(batch / "output") != entry["output"] or read_json(batch / "output/identity.json") != {
         "batch_id": entry["batch_id"],
@@ -508,7 +549,11 @@ def validate_batch(root, entry):
             ):
                 raise ValueError("Request journal lost its fixed input identity")
     if entry.get("paid_launch_intent"):
-        for name in ("baseline.json", "existing-metadata-guard.json", "successful-inputs.sqlite3"):
+        for name in (
+            "baseline.json",
+            "existing-metadata-guard.json",
+            "successful-inputs.sqlite3",
+        ):
             if not (batch / "output" / name).is_file():
                 raise ValueError("Launched batch lost a baseline or receipt cache")
     if entry["status"] == "completed" and reference(batch / "output/report.json") != entry["final_report"]:
@@ -585,7 +630,12 @@ def prepare(args):
     }
     # The reservation precedes publication. A crash here blocks, rather than
     # making a second output eligible for the same possibly paid inputs.
-    entry = {"batch_id": batch_id, "status": "reserved", "output": str(batch / "output"), "files": {}}
+    entry = {
+        "batch_id": batch_id,
+        "status": "reserved",
+        "output": str(batch / "output"),
+        "files": {},
+    }
     state["batches"].append(entry)
     persist(state_path, state)
     batch.mkdir(mode=0o700)
@@ -611,7 +661,10 @@ def prepare(args):
             "missing_rows": captured["missing_rows"],
         },
     )
-    persist(batch / "output/identity.json", {"batch_id": batch_id, "plan_sha256": inventory["plan_sha256"]})
+    persist(
+        batch / "output/identity.json",
+        {"batch_id": batch_id, "plan_sha256": inventory["plan_sha256"]},
+    )
     for name in ("requests.jsonl", "issued-requests.jsonl"):
         with (batch / "output" / name).open("x") as stream:
             stream.flush()
@@ -620,7 +673,11 @@ def prepare(args):
         status="prepared",
         files={
             name: sha(batch / name)
-            for name in ("selection.json", "selection-proof.json", "input-inventory.json")
+            for name in (
+                "selection.json",
+                "selection-proof.json",
+                "input-inventory.json",
+            )
         },
     )
     persist(state_path, state)
@@ -673,7 +730,7 @@ def revalidate(args, batch):
 
 
 def completion(batch):
-    from app.contexts.knowledge.application.retrieval import stored_vector
+    from app.contexts.documents.application.retrieval import stored_vector
 
     plan = read_json(batch / "selection.json")
     output = batch / "output"
@@ -757,15 +814,25 @@ def completion(batch):
 
 
 def execute(args, state, entry, lock):
-    from app.contexts.knowledge.infrastructure.providers.embedding_admission import process_identity
+    from app.contexts.documents.infrastructure.providers.embedding_admission import (
+        process_identity,
+    )
     from embedding_supervisor import supervise
 
     batch = validate_batch(args.handoff_root, entry)
     revalidate(args, batch)
-    entry.update(status="preflighting", pid=os.getpid(), start_identity=process_identity(os.getpid()))
+    entry.update(
+        status="preflighting",
+        pid=os.getpid(),
+        start_identity=process_identity(os.getpid()),
+    )
     state_path = args.handoff_root / "handoff-state.json"
     persist(state_path, state)
-    command = [sys.executable, str(ROOT / "scripts/complete_embeddings.py"), *runner_arguments(args, batch)]
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/complete_embeddings.py"),
+        *runner_arguments(args, batch),
+    ]
     log = batch / f"preflight-{time.time_ns()}.log"
     child = None
     stopped = False
@@ -780,7 +847,10 @@ def execute(args, state, entry, lock):
     try:
         with log.open("w") as stream:
             child = subprocess.Popen(
-                command, stdout=stream, stderr=subprocess.STDOUT, pass_fds=(lock.fileno(),)
+                command,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                pass_fds=(lock.fileno(),),
             )
         code = child.wait()
     finally:
@@ -846,7 +916,11 @@ def execute(args, state, entry, lock):
     entry["paid_launch_intent"] = True
     persist(state_path, state)
     code = supervise(
-        options, ROOT / "scripts/complete_embeddings.py", arguments, 12, inherited_fds=(lock.fileno(),)
+        options,
+        ROOT / "scripts/complete_embeddings.py",
+        arguments,
+        12,
+        inherited_fds=(lock.fileno(),),
     )
     entry["status"] = "blocked"
     if code == 0:
@@ -858,15 +932,31 @@ def execute(args, state, entry, lock):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("ocr-snapshot", "handoff-root", "exclusions", "models-env", "admission-path"):
+    for name in (
+        "ocr-snapshot",
+        "handoff-root",
+        "exclusions",
+        "models-env",
+        "admission-path",
+    ):
         parser.add_argument("--" + name, type=Path, required=True)
-    parser.add_argument("--apply", action="store_true", help="Run the mutating preflight and paid supervisor")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Run the mutating preflight and paid supervisor",
+    )
     parser.add_argument("--inherited-lock-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--run-batch", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if (args.inherited_lock_fd is None) != (args.run_batch is None) or args.run_batch and not args.apply:
         parser.error("Inherited execution requires a matching batch and --apply")
-    for name in ("ocr_snapshot", "handoff_root", "exclusions", "models_env", "admission_path"):
+    for name in (
+        "ocr_snapshot",
+        "handoff_root",
+        "exclusions",
+        "models_env",
+        "admission_path",
+    ):
         setattr(args, name, getattr(args, name).resolve())
     os.umask(0o077)
     args.handoff_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -876,7 +966,10 @@ def main(argv=None):
             if entry is None:
                 print(
                     json.dumps(
-                        {"status": "deferred", "report": str(args.handoff_root / "latest-prepare.json")}
+                        {
+                            "status": "deferred",
+                            "report": str(args.handoff_root / "latest-prepare.json"),
+                        }
                     )
                 )
                 return 0
@@ -885,7 +978,12 @@ def main(argv=None):
                     raise ValueError("Child batch differs from durable reservation")
                 return execute(args, state, entry, lock)
             print(
-                json.dumps({"status": entry["status"], "batch": str(args.handoff_root / entry["batch_id"])}),
+                json.dumps(
+                    {
+                        "status": entry["status"],
+                        "batch": str(args.handoff_root / entry["batch_id"]),
+                    }
+                ),
                 flush=True,
             )
             if not args.apply:
@@ -895,10 +993,22 @@ def main(argv=None):
             entry["launch_intent_at"] = time.time()
             persist(args.handoff_root / "handoff-state.json", state)
             command = [sys.executable, str(Path(__file__).resolve())]
-            for name in ("ocr_snapshot", "handoff_root", "exclusions", "models_env", "admission_path"):
+            for name in (
+                "ocr_snapshot",
+                "handoff_root",
+                "exclusions",
+                "models_env",
+                "admission_path",
+            ):
                 command.extend(("--" + name.replace("_", "-"), str(getattr(args, name))))
             command.extend(
-                ("--apply", "--run-batch", entry["batch_id"], "--inherited-lock-fd", str(lock.fileno()))
+                (
+                    "--apply",
+                    "--run-batch",
+                    entry["batch_id"],
+                    "--inherited-lock-fd",
+                    str(lock.fileno()),
+                )
             )
             child = subprocess.Popen(command, pass_fds=(lock.fileno(),))
             old = {
@@ -912,7 +1022,13 @@ def main(argv=None):
                     signal.signal(sig, handler)
     except (ValueError, OSError, KeyError, TypeError, sqlite3.Error) as error:
         print(
-            json.dumps({"status": "blocked", "error_type": type(error).__name__, "reason": str(error)}),
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "error_type": type(error).__name__,
+                    "reason": str(error),
+                }
+            ),
             file=sys.stderr,
         )
         return 2

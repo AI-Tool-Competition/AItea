@@ -8,7 +8,7 @@ from test_archive_inventory import archive as archive
 
 
 def bkpm_page(archive, *, mutate=None):
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     page(archive)
     url = "https://jdih.bkpm.go.id/api/document-search?id_theme=1&limit=50&page=1"

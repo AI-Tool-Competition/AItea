@@ -9,7 +9,7 @@ from contextlib import closing
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.collection_recovery import (
+from app.contexts.ingestion.application.collection_recovery import (
     BASE_RECOVERY_SECONDS,
     CollectionRecovery,
     Decision,
@@ -188,7 +188,7 @@ def test_embed_last_rejection_does_not_prove_entire_multibatch_call_was_unpaid()
 
 
 def test_only_complete_legacy_mineru_receipts_blocked_on_chart_content_are_refreshable(monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
+    from app.contexts.documents.infrastructure.providers import mineru as mineru
 
     source_hash = hashlib.sha256(b"verified source").hexdigest()
     text = "Section 1. Official text."
@@ -249,8 +249,8 @@ def test_only_complete_legacy_mineru_receipts_blocked_on_chart_content_are_refre
 
 
 def test_blocked_legacy_chart_review_requeues_once_with_audited_receipt(service, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
-    from app.contexts.knowledge.infrastructure.providers import vision as vision
+    from app.contexts.documents.infrastructure.providers import mineru as mineru
+    from app.contexts.documents.infrastructure.providers import vision as vision
 
     monkeypatch.setattr(mineru, "manifest_valid", lambda _manifest: True)
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)

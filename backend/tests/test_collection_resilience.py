@@ -10,8 +10,8 @@ from threading import Event
 import pytest
 from admin_helpers import grant_admin, login_admin
 from app.bootstrap import Service
-from app.contexts.collection.application.collection import MAX_ATTEMPTS
-from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+from app.contexts.ingestion.application.collection_jobs import MAX_ATTEMPTS
+from app.contexts.documents.infrastructure.parsers import document_parser as parsing
 from app.interfaces.http.factory import create_app
 from app.shared.infrastructure.http import download as ingestion_download
 from fastapi.testclient import TestClient

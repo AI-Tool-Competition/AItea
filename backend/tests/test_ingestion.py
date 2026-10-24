@@ -8,8 +8,8 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from app.contexts.knowledge.domain import text
-from app.contexts.knowledge.infrastructure.parsing import native
+from app.contexts.documents.domain import text
+from app.contexts.documents.infrastructure.parsers import native_parser as native
 from app.shared.infrastructure.http import download as transport
 
 

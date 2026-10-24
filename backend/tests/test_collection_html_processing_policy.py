@@ -7,10 +7,10 @@ from copy import deepcopy
 from threading import Event
 
 import pytest
-from app.contexts.collection.application.collection import CollectionWorkers
-from app.contexts.collection.application.html_image_collection import HtmlImageCollector
-from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
-from app.contexts.knowledge.infrastructure.providers import vision as vision
+from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+from app.contexts.ingestion.application.html_image_collection import HtmlImageCollector
+from app.contexts.documents.infrastructure.providers import embedding as ingestion_embedding
+from app.contexts.documents.infrastructure.providers import vision as vision
 from app.shared.domain.values import dump, now
 from test_html_image_collection import document, downloader
 from test_html_image_collection import service as service
@@ -188,7 +188,7 @@ def test_authorization_changes_after_claim_cannot_call_model_or_change_document(
 
 
 def test_review_change_during_image_read_is_checked_before_provider(service, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers import html_linked_asset_ocr as html_linked_asset_ocr
+    from app.contexts.documents.infrastructure.providers import html_linked_asset_ocr as html_linked_asset_ocr
 
     doc = bound(service, monkeypatch)
     claim = service.collection.claim_processing(
@@ -263,7 +263,7 @@ def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypa
 
 
 def test_html_image_ocr_resumes_bounded_batches_until_all_images_are_processed(service, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers.native_asset_ocr import assets
+    from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
     from test_html_image_collection import image
 
     html = (
@@ -369,7 +369,7 @@ def test_review_change_while_persisting_sent_pixels_is_checked_before_model(serv
 
 
 def test_review_change_when_selecting_embedding_batch_is_checked_before_model(service, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers import ragflow as ragflow
+    from app.contexts.documents.infrastructure.providers import ragflow as ragflow
 
     doc = document(service, html="<main><p>Complete primary native legal text.</p></main>")
     with service.db.transaction() as conn:

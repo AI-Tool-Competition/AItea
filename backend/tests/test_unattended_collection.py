@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -963,7 +963,7 @@ def real_rcep_html():
 
 
 def test_real_rcep_html_filters_third_country_tariffs_before_link_cap():
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page
 
     configured = rcep_source()
     legacy_recipe = collection.recipe(configured)

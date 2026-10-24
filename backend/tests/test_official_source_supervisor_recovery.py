@@ -14,8 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.infrastructure.discovery.egazette import EGAZETTE_APPLICATION, EGAZETTE_INDEX
-from app.paths import PROJECT_ROOT
+from app.contexts.ingestion.infrastructure.source_adapters.egazette import (
+    EGAZETTE_APPLICATION,
+    EGAZETTE_INDEX,
+)
+from app.configuration.paths import PROJECT_ROOT
 from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 
 ROOT = PROJECT_ROOT

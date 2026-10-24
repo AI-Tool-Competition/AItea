@@ -4,7 +4,7 @@ import json
 from contextlib import closing
 
 import pytest
-from app.contexts.conversation.application.node_workspace import NodeWorkspace, select_skills
+from app.contexts.conversations.application.node_workspace import NodeWorkspace, select_skills
 from app.interfaces.http.factory import create_app
 from fastapi.testclient import TestClient
 

@@ -6,8 +6,12 @@ import base64
 import hashlib
 import json
 import os
+import sys
 import subprocess
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.configuration.paths import InstancePaths  # noqa: E402
 from urllib.parse import quote
 
 import httpx
@@ -16,9 +20,10 @@ from dotenv import dotenv_values, set_key
 
 def bootstrap(root):
     root = Path(root).resolve()
-    runtime = root / ".dev/ragflow"
+    paths = InstancePaths.resolve(root)
+    runtime = paths.ragflow_config
     private = runtime / ".env"
-    values = dotenv_values(private)
+    values = dotenv_values(private, interpolate=False)
     base = "http://127.0.0.1:" + values["AITEA_RAGFLOW_API_PORT"]
     token = None
 
@@ -148,7 +153,7 @@ def bootstrap(root):
     if not api_token:
         raise RuntimeError("RAGFlow 未返回服务密钥。")
     set_key(str(private), "RAGFLOW_API_KEY", api_token)
-    application = root / ".env"
+    application = paths.env_file
     for key, value in {
         "RAGFLOW_BASE_URL": base,
         "RAGFLOW_API_KEY": api_token,

@@ -2,9 +2,9 @@ import json
 
 import httpx
 import pytest
-from app.contexts.conversation.application import tool_runtime as runtime
-from app.contexts.conversation.application.contracts import MessageStreamEvent
-from app.contexts.conversation.application.tool_runtime import (
+from app.contexts.conversations.application import tool_runtime as runtime
+from app.contexts.conversations.application.contracts import MessageStreamEvent
+from app.contexts.conversations.application.tool_runtime import (
     CHECK_MATERIALS,
     GENERATE_GUIDANCE,
     SEARCH_DOCUMENTS,

@@ -10,7 +10,7 @@
 | `TEA_EMBED_WORKERS` | 2 | 1–32；向量文档任务额度，不超过总领取额度 |
 
 | `EMBEDDING_HTTP_WORKERS` | 2 | 1–64；同机同模型共享 HTTP 上限，API 与运行脚本必须配置相同值 |
-| `EMBEDDING_ADMISSION_PATH` | 项目 `.dev/embedding-admission.sqlite3` | API 与后台共用的运行态额度库；可以显式指定独立磁盘路径 |
+| `EMBEDDING_ADMISSION_PATH` | 实例 `data/control/embedding-admission.sqlite3` | API 与后台共用的额度库，跟随 `TEA_DATA_DIR`；可以显式指定独立磁盘路径 |
 | `EMBEDDING_REQUEST_CONCURRENCY` | 1 | 1 或 2；同文档一次处理中的请求并行数 |
 
 `TEA_PARSE_WORKERS` independently bounds parser work per process and supports 1–128. Raise it only to feed a higher MinerU API concurrency stage; keep embedding request concurrency under its separate admission and provider limits.
@@ -24,6 +24,8 @@ API 和正式运行脚本在同一台 Linux 主机上，通过同一路径、同
 提高并发应比较成功输入字符数、耗时、实际请求峰值和错误率。共用数据库的 OCR 租约也会占用总领取额度，配置 64 不代表后台同时发出 64 个请求。独立 API 和后台进程的本地 HTTP 回归已实测 60 个长文请求占用时，4 个查询进入预留名额，总峰值 64，68 个输入全部完成；该验证使用本地模拟服务，不代表外部供应商能持续承受相同负载。
 
 额度库保存进程 PID、启动身份、请求类别和租约，不保存密钥、正文或向量。进程退出、PID 重用和超时租约会被回收；主动取消和正常完成释放名额。首次并发启动使用原子初始化；误指向业务数据库、其他协议 SQLite、符号链接或硬链接会拒绝使用。已占用额度时修改上限会拒绝，须先排空并重启所有使用该额度的进程。429 的冷却时间共享给前后台，查询等待也受既有总调用期限约束。
+
+成套实例备份保留额度、统计和供应商冷却时间；`make instance-restore` 在新副本中释放旧机器的进程租约，不修改备份或原实例。不要直接复制额度库后让新旧机器同时使用。配置归集与迁移命令见 [实例管理](INSTANCE_MANAGEMENT.md)。
 
 2026-10-19 的真实服务探测中，32 路、每请求 2 段的一个持续窗口达到实际峰值 32，最终排空窗口的 298 次请求全部成功；提高到目标 64 路、每请求 1 段后，实际峰值 59，最终 473 次请求中 464 次 HTTP 200、9 次 429，另保留一个响应处理被取消、结果未确认的输入记录。观察窗口的成功字符吞吐没有显示 64 路更快，因此当次续跑回到 32 路、16 个文档任务各并行 2 请求、每请求 2 段、60 秒超时。文本长度和窗口不同，这不是受控性能基准，也不保证后续不会限流。
 

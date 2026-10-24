@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -44,7 +44,8 @@ def test_prepare_is_idempotent_and_never_initializes_or_resets_evidence(project,
     assert fleet.read_bytes() == before
     config = prepare.read_config(fleet)
     assert {t["id"] for t in config["tasks"]} == {"official-id", "official-sg"}
-    assert not (project / "data").exists()
+    assert not (project / "data/tea.sqlite3").exists()
+    assert not (project / "data/official-updates").exists()
     assert not Path(result["state_dir"]).exists()
     assert "Restart=always" in Path(result["unit"]).read_text()
 

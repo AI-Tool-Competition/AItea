@@ -31,17 +31,19 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
 
-from app.contexts.collection.application.source_catalog import (  # noqa: E402
+from app.contexts.ingestion.application.source_catalog import (  # noqa: E402
     SourceCatalog,
     active_sources,
 )
-from app.contexts.collection.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
-from app.contexts.collection.infrastructure.discovery.discovery import discover_page  # noqa: E402
-from app.contexts.collection.infrastructure.source_registry_json import (  # noqa: E402
+from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
+    discover_page,
+)
+from app.contexts.ingestion.infrastructure.source_registry_json import (  # noqa: E402
     JsonSourceRegistry,
     read_source_registry,
 )
-from app.shared.infrastructure.blob_store import BlobStore  # noqa: E402
+from app.shared.infrastructure.persistence.blob_store import BlobStore  # noqa: E402
 from app.shared.infrastructure.http.download import (  # noqa: E402
     DownloadError,
     _download,
@@ -175,10 +177,19 @@ def recipe(source):
         "allowed_hosts": source["allowed_hosts"],
         "catalog_patterns": [root_pattern] if source["kind"] == "catalogue" else [],
         "html_document_patterns": [] if source["kind"] == "catalogue" else [root_pattern],
-        "document_patterns": [r"\.(?:pdf|docx?)(?:$|\?)", r"/(?:download|storage|uploads)/"],
+        "document_patterns": [
+            r"\.(?:pdf|docx?)(?:$|\?)",
+            r"/(?:download|storage|uploads)/",
+        ],
         "detail_patterns": [r"^/"],
         "include_terms": source["discovery_keywords"],
-        "exclude_terms": ["facebook", "instagram", "privacy policy", "careers", "login"],
+        "exclude_terms": [
+            "facebook",
+            "instagram",
+            "privacy policy",
+            "careers",
+            "login",
+        ],
         "max_links": 32,
     }
     if rcep_policy(source):
@@ -207,7 +218,11 @@ def valid_cached(root, cached):
 
 class Collector:
     def __init__(self, pool, root, country, *, limits=None):
-        self.pool_path, self.root, self.country = Path(pool).resolve(), Path(root).resolve(), country
+        self.pool_path, self.root, self.country = (
+            Path(pool).resolve(),
+            Path(root).resolve(),
+            country,
+        )
         if not self.root.is_relative_to(ROOT) or self.root == ROOT:
             raise ValueError("Collection output must remain in this project")
         self.limits = {**LIMITS, **(limits or {})}
@@ -238,7 +253,12 @@ class Collector:
             if self.state["binding"] != self.binding:
                 raise ValueError("Collector scope changed; preserve and explicitly migrate its state")
         else:
-            self.state = {"binding": self.binding, "sources": {}, "active_sources": [], "status": "ready"}
+            self.state = {
+                "binding": self.binding,
+                "sources": {},
+                "active_sources": [],
+                "status": "ready",
+            }
             self.save()
         self.catalog.accept(self.catalog.current)
         self.identities = self.state.setdefault("source_countries", {})
@@ -261,7 +281,11 @@ class Collector:
             previous = self.state["sources"].get(identifier, {})
             self.state["sources"][identifier] = observe(
                 previous,
-                {"status": "network_error", "error_type": "InterruptedGET", "url": source["url"]},
+                {
+                    "status": "network_error",
+                    "error_type": "InterruptedGET",
+                    "url": source["url"],
+                },
                 now=time.time(),
                 interval_seconds=source["interval_seconds"],
             )
@@ -313,7 +337,10 @@ class Collector:
             self.save()
         except (OSError, ValueError, KeyError, TypeError) as error:
             # Last good revision and every receipt/budget remain intact; log no raw configuration.
-            failure = {"code": "invalid_source_registry", "error_type": type(error).__name__}
+            failure = {
+                "code": "invalid_source_registry",
+                "error_type": type(error).__name__,
+            }
             if self.state.get("registry_error") != failure:
                 self.event("source_registry_rejected", **failure)
             self.state["registry_error"] = failure
@@ -529,7 +556,11 @@ class Collector:
                 )
                 self.cooldown(error.response_host or urlsplit(url).hostname, time.time() + delay)
         except Exception as error:
-            outcome = {"status": "content_invalid", "error_type": type(error).__name__, "url": url}
+            outcome = {
+                "status": "content_invalid",
+                "error_type": type(error).__name__,
+                "url": url,
+            }
             receipt.update(status="finished", outcome=outcome, asset=None, finished_at=time.time())
         with self.mutex:
             write(path, receipt)
@@ -551,7 +582,10 @@ class Collector:
             for url, item in frontier.items():
                 if not scope_excluded(source, url):
                     continue
-                marker = {"version": RCEP_POLICY_VERSION, "reason": "third_country_tariff_schedule"}
+                marker = {
+                    "version": RCEP_POLICY_VERSION,
+                    "reason": "third_country_tariff_schedule",
+                }
                 if item.get("scope_excluded") != marker:
                     self.event(
                         "candidate_scope_excluded",
@@ -573,8 +607,19 @@ class Collector:
                 if inspected.get("matched"):
                     refreshed = {**cached, "discovery": inspected}
                     cache[source["url"]] = refreshed
-                    self.map_links(source, source["url"], refreshed, cached, frontier, cache, deque())
-                    replay_status, root_hash = "verified_cached_discovery", cached["content_hash"]
+                    self.map_links(
+                        source,
+                        source["url"],
+                        refreshed,
+                        cached,
+                        frontier,
+                        cache,
+                        deque(),
+                    )
+                    replay_status, root_hash = (
+                        "verified_cached_discovery",
+                        cached["content_hash"],
+                    )
                 else:
                     replay_status = "cached_discovery_unmatched"
             elif cached:
@@ -592,7 +637,10 @@ class Collector:
                 current["next_at"] = max(
                     time.time() + self.limits["tick_seconds"],
                     current.get("retry_not_before") or 0,
-                    max((self.host_cooldowns.get(h, 0) for h in source["allowed_hosts"]), default=0),
+                    max(
+                        (self.host_cooldowns.get(h, 0) for h in source["allowed_hosts"]),
+                        default=0,
+                    ),
                 )
             self.event(
                 "candidate_policy_applied",
@@ -618,7 +666,8 @@ class Collector:
             if candidate in frontier:
                 item = frontier[candidate]
                 parents = item.get(
-                    "parents", [{"url": item["parent_url"], "content_hash": item["parent_hash"]}]
+                    "parents",
+                    [{"url": item["parent_url"], "content_hash": item["parent_hash"]}],
                 )
                 prior_parent = previous_asset or next(
                     (known for known in reversed(parents) if known["url"] == url), None
@@ -691,7 +740,10 @@ class Collector:
 
     def collect_source(self, source, previous):
         current = copy.deepcopy(previous)
-        cache, frontier = dict(current.get("cache", {})), dict(current.get("frontier", {}))
+        cache, frontier = (
+            dict(current.get("cache", {})),
+            dict(current.get("frontier", {})),
+        )
         root_due = time.time() >= current.get("root_next_at", 0) or source["url"] not in cache
         urls = [source["url"]] if root_due else []
         urls += [
@@ -736,7 +788,10 @@ class Collector:
                 item = frontier[url]
                 item["attempt_count"] = item.get("attempt_count", 0) + 1
                 item["health"] = observe(
-                    item.get("health"), outcome, now=time.time(), interval_seconds=7 * 86400
+                    item.get("health"),
+                    outcome,
+                    now=time.time(),
+                    interval_seconds=7 * 86400,
                 )
                 self.event(
                     "mapped_resource",
@@ -782,10 +837,14 @@ class Collector:
                     )
                 if url not in cache and len(cache) >= self.limits["max_frontier"] + 1:
                     victim = min(
-                        (k for k in cache if k != source["url"]), key=lambda k: cache[k]["observed_at"]
+                        (k for k in cache if k != source["url"]),
+                        key=lambda k: cache[k]["observed_at"],
                     )
                     self.event(
-                        "cache_metadata_archived", source_id=source["id"], url=victim, asset=cache.pop(victim)
+                        "cache_metadata_archived",
+                        source_id=source["id"],
+                        url=victim,
+                        asset=cache.pop(victim),
                     )
                 cache[url] = asset
                 self.map_links(source, url, asset, previous_asset, frontier, cache, urls)
@@ -795,7 +854,10 @@ class Collector:
                 break
         if root_outcome is not None:
             current = observe(
-                current, root_outcome, now=time.time(), interval_seconds=source["interval_seconds"]
+                current,
+                root_outcome,
+                now=time.time(),
+                interval_seconds=source["interval_seconds"],
             )
             current["root_next_at"] = current["next_at"]
             if root_outcome.get("error_type") == "EmptyCatalogue":
@@ -822,18 +884,28 @@ class Collector:
         next_at = max(time.time() + self.limits["tick_seconds"], min(candidates))
         if deferred is not None and deferred.status != "stopping":
             next_at = max(next_at, time.time() + max(300, deferred.retry_after))
-        host_until = max((self.host_cooldowns.get(host, 0) for host in source["allowed_hosts"]), default=0)
+        host_until = max(
+            (self.host_cooldowns.get(host, 0) for host in source["allowed_hosts"]),
+            default=0,
+        )
         current["next_at"] = max(next_at, host_until, current.get("retry_not_before") or 0)
         if host_until > time.time():
             current["retry_not_before"] = max(current.get("retry_not_before") or 0, host_until)
             current["scheduling_status"] = "host_cooldown"
-        current.update(cache=cache, frontier=frontier, last_receipts=[r["request_id"] for r in receipts])
+        current.update(
+            cache=cache,
+            frontier=frontier,
+            last_receipts=[r["request_id"] for r in receipts],
+        )
         return current
 
     def tick(self):
         self.reload_sources()
         selected = choose_sources(
-            self.sources, self.state["sources"], now=time.time(), max_sources=self.limits["sources_per_tick"]
+            self.sources,
+            self.state["sources"],
+            now=time.time(),
+            max_sources=self.limits["sources_per_tick"],
         )
         for decision in replacement_decisions(self.sources, self.state["sources"], selected, now=time.time()):
             self.event("source_replacement", **decision)
@@ -909,7 +981,10 @@ def main(argv=None):
                 collector.save()
                 return 75
     except (ValueError, OSError) as error:
-        print(json.dumps({"status": "blocked", "error_type": type(error).__name__}), file=sys.stderr)
+        print(
+            json.dumps({"status": "blocked", "error_type": type(error).__name__}),
+            file=sys.stderr,
+        )
         return 2
     return 0
 

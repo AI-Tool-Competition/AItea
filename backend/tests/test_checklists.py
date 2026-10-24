@@ -195,7 +195,7 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
 
 
 def test_setneg_source_fields_keep_page_hash_and_are_exposed_as_unreviewed(client):
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, request="setneg-structured-source-record")
@@ -270,7 +270,7 @@ def test_candidate_source_record_migration_upgrades_an_existing_database(tmp_pat
 
 
 def test_saved_setneg_detail_backfill_requires_matching_candidate_and_page_hash(client):
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, request="setneg-source-record-backfill")
@@ -319,7 +319,7 @@ def test_saved_setneg_detail_backfill_requires_matching_candidate_and_page_hash(
 
 
 def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, code="4.1", request="bkpm-source-record-backfill")
@@ -367,7 +367,7 @@ def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
 
 
 def test_saved_rcep_catalog_backfill_preserves_source_hierarchy(client):
-    from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     configure(client)
     run = discover(client, code="5.3", request="rcep-source-record-backfill")
@@ -494,7 +494,7 @@ def test_block_pages_do_not_create_candidates_or_documents(client, monkeypatch):
 
 
 def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_path):
-    from app.contexts.collection.application import checklists as checklists
+    from app.contexts.ingestion.application import checklists as checklists
 
     monkeypatch.setattr(checklists, "PAGE_BATCH", 3)
     fake_web(monkeypatch)

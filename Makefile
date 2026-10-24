@@ -40,6 +40,10 @@ help:
 	  'make dev-clean        停止服务并清理运行日志，不删除业务数据' \
 	  'make setup            使用 uv 和 pnpm 同步锁定依赖' \
 	  'make dev-check        检查开发启动与工作树工具' \
+	  'make instance-paths   查看实例数据库、私有配置、来源清单的实际位置' \
+	  'make instance-adopt   停止服务后归集旧配置，保留所有资料原路径' \
+	  'make instance-backup BACKUP=backups/实例名称  停服后备份资料和全部配置' \
+	  'make instance-restore BACKUP=backups/实例名称 TARGET=restores/新实例  恢复并重定位' \
 	  'make check            运行后端、前端类型与茶业务交互检查' \
 	  'make build / start    构建 / 启动本地生产预览' \
 	  'make archive-inventory COUNTRY=ID  导出资料目录，可选 OWNER=账号ID' \
@@ -95,11 +99,11 @@ ragflow-stop:
 archive-inventory: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 archive-inventory: export TEA_INVENTORY_OWNER = $(OWNER)
 archive-inventory:
-	cd backend && uv run --locked python -m app.contexts.collection.infrastructure.archive_inventory
+	cd backend && uv run --locked python -m app.contexts.ingestion.infrastructure.archive_inventory
 
 collection-catalog: export TEA_INVENTORY_COUNTRY = $(COUNTRY)
 collection-catalog:
-	cd backend && uv run --locked python -m app.contexts.collection.infrastructure.collection_catalog
+	cd backend && uv run --locked python -m app.contexts.ingestion.infrastructure.collection_catalog
 
 collect-resources: export TEA_CAMPAIGN_OUTPUT = $(if $(strip $(OUTPUT)),$(abspath $(OUTPUT)))
 collect-resources: export TEA_CAMPAIGN_ITEMS = $(ITEMS)
@@ -115,7 +119,22 @@ collection-prepare:
 	uv run --project backend --locked python scripts/prepare_collection_service.py
 
 collection-status:
-	uv run --project backend --locked python scripts/collection_watchdog.py status --fleet "$(CURDIR)/.dev/collection-service/fleet.json" --state-dir "$(CURDIR)/.dev/collection-service/state"
+	uv run --project backend --locked python scripts/prepare_collection_service.py --status
+
+.PHONY: instance-paths instance-adopt instance-backup instance-verify instance-restore
+instance-paths:
+	uv run --project backend --locked python scripts/manage_instance.py paths
+instance-adopt:
+	uv run --project backend --locked python scripts/manage_instance.py adopt
+instance-backup:
+	@test -n "$(BACKUP)" || (echo '请指定 BACKUP=新备份目录'; exit 2)
+	uv run --project backend --locked python scripts/manage_instance.py backup --backup-dir "$(BACKUP)"
+instance-verify:
+	@test -n "$(BACKUP)" || (echo '请指定 BACKUP=备份目录'; exit 2)
+	uv run --project backend --locked python scripts/manage_instance.py verify --backup-dir "$(BACKUP)"
+instance-restore:
+	@test -n "$(BACKUP)" -a -n "$(TARGET)" || (echo '请指定 BACKUP=备份目录 TARGET=全新恢复目录'; exit 2)
+	uv run --project backend --locked python scripts/manage_instance.py restore --backup-dir "$(BACKUP)" --target-dir "$(TARGET)"
 
 backend-check:
 	@mkdir -p "$(dir $(PYTEST_BASETEMP))"

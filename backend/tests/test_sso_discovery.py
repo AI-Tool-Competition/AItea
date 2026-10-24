@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 
 import pytest
-from app.contexts.collection.infrastructure.discovery.discovery import discover_page, recipe_for
-from app.paths import PROJECT_ROOT
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
+from app.configuration.paths import PROJECT_ROOT
 
 FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
 

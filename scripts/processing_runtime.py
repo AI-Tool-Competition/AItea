@@ -13,7 +13,7 @@ def retry_local_database(operation, *, on_wait):
     three attempts. The additional delay totals 0.6 seconds, below the existing
     120-second processing lease; callers retain stop/drain responsibility.
     """
-    from app.contexts.collection.application.collection import _storage_busy
+    from app.contexts.ingestion.application.collection_jobs import _storage_busy
 
     for attempt in range(3):
         try:

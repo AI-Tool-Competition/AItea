@@ -4,7 +4,7 @@ import os
 
 from fastapi import Depends, Query, Request, Response
 
-from app.contexts.identity.application.auth import COOKIE
+from app.contexts.accounts.application.auth import COOKIE
 from app.shared.application import models as models
 
 

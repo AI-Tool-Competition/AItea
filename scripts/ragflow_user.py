@@ -19,6 +19,10 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.configuration.paths import InstancePaths  # noqa: E402
+from app.configuration.environment import read_environment  # noqa: E402
+
 import httpx
 from dotenv import dotenv_values
 
@@ -52,12 +56,14 @@ def infinity_runtime_config(source, ports):
 class UserRuntime:
     def __init__(self, root, source):
         self.root, self.source = Path(root).resolve(), Path(source).resolve()
-        self.runtime = self.root / ".dev/ragflow"
-        self.data = self.root / "data/ragflow"
+        paths = InstancePaths.resolve(self.root)
+        self.runtime = paths.ragflow_runtime
+        self.config = paths.ragflow_config
+        self.data = paths.ragflow_data
         self.tools = Path(os.getenv("AITEA_RAGFLOW_TOOLS", str(Path.home() / ".local/opt/aitea"))).resolve()
         self.apptainer = self.tools / "apptainer-1.5.4/bin/apptainer"
-        self.values = {k: v or "" for k, v in dotenv_values(self.runtime / ".env").items()}
-        self.app = dotenv_values(self.root / ".env")
+        self.values = {k: v or "" for k, v in dotenv_values(self.config / ".env", interpolate=False).items()}
+        self.app = read_environment(self.root)
         api = int(self.values.get("AITEA_RAGFLOW_API_PORT", "19380"))
         self.ports = {
             "ragflow": api,
@@ -302,12 +308,13 @@ class UserRuntime:
 
     def _prepare(self):
         if not self.apptainer.is_file() or not shutil.which("unshare"):
-            raise RuntimeError("请先按 docs/RAGFLOW.md 将 Apptainer 1.5.4 安装到用户目录。")
+            raise RuntimeError("请先按 docs/MINERU_RAGFLOW.md 将 Apptainer 1.5.4 安装到用户目录。")
         for directory in (
             self.tools / "images",
             self.tools / "cache",
             self.tools / "tmp",
             self.runtime / "apptainer",
+            self.config,
             self.data,
         ):
             directory.mkdir(parents=True, exist_ok=True)
@@ -333,7 +340,7 @@ class UserRuntime:
             "logs",
         ):
             (self.data / name).mkdir(parents=True, exist_ok=True)
-        conf = self.runtime / "conf"
+        conf = self.config / "conf"
         conf.mkdir(exist_ok=True, mode=0o700)
         if not (conf / "all_models.json").exists():
             subprocess.run(
@@ -365,7 +372,7 @@ class UserRuntime:
         (conf / "service_conf.yaml").write_text(template)
         (conf / "service_conf.yaml").chmod(0o600)
         # Dedicated installation credentials; nothing is written to the image.
-        if not (self.runtime / "keys-created").exists():
+        if not (self.config / "keys-created").exists():
             subprocess.run(
                 [
                     "openssl",
@@ -393,7 +400,7 @@ class UserRuntime:
                 stdout=subprocess.DEVNULL,
             )
             (conf / "private.pem").chmod(0o600)
-            (self.runtime / "keys-created").touch(mode=0o600)
+            (self.config / "keys-created").touch(mode=0o600)
         infinity = infinity_runtime_config(
             self.source / "deploy/ragflow/infinity.toml",
             {
@@ -402,15 +409,15 @@ class UserRuntime:
                 "client_port": self.ports["infinity"],
             },
         )
-        (self.runtime / "infinity.toml").write_text(infinity)
-        (self.runtime / "kvrocks.conf").write_text(
+        (self.config / "infinity.toml").write_text(infinity)
+        (self.config / "kvrocks.conf").write_text(
             f"bind 127.0.0.1\nport {self.ports['kvrocks']}\ndir /var/lib/kvrocks\nrequirepass {values['REDIS_PASSWORD']}\ndaemonize no\nlog-level warning\n"
         )
-        (self.runtime / "kvrocks.conf").chmod(0o600)
-        (self.runtime / "nginx.conf").write_text(
+        (self.config / "kvrocks.conf").chmod(0o600)
+        (self.config / "nginx.conf").write_text(
             f"user root;\npid /tmp/aitea-nginx.pid;\nerror_log stderr;\nworker_processes 2;\nevents {{ worker_connections 256; }}\nhttp {{ include /etc/nginx/mime.types; access_log off; client_max_body_size 128m; proxy_read_timeout 180s; server {{ listen 0.0.0.0:{self.ports['web']}; root /ragflow/web/dist; location /api/ {{ proxy_pass http://127.0.0.1:{self.ports['ragflow']}; proxy_buffering off; }} location / {{ try_files $uri $uri/ /index.html; }} }} }}\n"
         )
-        script = self.runtime / "api-start.sh"
+        script = self.config / "api-start.sh"
         script.write_text(
             "#!/bin/sh\nset -eu\ncd /ragflow\nbin/ragflow_server --migrate\nexec bin/ragflow_server --api\n"
         )
@@ -473,7 +480,7 @@ class UserRuntime:
             ["kvrocks", "-c", "/aitea/kvrocks.conf"],
             binds=[
                 (self.data / "kvrocks", "/var/lib/kvrocks"),
-                (self.runtime / "kvrocks.conf", "/aitea/kvrocks.conf"),
+                (self.config / "kvrocks.conf", "/aitea/kvrocks.conf"),
             ],
         )
         self._wait("kvrocks", lambda: self._tcp(p["kvrocks"]))
@@ -497,7 +504,7 @@ class UserRuntime:
             ["/usr/bin/infinity", "-f", "/aitea/infinity.toml"],
             binds=[
                 (self.data / "infinity", "/var/infinity"),
-                (self.runtime / "infinity.toml", "/aitea/infinity.toml"),
+                (self.config / "infinity.toml", "/aitea/infinity.toml"),
             ],
         )
         self._wait("infinity", lambda: self._http(p["infinity_http"], "/admin/node/current"))
@@ -506,7 +513,7 @@ class UserRuntime:
             ["bin/ragflow_server", "--admin", "--init-superuser"],
             image="ragflow",
             binds=[
-                (self.runtime / "conf", "/ragflow/conf"),
+                (self.config / "conf", "/ragflow/conf"),
                 (self.data / "logs", "/ragflow/logs"),
             ],
             pwd="/ragflow",
@@ -522,9 +529,9 @@ class UserRuntime:
             "ragflow",
             ["/aitea/api-start.sh"],
             binds=[
-                (self.runtime / "conf", "/ragflow/conf"),
+                (self.config / "conf", "/ragflow/conf"),
                 (self.data / "logs", "/ragflow/logs"),
-                (self.runtime / "api-start.sh", "/aitea/api-start.sh"),
+                (self.config / "api-start.sh", "/aitea/api-start.sh"),
             ],
             pwd="/ragflow",
             root_user=True,
@@ -543,7 +550,7 @@ class UserRuntime:
             "web",
             ["/usr/sbin/nginx", "-c", "/aitea/nginx.conf", "-g", "daemon off;"],
             image="ragflow",
-            binds=[(self.runtime / "nginx.conf", "/aitea/nginx.conf")],
+            binds=[(self.config / "nginx.conf", "/aitea/nginx.conf")],
             root_user=True,
         )
         self._wait("web", lambda: self._http(p["web"], "/"))

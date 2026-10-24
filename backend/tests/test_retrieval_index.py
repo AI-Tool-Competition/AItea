@@ -5,7 +5,7 @@ from contextlib import closing
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.domain.metadata import DocumentMetadata
+from app.contexts.documents.domain.metadata import DocumentMetadata
 from app.shared.domain.values import dump, now
 
 
@@ -158,7 +158,7 @@ def test_empty_database_records_pdf_quality_upgrade_idempotently(tmp_path):
 def test_html_and_missing_source_upgrade_preserves_evidence_and_quarantines_cached_flags(workspace):
     old = body("omittedsourceimageclause")
     old.update(parser="html-basic", parser_version="2", pipeline_version="html-blocks-v2")
-    from app.contexts.knowledge.infrastructure.parsing.native import parse_file
+    from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
 
     good = parse_file("law.html", b"<main><p>verifiedhtmlclause</p></main>", "text/html")
     missing = body("missingsourceclause")

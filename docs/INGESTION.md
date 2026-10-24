@@ -4,7 +4,7 @@
 
 ## 接入边界
 
-`contexts/knowledge/infrastructure/parsing/native.py` 负责同步解析，`contexts/knowledge/domain/text.py` 保存纯文本规则，`shared/infrastructure/http/download.py` 提供受限下载；这些路径均位于 `backend/app/`，供应商适配独立放在 `contexts/knowledge/infrastructure/providers/`。应用服务必须先检查账户和业务归属，再将耗时工作交给受限工作线程或进程。外部上传应通过 `app.contexts.knowledge.infrastructure.parsing.parsing.parse_bounded` 进行资源隔离，不应在 API 事件循环或主服务进程内直接调用 `parse_file`。原始文件保存、不可变版本、内容 hash 去重、来源更新时间和引用访问控制由业务服务负责。
+`contexts/knowledge/infrastructure/parsing/native.py` 负责同步解析，`contexts/knowledge/domain/text.py` 保存纯文本规则，`shared/infrastructure/http/download.py` 提供受限下载；这些路径均位于 `backend/app/`，供应商适配独立放在 `contexts/knowledge/infrastructure/providers/`。应用服务必须先检查账户和业务归属，再将耗时工作交给受限工作线程或进程。外部上传应通过 `app.contexts.documents.infrastructure.parsers.document_parser.parse_bounded` 进行资源隔离，不应在 API 事件循环或主服务进程内直接调用 `parse_file`。原始文件保存、不可变版本、内容 hash 去重、来源更新时间和引用访问控制由业务服务负责。
 
 历史下载复用及 BKPM 表单封装原件的保留与映射规则见 [来源响应凭证](SOURCE_RECEIPTS.md)。
 
@@ -41,7 +41,7 @@ XLS 原件保留原数值/字符串、XF 格式、日期模式和打印页眉页
 
 MDB 通过管理员配置的 `TEA_MDB_READER_PATH` 使用项目内只读工具，构建与许可见 [工具说明](../scripts/tools/mdb/README.md)。工具在独立 Linux user/network namespace 内运行，绑定父进程死亡信号，限制时间、输出与资源；无法隔离时失败。Python 再从原件逐行及逐段核对 Memo 哈希，不依赖有 NULL/空串歧义和固定缓冲的通用 CSV 导出。真实 WTO 样本的 24 个链接对应 12 份字节原件，10 份提取 17,503 行，另 2 份文件头不合法；实际 Access 报表/查询均未完成，整份正文仍待核验，不进入索引。
 
-`app.contexts.knowledge.infrastructure.parsing.archive_parsing.parse_archive_pdf_bounded` 对账号内已保存原件执行文件模式解析。先核验 SHA-256、大小和普通文件身份，再由可寻址文件流读取；主进程不载入整个大文件。通用调用每次最多处理 64 个物理页；持续采集队列使用 16 页窗口，以限制单次解析时间和进程间结果体积。每个窗口的 CPU 上限 35 秒、内存地址空间 768 MiB、墙钟 45 秒，并发受共享 `TEA_PARSE_WORKERS` 进程槽限制。检查点从首次处理起覆盖全文件页码，未处理页保留 `pending_parse`；后续任务推进窗口，复用完成的原生页和 OCR 页。旧表格检查点可随新版网格规则重处理，已完成 OCR 不被覆盖。`archive_pdf.complete` 仅表示原生解析窗口已结束，整体是否可索引仍由 `quality.complete` 判断。
+`app.contexts.documents.infrastructure.parsers.archive_parsing.parse_archive_pdf_bounded` 对账号内已保存原件执行文件模式解析。先核验 SHA-256、大小和普通文件身份，再由可寻址文件流读取；主进程不载入整个大文件。通用调用每次最多处理 64 个物理页；持续采集队列使用 16 页窗口，以限制单次解析时间和进程间结果体积。每个窗口的 CPU 上限 35 秒、内存地址空间 768 MiB、墙钟 45 秒，并发受共享 `TEA_PARSE_WORKERS` 进程槽限制。检查点从首次处理起覆盖全文件页码，未处理页保留 `pending_parse`；后续任务推进窗口，复用完成的原生页和 OCR 页。旧表格检查点可随新版网格规则重处理，已完成 OCR 不被覆盖。`archive_pdf.complete` 仅表示原生解析窗口已结束，整体是否可索引仍由 `quality.complete` 判断。
 
 切片复用 GEO 的章节与 token 预算逻辑，并保持原文连续片段的空白。正文、检索上下文与原文定位分开；印尼法规的正文 Pasal 和 PENJELASAN 分节，裁判中引用的条文不作为裁判自身的条号。引用携带文档 ID、不可变版本、chunk ID、chunk 内容哈希及 locator；标题或路径不能作为引用唯一标识。
 
@@ -155,9 +155,9 @@ PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制
 
 ## 流式采集与不可变版本
 
-业务入口统一为 `CollectionService`（`app/contexts/collection/application/collection.py`）。手动、定时及旧 `/fetch` 都提交持久任务，HTTP 返回 202。工作线程逐份下载、逐份落盘和提交记录，后续正文解析、向量化进入独立队列；慢文件或模型请求不会挡住其他下载完成项。每条记录保存来源计划快照、原始/最终 URL、尝试次数和原件版本 ID。
+业务入口统一为 `CollectionService`（`app/contexts/ingestion/application/collection_jobs.py`）。手动、定时及旧 `/fetch` 都提交持久任务，HTTP 返回 202。工作线程逐份下载、逐份落盘和提交记录，后续正文解析、向量化进入独立队列；慢文件或模型请求不会挡住其他下载完成项。每条记录保存来源计划快照、原始/最终 URL、尝试次数和原件版本 ID。
 
-`app/shared/infrastructure/blob_store.py` 边读边计算 SHA-256，原件位于 `data/files/blobs/<账号哈希>/<内容哈希前2位>/<后2位>/<完整哈希>`。文件名只作展示。临时文件在同一文件系统的 `.staging/`，内容 fsync 后通过原子硬链接发布，文件只读，随后事务写入引用。相同账号的相同原件复用字节；不同账号隔离。数据库失败不能 unlink 已发布对象，因为另一条记录可能已引用。旧平铺原件保留原路径，不启动时搬迁。
+`app/shared/infrastructure/persistence/blob_store.py` 边读边计算 SHA-256，原件位于 `data/files/blobs/<账号哈希>/<内容哈希前2位>/<后2位>/<完整哈希>`。文件名只作展示。临时文件在同一文件系统的 `.staging/`，内容 fsync 后通过原子硬链接发布，文件只读，随后事务写入引用。相同账号的相同原件复用字节；不同账号隔离。数据库失败不能 unlink 已发布对象，因为另一条记录可能已引用。旧平铺原件保留原路径，不启动时搬迁。
 
 版本号属于法规家族，不是文件哈希：最新正文 A→B→A 会记录 v1→v2→v3，v1/v3 复用同一份字节。最新版本未变化时直接复用记录和已完成的解析；一级资格或向量配置变化时补索引。跨 URL 的版本须在任务 entries 中提供同一官方 `identity_key`；不凭相似标题自动合并法规。每份版本仍有自己的审核/有效期，新的内容不会继承“已审核”。列表、正文、下载、历史和引用都绑定文档 ID，不使用可变的“当前链接”代替旧引用。
 
@@ -201,7 +201,7 @@ PDF 表格提示采用 `painted-grid-ctm-v3`：在页坐标中合并实际绘制
 
 显式设置 `VISION_OCR_ADAPTIVE=true` 时，图片识别共享槽默认从 `min(VISION_OCR_WORKERS,16)` 起步，可通过固定范围批量入口指定较低起点，最低降至 1；每次升额至少间隔 30 秒且收到至少 `max(16,当前目标)` 个完整 HTTP 2xx 响应，随后增加 8，最高不超过启动配置。429、5xx、连接或读取超时立即将目标减半至下限，并重新开始至少 30 秒冷却。下降只限制新领取，已持有的识别槽自然结束并归还；短时实际占用可以高于下降后的目标，但始终不超过固定最大值。此控制不新增请求或重试，也不改变采集队列单次最多 20 页、模型截止、源图映射、正文校验及索引门禁。HTTP 成功仅衡量传输健康，无效 JSON 或正文不完整仍按原有规则处理，不能当作识别准确性的证据。
 
-OCR 共享槽通过条件变量维护当前占用与目标，原生解析继续使用固定信号量；运行中改变 `VISION_OCR_WORKERS` 或 `VISION_OCR_ADAPTIVE` 均拒绝新领取，需重启所属 worker。`app.contexts.knowledge.infrastructure.providers.vision.vision_ocr_capacity_state()` 只读返回最大值、当前目标、占用及峰值、成功响应和容量失败数、升降次数及冷却剩余秒数；读取不初始化额度、不读取密钥。默认 `VISION_OCR_ADAPTIVE=false` 保持固定额度，不进行健康升降。
+OCR 共享槽通过条件变量维护当前占用与目标，原生解析继续使用固定信号量；运行中改变 `VISION_OCR_WORKERS` 或 `VISION_OCR_ADAPTIVE` 均拒绝新领取，需重启所属 worker。`app.contexts.documents.infrastructure.providers.vision.vision_ocr_capacity_state()` 只读返回最大值、当前目标、占用及峰值、成功响应和容量失败数、升降次数及冷却剩余秒数；读取不初始化额度、不读取密钥。默认 `VISION_OCR_ADAPTIVE=false` 保持固定额度，不进行健康升降。
 
 DeepSeek 图片识别仅作为必要的补读，默认不开启，不对完整原生正文或成功识别缓存重复调用。其图片请求额外通过 canonical `TEA_DATA_DIR/.runtime/deepseek-vision-XX.lock` 的线程锁与文件锁共享 `VISION_OCR_REQUEST_WORKERS` 并发额度，所有进程必须使用相同数据根；通用模型请求还受各服务进程的模型请求槽限制。PDF、原生图及直接区域补读在登记请求意图前领取，等待超过 5 秒按容量延后，不消耗模型尝试次数；直接图片调用也经过同一可重入入口。进程退出由操作系统释放文件锁，不能删除或替换运行中的锁文件。运行配置修改后须重启所属 worker；既有未知结果保留人工核验状态。此限制不修改普通文本 LLM 或独立的 embedding 并发 64。当前能力及请求格式参照 [DeepSeek 官方图像文档](https://api-docs.deepseek.com/guides/vision/)，网关别名能力仍需实际验证，不能根据名称认定识别成功。
 

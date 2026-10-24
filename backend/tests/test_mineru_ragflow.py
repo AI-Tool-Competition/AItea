@@ -12,16 +12,16 @@ from threading import Lock
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
-from app.contexts.knowledge.infrastructure.providers.mineru import Admission, MinerUWait, manifest_valid
-from app.contexts.knowledge.infrastructure.providers.mineru_results import (
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+from app.contexts.documents.infrastructure.providers.mineru import Admission, MinerUWait, manifest_valid
+from app.contexts.documents.infrastructure.providers.mineru_results import (
     _assemble,
     _prepare,
     reference,
     resolve_reference,
 )
-from app.contexts.knowledge.infrastructure.providers.native_asset_ocr import assets
-from app.contexts.knowledge.infrastructure.providers.ragflow import RAGFlowError, chunk_content
+from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
+from app.contexts.documents.infrastructure.providers.ragflow import RAGFlowError, chunk_content
 from app.shared.domain.values import now
 from test_retrieval_index import body, seed
 
@@ -76,7 +76,7 @@ class Remote:
 def prepared(service, monkeypatch, *, count=1):
     remote = Remote()
     monkeypatch.setattr(
-        "app.contexts.knowledge.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
+        "app.contexts.documents.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
     )
     original = service.archive.blobs.put_bytes("owner", b"lawful tea clause")
     with service.db.transaction() as conn:
@@ -401,7 +401,7 @@ def test_remote_completion_invalidates_analysis_cache_without_changing_source_re
 
 
 def test_mineru_parts_are_mechanical_and_within_200_pages(tmp_path, monkeypatch):
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
     from pypdf import PdfReader, PdfWriter
     from pypdf._page import PageObject
 
@@ -429,7 +429,7 @@ def test_mineru_parts_are_mechanical_and_within_200_pages(tmp_path, monkeypatch)
 
 
 def result_archive(tmp_path, *, unsafe=False):
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
     out = io.BytesIO()
@@ -471,8 +471,8 @@ def test_mineru_retains_artifacts_and_requires_page_source_proofs(tmp_path):
 
 
 def test_mineru_assembles_documents_over_four_million_characters_within_storage_bound(tmp_path):
-    from app.contexts.knowledge.infrastructure.providers.mineru_results import MAX_ASSEMBLED_RESULT_BYTES
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.contexts.documents.infrastructure.providers.mineru_results import MAX_ASSEMBLED_RESULT_BYTES
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
     body = "x" * 4_100_000
@@ -521,7 +521,7 @@ def test_untrusted_mineru_zip_cannot_escape_storage(tmp_path):
 
 
 def test_mineru_limit_and_retry_after_are_shared(tmp_path, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
+    from app.contexts.documents.infrastructure.providers import mineru as mineru
 
     monkeypatch.setattr(mineru.time, "time", lambda: 1000)
     first, second = Admission(tmp_path), Admission(tmp_path)
@@ -537,8 +537,8 @@ def test_mineru_limit_and_retry_after_are_shared(tmp_path, monkeypatch):
 def test_mineru_download_uses_bounded_transport_and_account_cas(tmp_path, monkeypatch):
     import time
 
-    from app.contexts.knowledge.infrastructure.providers.mineru import MinerUClient
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.contexts.documents.infrastructure.providers.mineru import MinerUClient
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     monkeypatch.setenv("MINERU_API_TOKEN", "test-mineru-token")
     store = BlobStore(tmp_path / "files")
@@ -555,7 +555,7 @@ def test_mineru_download_uses_bounded_transport_and_account_cas(tmp_path, monkey
 
 
 def test_mineru_merged_tables_keep_original_text_on_each_physical_page(tmp_path):
-    from app.shared.infrastructure.blob_store import BlobStore
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
     out = io.BytesIO()
@@ -620,7 +620,7 @@ def test_mineru_merged_tables_keep_original_text_on_each_physical_page(tmp_path)
 
 
 def capacity_clock(tmp_path, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers import mineru as mineru
+    from app.contexts.documents.infrastructure.providers import mineru as mineru
 
     clock = [1000.0]
     monkeypatch.setattr(mineru.time, "time", lambda: clock[0])
@@ -667,7 +667,7 @@ def test_quota_does_not_become_concurrency_boundary(tmp_path, monkeypatch):
 
 
 def test_inconsistent_worker_configuration_cannot_reset_verified_evidence(tmp_path, monkeypatch):
-    from app.contexts.knowledge.infrastructure.providers.mineru import MinerUError
+    from app.contexts.documents.infrastructure.providers.mineru import MinerUError
 
     clock, admission = capacity_clock(tmp_path, monkeypatch)
     loaded_stage(clock, admission, 8)
@@ -688,7 +688,7 @@ def test_repeated_transport_failures_reduce_capacity(tmp_path, monkeypatch):
 
 
 def test_table_spans_preserve_column_alignment():
-    from app.contexts.knowledge.infrastructure.providers.mineru_results import _TableText
+    from app.contexts.documents.infrastructure.providers.mineru_results import _TableText
 
     table = _TableText()
     table.feed(
@@ -875,10 +875,10 @@ def test_processing_runs_source_bound_mineru_chart_ocr_before_indexing(workspace
     monkeypatch.setattr(service.collection.parser, "step", lambda *_args: deepcopy(manifest))
     monkeypatch.setattr(service, "embedding_fingerprint", lambda: None)
     monkeypatch.setattr(
-        "app.contexts.knowledge.infrastructure.providers.vision.vision_ocr_configured", lambda: True
+        "app.contexts.documents.infrastructure.providers.vision.vision_ocr_configured", lambda: True
     )
     monkeypatch.setattr(
-        "app.contexts.knowledge.infrastructure.providers.vision.transcribe_chart_image",
+        "app.contexts.documents.infrastructure.providers.vision.transcribe_chart_image",
         lambda _rendered: {
             "text": "Chart title: Export value\n| Year | Value |\n| 2024 | 17 |",
             "complete": True,

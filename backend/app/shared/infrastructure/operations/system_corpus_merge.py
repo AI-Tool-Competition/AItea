@@ -16,11 +16,11 @@ from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 
-from app.contexts.collection.application.collection_import import PROTOCOL as IMPORT_PROTOCOL
-from app.contexts.knowledge.application.system_library import SYSTEM_OWNER_ID
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import pdf_page_status, text_complete
+from app.contexts.ingestion.application.collection_import import PROTOCOL as IMPORT_PROTOCOL
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status, text_complete
 from app.shared.domain.values import dump, now
-from app.shared.infrastructure.blob_store import BlobStore
+from app.shared.infrastructure.persistence.blob_store import BlobStore
 from app.shared.infrastructure.operations import system_corpus_migration as migration
 
 PLAN_PROTOCOL = "system-corpus-alias-plan-v1"
@@ -530,7 +530,7 @@ def create_alias_plan(snapshot_dir, target_dir, candidates):
             _validate_target_checkpoint(ts, target, target_dir, target_paths)
             # Validate target originals through exact owner CAS, never only the
             # content_hash copied from its document row.
-            from app.contexts.collection.application.collection_import import _blob
+            from app.contexts.ingestion.application.collection_import import _blob
 
             blob = _blob(target_dir, SYSTEM_OWNER_ID, entry["binding"]["content_hash"])
             migration._require(

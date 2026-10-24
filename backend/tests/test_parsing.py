@@ -1,5 +1,5 @@
 import pytest
-from app.contexts.knowledge.infrastructure.parsing.parsing import parse_bounded
+from app.contexts.documents.infrastructure.parsers.document_parser import parse_bounded
 
 
 def _sleeping_worker(*args):
@@ -30,7 +30,7 @@ def test_empty_upload_is_rejected_before_process_creation():
 
 
 def test_a_stalled_parser_is_terminated_and_capacity_is_released(monkeypatch):
-    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
+    import app.contexts.documents.infrastructure.parsers.document_parser as parsing
 
     original = parsing._parse_worker
     monkeypatch.setenv("TEA_PARSE_TIMEOUT", "0.1")
@@ -46,7 +46,7 @@ def test_pipe_initialization_failure_does_not_leak_worker_slots(monkeypatch):
     from threading import BoundedSemaphore
     from types import SimpleNamespace
 
-    import app.contexts.knowledge.infrastructure.parsing.parsing as parsing
+    import app.contexts.documents.infrastructure.parsers.document_parser as parsing
 
     slots = BoundedSemaphore(2)
     monkeypatch.setattr(parsing, "_SLOTS", slots)

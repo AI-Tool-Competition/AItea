@@ -374,7 +374,9 @@ def _row_hash(row):
 
 def capture_guard(root, owner):
     """Snapshot only immutable data and completed pages; native progress is allowed."""
-    from app.shared.infrastructure.operations.data_backup import SUPPORTED_SCHEMA_VERSION
+    from app.shared.infrastructure.operations.data_backup import (
+        SUPPORTED_SCHEMA_VERSION,
+    )
 
     result = {"documents": {}, "tables": {}}
     with closing(sqlite3.connect((root / "tea.sqlite3").as_uri() + "?mode=ro", uri=True)) as conn:
@@ -507,7 +509,7 @@ def _journal_fingerprint(conn):
 
 
 def _sg_preflight(root, rows, guard, inventory):
-    from app.contexts.collection.infrastructure.discovery.egazette import (
+    from app.contexts.ingestion.infrastructure.source_adapters.egazette import (
         SOURCE_ROLE,
         publication_classification,
     )
@@ -653,7 +655,7 @@ def recover_interrupted_window(*, source, window, project, data, bundle, control
         if os.environ.get("VISION_OCR_ENABLED", "false").lower() != "false":
             raise ValueError("offline recovery requires OCR disabled")
         if source == "sg":
-            from app.contexts.collection.infrastructure.discovery.egazette import (
+            from app.contexts.ingestion.infrastructure.source_adapters.egazette import (
                 EGAZETTE_ORIGIN,
                 public_search_from_html,
             )

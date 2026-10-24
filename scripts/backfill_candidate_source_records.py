@@ -10,14 +10,16 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
+from app.configuration.paths import InstancePaths  # noqa: E402
+
 
 def main(argv=None):
-    from app.contexts.collection.application.checklists import ChecklistService
-    from app.shared.infrastructure.blob_store import BlobStore
-    from app.shared.infrastructure.db import Database
+    from app.contexts.ingestion.application.checklists import ChecklistService
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
+    from app.shared.infrastructure.persistence.database import Database
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
+    parser.add_argument("--data-dir", type=Path, default=InstancePaths.resolve(ROOT).data)
     parser.add_argument("--limit", type=int, default=500, help="maximum candidates to inspect (1–1000)")
     args = parser.parse_args(argv)
     if not 1 <= args.limit <= 1000 or args.data_dir.is_symlink():

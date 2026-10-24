@@ -9,10 +9,10 @@ from copy import deepcopy
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.html_image_collection import HtmlImageCollector
-from app.contexts.knowledge.infrastructure.parsing import native as ingestion_native
-from app.contexts.knowledge.infrastructure.parsing.ingestion_quality import text_complete
-from app.contexts.knowledge.infrastructure.providers.html_linked_asset_ocr import read_linked_images
+from app.contexts.ingestion.application.html_image_collection import HtmlImageCollector
+from app.contexts.documents.infrastructure.parsers import native_parser as ingestion_native
+from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import read_linked_images
 from app.shared.domain.values import dump, now
 from app.shared.infrastructure.http import download as ingestion_download
 from PIL import Image

@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.contexts.collection.infrastructure.discovery.singapore_cases import (
+from app.contexts.ingestion.infrastructure.source_adapters.singapore_cases import (
     CASE_PARSER_VERSION,
     DatasetRanges,
     DatasetValidationError,
@@ -26,7 +26,7 @@ from app.contexts.collection.infrastructure.discovery.singapore_cases import (
     validate_csv,
     write_json,
 )
-from app.shared.infrastructure.blob_store import _verify_existing
+from app.shared.infrastructure.persistence.blob_store import _verify_existing
 from app.shared.infrastructure.http.download import DownloadError
 
 ROOT = Path(__file__).resolve().parents[1]

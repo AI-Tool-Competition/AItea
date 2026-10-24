@@ -5,7 +5,7 @@ from contextlib import closing
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.knowledge.application.contracts import LegalRelationInput
+from app.contexts.documents.application.contracts import LegalRelationInput
 from app.shared.domain.errors import AppError
 from app.shared.domain.values import now
 

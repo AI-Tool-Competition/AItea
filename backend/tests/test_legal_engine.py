@@ -8,7 +8,7 @@ import pytest
 
 
 def runtime():
-    from app.contexts.legal.application import legal_engine as legal_engine
+    from app.contexts.legal_analysis.application import analysis_engine as legal_engine
 
     return legal_engine
 
@@ -205,7 +205,7 @@ def test_demo_runs_six_public_stages_without_legal_conclusions():
 
 
 def test_policy_defaults_are_editable_cards_and_program_checks_are_separate():
-    from app.contexts.legal.domain.legal_models import (
+    from app.contexts.legal_analysis.domain.analysis_models import (
         LEGAL_MODULES,
         PROGRAM_CHECKS,
         LegalPolicy,
@@ -480,7 +480,7 @@ def test_pause_resume_checks_inputs_and_evidence_before_reusing_stages(monkeypat
 
 
 def test_rule_composition_excludes_other_domains_and_jurisdictions(monkeypatch):
-    from app.contexts.legal.domain.legal_models import LegalRule
+    from app.contexts.legal_analysis.domain.analysis_models import LegalRule
 
     selected = LegalRule(
         id="trade-sg",
@@ -587,7 +587,7 @@ def test_extraction_can_fill_a_missing_fact_without_creating_a_false_conflict(mo
 
 
 def test_reconciled_conflicts_remain_visible_without_becoming_active_conflicts():
-    from app.contexts.legal.domain.legal_models import LegalFact
+    from app.contexts.legal_analysis.domain.analysis_models import LegalFact
 
     stored = LegalFact.model_validate(
         fact(
@@ -714,7 +714,7 @@ def test_deadline_reports_remaining_time_without_upgrading_conditional_premises(
 
 
 def test_jurisdiction_specific_required_facts_are_recomputed_after_scope_is_known(monkeypatch):
-    from app.contexts.legal.domain.legal_models import LegalRule
+    from app.contexts.legal_analysis.domain.analysis_models import LegalRule
 
     rule = LegalRule(
         id="cn-specific",

@@ -7,11 +7,16 @@ Activate the resulting unit explicitly with systemctl --user, as documented.
 from __future__ import annotations
 
 import json
+import argparse
 import os
+import sys
 import shutil
 from pathlib import Path
 
-from collection_watchdog import read_config, render_unit
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.configuration.paths import InstancePaths  # noqa: E402
+
+from collection_watchdog import read_config, render_unit, status
 from official_source_supervisor_recovery import load, value_digest, write
 
 
@@ -19,8 +24,10 @@ def prepare(project: Path, uv: Path):
     project, uv = project.resolve(), uv.resolve()
     directory = project / ".dev/collection-service"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fleet = directory / "fleet.json"
-    state = directory / "state"
+    paths = InstancePaths.resolve(project)
+    fleet = paths.collection_fleet
+    fleet.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state = paths.collection_state
     config = {
         "protocol": "aitea-collection-fleet-v1",
         "project_root": str(project),
@@ -38,9 +45,9 @@ def prepare(project: Path, uv: Path):
                     str(project / "scripts/unattended_collection.py"),
                     "run",
                     "--pool",
-                    str(project / "config/collection-sources/id-sg-unattended.json"),
+                    str(paths.source_pool),
                     "--root",
-                    str(project / "data/official-updates" / country),
+                    str(paths.data / "official-updates" / country),
                     "--country",
                     country,
                 ],
@@ -55,7 +62,13 @@ def prepare(project: Path, uv: Path):
     config["config_hash"] = value_digest(config)
     if fleet.exists():
         if load(fleet) != config:
-            raise ValueError("Existing fleet differs; preserve its state and review a migration")
+            try:
+                existing = read_config(fleet)
+            except ValueError as error:
+                raise ValueError("Existing fleet differs; invalid immutable configuration") from error
+            if existing["project_root"] != str(project):
+                raise ValueError("Existing fleet differs; project migration required")
+            config = existing
     else:
         write(fleet, config, exclusive=True)
     read_config(fleet)
@@ -76,7 +89,22 @@ def prepare(project: Path, uv: Path):
 
 if __name__ == "__main__":
     os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--status", action="store_true")
+    args = parser.parse_args()
+    project = Path(__file__).resolve().parents[1]
+    if args.status:
+        print(
+            json.dumps(
+                status(
+                    InstancePaths.resolve(project).collection_fleet,
+                    InstancePaths.resolve(project).collection_state,
+                ),
+                ensure_ascii=False,
+            )
+        )
+        raise SystemExit(0)
     executable = shutil.which("uv")
     if not executable:
         raise SystemExit("uv must be installed before preparing the collection service")
-    print(json.dumps(prepare(Path(__file__).resolve().parents[1], Path(executable)), ensure_ascii=False))
+    print(json.dumps(prepare(project, Path(executable)), ensure_ascii=False))

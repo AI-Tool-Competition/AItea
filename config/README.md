@@ -1,4 +1,10 @@
-# 流程配置
+# 仓库配置
+
+此目录保存随 Git 管理的业务配置默认值：`workflows/` 为办理流程，`collection-plans/` 为版本化法律采集要求，`collection-sources/` 为热更新来源清单，`collection-selections/` 为有界采集范围，`verification/` 为验证规则。私有凭据保存在实例的 `data/config/application.env`，不写入本目录。
+
+`TEA_CONFIG_DIR` 可指定唯一活动配置根；完整实例恢复默认使用其 `data/config/catalogs/` 快照。修改前运行 `make instance-paths` 查看生效位置，详见 [实例管理](../docs/INSTANCE_MANAGEMENT.md)。
+
+## 流程配置
 
 `workflows/liubao-export.json` 提供印尼／新加坡 × 线上／线下四条六堡茶路线，复用 58 项任务定义。新建业务及后台默认选择印尼线上路线，详情见 [六堡茶流程说明](../docs/LIUBAO_WORKFLOWS.md)。服务启动读取并校验配置，格式不合法时明确报错。`TEA_TEMPLATE_FILE` 可指定后台导出的单条模板，覆盖四条路线中的同编号配置；留空加载内置配置，修改后重启服务。旧 `.env` 中指向已删除的 `config/workflows/china-indonesia.json` 会按明确的退役兼容规则使用六堡茶默认路线，不恢复旧模板。
 

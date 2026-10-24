@@ -2,7 +2,7 @@
 
 已存资料的原件、正文、一二级映射、向量状态及待补缺口，可用 `make collection-catalog` 生成统一入口，见 [COLLECTION_MATERIALS.md](COLLECTION_MATERIALS.md)。
 
-`make collection-prepare` 在当前项目 `.dev/collection-service/` 生成绑定绝对路径及校验和的双国任务配置和 systemd 用户服务。使用既有 uv 环境，不启动模型调用，也不修改既有 OCR、向量任务或业务账号。来源池与核验记录见 [OFFICIAL_SOURCE_POOL.md](OFFICIAL_SOURCE_POOL.md)。
+`make collection-prepare` 在 `data/config/collection/fleet.json` 生成绑定路径及校验和的双国任务配置，在 `.dev/collection-service/` 生成 systemd 用户服务。监督状态集中在 `data/control/collection-service/`，配置绑定在 `data/control/collection-bindings/`。使用既有 uv 环境，不启动模型调用，也不修改既有 OCR、向量任务或业务账号。来源池与核验记录见 [OFFICIAL_SOURCE_POOL.md](OFFICIAL_SOURCE_POOL.md)。
 
 来源池是 `aitea-official-source-pool-v2` 动态读取的分层配置，不是逐份法规 URL 的静态清单：顶层按国家分组，子组对应法规主题和核验清单项；来源节点记录官方入口、允许主机、发现关键词、复查间隔及 `active`/`archived` 状态。`source_relations` 用稳定来源 ID 表达互补、交叉核验、实施规则和正式原件发布等关系，关系只指导采集与后续查询，不推断法律效力。采集器启动时重新读取并校验层级、引用和关系；只抓取 `active` 节点，归档节点及关系仍保留供历史回溯。每条活动来源的精确允许主机自动合并进代理域名白名单，使用显式配置的 CONNECT 代理。采集器从入口解析目录和链接，在允许主机内持续发现和排队符合主题的目录页、详情页及原件；候选、父页、摘要、版本关系和每次请求回执均持久保存。单轮请求数、链接队列、响应大小、主机并发和日额度有界，不会因网页链接扩大到未审核的域名或业务范围。新发现的域名、主题或资料类型先作为待核候选，核验主管机关身份与业务范围后再修改配置。
 
@@ -36,12 +36,12 @@ make collection-status
 
 服务与两个国家采集器分别维护进程身份、锁及持久状态。子进程异常退出后自动退避重启；watchdog 异常退出后 systemd 自动重启。在 systemd 的 `KillMode=mixed` 下，主进程异常退出会清理原服务进程组，再从请求账本恢复，不保证保留原 PID。脱离 systemd 的 watchdog 重启可接管身份、启动令牌和继承锁相符的幸存子进程。正常停止最多等待当前有界请求结束；此服务只包含单请求 20 秒的新采集器，不接收旧的长窗口周期任务。
 
-`systemctl --user stop aitea-collection.service` 正常停止服务；重新启动继续现有状态。全局紧急停止可在 `.dev/collection-service/state/STOP` 写入标记；单国停止为 `data/official-updates/ID/STOP` 或 `SG/STOP`。这些标记持续有效，重启不能绕过。单国自行退出 75 后，任务持久暂停；恢复时先停止整个服务、移除对应单国 STOP，再执行下列命令并重新启动服务。全局 STOP 仅需停止服务、移除标记再启动。不得通过删除状态、锁、请求账本或更换输出目录来解除暂停。
+`systemctl --user stop aitea-collection.service` 正常停止服务；重新启动继续现有状态。全局紧急停止可在 `data/control/collection-service/STOP` 写入标记；单国停止为 `data/official-updates/ID/STOP` 或 `SG/STOP`。这些标记持续有效，重启不能绕过。单国自行退出 75 后，任务持久暂停；恢复时先停止整个服务、移除对应单国 STOP，再执行下列命令并重新启动服务。全局 STOP 仅需停止服务、移除标记再启动。不得通过删除状态、锁、请求账本或更换输出目录来解除暂停。
 
 ```bash
 uv run --project backend --locked python scripts/collection_watchdog.py resume-task \
-  --fleet "$PWD/.dev/collection-service/fleet.json" \
-  --state-dir "$PWD/.dev/collection-service/state" --task official-id
+  --fleet "$PWD/data/config/collection/fleet.json" \
+  --state-dir "$PWD/data/control/collection-service" --task official-id
 ```
 
 ## 数据与访问边界
@@ -56,7 +56,7 @@ uv run --project backend --locked python scripts/collection_watchdog.py resume-t
 | `files/` | 复用项目 BlobStore 的不可变原始字节，以内容摘要校验 |
 | `events/YYYY-MM-DD/*.json` | 版本、父页引用、原件映射、失败观察、换源与队列归档记录 |
 
-所有数据留在项目目录中；项目 `data` 若为经确认的挂载或链接，实际存储随该卷。使用现有共享总库与个人上传隔离规则，采集器不建立个人账号，不修改任何用户的私有资料。备份需包含整个上述目录、来源池以及 `.dev/collection-service/` 配置；恢复时停止服务，原样保留请求账本、映射与健康状态，按新项目绝对路径审核迁移配置，不能把非空目录当新任务初始化。日志轮转仅影响诊断输出，原始证据与失败历史不会轮转删除。
+所有数据留在项目目录中；项目 `data` 若为经确认的挂载或链接，实际存储随该卷。使用现有共享总库与个人上传隔离规则，采集器不建立个人账号，不修改任何用户的私有资料。备份需包含整个上述目录、来源池以及 `data/config/`、`data/control/` 配置与状态，优先使用 [实例管理](INSTANCE_MANAGEMENT.md) 的成套迁移命令；恢复时停止服务，原样保留请求账本、映射与健康状态，按新项目绝对路径审核迁移配置，不能把非空目录当新任务初始化。日志轮转仅影响诊断输出，原始证据与失败历史不会轮转删除。
 
 每个引用保留父页 URL 和内容 SHA-256；同一原件被多个父页或父页新版本引用时，追加引用事件。目标原件真正读取或校验 304 后再记录目标摘要。仅从旧缓存得知的摘要明确标记为 `last_known_target_hash`，不能冒充本次取得。队列或缓存元数据到上限后归档旧元数据以容纳新发现，原件及映射历史保留。
 

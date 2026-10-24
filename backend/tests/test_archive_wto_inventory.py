@@ -7,9 +7,9 @@ from urllib.parse import urlsplit
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.checklists import ChecklistService
-from app.contexts.collection.infrastructure.discovery.discovery import _canonical
-from app.contexts.collection.infrastructure.discovery.wto_discovery import (
+from app.contexts.ingestion.application.checklists import ChecklistService
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import _canonical
+from app.contexts.ingestion.infrastructure.source_adapters.wto_discovery import (
     _UNVERIFIED_MDB,
     GOODS,
     MEMBERS,

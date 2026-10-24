@@ -1,7 +1,7 @@
 import sys
 import tomllib
 
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))

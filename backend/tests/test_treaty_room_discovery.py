@@ -7,14 +7,14 @@ from urllib.parse import urlencode
 
 import pytest
 from app.bootstrap import Service
-from app.contexts.collection.application.checklists import load_blueprint_version, load_blueprints
-from app.contexts.collection.infrastructure.discovery.discovery import (
+from app.contexts.ingestion.application.checklists import load_blueprint_version, load_blueprints
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     _Recipe,
     discover_page,
     recipe_for,
     request_parameters,
 )
-from app.contexts.collection.infrastructure.discovery.treaty_room_discovery import (
+from app.contexts.ingestion.infrastructure.source_adapters.treaty_room_discovery import (
     BASE,
     catalog_url,
     original_url,

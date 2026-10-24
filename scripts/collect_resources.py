@@ -36,7 +36,9 @@ def options_for(args, plan):
         "live_models": args.live_models,
     }
     if args.selection:
-        from app.contexts.collection.application.campaign_selection import validate_selection
+        from app.contexts.ingestion.application.campaign_selection import (
+            validate_selection,
+        )
 
         if (
             args.selection.is_symlink()
@@ -68,9 +70,9 @@ def child(
     os.umask(0o077)
     configure_models(models_env)
     from app.bootstrap import Service
-    from app.contexts.collection.application.collection import CollectionWorkers
-    from app.contexts.collection.application.resource_campaign import ResourceCampaign
-    from app.contexts.collection.infrastructure.archive_inventory import export_inventory
+    from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
+    from app.contexts.ingestion.application.resource_campaign import ResourceCampaign
+    from app.contexts.ingestion.infrastructure.archive_inventory import export_inventory
 
     with (output / "worker.log").open("a", encoding="utf-8", buffering=1) as log:
         os.dup2(log.fileno(), 1)
@@ -153,7 +155,10 @@ def child(
 
 
 def main():
-    from app.contexts.collection.application.checklists import load_blueprint_version, load_blueprints
+    from app.contexts.ingestion.application.checklists import (
+        load_blueprint_version,
+        load_blueprints,
+    )
     from app.shared.domain.values import dump
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -285,7 +290,9 @@ def main():
         ):
             raise ValueError("resume requires the same frozen plan and campaign options")
         if args.extend:
-            from app.contexts.collection.application.resource_campaign import validate_extension
+            from app.contexts.ingestion.application.resource_campaign import (
+                validate_extension,
+            )
 
             validate_extension(state["options"], options)
         if state is None and any(path.name != "campaign.lock" for path in output.iterdir()):

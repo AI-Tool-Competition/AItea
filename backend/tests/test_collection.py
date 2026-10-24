@@ -9,7 +9,7 @@ from threading import Event
 import pytest
 from admin_helpers import grant_admin, login_admin
 from app.bootstrap import Service
-from app.contexts.knowledge.infrastructure.providers import embedding as ingestion_embedding
+from app.contexts.documents.infrastructure.providers import embedding as ingestion_embedding
 from app.interfaces.http.factory import create_app
 from app.shared.infrastructure.http import download as ingestion_download
 from fastapi.testclient import TestClient
@@ -204,7 +204,7 @@ def test_expired_claim_can_resume_but_old_worker_cannot_commit(client, monkeypat
 
 def test_migration_preserves_existing_document_and_is_idempotent(tmp_path):
     from app.shared.domain.values import now
-    from app.shared.infrastructure.db import Database
+    from app.shared.infrastructure.persistence.database import Database
 
     db = Database(tmp_path)
     original = db.files_dir / "old-file"
@@ -271,7 +271,7 @@ def test_empty_retry_keeps_partial_terminal_state(client, monkeypatch):
 def test_coordinator_recovers_after_transient_database_error(client, monkeypatch):
     import sqlite3
 
-    from app.contexts.collection.application.collection import CollectionWorkers
+    from app.contexts.ingestion.application.collection_jobs import CollectionWorkers
 
     collection = client.app.state.service.collection
     attempted, recovered = Event(), Event()
@@ -425,7 +425,7 @@ def test_retry_after_cools_actual_redirect_host(client, monkeypatch, delay):
 def test_promotion_during_parsing_queues_index_using_current_classification(
     client, monkeypatch, ragflow_library
 ):
-    from app.contexts.knowledge.infrastructure.parsing import parsing as parsing
+    from app.contexts.documents.infrastructure.parsers import document_parser as parsing
 
     main = upload(client)
     src = source(client, level="secondary", primary_document_ids=[main["id"]])

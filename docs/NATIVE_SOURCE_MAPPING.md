@@ -1,9 +1,9 @@
 # 原生与转换资料的映射盘点
 
-`app.contexts.collection.infrastructure.archive_inventory` 提供离线、只读的资料盘点。默认格式仍为版本 4；显式使用 `--include-source-mapping` 后采用版本 5，在已有账号 SHA-256 / 国别分区内增加 `source-mapping.jsonl`。此选项不运行解析器、图片模型、向量模型或索引，不改变资料、审核状态和结构版本。
+`app.contexts.ingestion.infrastructure.archive_inventory` 提供离线、只读的资料盘点。默认格式仍为版本 4；显式使用 `--include-source-mapping` 后采用版本 5，在已有账号 SHA-256 / 国别分区内增加 `source-mapping.jsonl`。此选项不运行解析器、图片模型、向量模型或索引，不改变资料、审核状态和结构版本。
 
 ```bash
-uv run --project backend --locked python -m app.contexts.collection.infrastructure.archive_inventory \
+uv run --project backend --locked python -m app.contexts.ingestion.infrastructure.archive_inventory \
   --data-dir /absolute/path/to/data --owner ACCOUNT_ID --country ID \
   --include-text --include-source-mapping
 ```

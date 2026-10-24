@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.paths import PROJECT_ROOT
+from app.configuration.paths import PROJECT_ROOT
 
 SCRIPT = PROJECT_ROOT / "scripts/verify_ingestion.py"
 

@@ -7,7 +7,7 @@ from contextlib import closing
 import pytest
 from admin_helpers import grant_admin, login_admin
 from app.bootstrap import Service
-from app.contexts.workspace.application.contracts import TemplateDebugInput
+from app.contexts.workflows.application.contracts import TemplateDebugInput
 from app.interfaces.http.factory import create_app
 from app.shared.application.streaming import StreamCancelled
 from fastapi.testclient import TestClient
@@ -401,7 +401,7 @@ def test_sample_and_checkpoint_reject_changed_index_even_when_file_version_is_un
 
 
 def test_history_is_bounded_and_stage_filtered(client, monkeypatch):
-    import app.contexts.workspace.application.debugger as debugger
+    import app.contexts.workflows.application.workflow_debugger as debugger
 
     monkeypatch.setattr(debugger, "MAX_RUNS", 2)
     payload = request(client)
@@ -492,7 +492,7 @@ def test_answer_expectations_are_not_passed_without_a_valid_answer(client, monke
     elif scenario == "disabled":
         payload["template"]["agent"]["steps"][-1]["enabled"] = False
     elif scenario == "failed":
-        import app.contexts.conversation.application.assistant as assistant
+        import app.contexts.conversations.application.assistant as assistant
 
         def fail(*args, **kwargs):
             raise RuntimeError("failed guide")

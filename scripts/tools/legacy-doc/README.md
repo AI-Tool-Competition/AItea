@@ -1,6 +1,6 @@
 # DOC / WPF 离线文本与映射
 
-`backend/app/contexts/knowledge/infrastructure/parsing/legacy_doc_parsing.py` 由现有 `parse_bounded` 工作进程调用。工具是可选的服务器配置，不由上传文件选择，也不自动下载。普通 secondary 附件继续只保存原件。
+`backend/app/contexts/documents/infrastructure/parsers/legacy_doc_parsing.py` 由现有 `parse_bounded` 工作进程调用。工具是可选的服务器配置，不由上传文件选择，也不自动下载。普通 secondary 附件继续只保存原件。
 
 DOC 同时保存两组不同的定位：原始 OLE 目录 ID、流名、流内字节范围与 SHA，以及 Word 97 FIB / CLX / PlcPcd 的 CP→WordDocument 流范围；转换 DocBook XML 的 SHA、完整字节、XPath、表格行列/空单元格/合并属性、footnote 与声明断页也完整保留。CP 是 UTF-16 字符位置；OLE 流偏移不是容器文件偏移。`beginpage` 只是转换器声明的断页，不能当作核验过的打印页。真实 antiword 输出的表格可以嵌在 `para` 内，结构映射独立于正文消费，避免漏表或重复正文。
 

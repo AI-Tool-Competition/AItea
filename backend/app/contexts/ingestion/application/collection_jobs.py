@@ -691,11 +691,12 @@ class CollectionService:
                 AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
                 AND json_extract({metadata},'$.review_status')='draft'
                 AND json_extract({manifest},'$.parser')='html-basic'
-                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9','10')
-                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10')
+                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9','10','11')
+                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10','html-source-mapping-v11')
                     OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+','html-source-mapping-v8+','html-source-mapping-v9+')
-                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v10+')
-                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v10+'
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v11+')
+                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10','html-source-mapping-v11')
                 AND json_extract({manifest},'$.source_hash')=d.content_hash
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""
@@ -714,15 +715,15 @@ class CollectionService:
             "mime_type": "image/png",
         }
 
-    def _official_html_asset_hosts(self, document):
-        """Return the current source-pool asset scope for an imported official HTML page."""
+    def _official_html_source(self, document):
+        """Return the active source-pool entry for an exact imported HTML page."""
         from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 
         if document["owner_id"] != SYSTEM_OWNER_ID or document["mime_type"] != "text/html":
             return None
         with closing(self.db.connect()) as conn:
             imported = conn.execute(
-                """SELECT source_id,country,source_url FROM official_source_imports
+                """SELECT source_id,country,source_url,content_hash FROM official_source_imports
                 WHERE document_id=? AND status='stored' ORDER BY updated_at DESC LIMIT 1""",
                 (document["id"],),
             ).fetchone()
@@ -757,7 +758,21 @@ class CollectionService:
             or page.path not in approved_paths
         ):
             return None
-        return list(source.get("html_asset_hosts", []))
+        return source, dict(imported)
+
+    def _official_html_asset_hosts(self, document):
+        """Return same-origin and explicitly approved asset hosts for official HTML."""
+        context = self._official_html_source(document)
+        if not context:
+            return None
+        from app.shared.infrastructure.http.download import _validated_url
+
+        source = context[0]
+        _, page_host = _validated_url(source["url"])
+        approved = [*source.get("html_asset_hosts", [])]
+        if page_host in source.get("allowed_hosts", []):
+            approved.insert(0, page_host)
+        return list(dict.fromkeys(approved))
 
     def claim_processing(
         self,
@@ -1364,6 +1379,21 @@ class CollectionService:
                     )
                     asset_hosts = self._official_html_asset_hosts(doc)
                     from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+                    source_context = self._official_html_source(doc)
+                    if manifest.get("parser") == "html-basic" and source_context:
+                        from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
+                        from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import (
+                            update_quality,
+                        )
+                        from app.contexts.ingestion.application.html_document_binding import (
+                            bind_ready_official_documents,
+                        )
+
+                        manifest = bind_ready_official_documents(
+                            self.service, dict(doc), manifest, source_context
+                        )
+                        update_quality(manifest, assets(manifest))
 
                     if (
                         manifest.get("parser") == "html-basic"

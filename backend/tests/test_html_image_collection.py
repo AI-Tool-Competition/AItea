@@ -259,11 +259,15 @@ def test_official_source_parse_automatically_uses_its_approved_asset_hosts(servi
     )
     with service.db.transaction() as conn:
         conn.execute(
-            "CREATE TABLE official_source_imports(document_id TEXT,status TEXT,source_id TEXT,country TEXT,updated_at TEXT,source_url TEXT)"
+            "CREATE TABLE official_source_imports(document_id TEXT,status TEXT,source_id TEXT,country TEXT,updated_at TEXT,source_url TEXT,content_hash TEXT)"
         )
         conn.execute(
-            "INSERT INTO official_source_imports VALUES(?,'stored','sg-ccs-fair-trading','SG','2026-10-25',?)",
-            (doc["id"], "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/"),
+            "INSERT INTO official_source_imports VALUES(?,'stored','sg-ccs-fair-trading','SG','2026-10-25',?,?)",
+            (
+                doc["id"],
+                "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/",
+                doc["content_hash"],
+            ),
         )
         service.collection.queue_processing(conn, doc["id"], SYSTEM_OWNER_ID)
 
@@ -281,7 +285,7 @@ def test_official_source_parse_automatically_uses_its_approved_asset_hosts(servi
     assert observed["official_source"] is True
     assert observed["owner"] == SYSTEM_OWNER_ID
     assert observed["active_claim"]["lease_token"] == claim["lease_token"]
-    assert observed["allowed_asset_hosts"] == ["isomer-user-content.by.gov.sg"]
+    assert observed["allowed_asset_hosts"] == ["www.ccs.gov.sg", "isomer-user-content.by.gov.sg"]
 
 
 def test_download_checkpoint_survives_stale_manifest_and_reuses_cas_without_new_http(service, monkeypatch):

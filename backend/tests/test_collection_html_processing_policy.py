@@ -256,8 +256,8 @@ def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypa
     service.collection.process_item(claim)
 
     updated = json.loads(row(service, "documents", doc["id"])["manifest"])
-    assert updated["parser_version"] == "10"
-    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v10"
+    assert updated["parser_version"] == "11"
+    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v11"
     assert updated["html_source"]["linked_images"][0]["asset_status"] == "ocr_complete"
     assert row(service, "processing_jobs", doc["id"])["status"] == "completed"
 

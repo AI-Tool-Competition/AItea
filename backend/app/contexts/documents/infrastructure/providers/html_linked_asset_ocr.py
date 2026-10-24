@@ -14,9 +14,12 @@ import stat
 from copy import deepcopy
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit
 
 PROTOCOL = "html-linked-image-v1"
+LINKED_DOCUMENT_PROTOCOL = "official-html-pdf-link-v1"
+TEXTUAL_ICON_PROTOCOL = "verified_accessible_icon_name-v1"
+_HTML_PARSER_VERSIONS = {"3", "4", "5", "6", "7", "8", "9", "10", "11"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 32 * 1024 * 1024
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -45,12 +48,172 @@ def resolved_url(source_url, literal):
     return _validated_url(encoded)[0]
 
 
+def _html_source(manifest):
+    source = manifest.get("html_source")
+    if (
+        not isinstance(source, dict)
+        or manifest.get("parser") != "html-basic"
+        or manifest.get("parser_version") not in _HTML_PARSER_VERSIONS
+        or source.get("mapping_version") != f"html-source-mapping-v{manifest.get('parser_version')}"
+        or source.get("source_hash") != manifest.get("source_hash")
+    ):
+        raise ValueError("HTML 资料需要当前版本的原文映射。")
+    rows = source.get("objects", [])
+    if not isinstance(rows, list) or len(rows) > 500 or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("HTML 对象映射数量无效。")
+    return source, rows
+
+
+def textual_icon_objects(manifest):
+    """Validate the exact accessible icon labels copied into nearby body text."""
+    _, rows = _html_source(manifest)
+    objects = [row for row in rows if row.get("visual_role") == "textual_icon"]
+    if len(objects) > 500:
+        raise ValueError("HTML 语义图标数量无效。")
+    keys = set()
+    for row in objects:
+        key = row.get("object_key")
+        attrs = row.get("url_attributes")
+        metadata = row.get("metadata") or {}
+        locator = row.get("locator") or {}
+        try:
+            path = urlsplit(attrs[0].get("decoded_value", "")).path.casefold()
+        except (IndexError, AttributeError, TypeError, ValueError):
+            path = ""
+        if (
+            not isinstance(key, str)
+            or key in keys
+            or row.get("tag") != "img"
+            or row.get("source_hash") != manifest.get("source_hash")
+            or locator.get("source_hash") != manifest.get("source_hash")
+            or locator.get("source_boundary_complete") is not True
+            or row.get("duplicate_url_attributes") is not False
+            or not isinstance(attrs, list)
+            or len(attrs) != 1
+            or attrs[0].get("attribute") != "src"
+            or not path.endswith("/esgcorptheme/images/unicons/svg/line/check.svg")
+            or str(metadata.get("alt", "")).strip().casefold() != "check"
+            or row.get("textual_marker") != "✓"
+            or row.get("textual_marker_protocol") != TEXTUAL_ICON_PROTOCOL
+            or row.get("alt_is_recognized_text") is not True
+        ):
+            raise ValueError("HTML 语义图标与原始替代文字不匹配。")
+        keys.add(key)
+    quality = manifest.get("quality") or {}
+    if not isinstance(quality, dict):
+        raise ValueError("HTML 语义图标质量摘要无效。")
+    quality_keys = quality.get("textual_icon_object_keys", [])
+    if quality_keys != [row["object_key"] for row in objects]:
+        raise ValueError("HTML 语义图标质量摘要与对象映射不匹配。")
+    element_keys = set()
+    elements = manifest.get("elements", [])
+    if not isinstance(elements, list):
+        raise ValueError("HTML 正文元素映射无效。")
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        metadata = element.get("metadata_json") or {}
+        content = element.get("content_text", "")
+        if not isinstance(metadata, dict) or not isinstance(content, str):
+            continue
+        for marker in metadata.get("textual_icons", []):
+            if (
+                isinstance(marker, dict)
+                and marker.get("text") == "✓"
+                and marker.get("object_key") in keys
+                and "✓" in content
+            ):
+                element_keys.add(marker["object_key"])
+    if element_keys != keys:
+        raise ValueError("HTML 语义图标没有绑定到可检索正文。")
+    return keys
+
+
+def linked_document_objects(manifest):
+    """Validate ready PDF links against the exact iframe and parent page map."""
+    from app.shared.infrastructure.http.download import _validated_url
+
+    source, objects = _html_source(manifest)
+    bindings = source.get("linked_documents", [])
+    if not isinstance(bindings, list) or len(bindings) > 500:
+        raise ValueError("HTML 关联原件记录数量无效。")
+    by_key = {row.get("object_key"): row for row in objects if isinstance(row.get("object_key"), str)}
+    result = {}
+    for value in bindings:
+        if not isinstance(value, dict):
+            raise ValueError("HTML 关联原件记录无效。")
+        key = value.get("object_key")
+        row = by_key.get(key)
+        attrs = row.get("url_attributes", []) if isinstance(row, dict) else []
+        locator = row.get("locator") or {} if isinstance(row, dict) else {}
+        source_url = value.get("parent_source_url")
+        requested = value.get("requested_url")
+        try:
+            if not isinstance(attrs, list) or len(attrs) != 1 or not isinstance(attrs[0], dict):
+                raise ValueError("HTML iframe URL attribute is invalid")
+            parent_url, parent_host = _validated_url(source_url)
+            requested_url, requested_host = _validated_url(requested)
+            exact_requested = resolved_url(source_url, attrs[0].get("decoded_value", ""))
+        except (AttributeError, TypeError, ValueError):
+            parent_url = requested_url = exact_requested = parent_host = requested_host = None
+        target_hash = value.get("target_hash")
+        generation = value.get("target_ragflow_generation")
+        profile = value.get("target_embedding_profile")
+        if (
+            not isinstance(key, str)
+            or key in result
+            or row is None
+            or row.get("tag") != "iframe"
+            or row.get("source_hash") != manifest.get("source_hash")
+            or row.get("parent_object_key") is not None
+            or row.get("duplicate_url_attributes") is not False
+            or locator.get("source_hash") != manifest.get("source_hash")
+            or locator.get("source_boundary_complete") is not True
+            or len(attrs) != 1
+            or attrs[0].get("attribute") != "src"
+            or value.get("protocol") != LINKED_DOCUMENT_PROTOCOL
+            or value.get("parent_source_hash") != manifest.get("source_hash")
+            or value.get("parent_locator") != locator
+            or value.get("source_fragment_sha256") != row.get("source_fragment_sha256")
+            or value.get("url_attribute") != attrs[0]
+            or parent_url != source_url
+            or requested_url != requested
+            or requested != exact_requested
+            or parent_host != requested_host
+            or value.get("target_source_url") != requested
+            or value.get("target_mime_type") != "application/pdf"
+            or value.get("target_state") != "ready"
+            or value.get("target_text_complete") is not True
+            or not isinstance(value.get("source_id"), str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", value.get("source_id", ""))
+            or not isinstance(value.get("target_document_id"), str)
+            or not re.fullmatch(r"[a-f0-9]{32}", value.get("target_document_id", ""))
+            or type(value.get("target_version")) is not int
+            or value["target_version"] < 1
+            or not isinstance(target_hash, str)
+            or not _HASH.fullmatch(target_hash)
+            or not isinstance(generation, str)
+            or not _HASH.fullmatch(generation)
+            or not isinstance(profile, str)
+            or not _HASH.fullmatch(profile)
+            or not isinstance(value.get("target_dataset_id"), str)
+            or not value.get("target_dataset_id")
+            or len(value["target_dataset_id"]) > 200
+            or not isinstance(value.get("target_remote_id"), str)
+            or not value.get("target_remote_id")
+            or len(value["target_remote_id"]) > 200
+        ):
+            raise ValueError("HTML 关联原件与原始 iframe 或已入库 PDF 不匹配。")
+        result[key] = value
+    return result
+
+
 def _object(manifest, object_key):
     source = manifest.get("html_source") or {}
     if (
         not isinstance(source, dict)
         or manifest.get("parser") != "html-basic"
-        or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9", "10"}
+        or manifest.get("parser_version") not in _HTML_PARSER_VERSIONS
         or source.get("mapping_version") != f"html-source-mapping-v{manifest.get('parser_version')}"
         or source.get("source_hash") != manifest.get("source_hash")
     ):
@@ -62,8 +225,8 @@ def _object(manifest, object_key):
     if len(matches) != 1:
         raise ValueError("HTML 图片必须唯一对应正文对象。")
     row = matches[0]
-    if row.get("visual_role") == "decorative_ui":
-        raise ValueError("界面装饰图标不进入正文图片识别。")
+    if row.get("visual_role") in {"decorative_ui", "textual_icon"}:
+        raise ValueError("已核验的界面图标不进入正文图片识别。")
     attributes = row.get("url_attributes", [])
     locator = row.get("locator") or {}
     if (
@@ -178,7 +341,7 @@ def _candidates(content, manifest):
     rows = _parent_objects(content, manifest)
     eligible, unresolved = [], []
     for row in rows:
-        if row.get("visual_role") == "decorative_ui":
+        if row.get("visual_role") in {"decorative_ui", "textual_icon"}:
             continue
         try:
             eligible.append(deepcopy(_object(manifest, row["object_key"])))
@@ -392,13 +555,17 @@ def read_linked_images(
 def update_quality(manifest, values):
     """Only all verified body objects can remove the visual completeness gate."""
     quality = manifest.get("quality") or {}
-    source = manifest.get("html_source") or {}
-    rows = source.get("objects", [])
+    _, rows = _html_source(manifest)
+    linked_keys = set(linked_document_objects(manifest))
+    textual_keys = textual_icon_objects(manifest)
     complete_keys = {value["object_key"] for value in values if value["asset_status"] == "ocr_complete"}
+    resolved_keys = linked_keys | textual_keys | {
+        row["object_key"] for row in rows if row.get("visual_role") == "decorative_ui"
+    }
     pending = [
         row["object_key"]
         for row in rows
-        if row.get("visual_role") != "decorative_ui" and row["object_key"] not in complete_keys
+        if row["object_key"] not in resolved_keys and row["object_key"] not in complete_keys
     ]
     complete = (
         quality.get("source_mapping_complete") is True
@@ -412,6 +579,7 @@ def update_quality(manifest, values):
         pending_objects=pending,
         visual_verification_required=bool(pending),
         linked_image_protocol=PROTOCOL,
+        linked_document_protocol=LINKED_DOCUMENT_PROTOCOL,
     )
     if complete:
         from app.contexts.documents.infrastructure.parsers.html_parsing import VISUAL_PENDING_WARNING
@@ -428,15 +596,18 @@ def update_quality(manifest, values):
 
 
 def complete(manifest, values):
-    objects = [
-        row
-        for row in (manifest.get("html_source") or {}).get("objects", [])
-        if isinstance(row, dict) and row.get("visual_role") != "decorative_ui"
-    ]
-    if not isinstance(objects, list) or any(not isinstance(row, dict) for row in objects):
+    try:
+        _, objects = _html_source(manifest)
+        textual_keys = textual_icon_objects(manifest)
+        linked_keys = set(linked_document_objects(manifest))
+    except (AttributeError, KeyError, TypeError, ValueError):
         return False
     if not objects:
         return True
     keys = [row.get("object_key") for row in objects]
     verified = [row.get("object_key") for row in values if row["asset_status"] == "ocr_complete"]
-    return len(keys) == len(set(keys)) and len(verified) == len(keys) and set(keys) == set(verified)
+    resolved = textual_keys | linked_keys | {
+        row["object_key"] for row in objects if row.get("visual_role") == "decorative_ui"
+    }
+    resolved |= set(verified)
+    return len(keys) == len(set(keys)) and len(verified) == len(set(verified)) and set(keys) == resolved

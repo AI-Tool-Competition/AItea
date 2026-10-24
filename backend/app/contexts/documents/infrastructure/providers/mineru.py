@@ -98,6 +98,19 @@ def _number(name, default, minimum, maximum):
     return value
 
 
+def parse_profile_hash(profile, retry_generation=None):
+    """Return a stable parse identity, with an explicit opt-in for fresh runs."""
+    if retry_generation is None:
+        payload = profile
+    else:
+        if not isinstance(retry_generation, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,100}", retry_generation
+        ):
+            raise ValueError("MinerU 重试批次标识无效。")
+        payload = {"profile": profile, "retry_generation": retry_generation}
+    return hashlib.sha256(dump(payload).encode()).hexdigest()
+
+
 class MinerUWait(ValueError):
     def __init__(self, code="rate_wait", retry_after=15):
         super().__init__("MinerU 正在等待远端容量，任务和原件已保留。")
@@ -568,7 +581,8 @@ class MinerUParser:
         if doc["role"] != "primary" or not supports(doc["filename"], doc["mime_type"]):
             raise MinerUError("unsupported_format")
         profile = self.profile()
-        fingerprint = hashlib.sha256(dump(profile).encode()).hexdigest()
+        retry_generation = (manifest.get("remote_parse") or {}).get("retry_generation")
+        fingerprint = parse_profile_hash(profile, retry_generation)
         tasks = self._tasks(doc, fingerprint)
         previous = manifest.get("remote_parse", {}).get("previous_manifest")
         if not tasks:
@@ -618,6 +632,7 @@ class MinerUParser:
                     "profile_hash": fingerprint,
                     "page_count": prepared["page_count"],
                     "previous_manifest": previous,
+                    **({"retry_generation": retry_generation} if retry_generation else {}),
                 }
                 conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), doc["id"]))
             tasks = self._tasks(doc, fingerprint)
@@ -766,6 +781,8 @@ class MinerUParser:
                 120,
             )
             result["remote_parse"].update(profile=profile, profile_hash=fingerprint)
+            if retry_generation:
+                result["remote_parse"]["retry_generation"] = retry_generation
             if manifest.get("mineru_chart_assets"):
                 from app.contexts.documents.infrastructure.providers.native_asset_ocr import (
                     reuse_mineru_chart_checkpoints,
@@ -793,6 +810,8 @@ class MinerUParser:
                 for t in tasks
             ],
         )
+        if retry_generation:
+            remote["retry_generation"] = retry_generation
         remote["retry_after_seconds"] = max(
             1, min((t["next_at"] - time.time() for t in tasks if t["state"] != "done"), default=poll)
         )

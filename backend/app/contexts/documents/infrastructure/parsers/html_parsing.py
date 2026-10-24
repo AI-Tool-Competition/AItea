@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from app.shared.infrastructure.vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v10"
+VERSION = "html-source-mapping-v11"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -86,10 +86,11 @@ def _decorative_ui_image(tag, references, metadata, parent_classes, parent_frame
     label = str(metadata.get("alt", "")).strip().casefold()
     source = str(references[0].get("decoded_value", ""))
     try:
-        filename = urlsplit(source).path.rsplit("/", 1)[-1].casefold()
+        source_path = urlsplit(source).path.casefold()
+        filename = source_path.rsplit("/", 1)[-1]
     except ValueError:
         return None
-    if not filename.endswith(".svg") or not label:
+    if not filename.endswith(".svg"):
         return None
     stem = filename[:-4]
     if (
@@ -114,7 +115,55 @@ def _decorative_ui_image(tag, references, metadata, parent_classes, parent_frame
         return "svg_navigation_control"
     if stem == "back-to-top" and label in {"back to top", "back to top icon"}:
         return "svg_navigation_control"
+    if not label and source_path.endswith("/esgcorptheme/images/external-link.svg"):
+        return "enterprise_sg_external_link_control"
+    if (
+        stem == "comments"
+        and label == "chat"
+        and source_path.endswith("/esgcorptheme/images/unicons/svg/line/comments.svg")
+    ):
+        return "enterprise_sg_faq_promo_icon"
     return None
+
+
+def _textual_status_icon(tag, references, metadata):
+    """Convert the official EnterpriseSG check glyph into searchable text."""
+    if tag != "img" or len(references) != 1 or references[0].get("attribute") != "src":
+        return None
+    if str(metadata.get("alt", "")).strip().casefold() != "check":
+        return None
+    try:
+        path = urlsplit(str(references[0].get("decoded_value", ""))).path.casefold()
+    except ValueError:
+        return None
+    if path.endswith("/esgcorptheme/images/unicons/svg/line/check.svg"):
+        return "✓"
+    return None
+
+
+def _small_unlabelled_svg_ui(frame, fragment):
+    """Resolve small, explicitly icon-sized SVGs with no accessible data text."""
+    if frame.get("tag") != "svg" or frame.get("aria_label") or frame.get("role") == "img":
+        return False
+    metadata = frame.get("object_metadata") or {}
+    if metadata.get("title") or re.search(r"<(?:title|desc|text|textpath|foreignobject|image)\b", fragment, re.I):
+        return False
+    classes = set(frame.get("classes", []))
+    known_icon_styles = (
+        {"w-3.5", "h-3.5"}.issubset(classes)
+        or classes == {"text-danger"}
+    )
+    if not known_icon_styles:
+        return False
+
+    def small_dimension(value):
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(px|em|rem)?\s*", str(value or ""), re.I)
+        if not match:
+            return False
+        amount, unit = float(match[1]), (match[2] or "px").casefold()
+        return amount <= (1.5 if unit in {"em", "rem"} else 24)
+
+    return small_dimension(metadata.get("width")) and small_dimension(metadata.get("height"))
 
 
 def _rsc_videos(source, source_hash, scripts, objects):
@@ -411,6 +460,7 @@ class HTMLDocument(HTMLParser):
         self.elements = []
         self.headings = []
         self.buffer = []
+        self._pending_textual_icons = []
         self.heading_level = 0
         self.start_line = 1
         self.links = []
@@ -463,6 +513,10 @@ class HTMLDocument(HTMLParser):
         if self.heading_level:
             self.headings = self.headings[: self.heading_level - 1] + [text]
             kind = "heading"
+        textual_icons = self._pending_textual_icons
+        if textual_icons:
+            text = " ".join([*(item["text"] for item in textual_icons), text])
+            self._pending_textual_icons = []
         order = len(self.elements) + 1
         context_frame = next(
             (frame for frame in reversed(self._stack) if frame.get("block_context")),
@@ -501,7 +555,15 @@ class HTMLDocument(HTMLParser):
         if context.get("id"):
             locator["anchor"] = context["id"]
         self.elements.append(
-            ParsedElement(f"html-{order:06}", kind, order - 1, text, locator, list(self.headings))
+            ParsedElement(
+                f"html-{order:06}",
+                kind,
+                order - 1,
+                text,
+                locator,
+                list(self.headings),
+                metadata_json={"textual_icons": textual_icons} if textual_icons else {},
+            )
         )
 
     def _finish_table_cell(
@@ -796,6 +858,9 @@ class HTMLDocument(HTMLParser):
             ),
         )
         record["source_fragment_sha256"] = _hash(self.source[frame["start"] : end])
+        if _small_unlabelled_svg_ui(frame, self.source[frame["start"] : end]):
+            record["visual_role"] = "decorative_ui"
+            record["visual_exclusion_reason"] = "small_unlabelled_inline_svg_ui_icon"
         if not closed:
             self._uncertain = True
 
@@ -937,6 +1002,7 @@ class HTMLDocument(HTMLParser):
             "tag": tag,
             "classes": str(values.get("class", ""))[:4096].split()[:32],
             "aria_label": str(values.get("aria-label", ""))[:256].strip().casefold(),
+            "role": str(values.get("role", "")).strip().casefold(),
             "hidden": hidden,
             "main": in_main,
             "path": path,
@@ -1049,10 +1115,22 @@ class HTMLDocument(HTMLParser):
             parent_classes = {
                 class_name for ancestor in self._stack for class_name in ancestor.get("classes", [])
             }
-            exclusion_reason = _decorative_ui_image(tag, references, metadata, parent_classes, self._stack)
+            marker = _textual_status_icon(tag, references, metadata)
+            exclusion_reason = None
+            if marker:
+                record.update(
+                    visual_role="textual_icon",
+                    textual_marker=marker,
+                    textual_marker_protocol="verified_accessible_icon_name-v1",
+                    alt_is_recognized_text=True,
+                )
+                self._pending_textual_icons.append({"object_key": key, "text": marker})
+            else:
+                exclusion_reason = _decorative_ui_image(tag, references, metadata, parent_classes, self._stack)
             if exclusion_reason:
                 record["visual_role"] = "decorative_ui"
                 record["visual_exclusion_reason"] = exclusion_reason
+            frame["object_metadata"] = metadata
             self.objects.append(record)
             frame["object_index"] = len(self.objects) - 1
         if visible and not inside_visual and not visual and tag in self._blocks:
@@ -1196,6 +1274,24 @@ class HTMLDocument(HTMLParser):
         self._finish_table_row()
         self._emit_table(closed=False)
         self._flush()
+        for marker in self._pending_textual_icons:
+            order = len(self.elements) + 1
+            self.elements.append(
+                ParsedElement(
+                    f"html-{order:06}",
+                    "paragraph",
+                    order - 1,
+                    marker["text"],
+                    {
+                        "kind": "html_source_icon",
+                        "source_hash": self.source_hash,
+                        "object_key": marker["object_key"],
+                    },
+                    list(self.headings),
+                    metadata_json={"textual_icons": [marker]},
+                )
+            )
+        self._pending_textual_icons = []
         for frame in self._stack:
             if frame.get("script_inline") and self.source is not None:
                 self._scripts.append(
@@ -1257,8 +1353,9 @@ class HTMLDocument(HTMLParser):
             )
         )
         error_page = download_error or any(_ERROR_TITLE.fullmatch(title) for title in titles)
+        resolved_roles = {"decorative_ui", "textual_icon"}
         pending_objects = [
-            record["object_key"] for record in self.objects if record.get("visual_role") != "decorative_ui"
+            record["object_key"] for record in self.objects if record.get("visual_role") not in resolved_roles
         ]
         complete = has_body and not pending_objects and not self._uncertain and not error_page
         warnings = []
@@ -1280,11 +1377,14 @@ class HTMLDocument(HTMLParser):
                 for record in self.objects
                 if record.get("visual_role") == "decorative_ui"
             ],
+            "textual_icon_object_keys": [
+                record["object_key"] for record in self.objects if record.get("visual_role") == "textual_icon"
+            ],
             "error_page_detected": error_page,
         }
         return HTMLParsedDocument(
             "html-basic",
-            "10",
+            "11",
             VERSION,
             self.elements,
             [],

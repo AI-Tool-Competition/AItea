@@ -13,7 +13,12 @@ from threading import Lock
 import pytest
 from app.bootstrap import Service
 from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
-from app.contexts.documents.infrastructure.providers.mineru import Admission, MinerUWait, manifest_valid
+from app.contexts.documents.infrastructure.providers.mineru import (
+    Admission,
+    MinerUWait,
+    manifest_valid,
+    parse_profile_hash,
+)
 from app.contexts.documents.infrastructure.providers.mineru_results import (
     _assemble,
     _prepare,
@@ -23,8 +28,19 @@ from app.contexts.documents.infrastructure.providers.mineru_results import (
 )
 from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
 from app.contexts.documents.infrastructure.providers.ragflow import RAGFlowError, chunk_content
-from app.shared.domain.values import now
+from app.shared.domain.values import dump, now
 from test_retrieval_index import body, seed
+
+
+def test_mineru_retry_generation_creates_a_fresh_remote_parse_identity():
+    profile = {"provider": "mineru", "model_version": "vlm"}
+
+    baseline = parse_profile_hash(profile)
+    assert baseline == hashlib.sha256(dump(profile).encode()).hexdigest()
+    assert parse_profile_hash(profile, "retry-1") != baseline
+    assert parse_profile_hash(profile, "retry-2") != parse_profile_hash(profile, "retry-1")
+    with pytest.raises(ValueError):
+        parse_profile_hash(profile, "unsafe/retry")
 
 
 @pytest.fixture

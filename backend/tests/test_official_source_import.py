@@ -205,6 +205,14 @@ def test_official_html_image_parse_continues_across_bounded_asset_batches(tmp_pa
         }
 
     monkeypatch.setattr(ingestion_download, "_download", download)
+    failures = []
+    original_failure = service.collection._failure
+
+    def record_failure(claim, error, *, processing):
+        failures.append(error)
+        original_failure(claim, error, processing=processing)
+
+    monkeypatch.setattr(service.collection, "_failure", record_failure)
     for index, expected_batch in enumerate((2, 2, 1)):
         if index:
             with service.db.transaction() as conn:
@@ -216,6 +224,7 @@ def test_official_html_image_parse_continues_across_bounded_asset_batches(tmp_pa
         assert claim and claim["phase"] == "parse"
         before = len(calls)
         service.collection.process_item(claim)
+        assert not failures, repr(failures)
         assert len(calls) - before == expected_batch
         with closing(service.db.connect()) as conn:
             job = conn.execute(

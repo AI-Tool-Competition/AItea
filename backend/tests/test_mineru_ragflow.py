@@ -57,6 +57,10 @@ class Remote:
                 if method == "GET":
                     assert "keywords" in params and "name" not in params
                     return {"docs": []}
+                if params and params.get("type") == "empty":
+                    assert payload and payload["name"].startswith("aitea-")
+                    assert files is None
+                    return [{"id": "document-target"}]
                 assert files["file"][1].read()
                 return [{"id": "document-target"}]
             if path.endswith("/chunks"):
@@ -74,12 +78,12 @@ class Remote:
             raise AssertionError((method, path))
 
 
-def prepared(service, monkeypatch, *, count=1):
+def prepared(service, monkeypatch, *, count=1, source_bytes=b"lawful tea clause"):
     remote = Remote()
     monkeypatch.setattr(
         "app.contexts.documents.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
     )
-    original = service.archive.blobs.put_bytes("owner", b"lawful tea clause")
+    original = service.archive.blobs.put_bytes("owner", source_bytes)
     with service.db.transaction() as conn:
         seed(conn, "target", body(count=count))
         conn.execute(
@@ -152,6 +156,22 @@ def test_index_uses_cloud_chunks_once_and_resumes(workspace, monkeypatch):
     with closing(workspace.db.connect()) as conn:
         assert not workspace.index.pending(conn, "target", workspace.embedding_fingerprint())
         assert conn.execute("SELECT count(*) FROM retrieval_vectors").fetchone()[0] == 0
+
+
+def test_large_source_uses_empty_ragflow_document_and_existing_mineru_chunks(workspace, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import ragflow
+
+    source = b"large source already parsed by MinerU"
+    monkeypatch.setattr(ragflow, "MAX_DATASET_DOCUMENT_UPLOAD_BYTES", len(source) - 1)
+    remote, document, claim = prepared(workspace, monkeypatch, source_bytes=source)
+
+    assert workspace.ragflow.step(document, claim) == 1
+
+    uploads = [call for call in remote.calls if call[0] == "POST" and call[1].endswith("/documents")]
+    assert len(uploads) == 1
+    assert uploads[0][3] == {"type": "empty"}
+    assert uploads[0][2]["name"].startswith("aitea-")
+    assert not any(call[1].endswith("/parse") or "/ingest" in call[1] for call in remote.calls)
 
 
 def test_lost_embedding_response_is_reconciled_without_resubmission(workspace, monkeypatch):

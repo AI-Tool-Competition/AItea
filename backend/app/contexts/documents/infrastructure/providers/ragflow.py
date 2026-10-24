@@ -23,6 +23,7 @@ from app.shared.infrastructure.persistence.blob_store import _verify_existing
 
 SCHEMA_VERSION = 21
 RECIPE = "mineru-ragflow-structured-v1"
+MAX_DATASET_DOCUMENT_UPLOAD_BYTES = 128 * 1024 * 1024
 _ID = re.compile(r"[a-zA-Z0-9_-]{1,128}\Z")
 MAX_RECONCILE_INTENTS = 500
 
@@ -441,6 +442,19 @@ class RAGFlowIndex:
                 raise RAGFlowError("ambiguous_document")
             if found:
                 remote_id = _identifier(found[0]["id"])
+            elif doc["size"] > MAX_DATASET_DOCUMENT_UPLOAD_BYTES:
+                # MinerU already parsed this source. RAGFlow only needs a
+                # document identity for the structured chunks we add below;
+                # its dataset upload endpoint caps files at 128 MiB.
+                uploaded = client.call(
+                    "POST",
+                    f"/datasets/{dataset}/documents",
+                    params={"type": "empty"},
+                    payload={"name": name},
+                )
+                if not isinstance(uploaded, list) or len(uploaded) != 1:
+                    raise RAGFlowError("upload_receipt")
+                remote_id = _identifier(uploaded[0]["id"])
             else:
                 _verify_existing(Path(doc["storage_path"]), doc["content_hash"], doc["size"])
                 with open(doc["storage_path"], "rb") as source:

@@ -1,10 +1,10 @@
 """Time-driven source rotation checks without network, models, or database writes."""
 
-from copy import deepcopy
 import importlib
 import json
-from pathlib import Path
 import sys
+from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -176,6 +176,21 @@ def test_content_invalid_is_recorded_without_fake_success():
     assert state["failure_count"] == 1
     assert state["replacement_eligible"]
     assert state["next_at"] == 10 + 6 * 3600
+
+
+def test_stable_failure_code_is_preserved_and_validated():
+    state = observe(
+        now=10,
+        status="network_error",
+        error_type="DownloadError",
+        failure_code="dns_resolution_failed",
+    )
+    assert state["last_observation"]["failure_code"] == "dns_resolution_failed"
+
+    with pytest.raises(ValueError, match="failure_code"):
+        observe(now=20, status="network_error", failure_code="secret=token")
+    with pytest.raises(ValueError, match="failure_code"):
+        observe(now=20, status="network_error", failure_code="unreviewed_reason")
 
 
 def test_bounded_evidence_omits_url_credentials_and_query_tokens():

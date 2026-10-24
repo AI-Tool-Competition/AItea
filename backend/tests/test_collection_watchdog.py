@@ -299,6 +299,42 @@ def test_model_credentials_are_removed_from_worker_environment(monkeypatch, tmp_
     assert env["AITEA_COLLECTION_LAUNCH_TOKEN"] == "launch-token"
 
 
+def test_worker_loads_only_explicit_proxy_settings_and_active_source_hosts(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    config = project / "config/collection-sources/id-sg-unattended.json"
+    config.parent.mkdir(parents=True)
+    import json
+
+    pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    archived = next(source for source in pool["sources"] if source["id"] == "id-setneg-perpu")
+    archived["status"] = "archived"
+    config.write_text(json.dumps(pool))
+    (project / ".env").write_text(
+        "COLLECTION_PROXY_URL=http://127.0.0.1:17777\n"
+        "COLLECTION_PROXY_HOSTS=jdih.setneg.go.id,custom.gov.sg\n"
+        "COLLECTION_DOH_HOSTS=custom.gov.sg\n"
+        "EMBEDDING_API_KEY=must-not-leak\n"
+    )
+    for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"):
+        monkeypatch.delenv(key, raising=False)
+    env = watchdog.model_free_environment(project, {"id": "raw"}, "launch-token")
+    expected_hosts = {
+        host
+        for source in pool["sources"]
+        if source["status"] == "active" and source["transport"] == "proxy"
+        for host in source["allowed_hosts"]
+    }
+    assert env["COLLECTION_PROXY_URL"] == "http://127.0.0.1:17777"
+    assert set(env["COLLECTION_PROXY_HOSTS"].split(",")) == expected_hosts | {
+        "custom.gov.sg",
+        "jdih.setneg.go.id",
+    }
+    assert env["COLLECTION_DOH_HOSTS"] == "custom.gov.sg"
+    assert env["EMBEDDING_API_KEY"] == ""
+    assert "must-not-leak" not in env.values()
+    assert env["HTTP_PROXY"] == os.environ.get("HTTP_PROXY", "")
+
+
 def test_systemd_unit_uses_explicit_paths_and_stop_status(fleet):
     uv = fleet.project / "uv"
     uv.write_text("#!/bin/sh\nexit 0\n")

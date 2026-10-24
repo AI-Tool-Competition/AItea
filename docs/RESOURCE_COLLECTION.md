@@ -175,6 +175,8 @@ uv run --project backend --locked python scripts/verify_singapore_cases.py --hel
 
 现有安全下载器支持显式、逐域代理配置：`COLLECTION_PROXY_URL` 为受信 CONNECT 代理地址，`COLLECTION_PROXY_HOSTS` 为精确主机名列表。只有显式配置的域名经过代理，环境中的普通 `HTTP_PROXY` 不自动改变抓取方式。`COLLECTION_DOH_HOSTS` 必须是该列表的子集；只在这些域使用固定 Google DoH 服务解析，验证返回的全部地址、别名与 TTL，然后向代理请求已验证的公网 IP，原网站仍负责 TLS/SNI 与证书校验。每次重定向重新检查主机；代理不会放宽 HTTPS、公网地址、原件大小及时间限制。
 
+无人值守采集 watchdog 只从项目 `.env` 读取这三个 `COLLECTION_*` 代理字段，不把模型密钥传给采集子进程；进程环境中的同名显式配置可覆盖 `.env`。它还会将统一来源清单里所有 `active` 且标记 `transport: proxy` 的精确 `allowed_hosts` 合并至代理主机清单，归档来源不会扩大网络范围。普通 `HTTP_PROXY`/`HTTPS_PROXY` 继续不参与路由。代理不可用时保留受限重试和失败原因，不回退为绕过代理的直连。
+
 代理地址只接受数值 IP；明文代理认证仅允许本机回环中继。凭据和包含签名的临时下载 URL 不写入报告。专用配置保存在权限 0600 的文件中，进程读取后再运行，不提交 Git。当前服务器的普通代理、独立地区出口及普通浏览器实测仍未解除 SSO/BPK 的访问限制；原件缺口继续保留，错误页或验证码不当作法规内容。独立测试中继与浏览器已停止，未更改服务器其他任务的代理选择。
 
 `COLLECTION_BROWSER_HEADERS_HOSTS` 可逐域启用固定的普通浏览器请求头。它只提供 User-Agent、Accept 与 Accept-Language，不提供 Cookie、登录授权或验证令牌。Kemnaker 的目录、详情和 `/asset/data_puu/` 原件在该配置下实测返回真实内容，原件哈希与来源页面分别保留；其他站点返回页面框架时仍按框架判断，不将普通请求头视为获取全部正文的证明。

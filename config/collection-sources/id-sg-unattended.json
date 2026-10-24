@@ -1,5 +1,5 @@
 {
-  "protocol": "aitea-official-source-pool-v1",
+  "protocol": "aitea-official-source-pool-v2",
   "countries": [
     "ID",
     "SG"
@@ -46,7 +46,10 @@
           "目录包含其他贸易部门事项，需按主题筛选；同一次浏览曾被拒绝，但本机有界直连已取得真实法规目录。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-trade-origin"
     },
     {
       "id": "sg-sfa-labelling",
@@ -87,7 +90,10 @@
           "指南解释适用要求；2025 修订及 2026 生效信息须回查其正式法规和具体版本。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-food-trade"
     },
     {
       "id": "id-bpom-regulations",
@@ -130,7 +136,10 @@
           "BPOM 同时监管药品、化妆品；只收与茶叶食品相关材料，不扩采无关药品栏目。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-food-regulatory"
     },
     {
       "id": "sg-customs-import",
@@ -172,7 +181,10 @@
           "本页为官方指引，不能代替 Customs Act、GST Act 和 RIEA 的特定适用条文。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-food-trade"
     },
     {
       "id": "id-bpjph-nonhalal-regulation",
@@ -213,7 +225,10 @@
           "规则是否适用于具体纯茶、配料茶必须按原文核验；页面可达不等于原件已下载或法律效力已审核。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-food-regulatory"
     },
     {
       "id": "sg-iras-imports",
@@ -254,7 +269,10 @@
           "不扩采个人税、房产税及全部税种；关税优惠不等于 GST 豁免。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-food-trade"
     },
     {
       "id": "id-bkpm-regulations",
@@ -296,7 +314,10 @@
           "不收 OSS 界面点击、表格填写教程和不相关投资宣传；单个目录不能证明全量法规覆盖。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-business-tax"
     },
     {
       "id": "sg-enterprisesg-rcep",
@@ -338,7 +359,10 @@
           "不能仅凭协定名称推定茶叶自动享受优惠；外部链接须经独立官方来源核验后另行批准，不能由本条跨域自动扩采。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-trade-origin"
     },
     {
       "id": "sg-acra-compliance",
@@ -379,7 +403,10 @@
           "不扩采 VCC、审计行业监管、完整企业名录、付费档案及 Bizfile 操作。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-business"
     },
     {
       "id": "sg-pdpc-marketing",
@@ -420,7 +447,10 @@
           "不将模板、工具或培训说明当成具有同等效力的法律；只采与经营场景相关资料。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-digital-brand"
     },
     {
       "id": "sg-ipos-trademark-guides",
@@ -461,7 +491,10 @@
           "排除专利全库和付费代理宣传；商标注册、商业登记及产地声称不能互相替代。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-digital-brand"
     },
     {
       "id": "id-kemenkeu-www-regulations",
@@ -504,7 +537,10 @@
           "本机 www 与非 www 入口本次均 DNS 超时；官方网页仍可由检索核到，记为暂时访问失败，不认定网站已过期或法规失效。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-trade-origin"
     },
     {
       "id": "id-pajak-regulations",
@@ -545,7 +581,10 @@
           "本机连接失败；检索仍列出 2026 年 10 月税务材料，不能据连接失败认定失效。动态税率与汇率必须保存适用时间。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-business-tax"
     },
     {
       "id": "id-ditjenpp-regulations",
@@ -590,7 +629,10 @@
           "本机连接失败，暂作低优先级可复查候选；不替代各原件版本和法效核验。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-trade-origin"
     },
     {
       "id": "id-bpjph-regulations",
@@ -632,7 +674,10 @@
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
         ]
       },
-      "empty_catalogue": true
+      "empty_catalogue": true,
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-food-regulatory"
     },
     {
       "id": "id-setneg-perpu",
@@ -675,7 +720,237 @@
           "历史原件和15来源账本应保留；本条只新增来源，不重置模型尝试或旧HTTP请求计数。"
         ],
         "collector_scope_note": "Retains exact prior PERPU catalogue endpoint; 50 rows plus next page bounded to 51 links; historical originals retained, current 404 pending recheck."
-      }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-general-law"
+    }
+  ],
+  "schema_version": 2,
+  "groups": [
+    {
+      "id": "id",
+      "country": "ID",
+      "title": "印度尼西亚法规与监管来源",
+      "parent_id": null,
+      "checklist_items": [],
+      "source_ids": [],
+      "children": [
+        {
+          "id": "id-trade-origin",
+          "country": "ID",
+          "title": "贸易、原产地与法规发布",
+          "parent_id": "id",
+          "checklist_items": [
+            "ID-1.3",
+            "ID-1.4",
+            "ID-1.5",
+            "ID-1.6",
+            "ID-1.8",
+            "ID-4.2",
+            "ID-4.3"
+          ],
+          "source_ids": [
+            "id-kemendag-regulations",
+            "id-kemenkeu-www-regulations",
+            "id-ditjenpp-regulations"
+          ],
+          "children": []
+        },
+        {
+          "id": "id-food-regulatory",
+          "country": "ID",
+          "title": "食品、标签、包装与清真",
+          "parent_id": "id",
+          "checklist_items": [
+            "ID-1.8",
+            "ID-4.2"
+          ],
+          "source_ids": [
+            "id-bpom-regulations",
+            "id-bpjph-nonhalal-regulation",
+            "id-bpjph-regulations"
+          ],
+          "children": []
+        },
+        {
+          "id": "id-business-tax",
+          "country": "ID",
+          "title": "企业许可与税务",
+          "parent_id": "id",
+          "checklist_items": [
+            "ID-1.8",
+            "ID-4.1",
+            "ID-4.3"
+          ],
+          "source_ids": [
+            "id-bkpm-regulations",
+            "id-pajak-regulations"
+          ],
+          "children": []
+        },
+        {
+          "id": "id-general-law",
+          "country": "ID",
+          "title": "国家法规目录",
+          "parent_id": "id",
+          "checklist_items": [],
+          "source_ids": [
+            "id-setneg-perpu"
+          ],
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sg",
+      "country": "SG",
+      "title": "新加坡法规与监管来源",
+      "parent_id": null,
+      "checklist_items": [],
+      "source_ids": [],
+      "children": [
+        {
+          "id": "sg-food-trade",
+          "country": "SG",
+          "title": "食品、进口、海关与税务",
+          "parent_id": "sg",
+          "checklist_items": [
+            "SG-3.1",
+            "SG-3.2",
+            "SG-3.3"
+          ],
+          "source_ids": [
+            "sg-sfa-labelling",
+            "sg-customs-import",
+            "sg-iras-imports"
+          ],
+          "children": []
+        },
+        {
+          "id": "sg-trade-origin",
+          "country": "SG",
+          "title": "贸易协定与原产地",
+          "parent_id": "sg",
+          "checklist_items": [
+            "SG-5.1"
+          ],
+          "source_ids": [
+            "sg-enterprisesg-rcep"
+          ],
+          "children": []
+        },
+        {
+          "id": "sg-business",
+          "country": "SG",
+          "title": "企业注册与治理",
+          "parent_id": "sg",
+          "checklist_items": [
+            "SG-3.4"
+          ],
+          "source_ids": [
+            "sg-acra-compliance"
+          ],
+          "children": []
+        },
+        {
+          "id": "sg-digital-brand",
+          "country": "SG",
+          "title": "营销隐私、商标与品牌",
+          "parent_id": "sg",
+          "checklist_items": [
+            "SG-3.6",
+            "SG-3.7"
+          ],
+          "source_ids": [
+            "sg-pdpc-marketing",
+            "sg-ipos-trademark-guides"
+          ],
+          "children": []
+        }
+      ]
+    }
+  ],
+  "source_relations": [
+    {
+      "source_id": "id-bpom-regulations",
+      "related_source_id": "id-bpjph-regulations",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.8",
+        "ID-4.2"
+      ],
+      "reason": "BPOM 侧重食品安全与标签监管，BPJPH 提供清真制度来源；同一茶类问题需要并列核对适用范围。"
+    },
+    {
+      "source_id": "id-bpjph-regulations",
+      "related_source_id": "id-bpjph-nonhalal-regulation",
+      "type": "publishes_original",
+      "checklist_items": [
+        "ID-1.8",
+        "ID-4.2"
+      ],
+      "reason": "BPJPH 法规目录用于发现正式规则，专题说明页用于找到非清真标识规则原件入口。"
+    },
+    {
+      "source_id": "id-kemendag-regulations",
+      "related_source_id": "id-ditjenpp-regulations",
+      "type": "cross_checks",
+      "checklist_items": [
+        "ID-1.3",
+        "ID-1.8",
+        "ID-4.2"
+      ],
+      "reason": "贸易部专题来源与国家法规发布目录交叉核对文件身份、公布信息及可能的修订关联。"
+    },
+    {
+      "source_id": "id-kemenkeu-www-regulations",
+      "related_source_id": "id-pajak-regulations",
+      "type": "complements",
+      "checklist_items": [
+        "ID-4.3"
+      ],
+      "reason": "财政部法规来源与税务总局实施规则互补，用于区分税种规范与申报执行要求。"
+    },
+    {
+      "source_id": "sg-sfa-labelling",
+      "related_source_id": "sg-customs-import",
+      "type": "complements",
+      "checklist_items": [
+        "SG-3.1",
+        "SG-3.2"
+      ],
+      "reason": "SFA 负责食品监管与标签，海关负责进口许可与通关，两类要求按产品和交易环节共同核对。"
+    },
+    {
+      "source_id": "sg-customs-import",
+      "related_source_id": "sg-iras-imports",
+      "type": "cross_checks",
+      "checklist_items": [
+        "SG-3.1",
+        "SG-3.3"
+      ],
+      "reason": "海关进口程序与 IRAS GST 指引用于交叉核对许可、进口记录和税务处理。"
+    },
+    {
+      "source_id": "sg-enterprisesg-rcep",
+      "related_source_id": "sg-customs-import",
+      "type": "implements",
+      "checklist_items": [
+        "SG-5.1",
+        "SG-3.1"
+      ],
+      "reason": "RCEP 原产地优惠需要结合海关进口申报与证明要求判断；协定文本本身不能替代通关规则。"
+    },
+    {
+      "source_id": "sg-pdpc-marketing",
+      "related_source_id": "sg-ipos-trademark-guides",
+      "type": "complements",
+      "checklist_items": [
+        "SG-3.6",
+        "SG-3.7"
+      ],
+      "reason": "营销活动的个人信息处理与品牌、商标使用是并行的合规检查项，需分别回到主管机关规则。"
     }
   ]
 }

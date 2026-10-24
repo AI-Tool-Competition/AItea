@@ -1212,6 +1212,7 @@ class CollectionRecovery:
                 except (TypeError, ValueError):
                     continue
                 remote = manifest.get("remote_parse") if isinstance(manifest, dict) else None
+                page_count = remote.get("page_count") if isinstance(remote, dict) else None
                 if (
                     not isinstance(remote, dict)
                     or remote.get("provider") != "mineru"
@@ -1220,8 +1221,10 @@ class CollectionRecovery:
                     or not isinstance(remote.get("profile"), dict)
                     or not isinstance(remote.get("profile_hash"), str)
                     or not re.fullmatch(r"[a-f0-9]{64}", remote["profile_hash"])
-                    or type(remote.get("page_count")) is not int
-                    or not 1 <= remote["page_count"] <= 3000
+                    or (
+                        page_count is not None
+                        and (type(page_count) is not int or not 1 <= page_count <= 3000)
+                    )
                 ):
                     continue
                 try:
@@ -1238,7 +1241,7 @@ class CollectionRecovery:
                 )
                 if (
                     not old_tasks
-                    or len(old_tasks) > remote["page_count"]
+                    or len(old_tasks) > (page_count if page_count is not None else 3000)
                     or [task["part_index"] for task in old_tasks] != list(range(len(old_tasks)))
                     or any(task["state"] not in {"planned", *ACTIVE, "done", "failed", "blocked"} for task in old_tasks)
                     or not any(self._mineru_remote_terminal_failure(task) for task in old_tasks)

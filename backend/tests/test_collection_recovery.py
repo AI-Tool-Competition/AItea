@@ -707,7 +707,7 @@ def test_confirmed_mineru_failure_retries_in_fresh_generation_and_reuses_other_p
     profile = MinerUParser.profile()
     profile_hash = parse_profile_hash(profile)
     manifest = pending_manifest("official.pdf", document["content_hash"])
-    manifest["remote_parse"].update(state="pending", profile=profile, profile_hash=profile_hash, page_count=3)
+    manifest["remote_parse"].update(state="pending", profile=profile, profile_hash=profile_hash)
     part_blob = dump(
         {
             "content_hash": document["content_hash"],

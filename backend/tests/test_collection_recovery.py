@@ -811,6 +811,40 @@ def test_confirmed_mineru_failure_retries_in_fresh_generation_and_reuses_other_p
     with service.db.transaction() as conn:
         conn.execute("UPDATE collection_recovery_jobs SET available_at=0 WHERE item_id=?", (document["id"],))
         conn.execute("UPDATE processing_jobs SET available_at=0 WHERE document_id=?", (document["id"],))
+        queued_documents = [
+            (
+                f"queue-fill-{index}",
+                "owner",
+                None,
+                None,
+                "queued",
+                f"queued-{index}.pdf",
+                "primary",
+                "processing",
+                "application/pdf",
+                1,
+                1,
+                f"{index:064x}",
+                f"files/queued-{index}.pdf",
+                "[]",
+                None,
+                None,
+                "{}",
+                now(),
+            )
+            for index in range(200)
+        ]
+        conn.executemany(
+            """INSERT INTO documents(
+                id,owner_id,case_id,parent_id,title,filename,role,status,mime_type,size,version,
+                content_hash,storage_path,tags,source_url,error,manifest,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            queued_documents,
+        )
+        conn.executemany(
+            "INSERT INTO processing_jobs(document_id,owner_id,phase,status,updated_at) VALUES(?,?,'embed','queued',?)",
+            [(row[0], "owner", now()) for row in queued_documents],
+        )
     resumed = service.collection.recovery.run_due(limit=32)
     assert resumed["requeued"] == 1
     with closing(service.db.connect()) as conn:
@@ -820,8 +854,12 @@ def test_confirmed_mineru_failure_retries_in_fresh_generation_and_reuses_other_p
         recovery = conn.execute(
             "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
         ).fetchone()
+        queue_size = conn.execute(
+            "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+        ).fetchone()[0]
     assert tuple(job) == ("parse", "queued")
     assert tuple(recovery) == ("queued", "mineru_terminal_retry")
+    assert queue_size == 201
 
 
 def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeypatch, service):

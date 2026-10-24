@@ -26,6 +26,9 @@ BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
+PROCESSING_QUEUE_LIMIT = 200
+# Keep one bounded admission slot so recovery work cannot starve behind new imports.
+RECOVERY_QUEUE_RESERVE = 1
 
 
 def _encoded(value):
@@ -864,7 +867,7 @@ class CollectionRecovery:
                     "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')" + scope,
                     arguments,
                 ).fetchone()[0]
-                >= 200
+                >= PROCESSING_QUEUE_LIMIT + RECOVERY_QUEUE_RESERVE
             ):
                 self._defer(conn, row, timestamp)
                 return "deferred"

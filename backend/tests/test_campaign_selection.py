@@ -14,9 +14,9 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 PLAN = "indonesia-20261003"
-CATALOG = "https://rcepsec.org/rcep-agreements/"
-PRIMARY = "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3.pdf"
-SECONDARY = "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3B.pdf"
+CATALOG = "https://fta.mofcom.gov.cn/channel/rcep.shtml"
+PRIMARY = "https://fta.mofcom.gov.cn/upload/agreementFiles/rcep/rceppdf/d3z_en.pdf"
+SECONDARY = "https://fta.mofcom.gov.cn/upload/agreementFiles/rcep/rceppdf/d3z_fj2_en.pdf"
 
 
 def selected_options():
@@ -59,7 +59,7 @@ def extended_options():
         {
             "key": "product-specific-rules",
             "item_id": "5.3",
-            "url": "https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf",
+            "url": "https://fta.mofcom.gov.cn/upload/agreementFiles/rcep/rceppdf/d3z_fj1_en.pdf",
             "level": "primary",
             "evidence_url": CATALOG,
             "locator": "Annex 3A: Product-Specific Rules",
@@ -164,9 +164,7 @@ def run_selected(tmp_path, monkeypatch, *, shared=True, assert_pipeline=False, p
     catalog = f'<title>RCEP Agreement</title><a href="{PRIMARY}">Chapter 3</a>'
     if shared:
         catalog += f'<a href="{SECONDARY}">Annex 3B</a>'
-    catalog += (
-        '<a href="https://rcepsec.org/wp-content/uploads/2026/06/Chapter-20.pdf">Unselected original</a>'
-    )
+    catalog += '<a href="https://fta.mofcom.gov.cn/upload/agreementFiles/rcep/rceppdf/d20z_en.pdf">Unselected original</a>'
 
     def download(url, *, consume, **kwargs):
         body = primary if url == PRIMARY else secondary if url == SECONDARY else catalog.encode()

@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 8,
+  "version": 9,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -2123,14 +2123,9 @@
           "note": "目录发现入口；需逐件核对元数据、范围、正文及必要附件，入口页面不作为法律正文。"
         },
         {
-          "url": "https://rcepsec.org/rcep-agreements/",
-          "purpose": "catalog",
-          "note": "RCEP 秘书处新版公开协定目录；旧 /legal-text/ 已404。本页固定按钮中有序言、20章、章节附件及国别表，2026-10-13完整目录与原件已验证。按公开URL字面值发现，不运行网页脚本；保留印尼对华税表、表首注、差别关税附录、印尼服务/投资及人员移动承诺，排除其他成员国别表。"
-        },
-        {
           "url": "https://fta.mofcom.gov.cn/channel/rcep.shtml",
           "purpose": "catalog",
-          "note": "中国商务部签署方官方英文 RCEP 文本及印尼承诺镜像；2026-10-13完整目录、20章与章节附件已验证。只取英文签署正文、总注释和清单规定的印尼对华及服务/投资/人员移动承诺；中文解读、其他成员国别表不进入本项。IPv6连接不可用时仅对同次DNS验证通过的公网地址做安全连接回退。"
+          "note": "中国商务部签署方官方英文 RCEP 文本及印尼承诺镜像；2026-10-13完整目录、20章与章节附件已验证。只取英文签署正文、总注释和清单规定的印尼对华及服务/投资/人员移动承诺；中文解读、其他成员国别表不进入本项。IPv6连接不可用时仅对同次DNS验证通过的公网地址做安全连接回退。上一版本的 RCEP 秘书处目录 rcepsec.org 于 2026-10-25 经本机代理 DNS 与 HTTPS DNS 查询均失败，公网页面抓取也超时，因此已从当前活动清单移除；历史候选和原件记录保留。"
         }
       ],
       "tags": [
@@ -2148,7 +2143,7 @@
         "目录记录不算全文；签署文本不自动证明附件为最新适用版。"
       ],
       "steps": [
-        "抓取步骤：以本页为RCEP唯一目录入口。先点击截图红框内 Preamble 后的 PDF 链接下载序言，再逐个点击 Text of RCEP 下全部20章及章节附件的 PDF 链接，取得完整正文；Annex 3A产品特定原产地规则（PSR）、Annex 3B最低信息要求等按所属章节配套取得。再按网页实际栏目进入Annex I关税承诺表，配套下载General Notes、Headnote to Schedule of Indonesia、Schedule of Indonesia — for China及印尼Tariff Differentials；进入Annex III分别下载Schedule of Indonesia — Services和Schedule of Indonesia — Investment；进入Annex IV下载印尼自然人临时移动承诺表。总注释与印尼表首注须随关税表保存，保留承诺的解释条件和例外。记录目录层级、文件标题、PDF链接和获取时间；不抓新闻、一般解读和平台操作材料。"
+        "抓取步骤：以澳大利亚 DFAT 官方目录为主要入口，并用中国商务部签署方官方目录交叉核对。先点击截图红框内 Preamble 后的 PDF 链接下载序言，再逐个点击 Text of RCEP 下全部20章及章节附件的 PDF 链接，取得完整正文；Annex 3A产品特定原产地规则（PSR）、Annex 3B最低信息要求等按所属章节配套取得。再按网页实际栏目进入Annex I关税承诺表，配套下载General Notes、Headnote to Schedule of Indonesia、Schedule of Indonesia — for China及印尼Tariff Differentials；进入Annex III分别下载Schedule of Indonesia — Services和Schedule of Indonesia — Investment；进入Annex IV下载印尼自然人临时移动承诺表。总注释与印尼表首注须随关税表保存，保留承诺的解释条件和例外。记录目录层级、文件标题、PDF链接和获取时间；不抓新闻、一般解读和平台操作材料。"
       ],
       "fields": [
         "原始标题",

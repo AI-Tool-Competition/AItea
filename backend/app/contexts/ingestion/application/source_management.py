@@ -157,6 +157,17 @@ class SourceService:
                 ) AS has_unattempted_candidates
                 FROM sources s WHERE enabled=1
                 AND NOT EXISTS(SELECT 1 FROM collection_runs r WHERE r.source_id=s.id AND r.status IN ('queued','running'))
+                AND NOT EXISTS(
+                    SELECT 1 FROM checklist_bindings new_binding
+                    JOIN checklist_bindings old_binding
+                        ON old_binding.owner_id=new_binding.owner_id
+                        AND old_binding.plan_id=new_binding.plan_id
+                        AND old_binding.item_id=new_binding.item_id
+                        AND old_binding.version<new_binding.version
+                    JOIN collection_runs old_run ON old_run.source_id=old_binding.source_id
+                        AND old_run.status IN ('queued','running')
+                    WHERE new_binding.source_id=s.id AND new_binding.owner_id=s.owner_id
+                )
                 AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now')
                     OR EXISTS(
                         SELECT 1 FROM checklist_bindings b

@@ -599,6 +599,17 @@ class ChecklistService:
             fail(409, "stale_plan", "清单版本已有更新，请刷新")
         with self.db.transaction() as conn:
             created = sum(self._configure_item(conn, owner, plan, item)[1] for item in plan["items"])
+            # A newly published plan version gets new immutable bindings. Retire
+            # older scheduled sources without deleting their snapshots, runs,
+            # candidates, or documents.
+            conn.execute(
+                """UPDATE sources SET enabled=0,revision=revision+1,updated_at=?
+                WHERE owner_id=? AND enabled=1 AND id IN (
+                    SELECT source_id FROM checklist_bindings
+                    WHERE owner_id=? AND plan_id=? AND version<?
+                )""",
+                (now(), owner, owner, plan_id, plan["version"]),
+            )
         return {"created": created, "existing": len(plan["items"]) - created}
 
     def discover_all(self, owner, plan_id, client_request_id):

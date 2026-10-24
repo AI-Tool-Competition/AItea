@@ -66,7 +66,7 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 8
+    assert plan["version"] == 9
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
@@ -133,6 +133,45 @@ def test_configuration_schedules_only_unconditional_automated_sources(client):
     assert not enabled[(singapore_plan, "2.1")]
     assert not enabled[(singapore_plan, "4.1")]
     assert not enabled[(singapore_plan, "4.2")]
+
+
+def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
+    service = client.app.state.service
+    plan = service.checklists.plans[PLAN]
+    current_version = plan["version"]
+    plan["version"] = current_version - 1
+    assert configure(client) == {"created": 29, "existing": 0}
+    old_source = client.get(BASE).json()["items"][0]["source_id"]
+    old_run = discover(client, code="1.1", request="old-version-active")
+
+    plan["version"] = current_version
+    assert configure(client) == {"created": 29, "existing": 0}
+    new_source = client.get(BASE).json()["items"][0]["source_id"]
+    assert new_source != old_source
+
+    with closing(service.db.connect()) as conn:
+        owner = conn.execute("SELECT owner_id FROM sources WHERE id=?", (old_source,)).fetchone()[0]
+        assert conn.execute("SELECT enabled FROM sources WHERE id=?", (old_source,)).fetchone()[0] == 0
+        assert conn.execute("SELECT enabled FROM sources WHERE id=?", (new_source,)).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
+            (owner, PLAN, current_version - 1),
+        ).fetchone()[0] == 29
+        assert not service.collection.source_due(conn, owner, new_source)
+    assert not any(row["id"] == new_source for row in service.due_sources())
+
+    with closing(service.db.connect()) as conn:
+        revision = conn.execute(
+            "SELECT revision FROM collection_runs WHERE id=?", (old_run["id"],)
+        ).fetchone()[0]
+    cancelled = client.post(
+        f"/api/tea/collection-runs/{old_run['id']}/cancel",
+        json={"expected_revision": revision},
+    )
+    assert cancelled.status_code == 200
+    with closing(service.db.connect()) as conn:
+        assert service.collection.source_due(conn, owner, new_source)
+    assert any(row["id"] == new_source for row in service.due_sources())
 
 
 def fake_web(monkeypatch):
@@ -367,52 +406,29 @@ def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
     assert candidate["source_record"]["evidence"] == {"url": catalog_url, "sha256": blob.digest}
 
 
-def test_saved_rcep_catalog_backfill_preserves_source_hierarchy(client):
+def test_retired_rcep_catalog_remains_available_in_immutable_plan_history(client):
+    from app.contexts.ingestion.application.checklists import load_blueprint_version
     from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
-    configure(client)
-    run = discover(client, code="5.3", request="rcep-source-record-backfill")
-    service = client.app.state.service
-    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
-    with closing(service.db.connect()) as conn:
-        claim = conn.execute(
-            """SELECT i.*,r.plan FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
-            WHERE i.run_id=? AND i.host='rcepsec.org' ORDER BY i.id LIMIT 1""",
-            (run["id"],),
-        ).fetchone()
-    assert claim
-    claim = dict(claim)
-    claim["plan"] = json.loads(claim["plan"])
+    current = client.app.state.service.checklists.plans[PLAN]
+    archived = load_blueprint_version(PLAN, 8)
+    current_sources = [
+        entry["url"]
+        for item in current["items"] if item["id"] == "5.3"
+        for entry in item["entries"]
+    ]
+    historical_item = next(item for item in archived["items"] if item["id"] == "5.3")
+    assert not any("rcepsec.org" in url for url in current_sources)
+    assert any("rcepsec.org" in entry["url"] for entry in historical_item["entries"])
     body = b"""<html><title>RCEP Agreements</title><body><ul class="rcep-list">
     <li class="rcep-item"><a class="rcep-link" onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3.pdf')">Chapter 3: Rules of Origin</a>
     <ul><li><a class="rcep-link rcep-sub-link" onclick="loadPdf(this, 'https://rcepsec.org/wp-content/uploads/2026/06/Chapter-3-Annex-3A.pdf')">Annex 3A: Product-Specific Rules</a></li></ul></li>
     </ul></body></html>"""
     page_url = "https://rcepsec.org/rcep-agreements/"
-    item = next(entry for entry in service.checklists.plans[PLAN]["items"] if entry["id"] == "5.3")
-    result = discover_page(page_url, body, "text/html", recipe_for(item))
-    for link in result["links"]:
-        link.pop("source_record", None)
-    blob = service.archive.blobs.put_bytes(owner, body)
-    fetched = {
-        "url": page_url,
-        "filename": "rcep-agreements.html",
-        "mime_type": "text/html",
-        "blob": blob,
-        "request_evidence": {"method": "GET", "url": page_url},
-    }
-    with service.db.transaction() as conn:
-        service.checklists.save_page(conn, claim, fetched, claim["plan"], result)
-
-    candidates = client.get(BASE + "/items/5.3/candidates").json()["items"]
-    candidate = next(item for item in candidates if "Chapter-3-Annex-3A.pdf" in item["url"])
-    assert candidate["source_record"] is None
-    recovered = service.checklists.backfill_candidate_source_records(providers={"rcepsec"})
-    assert recovered == {"scanned": 2, "verified": 2, "inserted": 2, "skipped": 0}
-    candidates = client.get(BASE + "/items/5.3/candidates").json()["items"]
-    candidate = next(item for item in candidates if "Chapter-3-Annex-3A.pdf" in item["url"])
+    result = discover_page(page_url, body, "text/html", recipe_for(historical_item))
+    candidate = next(link for link in result["links"] if "Chapter-3-Annex-3A.pdf" in link["url"])
     assert candidate["source_record"]["provider"] == "rcepsec"
     assert candidate["source_record"]["structure"]["parent_titles"] == ["Chapter 3: Rules of Origin"]
-    assert candidate["source_record"]["evidence"] == {"url": page_url, "sha256": blob.digest}
 
 
 def test_selected_candidates_retain_country_tier_and_immutable_run_snapshot(client, monkeypatch):

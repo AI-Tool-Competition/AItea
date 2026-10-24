@@ -2,7 +2,7 @@
 import { Check, Download, FileText, History, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { ClipboardSafeStreamdown } from "@/components/ai-elements/streamdown";
+import { ClipboardSafeStreamdown } from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";

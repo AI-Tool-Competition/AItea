@@ -17,8 +17,8 @@ import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
-} from "@/components/ai-elements/conversation";
-import { ClipboardSafeStreamdown } from "@/components/ai-elements/streamdown";
+  ClipboardSafeStreamdown,
+} from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
 import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
 import type {

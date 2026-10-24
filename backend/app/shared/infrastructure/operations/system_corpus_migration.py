@@ -1189,7 +1189,7 @@ def _migrate_streaming(snapshot_dir, target_dir, receipt, *, apply, source_stopp
         _progress(backup_dir / "migration-progress.json", progress)
         # Only structural upgrades precede the first corpus transaction.
         service = Service(target_dir)
-        blobs = BlobStore(target_dir / "files", max_bytes=128 * 1024 * 1024)
+        blobs = BlobStore(target_dir / "files", max_bytes=300 * 1024 * 1024)
         for digest, path in paths.items():
             with path.open("rb") as stream:
                 blob = blobs.put(SYSTEM_OWNER_ID, iter(lambda: stream.read(1024 * 1024), b""))
@@ -1442,7 +1442,7 @@ def migrate_system_corpus(
         _check_target(conn, source, expected, upgraded)
     from app.shared.infrastructure.persistence.blob_store import BlobStore
 
-    blobs = BlobStore(target_dir / "files", max_bytes=128 * 1024 * 1024)
+    blobs = BlobStore(target_dir / "files", max_bytes=300 * 1024 * 1024)
     for digest, path in paths.items():
         with path.open("rb") as stream:
             blob = blobs.put(SYSTEM_OWNER_ID, iter(lambda: stream.read(1024 * 1024), b""))

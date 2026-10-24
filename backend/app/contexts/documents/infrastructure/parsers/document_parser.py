@@ -451,7 +451,7 @@ def _archive_reference(path, source_hash: str, size: int) -> tuple[str, str, int
         or not isinstance(source_hash, str)
         or not re.fullmatch(r"[0-9a-f]{64}", source_hash)
         or type(size) is not int
-        or not 0 < size <= 128 * 1024 * 1024
+        or not 0 < size <= 300 * 1024 * 1024
     ):
         raise ValueError("采集原件路径、hash 或大小无效。")
     return file_path, source_hash, size

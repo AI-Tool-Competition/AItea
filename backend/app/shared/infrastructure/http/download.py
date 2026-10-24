@@ -29,7 +29,7 @@ from app.shared.infrastructure.http.public_search import EGazetteSearchRequest
 MAX_BYTES = 20 * 1024 * 1024
 
 
-MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
+MAX_ORIGINAL_BYTES = 300 * 1024 * 1024
 
 
 MAX_COMPRESSED_HTML_BYTES = 4 * 1024 * 1024
@@ -269,7 +269,7 @@ def _download(
             raise DownloadError(str(exc)) from exc
     max_bytes = MAX_BYTES if max_bytes is None else max_bytes
     if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ORIGINAL_BYTES:
-        raise DownloadError("原件传输额度无效，最多 128 MB。")
+        raise DownloadError("原件传输额度无效，最多 300 MiB。")
     if range_total_bytes is not None and (
         byte_range is None
         or type(range_total_bytes) is not int

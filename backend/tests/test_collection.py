@@ -37,6 +37,18 @@ def source(client, **plan):
     return response.json()
 
 
+def test_generic_source_cannot_use_curated_checklist_size_override(client):
+    response = client.post(
+        "/api/tea/sources",
+        json={
+            "name": "Untrusted source",
+            "url": "https://example.org/large.pdf",
+            "plan": {"max_original_bytes": 128 * 1024 * 1024 + 1},
+        },
+    )
+    assert response.status_code == 422
+
+
 def run(client, source_id, key="first", **kwargs):
     response = client.post(f"/api/tea/sources/{source_id}/runs", json={"client_request_id": key, **kwargs})
     assert response.status_code == 202, response.text

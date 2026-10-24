@@ -413,7 +413,7 @@ def verify_originals(service, plan):
         if (
             not re_hash(digest)
             or type(row["size"]) is not int
-            or not 0 < row["size"] <= 128 * 1024 * 1024
+            or not 0 < row["size"] <= 300 * 1024 * 1024
             or Path(row["storage_path"]) != expected
         ):
             raise ValueError("向量处理原件不在账号内容存储内")

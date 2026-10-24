@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.shared.domain.models import PublicURL, StrictModel, Tag
 
@@ -16,7 +16,7 @@ class CollectionPlan(StrictModel):
     )
     discover_attachments: bool = True
     max_items: int = Field(default=200, ge=1, le=500)
-    max_original_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=128 * 1024 * 1024)
+    max_original_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=300 * 1024 * 1024)
     download_timeout_seconds: int = Field(default=90, ge=30, le=900)
 
     @model_validator(mode="after")
@@ -79,6 +79,13 @@ class SourceInput(StrictModel):
     tags: list[Tag] = Field(default_factory=list, max_length=20)
     plan: CollectionPlan = Field(default_factory=CollectionPlan)
 
+    @field_validator("plan")
+    @classmethod
+    def keep_generic_sources_bounded(cls, plan):
+        if plan.max_original_bytes > 128 * 1024 * 1024:
+            raise ValueError("普通采集来源原件上限为 128 MiB。")
+        return plan
+
 
 class SourcePatch(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -88,3 +95,10 @@ class SourcePatch(StrictModel):
     tags: list[Tag] | None = Field(default=None, max_length=20)
     plan: CollectionPlan | None = None
     expected_revision: int = Field(ge=1)
+
+    @field_validator("plan")
+    @classmethod
+    def keep_generic_sources_bounded(cls, plan):
+        if plan is not None and plan.max_original_bytes > 128 * 1024 * 1024:
+            raise ValueError("普通采集来源原件上限为 128 MiB。")
+        return plan

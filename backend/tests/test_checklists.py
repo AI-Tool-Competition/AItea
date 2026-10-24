@@ -66,9 +66,10 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 7
+    assert plan["version"] == 8
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
-        assert items[item_id]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
+        assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
+        assert items[item_id]["limits"]["download_timeout_seconds"] == 900
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
@@ -435,7 +436,7 @@ def test_selected_candidates_retain_country_tier_and_immutable_run_snapshot(clie
                 0
             ]
         )
-    assert run_plan["max_original_bytes"] == 128 * 1024 * 1024
+    assert run_plan["max_original_bytes"] == 300 * 1024 * 1024
     drain_downloads(client)
     stored = client.get(BASE + "/items/1.3/candidates?status=stored").json()["items"][0]
     document = client.get(f"/api/tea/documents/{stored['document_id']}").json()["document"]

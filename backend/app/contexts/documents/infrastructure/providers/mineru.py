@@ -21,6 +21,7 @@ import httpx
 
 from app.contexts.documents.infrastructure.parsers.document_parser import _run_bounded
 from app.contexts.documents.infrastructure.providers.mineru_results import (
+    MAX_RESULT_BYTES,
     MAX_SOURCE_BYTES,
     VERSION,
     reference,
@@ -427,7 +428,7 @@ class MinerUClient:
             url,
             deadline=time.monotonic() + 120,
             consume=lambda chunks: store.put(owner, chunks),
-            max_bytes=MAX_SOURCE_BYTES,
+            max_bytes=MAX_RESULT_BYTES,
         )
         return reference(result["blob"])
 

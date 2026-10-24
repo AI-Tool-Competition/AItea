@@ -26,7 +26,7 @@ from app.contexts.documents.infrastructure.parsers.document_parser import (
 )
 from app.contexts.documents.infrastructure.parsers.pdf_limits import ARCHIVE_MAX_PAGES
 
-_MAX_BYTES = 128 * 1024 * 1024
+_MAX_BYTES = 300 * 1024 * 1024
 _MAX_PAGES = ARCHIVE_MAX_PAGES
 _MAX_WINDOW_PAGES = 64
 _MAX_PAGE_STREAM_BYTES = 16 * 1024 * 1024
@@ -187,7 +187,7 @@ def archive_rebuild_bounded(manifest: dict) -> dict:
 
 def _validate_original_request(path, source_hash, size) -> str:
     if type(size) is not int or not 0 < size <= _MAX_BYTES:
-        raise ValueError("采集 PDF 原件不能为空且不能超过 128 MB。")
+        raise ValueError("采集 PDF 原件不能为空且不能超过 300 MiB。")
     if not isinstance(source_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", source_hash):
         raise ValueError("采集 PDF 必须绑定有效的 SHA-256 source hash。")
     try:

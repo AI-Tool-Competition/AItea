@@ -13,6 +13,8 @@ from app.shared.domain.values import now, uid
 from app.shared.infrastructure.persistence.blob_store import Blob
 from app.shared.infrastructure.http.download import MAX_ORIGINAL_BYTES, DownloadError
 
+MAX_RESUMABLE_TRANSFER_BYTES = 128 * 1024 * 1024
+
 
 class TransferPending(DownloadError):
     """Useful progress or a changed source version, not a failed attempt."""
@@ -69,7 +71,7 @@ class CollectionTransfers:
     def _can_segment(self, metadata):
         return (
             type(metadata.get("total_size")) is int
-            and self.minimum_size <= metadata["total_size"] <= MAX_ORIGINAL_BYTES
+            and self.minimum_size <= metadata["total_size"] <= min(MAX_ORIGINAL_BYTES, MAX_RESUMABLE_TRANSFER_BYTES)
             and metadata.get("accept_ranges")
             and isinstance(metadata.get("etag"), str)
             and re.fullmatch(r'"[\x21\x23-\x7e]{0,1020}"', metadata["etag"])

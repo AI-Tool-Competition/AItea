@@ -304,7 +304,7 @@ def test_larger_original_limit_is_explicit_and_still_stream_bounded(transport, m
     responses.append(Response([b"abcdefgh"], headers={"Content-Length": "8"}))
     assert download(max_bytes=8)["content"] == b"abcdefgh"
     with pytest.raises(ingestion_download.DownloadError):
-        download(max_bytes=128 * 1024 * 1024 + 1)
+        download(max_bytes=300 * 1024 * 1024 + 1)
 
 
 @pytest.mark.parametrize("mime", ["text/html", "text/xml", "application/xml"])

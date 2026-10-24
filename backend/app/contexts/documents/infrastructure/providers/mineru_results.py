@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import mimetypes
 import resource
 import stat
+import tempfile
 import zipfile
 from collections import defaultdict
 from html.parser import HTMLParser
@@ -17,7 +17,9 @@ from app.shared.infrastructure.persistence.blob_store import BlobStore, _verify_
 
 VERSION = "mineru-precise-v1"
 CHART_ASSET_INVENTORY_VERSION = "mineru-chart-assets-v1"
-MAX_SOURCE_BYTES = 128 * 1024 * 1024
+MAX_SOURCE_BYTES = 300 * 1024 * 1024
+MAX_RESULT_BYTES = 128 * 1024 * 1024
+MAX_MINERU_PART_BYTES = 180_000_000
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_ASSEMBLED_TEXT_CHARACTERS = 8_000_000
@@ -56,7 +58,7 @@ def _prepare(source, source_hash, size, filename, files_dir, owner, mime_type=""
     path = Path(source)
     _verify_existing(path, source_hash, size)
     if size > MAX_SOURCE_BYTES:
-        raise ValueError("原件超过当前资料库 128 MB 的安全传输上限。")
+        raise ValueError("原件超过当前资料库 300 MiB 的安全传输上限。")
     store = BlobStore(Path(files_dir), max_bytes=MAX_SOURCE_BYTES)
     with path.open("rb") as original_file:
         original = reference(store.put(owner, iter(lambda: original_file.read(65536), b"")))
@@ -72,17 +74,34 @@ def _prepare(source, source_hash, size, filename, files_dir, owner, mime_type=""
         raise ValueError("PDF 页数必须在 1 至 3000 之间。")
     store = BlobStore(Path(files_dir), max_bytes=MAX_SOURCE_BYTES)
     parts = []
-    for offset in range(0, count, 200):
-        end = min(count, offset + 200)
-        blob = original
-        if count > 200:
+
+    def append_part(first, last):
+        # A PDF can fit the page ceiling and still exceed MinerU's request-size
+        # ceiling. Split by physical page without extracting or changing text.
+        with tempfile.TemporaryFile() as output:
             writer = PdfWriter()
-            for page in reader.pages[offset:end]:
-                writer.add_page(page)
-            out = io.BytesIO()
-            writer.write(out)
-            blob = reference(store.put_bytes(owner, out.getvalue()))
-        parts.append({"first_page": offset + 1, "last_page": end, "blob": blob})
+            for page_index in range(first - 1, last):
+                writer.add_page(reader.pages[page_index])
+            writer.write(output)
+            output_size = output.tell()
+            if output_size > MAX_MINERU_PART_BYTES:
+                if first == last:
+                    raise ValueError("单页 PDF 超过 MinerU 单文件额度，无法安全拆分。")
+                middle = (first + last) // 2
+                append_part(first, middle)
+                append_part(middle + 1, last)
+                return
+            output.seek(0)
+            blob = reference(store.put(owner, iter(lambda: output.read(65536), b"")))
+        parts.append({"first_page": first, "last_page": last, "blob": blob})
+
+    for offset in range(0, count, 200):
+        first = offset + 1
+        last = min(count, offset + 200)
+        if count <= 200 and size <= MAX_MINERU_PART_BYTES:
+            parts.append({"first_page": first, "last_page": last, "blob": original})
+        else:
+            append_part(first, last)
     return {"page_count": count, "parts": parts}
 
 

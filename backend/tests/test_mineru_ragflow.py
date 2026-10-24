@@ -451,6 +451,44 @@ def test_mineru_parts_are_mechanical_and_within_200_pages(tmp_path, monkeypatch)
     ] == [200, 1]
 
 
+def test_mineru_parts_also_obey_file_size_limit(tmp_path, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import mineru_results
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
+    from pypdf import PdfReader, PdfWriter
+
+    part_limit = 2048
+    monkeypatch.setattr(mineru_results, "MAX_MINERU_PART_BYTES", part_limit)
+    writer = PdfWriter()
+    for _ in range(40):
+        writer.add_blank_page(width=100, height=200)
+    out = io.BytesIO()
+    writer.write(out)
+    store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
+    original = store.put_bytes("owner", out.getvalue())
+    result = _prepare(
+        str(original.path),
+        original.digest,
+        original.size,
+        "document.pdf",
+        str(store.files_dir),
+        "owner",
+        "application/pdf",
+    )
+
+    assert result["page_count"] == 40
+    assert result["parts"][0]["first_page"] == 1
+    assert result["parts"][-1]["last_page"] == 40
+    expected_page = 1
+    for part in result["parts"]:
+        blob_path = resolve_reference(part["blob"], store.files_dir, "owner")
+        assert blob_path.stat().st_size <= part_limit
+        assert part["first_page"] == expected_page
+        assert part["last_page"] - part["first_page"] + 1 <= 200
+        assert len(PdfReader(blob_path).pages) == part["last_page"] - part["first_page"] + 1
+        expected_page = part["last_page"] + 1
+    assert expected_page == 41
+
+
 def result_archive(tmp_path, *, unsafe=False):
     from app.shared.infrastructure.persistence.blob_store import BlobStore
 

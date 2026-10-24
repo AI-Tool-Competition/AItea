@@ -20,28 +20,34 @@ _BROWSER_HEADERS = {
 
 
 def request_headers_for(host: str) -> dict[str, str]:
-    """Operator-only, exact-host browser compatibility; default is no override.
+    """Apply the exact-host browser profile from config or operator settings.
 
     The static profile never carries cookies, authentication or challenge
     tokens. DNS, public-address validation, TLS and request bounds remain the
     downloader's responsibility and are unaffected by these three headers.
     """
     value = os.getenv("COLLECTION_BROWSER_HEADERS_HOSTS", "")
-    if not value:
-        return {}
-    from app.contexts.ingestion.infrastructure.collection_proxy import _canonical_host, _hosts
+    from app.contexts.ingestion.infrastructure.collection_proxy import (
+        _canonical_host,
+        _catalog_proxy_hosts,
+        _hosts,
+    )
     from app.shared.infrastructure.http.download import DownloadError
 
     try:
-        allowed = _hosts(value)
-        if any("." not in entry or entry == "localhost" or entry.endswith(".localhost") for entry in allowed):
+        operator_hosts = _hosts(value)
+        if any(
+            "." not in entry or entry == "localhost" or entry.endswith(".localhost")
+            for entry in operator_hosts
+        ):
             raise ValueError
         current = _canonical_host(host)
     except (ValueError, UnicodeError):
         raise DownloadError(
             "COLLECTION_BROWSER_HEADERS_HOSTS 必须是最多 64 个精确公网来源域名，不能包含 URL、通配符、端口或认证信息。"
         ) from None
-    return dict(_BROWSER_HEADERS) if current in allowed else {}
+    _, _, catalog_hosts = _catalog_proxy_hosts()
+    return dict(_BROWSER_HEADERS) if current in (operator_hosts | catalog_hosts) else {}
 
 
 _MA_HOST = "putusan3.mahkamahagung.go.id"

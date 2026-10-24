@@ -135,7 +135,7 @@ def test_recovered_addresses_do_not_accept_nonpdf_or_traversal_paths():
 
 def test_browser_headers_are_disabled_by_default(monkeypatch):
     monkeypatch.delenv("COLLECTION_BROWSER_HEADERS_HOSTS", raising=False)
-    assert request_headers_for("jdih.kemnaker.go.id") == {}
+    assert request_headers_for("jdih.mahkamahagung.go.id") == {}
 
 
 def test_browser_profile_only_applies_to_explicit_exact_hosts(monkeypatch):

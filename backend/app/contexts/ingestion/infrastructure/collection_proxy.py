@@ -63,7 +63,7 @@ def _hosts(value: str) -> frozenset[str]:
     return frozenset(_canonical_host(entry.strip()) for entry in entries)
 
 
-def _catalog_proxy_hosts() -> tuple[frozenset[str], frozenset[str]]:
+def _catalog_proxy_hosts() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     """Read the versioned, non-secret proxy scope from the active catalog root."""
     path = InstancePaths.resolve().catalogs / "collection-proxy.json"
     try:
@@ -73,22 +73,31 @@ def _catalog_proxy_hosts() -> tuple[frozenset[str], frozenset[str]]:
     except DownloadError:
         raise
     except FileNotFoundError:
-        return frozenset(), frozenset()
+        return frozenset(), frozenset(), frozenset()
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise DownloadError("采集代理域名清单无法读取。") from None
     if not isinstance(payload, dict) or payload.get("protocol") != "aitea-collection-proxy-v1":
         raise DownloadError("采集代理域名清单格式无效。")
     allowed, doh = payload.get("allowed_hosts"), payload.get("doh_hosts", [])
+    browser = payload.get("browser_header_hosts", [])
     if (
         not isinstance(allowed, list)
         or not isinstance(doh, list)
-        or any(not isinstance(value, str) for value in (*allowed, *doh))
+        or not isinstance(browser, list)
+        or any(not isinstance(value, str) for value in (*allowed, *doh, *browser))
+        or any(not value or "," in value for value in browser)
     ):
         raise DownloadError("采集代理域名清单格式无效。")
     hosts, doh_hosts = _hosts(",".join(allowed)), _hosts(",".join(doh))
-    if len(hosts) > 64 or not doh_hosts.issubset(hosts):
-        raise DownloadError("采集代理域名清单超出限制或 DNS 域名未获允许。")
-    return hosts, doh_hosts
+    browser_hosts = frozenset(_canonical_host(value) for value in browser)
+    if (
+        len(hosts) > 64
+        or len(browser_hosts) > 64
+        or not doh_hosts.issubset(hosts)
+        or not browser_hosts.issubset(hosts)
+    ):
+        raise DownloadError("采集代理域名清单超出限制或浏览器请求头域名未获允许。")
+    return hosts, doh_hosts, browser_hosts
 
 
 @dataclass(frozen=True)
@@ -106,7 +115,7 @@ def proxy_for_host(host: str) -> ProxyEndpoint | None:
     doh_list = os.getenv("COLLECTION_DOH_HOSTS", "")
     if not (url or host_list or doh_list):
         return None
-    catalog_hosts, catalog_doh_hosts = _catalog_proxy_hosts()
+    catalog_hosts, catalog_doh_hosts, _ = _catalog_proxy_hosts()
     hosts = catalog_hosts | _hosts(host_list)
     doh_hosts = catalog_doh_hosts | _hosts(doh_list)
     if not url or not hosts:

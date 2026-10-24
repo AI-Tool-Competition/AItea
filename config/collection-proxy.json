@@ -54,5 +54,12 @@
     "www.sfa.gov.sg",
     "www.wto.org"
   ],
-  "doh_hosts": []
+  "doh_hosts": [],
+  "browser_header_hosts": [
+    "api-treaty-room.kemlu.go.id",
+    "jdih.kemnaker.go.id",
+    "jdih.setneg.go.id",
+    "treaty-room.kemlu.go.id",
+    "www.bi.go.id"
+  ]
 }

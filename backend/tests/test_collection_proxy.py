@@ -91,6 +91,12 @@ def test_versioned_proxy_catalog_supplies_exact_source_hosts(monkeypatch):
     assert endpoint is not None
     assert transport.proxy_for_host("unreviewed.example") is None
     assert transport.proxy_for_host("sub.fta.mofcom.gov.cn") is None
+    from app.contexts.ingestion.infrastructure.source_adapters.official_source_recovery import (
+        request_headers_for,
+    )
+
+    assert request_headers_for("www.bi.go.id")["Accept-Language"].startswith("id-ID")
+    assert request_headers_for("jdih.mahkamahagung.go.id") == {}
 
 
 def test_versioned_proxy_catalog_covers_configured_collection_domains():

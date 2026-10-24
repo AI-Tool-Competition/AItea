@@ -378,12 +378,11 @@ def _download(
                     else "identity",
                     "Accept": "application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,*/*;q=0.5",
                 }
-                if os.getenv("COLLECTION_BROWSER_HEADERS_HOSTS"):
-                    from app.contexts.ingestion.infrastructure.source_adapters.official_source_recovery import (
-                        request_headers_for,
-                    )
+                from app.contexts.ingestion.infrastructure.source_adapters.official_source_recovery import (
+                    request_headers_for,
+                )
 
-                    headers.update(request_headers_for(host))
+                headers.update(request_headers_for(host))
                 headers.update({key: value for key, value in conditionals.items() if value is not None})
                 headers.update(search_headers)
                 if byte_range is not None:

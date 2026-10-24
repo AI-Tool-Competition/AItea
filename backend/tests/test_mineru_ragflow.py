@@ -697,6 +697,50 @@ def test_table_spans_preserve_column_alignment():
     assert table.rows == [["Rates", "Rates"], ["Tea", "5%"], ["Tea", "0%"]]
 
 
+def test_overlapping_mineru_table_spans_preserve_cell_order_and_require_review(tmp_path):
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
+
+    store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
+    body = '<table><tr><td>A</td><td rowspan="2">B</td></tr><tr><td colspan="2">C</td></tr></table>'
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("layout.json", json.dumps({"pdf_info": [{"page_idx": 0}]}))
+        archive.writestr(
+            "task_content_list.json",
+            json.dumps(
+                [
+                    {
+                        "type": "table",
+                        "page_idx": 0,
+                        "bbox": [10, 20, 900, 950],
+                        "table_body": body,
+                    }
+                ]
+            ),
+        )
+    source = store.put_bytes("owner", b"source")
+    result_blob = store.put_bytes("owner", output.getvalue())
+    task = {
+        "id": "task-overlap",
+        "batch_id": "batch-overlap",
+        "state": "done",
+        "source_hash": source.digest,
+        "first_page": 1,
+        "last_page": 1,
+        "part_blob": reference(source),
+        "result_blob": reference(result_blob),
+    }
+
+    manifest = _assemble([task], source.digest, "source.pdf", str(store.files_dir), "owner", None)
+    text = manifest["pages"][0]["text"]
+    assert all(value in text for value in ("A", "B", "C"))
+    assert "未推断列对齐" in text
+    assert manifest["pages"][0]["reasons"] == ["table_structure_ambiguous"]
+    assert not text_complete(manifest)
+    table_ref = manifest["elements"][0]["metadata_json"]["table_html"]
+    assert resolve_reference(table_ref, store.files_dir, "owner").read_text() == body
+
+
 def test_isolated_failure_does_not_hide_later_transport_failure_streak(tmp_path, monkeypatch):
     _, admission = capacity_clock(tmp_path, monkeypatch)
     admission.backoff("ReadTimeout")

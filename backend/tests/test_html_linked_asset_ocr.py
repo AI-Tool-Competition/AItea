@@ -201,6 +201,38 @@ def test_partial_vision_and_multiframe_sources_are_never_complete(tmp_path, enab
     assert native.assets(result)[0]["asset_status"] == "ocr_failed" and not text_complete(result)
 
 
+def test_explicit_native_asset_retry_preserves_previous_transcript(tmp_path, enabled, monkeypatch):
+    body, manifest, raw = binding(tmp_path)
+    key = native.assets(manifest)[0]["asset_key"]
+    monkeypatch.setattr(vision, "transcribe_image", lambda *_: transcript(uncertain=True))
+    first = native.ocr_native_assets_bounded(body, manifest, image_contents={key: raw})
+    previous = native.assets(first)[0]
+    assert previous["asset_status"] == "ocr_uncertain"
+
+    retry = native.prepare_asset_retries(first)
+    current = native.assets(retry)[0]
+    history = current["ocr_attempt_history"]
+    assert current["asset_status"] == "pending_vision"
+    assert "ocr" not in current and "error" not in current
+    assert len(history) == 1
+    assert history[0]["previous_asset"]["asset_status"] == "ocr_uncertain"
+    assert history[0]["previous_asset"]["ocr"]["text"] == "The complete printed image text."
+    previous_bytes = json.dumps(
+        history[0]["previous_asset"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    assert history[0]["previous_asset_sha256"] == hashlib.sha256(previous_bytes).hexdigest()
+
+    monkeypatch.setattr(vision, "transcribe_image", lambda *_: transcript())
+    rerun = native.ocr_native_assets_bounded(body, retry, image_contents={key: raw})
+    final = native.assets(rerun)[0]
+    assert final["asset_status"] == "ocr_complete"
+    assert final["ocr_attempt_history"] == history
+    assert final["ocr"]["text"] == "The complete printed image text."
+
+
 def test_html_long_infographic_has_explicit_pixel_bound_without_changing_word_limit(
     tmp_path, enabled, monkeypatch
 ):

@@ -93,6 +93,8 @@ class _TableText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.rows, self.row, self.cell, self.depth = [], None, None, 0
         self.spans, self.cell_span = {}, (1, 1)
+        self.source_rows, self.source_row = [], None
+        self.cell_count, self.ambiguous = 0, False
 
     def _carry(self):
         while (len(self.rows), len(self.row)) in self.spans:
@@ -101,6 +103,8 @@ class _TableText(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "tr":
             self.row = []
+            self.source_row = []
+            self.source_rows.append(self.source_row)
         elif tag in {"td", "th"}:
             self.cell = []
             attributes = dict(attrs)
@@ -108,9 +112,14 @@ class _TableText(HTMLParser):
             for key in ("rowspan", "colspan"):
                 value = attributes.get(key, "1")
                 if not str(value).isdigit() or not 1 <= int(value) <= 256:
-                    raise ValueError("MinerU 表格合并范围无效或超过限制。")
-                spans.append(int(value))
-            self.cell_span = tuple(spans)
+                    self.ambiguous = True
+                    spans.append(1)
+                else:
+                    spans.append(int(value))
+            self.cell_span = tuple(spans) if not self.ambiguous else (1, 1)
+            self.cell_count += 1
+            if self.cell_count > 100000:
+                raise ValueError("MinerU 表格单元格超过处理限制。")
         elif tag == "br" and self.cell is not None:
             self.cell.append(" ")
         elif tag in {"script", "style"}:
@@ -118,22 +127,33 @@ class _TableText(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag in {"td", "th"} and self.cell is not None:
+            content = " ".join("".join(self.cell).split()).replace("|", "\\|")
+            if self.source_row is not None:
+                self.source_row.append(content)
+            if self.ambiguous:
+                self.cell = None
+                return
             if self.row is not None:
                 self._carry()
-                content = " ".join("".join(self.cell).split()).replace("|", "\\|")
                 row_span, col_span = self.cell_span
                 first_col = len(self.row)
                 if len(self.spans) + row_span * col_span > 100000 or first_col + col_span > 1024:
-                    raise ValueError("MinerU 表格网格超过处理限制。")
+                    self.ambiguous = True
+                    self.cell = None
+                    return
                 for offset in range(col_span):
                     column = first_col + offset
                     if (len(self.rows), column) in self.spans:
-                        raise ValueError("MinerU 表格合并范围互相覆盖。")
+                        self.ambiguous = True
+                        self.cell = None
+                        return
                     self.row.append(content)
                     for delta in range(1, row_span):
                         key = (len(self.rows) + delta, column)
                         if key in self.spans:
-                            raise ValueError("MinerU 表格合并范围互相覆盖。")
+                            self.ambiguous = True
+                            self.cell = None
+                            return
                         self.spans[key] = content
             self.cell = None
         elif tag == "tr" and self.row is not None:
@@ -148,6 +168,10 @@ class _TableText(HTMLParser):
             self.cell.append(data)
 
     def markdown(self):
+        if self.ambiguous:
+            return "表格结构待核验；以下单元格按原文顺序保留，未推断列对齐：\n" + "\n".join(
+                "；".join(row) for row in self.source_rows
+            )
         if not self.rows:
             return ""
         width = max(map(len, self.rows))
@@ -324,6 +348,8 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
                 body = _strings(block.get("_physical_table_body", block.get("table_body")))
                 table = _TableText()
                 table.feed(body)
+                if table.ambiguous:
+                    issues[local_page].append("table_structure_ambiguous")
                 text = "\n\n".join(
                     filter(
                         None,

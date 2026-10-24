@@ -248,6 +248,7 @@ class HtmlImageCollector:
                 "image/png",
                 "image/jpeg",
                 "image/gif",
+                "image/webp",
                 "application/octet-stream",
                 "binary/octet-stream",
             }:

@@ -64,6 +64,12 @@ def image():
     return result.getvalue()
 
 
+def webp_image():
+    result = io.BytesIO()
+    Image.new("RGB", (60, 40), "white").save(result, format="WEBP")
+    return result.getvalue()
+
+
 def downloader(service, monkeypatch, *, during=None, mime="image/png", raw=None):
     requests = []
 
@@ -193,6 +199,31 @@ def test_http_error_body_is_saved_as_source_evidence_and_never_bound(service, mo
         receipt["status"] == "failed"
         and receipt["image_blob"]["content_hash"] == hashlib.sha256(image()).hexdigest()
     )
+
+
+def test_webp_body_image_is_bound_and_rendered_for_ocr(service, monkeypatch):
+    from app.contexts.documents.infrastructure.providers.native_asset_ocr import _render, assets
+
+    doc = document(service)
+    raw = webp_image()
+    requests = downloader(service, monkeypatch, mime="image/webp", raw=raw)
+    result = HtmlImageCollector(service).prepare("owner", doc["id"], deadline=time.monotonic() + 60)
+
+    assert len(requests) == 1 and result["bound_images"] and not result["errors"]
+    with closing(service.db.connect()) as conn:
+        manifest = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()[0]
+        )
+    asset = assets(manifest)[-1]
+    rendered = _render(
+        (service.db.data_dir / doc["storage_path"]).read_bytes(),
+        manifest,
+        asset,
+        image_content=raw,
+    )
+    assert rendered["original_image_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert rendered["mime_type"] == "image/png"
+    assert (rendered["width"], rendered["height"]) == (60, 40)
 
 
 @pytest.mark.parametrize("active_phase,preferred", [("parse", "embed"), ("embed", "parse")])

@@ -241,6 +241,41 @@ def pending_assets(manifest: dict) -> list[dict]:
     return [value for value in assets(manifest) if value["asset_status"] == "pending_vision"]
 
 
+def prepare_asset_retries(manifest: dict, *, statuses=("ocr_failed", "ocr_uncertain"), max_assets=20) -> dict:
+    """Prepare an explicit bounded retry while preserving every previous result."""
+    if (
+        not isinstance(statuses, (tuple, list, set, frozenset))
+        or not statuses
+        or any(
+            not isinstance(status, str) or status not in {"ocr_failed", "ocr_uncertain"}
+            for status in statuses
+        )
+        or type(max_assets) is not int
+        or not 1 <= max_assets <= 20
+    ):
+        raise ValueError("原生图片重试范围或批量上限无效。")
+    selected = [value for value in assets(manifest) if value["asset_status"] in statuses]
+    if len(selected) > max_assets:
+        raise ValueError("原生图片重试数量超过单批上限。")
+    updated = deepcopy(manifest)
+    if not selected:
+        return updated
+    from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
+        preserve_previous_asset_attempt,
+    )
+
+    for value in selected:
+        preserve_previous_asset_attempt(value)
+        value["asset_status"] = "pending_vision"
+        value.pop("ocr", None)
+        value.pop("error", None)
+        value.pop("deferred_reason", None)
+        apply_asset_checkpoint(updated, value)
+    if len(json.dumps(updated, ensure_ascii=False, allow_nan=False).encode()) > MAX_MANIFEST_BYTES:
+        raise ValueError("原生图片重试检查点超过处理限制。")
+    return updated
+
+
 def read_mineru_chart_images(files_dir, owner_id, manifest, *, max_assets=4):
     """Read only hash-bound chart blobs selected for the next bounded OCR batch."""
     from app.contexts.documents.infrastructure.providers.mineru_results import resolve_reference
@@ -422,7 +457,7 @@ def _render(content, manifest, value, archive_path=None, archive_size=None, imag
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
             frames = getattr(image, "n_frames", 1)
-            if image.format not in {"PNG", "JPEG", "GIF"}:
+            if image.format not in {"PNG", "JPEG", "GIF", "WEBP"}:
                 raise ValueError("原生图片光栅格式不受支持。")
             if frames != 1:
                 raise ValueError("多帧原生图片需要逐帧映射，不能只识别首帧。")

@@ -34,7 +34,9 @@ def request_outcome_unknown(metadata):
 def preserve_previous_asset_attempt(asset):
     """Retain failed native-image evidence before an explicit retry resets it."""
     metadata = asset.get("ocr") or {}
-    if not (metadata.get("attempts") or metadata.get("request_id")):
+    if not (metadata.get("attempts") or metadata.get("request_id")) and asset.get(
+        "asset_status"
+    ) not in {"ocr_failed", "ocr_uncertain"}:
         return
     history = asset.get("ocr_attempt_history", [])
     if not isinstance(history, list) or len(history) >= 3:

@@ -8,6 +8,7 @@ import mimetypes
 import resource
 import stat
 import tempfile
+import uuid
 import zipfile
 from collections import defaultdict
 from html.parser import HTMLParser
@@ -207,6 +208,17 @@ def _strings(value):
     return ""
 
 
+def _is_origin_pdf(filename):
+    path = PurePosixPath(filename)
+    if path.name != filename or not filename.endswith("_origin.pdf"):
+        return False
+    identifier = filename.removesuffix("_origin.pdf")
+    try:
+        return str(uuid.UUID(identifier)) == identifier.lower()
+    except ValueError:
+        return False
+
+
 def _read_archive(task, store, owner):
     ref = task["result_blob"]
     archive_path = resolve_reference(ref, store.files_dir, owner)
@@ -216,6 +228,8 @@ def _read_archive(task, store, owner):
         members = archive.infolist()
         if len(members) > 10000 or sum(x.file_size for x in members) > MAX_EXPANDED_BYTES:
             raise ValueError("MinerU 结果包超过解包限制。")
+        if sum(_is_origin_pdf(item.filename) for item in members) > 1:
+            raise ValueError("MinerU 结果包包含重复的原件输出。")
         names = set()
         for item in members:
             path = PurePosixPath(item.filename)
@@ -226,11 +240,66 @@ def _read_archive(task, store, owner):
                 or item.filename in names
                 or stat.S_ISLNK(item.external_attr >> 16)
                 or item.flag_bits & 1
-                or item.file_size > MAX_MEMBER_BYTES
+                or (item.file_size > MAX_MEMBER_BYTES and not _is_origin_pdf(item.filename))
             ):
                 raise ValueError("MinerU 结果包包含不安全或重复的成员。")
             names.add(item.filename)
             if item.is_dir():
+                continue
+            if _is_origin_pdf(item.filename):
+                # MinerU includes an auxiliary PDF derived from the submitted
+                # split. It can be re-serialized by the provider, so verify
+                # its ZIP checksum, PDF structure and physical page count
+                # before skipping it; do not treat it as source evidence.
+                part_ref = task.get("part_blob")
+                try:
+                    part_path = resolve_reference(part_ref, store.files_dir, owner)
+                    _verify_existing(part_path, part_ref["content_hash"], part_ref["size"])
+                except (KeyError, TypeError, ValueError, OSError) as exc:
+                    raise ValueError("MinerU 结果包原件副本无法绑定到提交分片。") from exc
+                if (
+                    type(part_ref.get("size")) is not int
+                    or not 0 < part_ref["size"] <= MAX_SOURCE_BYTES
+                    or item.file_size > MAX_SOURCE_BYTES
+                ):
+                    raise ValueError("MinerU 结果包原件输出超过安全大小限制。")
+                with tempfile.TemporaryFile() as pdf_file:
+                    digest = hashlib.sha256()
+                    size = 0
+                    prefix = bytearray()
+                    with archive.open(item) as member:
+                        while chunk := member.read(65536):
+                            size += len(chunk)
+                            if size > MAX_SOURCE_BYTES:
+                                raise ValueError("MinerU 结果包原件输出超过安全大小限制。")
+                            if len(prefix) < 5:
+                                prefix.extend(chunk[: 5 - len(prefix)])
+                            digest.update(chunk)
+                            pdf_file.write(chunk)
+                    if size != item.file_size:
+                        raise ValueError("MinerU 结果包原件输出长度不一致。")
+                    is_exact_part = size == part_ref["size"] and digest.hexdigest() == part_ref["content_hash"]
+                    if not is_exact_part:
+                        if bytes(prefix) != b"%PDF-":
+                            raise ValueError("MinerU 结果包原件输出不是有效 PDF。")
+                        try:
+                            from pypdf import PdfReader
+
+                            pdf_file.seek(0)
+                            reader = PdfReader(pdf_file, strict=False)
+                            if reader.is_encrypted and not reader.decrypt(""):
+                                raise ValueError("PDF is encrypted")
+                            page_count = len(reader.pages)
+                        except Exception as exc:
+                            raise ValueError("MinerU 结果包原件输出无法验证。") from exc
+                        first_page, last_page = task.get("first_page"), task.get("last_page")
+                        expected = (
+                            last_page - first_page + 1
+                            if type(first_page) is int and type(last_page) is int and last_page >= first_page
+                            else None
+                        )
+                        if not 0 < page_count <= 3000 or (expected is not None and page_count != expected):
+                            raise ValueError("MinerU 结果包原件输出页数与提交分片不匹配。")
                 continue
             data = archive.read(item)
             if len(data) != item.file_size:

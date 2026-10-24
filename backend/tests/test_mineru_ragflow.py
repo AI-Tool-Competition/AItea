@@ -17,6 +17,7 @@ from app.contexts.documents.infrastructure.providers.mineru import Admission, Mi
 from app.contexts.documents.infrastructure.providers.mineru_results import (
     _assemble,
     _prepare,
+    _read_archive,
     reference,
     resolve_reference,
 )
@@ -489,7 +490,7 @@ def test_mineru_parts_also_obey_file_size_limit(tmp_path, monkeypatch):
     assert expected_page == 41
 
 
-def result_archive(tmp_path, *, unsafe=False):
+def result_archive(tmp_path, *, unsafe=False, source=b"original source", origin=None, extra=None):
     from app.shared.infrastructure.persistence.blob_store import BlobStore
 
     store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
@@ -503,10 +504,14 @@ def result_archive(tmp_path, *, unsafe=False):
             ),
         )
         archive.writestr("full.md", "tea lawful clause")
+        if origin is not None:
+            archive.writestr("839d0d23-bf92-4c24-9b57-c8a79ff44512_origin.pdf", origin)
+        if extra is not None:
+            archive.writestr(*extra)
         if unsafe:
             archive.writestr("../escape.txt", "invalid")
     raw = store.put_bytes("owner", out.getvalue())
-    original = store.put_bytes("owner", b"original source")
+    original = store.put_bytes("owner", source)
     task = {
         "id": "task-1",
         "batch_id": "batch-1",
@@ -518,6 +523,65 @@ def result_archive(tmp_path, *, unsafe=False):
         "result_blob": reference(raw),
     }
     return store, task
+
+
+def blank_pdf(page_count):
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=100, height=100)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def test_mineru_skips_verified_origin_copy_above_member_limit(tmp_path, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import mineru_results
+
+    source = blank_pdf(1)
+    assert len(source) > 200
+    monkeypatch.setattr(mineru_results, "MAX_MEMBER_BYTES", 200)
+    store, task = result_archive(tmp_path, source=source, origin=source)
+
+    blocks, layout, artifacts, _ = _read_archive(task, store, "owner")
+
+    assert len(blocks) == 1 and len(layout) == 1
+    assert "839d0d23-bf92-4c24-9b57-c8a79ff44512_origin.pdf" not in artifacts
+
+
+def test_mineru_skips_valid_provider_origin_pdf_with_matching_page_count(tmp_path, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import mineru_results
+
+    source = b"submitted" * 100
+    derivative = blank_pdf(1)
+    assert len(derivative) > 200 and derivative != source
+    monkeypatch.setattr(mineru_results, "MAX_MEMBER_BYTES", 200)
+    store, task = result_archive(tmp_path, source=source, origin=derivative)
+
+    _, _, artifacts, _ = _read_archive(task, store, "owner")
+
+    assert "839d0d23-bf92-4c24-9b57-c8a79ff44512_origin.pdf" not in artifacts
+
+
+def test_mineru_rejects_provider_origin_pdf_with_wrong_page_count(tmp_path, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import mineru_results
+
+    monkeypatch.setattr(mineru_results, "MAX_MEMBER_BYTES", 200)
+    store, task = result_archive(tmp_path, source=b"submitted" * 100, origin=blank_pdf(2))
+
+    with pytest.raises(ValueError, match="页数与提交分片不匹配"):
+        _read_archive(task, store, "owner")
+
+
+def test_mineru_keeps_member_limit_for_unrelated_zip_members(tmp_path, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import mineru_results
+
+    monkeypatch.setattr(mineru_results, "MAX_MEMBER_BYTES", 200)
+    store, task = result_archive(tmp_path, extra=("unexpected.bin", b"x" * 201))
+
+    with pytest.raises(ValueError, match="不安全"):
+        _read_archive(task, store, "owner")
 
 
 def test_mineru_retains_artifacts_and_requires_page_source_proofs(tmp_path):

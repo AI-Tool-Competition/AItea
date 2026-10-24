@@ -329,6 +329,12 @@ def _auxiliary_worker(connection, operation: str, payload) -> None:
                 _verify_hash(stream, source_hash, size)
                 _verify_identity(path, info, size)
             result = {"source_hash": source_hash, "size": size}
+        elif operation == "mineru_rebuild":
+            from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+                rebuild_manifest,
+            )
+
+            result = rebuild_manifest(payload)
         else:
             from app.contexts.documents.infrastructure.parsers.native_parser import rebuild_pdf_manifest
 
@@ -691,6 +697,7 @@ def apply_page_transcription(page, metadata, transcript, *, native_hint):
     ):
         transcript["uncertain_spans"].append("table_layout_not_preserved")
     metadata.update(transcript)
+    metadata["text_sha256"] = hashlib.sha256(transcript["text"].encode()).hexdigest()
     page.update(
         text=transcript["text"],
         printed_page=transcript["printed_page"],
@@ -706,6 +713,8 @@ def rebuild_pdf_bounded(manifest: dict) -> dict:
         from app.contexts.documents.infrastructure.parsers.archive_parsing import archive_rebuild_bounded
 
         return archive_rebuild_bounded(manifest)
+    if manifest.get("parser") == "mineru":
+        return _run_bounded(_auxiliary_worker, ("mineru_rebuild", manifest), 45)
     return _run_bounded(_auxiliary_worker, ("assemble", manifest), 45)
 
 
@@ -751,7 +760,8 @@ def ocr_bounded(
 
     if (
         not pages
-        or len(pages) > (ARCHIVE_MAX_PAGES if content is None else 300)
+        or len(pages)
+        > (ARCHIVE_MAX_PAGES if content is None else 300)
         or [page.get("page") for page in pages] != list(range(1, len(pages) + 1))
         or any(page.get("source_hash") != result["source_hash"] for page in pages)
     ):

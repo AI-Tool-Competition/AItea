@@ -284,7 +284,7 @@ def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(
     assert stored_manifest["pages"][0]["status"] == "pending_ocr"
 
 
-def test_incomplete_vision_page_is_retried_but_mineru_table_review_is_not():
+def test_incomplete_vision_page_and_mineru_table_review_are_retried_visually():
     vision_page = {
         "page": 4,
         "status": "ocr_uncertain",
@@ -314,10 +314,159 @@ def test_incomplete_vision_page_is_retried_but_mineru_table_review_is_not():
     mineru_page = {
         "page": 4,
         "status": "ocr_uncertain",
-        "ocr": {"provider": "mineru", "complete": False, "uncertain_spans": ["table_structure_ambiguous"]},
+        "reasons": ["table_structure_ambiguous"],
+        "ocr": {
+            "provider": "mineru",
+            "result_hash": "a" * 64,
+            "complete": False,
+            "uncertain_spans": ["table_structure_ambiguous"],
+        },
     }
     decision = classify_processing({"pages": [mineru_page]}, phase="parse")
+    assert decision.reason == "mineru_visual_table_retry" and decision.retryable
+    assert decision.pages == (4,)
+
+
+def test_mineru_visual_fallback_retries_incomplete_output_only_three_quality_cycles():
+    page = {
+        "page": 4,
+        "status": "ocr_uncertain",
+        "ocr_fallback": {"protocol": "mineru-table-visual-page-v1", "attempts": 2},
+        "ocr": {
+            "prompt_version": "legal-page-transcription-v3",
+            "request_id": "completed-request",
+            "attempts": 1,
+            "complete": True,
+            "uncertain_spans": ["table_layout_not_preserved"],
+        },
+    }
+    decision = classify_processing({"pages": [page]}, phase="parse")
+    assert decision.reason == "ocr_quality_retry" and decision.pages == (4,)
+
+    page["ocr_fallback"]["attempts"] = 3
+    decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.reason == "quality_review" and not decision.retryable
+
+
+def test_mineru_table_retry_preserves_original_page_and_marks_visual_fallback(service):
+    content = make_pdf([("Schedule tariff table", False)])
+    original = service.archive.blobs.put_bytes("owner", content)
+    manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_uncertain",
+        reasons=["table_structure_ambiguous"],
+        text="Original MinerU table text",
+        ocr={
+            "provider": "mineru",
+            "result_hash": "b" * 64,
+            "complete": False,
+            "uncertain_spans": ["table_structure_ambiguous"],
+        },
+    )
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.pdf",
+            "application/pdf",
+            "https://official.invalid/law.pdf",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="mineru-visual-fallback",
+            kind_hint="law",
+        )
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document["id"]))
+        decision = classify_processing(manifest, phase="parse")
+        receipt = service.collection.recovery._retry_pages(
+            conn,
+            {"owner_id": "owner", "id": "recovery", "recovery_count": 0},
+            {"id": document["id"], "version": 1, "content_hash": original.digest},
+            manifest,
+            decision,
+        )
+    with closing(service.db.connect()) as conn:
+        stored = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0])
+    retried = stored["pages"][0]
+    assert decision.reason == "mineru_visual_table_retry"
+    assert retried["status"] == "pending_ocr"
+    assert retried["ocr_fallback"]["protocol"] == "mineru-table-visual-page-v1"
+    assert retried["ocr_fallback"]["attempts"] == 1
+    assert retried["ocr_retry_cycles"][-1]["previous_page"]["text"] == "Original MinerU table text"
+    assert receipt[0]["page"] == 1
+
+
+def test_blocked_mineru_table_review_is_automatically_queued_for_visual_fallback(service, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import mineru
+
+    monkeypatch.setattr(mineru, "manifest_valid", lambda _manifest: True)
+    content = make_pdf([("Schedule tariff table", False)])
+    document = register(service, content, key="mineru-table-auto-fallback")
+    manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
+    manifest["parser"] = "mineru"
+    manifest["parser_version"] = "api-v4"
+    manifest["pipeline_version"] = "mineru-precise-v1+layout-token-hierarchical-v2"
+    manifest["pages"][0].update(
+        status="ocr_uncertain",
+        reasons=["table_structure_ambiguous"],
+        text="Original MinerU tariff row",
+        ocr={
+            "provider": "mineru",
+            "result_hash": "d" * 64,
+            "complete": False,
+            "uncertain_spans": ["table_structure_ambiguous"],
+        },
+    )
+    manifest["remote_parse"] = {
+        "provider": "mineru",
+        "state": "done",
+        "source_hash": document["content_hash"],
+        "page_count": 1,
+        "parts": [],
+    }
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        claim = {
+            "document_id": document["id"],
+            "owner_id": "owner",
+            "phase": "parse",
+            "attempts": 3,
+        }
+        service.collection.recovery.record_failure(
+            conn,
+            claim,
+            processing=True,
+            decision=Decision("quality_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    result = service.collection.recovery.run_due(limit=32)
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "mineru_visual_table_retry")
+    assert saved["pages"][0]["status"] == "pending_ocr"
+    assert saved["pages"][0]["ocr_fallback"]["attempts"] == 1
+    assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["text"] == "Original MinerU tariff row"
 
 
 @pytest.mark.parametrize("status", [400, 401, 403])

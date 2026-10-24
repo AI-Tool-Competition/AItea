@@ -851,13 +851,80 @@ def manifest_valid(manifest):
             return False
         for number, page in enumerate(pages, 1):
             part, proof = by_page[number], page["ocr"]
+            result_hash = part["result_blob"]["content_hash"]
+            if page["page"] != number or page["source_hash"] != source or not isinstance(proof, dict):
+                return False
+            fallback = page.get("ocr_fallback")
+            if fallback is not None:
+                if not isinstance(fallback, dict) or fallback.get("protocol") != "mineru-table-visual-page-v1":
+                    return False
+                if not isinstance(page.get("text"), str):
+                    return False
+                text_hash = hashlib.sha256(page["text"].encode()).hexdigest()
+                image = proof.get("image_blob")
+                cycles = page.get("ocr_retry_cycles")
+                previous_mineru_page = False
+                if isinstance(cycles, list):
+                    for cycle in cycles:
+                        previous = cycle.get("previous_page") if isinstance(cycle, dict) else None
+                        previous_proof = previous.get("ocr") if isinstance(previous, dict) else None
+                        if not isinstance(previous_proof, dict):
+                            continue
+                        try:
+                            encoded_previous = json.dumps(
+                                previous,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                allow_nan=False,
+                            ).encode()
+                        except (TypeError, ValueError):
+                            continue
+                        previous_mineru_page = previous_mineru_page or (
+                            cycle.get("previous_page_sha256") == hashlib.sha256(encoded_previous).hexdigest()
+                            and previous.get("page") == number
+                            and previous.get("source_hash") == source
+                            and isinstance(previous.get("text"), str)
+                            and previous_proof.get("provider") == "mineru"
+                            and previous_proof.get("task_id") == part["task_id"]
+                            and previous_proof.get("provider_page_idx") == number - part["first_page"]
+                            and previous_proof.get("result_hash") == result_hash
+                            and previous_proof.get("text_sha256")
+                            == hashlib.sha256(previous.get("text", "").encode()).hexdigest()
+                        )
+                if (
+                    fallback.get("accepted") is not True
+                    or fallback.get("source_page") != number
+                    or fallback.get("source_result_hash") != result_hash
+                    or fallback.get("text_sha256") != text_hash
+                    or not previous_mineru_page
+                    or proof.get("provider") != "vision"
+                    or page.get("status") != "ocr_complete"
+                    or proof.get("source_hash") != source
+                    or proof.get("page") != number
+                    or proof.get("text_sha256") != text_hash
+                    or proof.get("complete") is not True
+                    or proof.get("uncertain_spans")
+                    or proof.get("prompt_version") != fallback.get("prompt_version")
+                    or not isinstance(proof.get("prompt_version"), str)
+                    or not isinstance(proof.get("request_id"), str)
+                    or not re.fullmatch(r"[a-f0-9]{32}", proof["request_id"])
+                    or not isinstance(proof.get("image_sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", proof["image_sha256"])
+                    or not isinstance(image, dict)
+                    or image.get("content_hash") != proof.get("image_sha256")
+                    or image.get("mime_type") != "image/png"
+                    or type(image.get("size")) is not int
+                    or image["size"] <= 0
+                    or "table_structure_ambiguous" in (page.get("reasons") or [])
+                ):
+                    return False
+                continue
             if (
-                page["page"] != number
-                or page["source_hash"] != source
-                or proof["provider"] != "mineru"
+                proof["provider"] != "mineru"
                 or proof["task_id"] != part["task_id"]
                 or proof["provider_page_idx"] != number - part["first_page"]
-                or proof["result_hash"] != part["result_blob"]["content_hash"]
+                or proof["result_hash"] != result_hash
                 or proof["text_sha256"] != hashlib.sha256(page["text"].encode()).hexdigest()
             ):
                 return False

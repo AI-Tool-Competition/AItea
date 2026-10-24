@@ -30,6 +30,7 @@ def isolated_providers(monkeypatch):
         monkeypatch.setenv(key, "")
     monkeypatch.setenv("VISION_OCR_ENABLED", "false")
     monkeypatch.setenv("VISION_OCR_WORKERS", "2")
+    monkeypatch.setenv("VISION_OCR_REQUEST_TIMEOUT_SECONDS", "180")
     monkeypatch.delenv("VISION_OCR_REQUEST_WORKERS", raising=False)
     monkeypatch.setenv("VISION_OCR_ADAPTIVE", "false")
     monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "64")

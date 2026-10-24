@@ -715,6 +715,101 @@ class CollectionService:
             "mime_type": "image/png",
         }
 
+    def _retry_mineru_visual_pages(self, doc, claim, manifest):
+        """Transcribe only the source-bound pages explicitly reset for visual fallback."""
+        from app.contexts.documents.infrastructure.parsers.document_parser import ocr_bounded
+        from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
+        from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+            has_pending_visual_fallback,
+            is_visual_fallback_page,
+        )
+        from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
+            persist_response_evidence,
+        )
+        from app.contexts.documents.infrastructure.providers.vision import (
+            vision_ocr_configured,
+            vision_ocr_request_worker_limit,
+        )
+
+        if not has_pending_visual_fallback(manifest) or not vision_ocr_configured():
+            raise ValueError("MinerU 视觉回退任务未就绪。")
+        selected = [
+            page
+            for page in manifest.get("pages", [])
+            if is_visual_fallback_page(page) and page.get("status") == "pending_ocr"
+        ]
+        if not selected or any(
+            page.get("source_hash") != doc["content_hash"] or pdf_page_status(page) != "pending_ocr"
+            for page in selected
+        ):
+            raise ValueError("MinerU 视觉回退页码或来源绑定无效。")
+
+        def checkpoint_page(value):
+            number = value.get("page")
+            if type(number) is not int or not 1 <= number <= len(manifest["pages"]):
+                raise ValueError("MinerU 视觉回退页码无效。")
+            with self.db.transaction() as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise RuntimeError("MinerU 视觉识别租约已失效，停止提交检查点。")
+                row = conn.execute(
+                    "SELECT manifest FROM documents WHERE id=? AND owner_id=?",
+                    (doc["id"], claim["owner_id"]),
+                ).fetchone()
+                current = json.loads(row["manifest"]) if row else None
+                if (
+                    not isinstance(current, dict)
+                    or current.get("source_hash") != doc["content_hash"]
+                    or current.get("parser") != "mineru"
+                    or current.get("remote_parse", {}).get("state") != "done"
+                ):
+                    raise ValueError("MinerU 视觉回退资料版本已变化。")
+                previous = current.get("pages", [])[number - 1]
+                if (
+                    previous.get("source_hash") != doc["content_hash"]
+                    or not is_visual_fallback_page(previous)
+                    or not is_visual_fallback_page(value)
+                ):
+                    raise ValueError("MinerU 视觉回退检查点与请求页不匹配。")
+                current["pages"][number - 1] = deepcopy(value)
+                conn.execute(
+                    "UPDATE documents SET manifest=? WHERE id=? AND owner_id=?",
+                    (dump(current), doc["id"], claim["owner_id"]),
+                )
+
+        def checkpoint_response(evidence):
+            with closing(self.db.connect()) as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise RuntimeError("MinerU 视觉识别租约已失效，停止保存错误回执。")
+                row = conn.execute(
+                    "SELECT manifest FROM documents WHERE id=? AND owner_id=?",
+                    (doc["id"], claim["owner_id"]),
+                ).fetchone()
+            current = json.loads(row["manifest"]) if row else None
+            number = evidence.get("page")
+            if not isinstance(current, dict) or type(number) is not int:
+                raise ValueError("MinerU 视觉识别错误回执缺少页面绑定。")
+            request_page = current["pages"][number - 1]
+            return persist_response_evidence(
+                self.service.archive.blobs,
+                claim["owner_id"],
+                evidence,
+                source_hash=doc["content_hash"],
+                request_page=request_page,
+            )
+
+        return ocr_bounded(
+            doc["filename"],
+            None,
+            doc["mime_type"],
+            manifest,
+            on_page=checkpoint_page,
+            on_image=lambda rendered: self._persist_ocr_image(claim, rendered),
+            on_response_error=checkpoint_response,
+            max_pages=min(20, vision_ocr_request_worker_limit()),
+            archive_path=doc["storage_path"],
+            archive_size=doc["size"],
+        )
+
     def _official_html_source(self, document):
         """Return the active source-pool entry for an exact imported HTML page."""
         from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
@@ -1362,7 +1457,14 @@ class CollectionService:
             fingerprint = self.service.embedding_fingerprint()
             if claim["phase"] == "parse":
                 if supports(doc["filename"], doc["mime_type"]):
-                    manifest = preserve_import_origin(self.parser.step(doc, claim, manifest))
+                    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+                        has_pending_visual_fallback,
+                    )
+
+                    if has_pending_visual_fallback(manifest):
+                        manifest = self._retry_mineru_visual_pages(doc, claim, manifest)
+                    else:
+                        manifest = preserve_import_origin(self.parser.step(doc, claim, manifest))
                 else:
                     content = Path(doc["storage_path"]).read_bytes()
                     if hashlib.sha256(content).hexdigest() != doc["content_hash"]:
@@ -1595,6 +1697,13 @@ class CollectionService:
                     # the recognizer is configured; otherwise keep the exact
                     # pending state visible instead of spinning forever.
                     needs_parse = needs_parse or (vision_ocr_configured() and bool(pending_assets(manifest)))
+                    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+                        has_pending_visual_fallback,
+                    )
+
+                    needs_parse = needs_parse or (
+                        vision_ocr_configured() and has_pending_visual_fallback(manifest)
+                    )
                     # Official HTML sources can have more body images than a
                     # single bounded acquisition lease. Keep advancing only
                     # after at least one verified binding exists, so a failed

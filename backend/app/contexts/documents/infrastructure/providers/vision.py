@@ -253,6 +253,17 @@ def vision_ocr_request_worker_limit() -> int:
     return value
 
 
+def vision_ocr_request_timeout() -> int:
+    """Bound a complete visual-model response while allowing dense tables more time."""
+    try:
+        value = int(os.getenv("VISION_OCR_REQUEST_TIMEOUT_SECONDS", "180"))
+    except ValueError as exc:
+        raise ValueError("VISION_OCR_REQUEST_TIMEOUT_SECONDS must be between 10 and 600") from exc
+    if not 10 <= value <= 600:
+        raise ValueError("VISION_OCR_REQUEST_TIMEOUT_SECONDS must be between 10 and 600")
+    return value
+
+
 def vision_ocr_adaptive_enabled() -> bool:
     value = os.getenv("VISION_OCR_ADAPTIVE", "false").strip().lower()
     if value in {"1", "true", "yes", "on"}:
@@ -321,12 +332,15 @@ def _invoke(body: dict) -> tuple[dict, str, str]:
 
 
 def _invoke_provider(body: dict) -> tuple[dict, str, str]:
-    deadline = time.monotonic() + 65
+    request_timeout = vision_ocr_request_timeout()
+    deadline = time.monotonic() + request_timeout + 5
     data = bytearray()
     received_status = None
     try:
         with httpx.Client(
-            timeout=httpx.Timeout(60, connect=10), follow_redirects=False, trust_env=False
+            timeout=httpx.Timeout(request_timeout, connect=min(10, request_timeout)),
+            follow_redirects=False,
+            trust_env=False,
         ) as client:
             with client.stream(
                 "POST",

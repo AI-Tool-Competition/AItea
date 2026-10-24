@@ -116,9 +116,10 @@ def test_versioned_proxy_catalog_covers_configured_collection_domains():
         while stack:
             value = stack.pop()
             if isinstance(value, dict):
-                hosts = value.get("allowed_hosts")
-                if isinstance(hosts, list):
-                    required.update(host for host in hosts if isinstance(host, str))
+                for field in ("allowed_hosts", "trusted_hosts", "html_asset_hosts"):
+                    hosts = value.get(field)
+                    if isinstance(hosts, list):
+                        required.update(host for host in hosts if isinstance(host, str))
                 stack.extend(value.values())
             elif isinstance(value, list):
                 stack.extend(value)

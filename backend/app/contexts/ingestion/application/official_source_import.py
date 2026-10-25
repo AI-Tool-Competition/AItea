@@ -13,7 +13,7 @@ import stat
 import threading
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
 from app.configuration.paths import InstancePaths
@@ -33,6 +33,113 @@ _SUPPORTED_MIME = {
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+
+def _sso_catalogue_detail_url(source: dict, url: str) -> bool:
+    policy = source.get("discovery", {})
+    if (
+        not isinstance(policy, dict)
+        or policy.get("adapter") != "sso_catalog_2026"
+        or policy.get("category") not in {"Act", "SL"}
+    ):
+        return False
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname == "sso.agc.gov.sg"
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+        and not parsed.fragment
+        and re.fullmatch(
+            rf"/{re.escape(policy.get('category', ''))}/[A-Za-z0-9_-]+(?:/\d{{8}})?/?",
+            parsed.path,
+        )
+    )
+
+
+def _sso_catalogue_evidence(source: dict, event: dict, url: str) -> dict | None:
+    """Validate the current-catalogue identity and exact parent-row location."""
+    if not _sso_catalogue_detail_url(source, url) or event.get("source_status") != "Current":
+        return None
+    policy = source["discovery"]
+    category = policy["category"].casefold()
+    match = re.fullmatch(r"/(Act|SL)/([A-Za-z0-9_-]+)(?:/\d{8})?/?", urlsplit(url).path, re.I)
+    identity = event.get("source_identity_key")
+    locator = event.get("source_locator")
+    if (
+        not match
+        or match[1].casefold() != category
+        or identity != f"sso:{category}:{match[2].casefold()}"
+        or not isinstance(locator, dict)
+        or locator.get("source_sha256") != event.get("discovery_parent_hash")
+        or not re.fullmatch(r"[a-f0-9]{64}", str(locator.get("source_sha256", "")))
+        or locator.get("table_class") != "browse-list"
+        or locator.get("unit") != "decoded_unicode_char"
+        or type(locator.get("row")) is not int
+        or not 1 <= locator["row"] <= policy["page_size"]
+        or type(locator.get("start")) is not int
+        or type(locator.get("end")) is not int
+        or not 0 <= locator["start"] < locator["end"] <= 4 * 1024 * 1024
+        or not re.fullmatch(r"[a-f0-9]{64}", str(locator.get("fragment_sha256", "")))
+    ):
+        return None
+    catalogue_url = event.get("discovery_parent_url")
+    try:
+        catalogue = urlsplit(catalogue_url)
+        catalogue_port = catalogue.port
+        catalogue_pairs = parse_qsl(catalogue.query, keep_blank_values=True, max_num_fields=20)
+    except (TypeError, ValueError):
+        return None
+    catalogue_query = {key.casefold(): value for key, value in catalogue_pairs}
+    if (
+        catalogue.scheme != "https"
+        or catalogue.hostname != "sso.agc.gov.sg"
+        or catalogue.username is not None
+        or catalogue.password is not None
+        or catalogue_port is not None
+        or catalogue.fragment
+        or not re.fullmatch(
+            rf"/Browse/{re.escape(policy['category'])}/Current(?:/All(?:/\d{{1,6}})?)?/?",
+            catalogue.path,
+        )
+        or len(catalogue_query) != len(catalogue_pairs)
+        or catalogue_query
+        != {
+            "pagesize": str(policy["page_size"]),
+            "sortby": "Title",
+            "sortorder": "ASC",
+        }
+    ):
+        return None
+    document_date = event.get("source_document_date")
+    if document_date is not None and not re.fullmatch(r"\d{8}", str(document_date)):
+        return None
+    try:
+        detail_pairs = parse_qsl(urlsplit(url).query, keep_blank_values=True, max_num_fields=20)
+    except ValueError:
+        return None
+    query = {key.casefold(): value for key, value in detail_pairs}
+    if len(query) != len(detail_pairs) or set(query) - {"docdate", "viewtype", "_"}:
+        return None
+    if query.get("viewtype", "pdf").casefold() != "pdf":
+        return None
+    if "_" in query and not re.fullmatch(r"\d{1,20}", query["_"]):
+        return None
+    if query.get("docdate") != document_date and (query.get("docdate") or document_date):
+        return None
+    return {
+        "identity_key": identity,
+        "document_date": document_date,
+        "source_status": "Current",
+        "source_locator": locator,
+        "catalogue_url": catalogue_url,
+        "catalogue_sha256": event.get("discovery_parent_hash"),
+    }
 
 
 def _safe_file(root: Path, relative: str, expected_hash: str) -> bytes:
@@ -315,6 +422,14 @@ class OfficialSourceImporter:
         discovery = asset.get("discovery", {})
         purpose = event.get("discovery_purpose") or discovery.get("purpose")
         matched = event.get("discovery_matched", discovery.get("matched"))
+        if source.get("discovery", {}).get("adapter") == "sso_catalog_2026":
+            if _sso_catalogue_evidence(source, event, url) is None or matched is not True:
+                return False, "sso_catalogue_evidence_invalid"
+            if purpose == "document":
+                return True, None
+            if purpose == "detail" and verified_mime_type in _SUPPORTED_MIME:
+                return True, None
+            return False, "catalogue_page_not_document"
         if matched is True and purpose == "document":
             return True, None
         if (
@@ -533,6 +648,20 @@ class OfficialSourceImporter:
                 event=event,
             )
             return "skipped"
+        sso_evidence = _sso_catalogue_evidence(source, event, url)
+        identity_key = f"official-source:{source['id']}:{url}"
+        source_response = None
+        if sso_evidence is not None:
+            identity_key = f"official-source:{source['id']}:{sso_evidence['identity_key']}"
+            source_response = {
+                "protocol": "official-source-catalogue-evidence-v1",
+                "source_id": source["id"],
+                **sso_evidence,
+                "checklist_items": source.get("verification", {}).get("checklist_items", []),
+                "title": event.get("discovery_title")[:300]
+                if isinstance(event.get("discovery_title"), str)
+                else None,
+            }
         try:
             blob = self.service.archive.blobs.put(SYSTEM_OWNER_ID, iter([original]))
             if blob.digest != digest or blob.size != len(original):
@@ -549,8 +678,9 @@ class OfficialSourceImporter:
                     collection=f"country:{country}",
                     level="primary",
                     tags=["official-source", source["id"]],
-                    identity_key=f"official-source:{source['id']}:{url}",
+                    identity_key=identity_key,
                     kind_hint="guidance" if source["kind"] == "guidance" else "law",
+                    source_response=source_response,
                 )
                 conn.execute(
                     """INSERT INTO official_source_imports(
@@ -633,8 +763,11 @@ class OfficialSourceImporter:
                         row["mime_type"] == "text/html"
                         and (source := self.sources.get(row["source_id"])) is not None
                         and source.get("country") == country
-                        and source.get("kind") == "guidance"
-                        and self._approved_html_detail(source, row["source_url"])
+                        and (
+                            source.get("kind") == "guidance"
+                            and self._approved_html_detail(source, row["source_url"])
+                            or _sso_catalogue_detail_url(source, row["source_url"])
+                        )
                     )
                 }
                 retryable.update(

@@ -153,6 +153,42 @@ def _validate_verification(source: dict, country: str, hosts: list[str], validat
             raise ValueError("An active source needs a bounded server receipt and body checksum")
 
 
+def _validate_discovery_policy(source: dict, validate_url) -> None:
+    """Validate the one specialized catalogue policy exposed by the registry."""
+    policy = source.get("discovery")
+    if policy is None:
+        return
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != {"adapter", "category", "state", "page_size", "cache_limit"}
+        or policy.get("adapter") != "sso_catalog_2026"
+        or policy.get("category") not in {"Act", "SL"}
+        or policy.get("state") != "Current"
+        or type(policy.get("page_size")) is not int
+        or policy["page_size"] not in {20, 50, 100, 250, 500}
+        or type(policy.get("cache_limit")) is not int
+        or not policy["page_size"] <= policy["cache_limit"] <= 10_000
+    ):
+        raise ValueError("Invalid bounded source discovery policy")
+    try:
+        normalized, host = validate_url(source["url"])
+        parsed = urlsplit(source["url"])
+        expected_path = f"/Browse/{policy['category']}/Current/All"
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("SSO source must use its exact current catalogue root") from error
+    if (
+        source.get("country") != "SG"
+        or source.get("kind") != "catalogue"
+        or source.get("allowed_hosts") != ["sso.agc.gov.sg"]
+        or host != "sso.agc.gov.sg"
+        or normalized != source["url"]
+        or parsed.path != expected_path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("SSO source must use its exact current catalogue root")
+
+
 def validate_source_registry(
     pool: dict, country: str, validate_url: Callable[[str], tuple[str, str]]
 ) -> list[dict]:
@@ -183,6 +219,11 @@ def validate_source_registry(
         source_rows[identifier] = source
         scope = source["country"]
         hosts = source["allowed_hosts"]
+        discovery_keywords = source.get("discovery_keywords")
+        specialized_discovery = (
+            isinstance(source.get("discovery"), dict)
+            and source["discovery"].get("adapter") == "sso_catalog_2026"
+        )
         normalized, host = validate_url(source["url"])
         if (identifier == SETNEG_ID or host == "jdih.setneg.go.id") and (
             identifier != SETNEG_ID
@@ -207,15 +248,18 @@ def validate_source_registry(
             or source["kind"] not in {"guidance", "legislation", "catalogue"}
             or not source["topics"]
             or not all(isinstance(topic, str) and 1 <= len(topic) <= 100 for topic in source["topics"])
-            or not 1 <= len(source["discovery_keywords"]) <= 40
+            or not isinstance(discovery_keywords, list)
+            or len(discovery_keywords) > 40
+            or (not discovery_keywords and not specialized_discovery)
             or any(
                 not isinstance(word, str) or not 1 <= len(word) <= 100
-                for word in source["discovery_keywords"]
+                for word in discovery_keywords
             )
         ):
             raise ValueError("Invalid official source scope or bounds")
         _validate_html_document_paths(source)
         _validate_html_asset_hosts(source, scope, validate_url)
+        _validate_discovery_policy(source, validate_url)
         if protocol == "aitea-official-source-pool-v2":
             if source.get("status") not in {"active", "archived"} or source.get("transport") != "proxy":
                 raise ValueError("Every v2 source needs an explicit status and proxy transport")

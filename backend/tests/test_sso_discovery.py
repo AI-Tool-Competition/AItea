@@ -59,6 +59,18 @@ def test_real_current_sl_rows_and_counts_survive_navigation_link_saturation():
         assert hashlib.sha256(fragment.encode()).hexdigest() == loc["fragment_sha256"]
 
 
+def test_pagination_does_not_consume_the_document_candidate_limit():
+    raw = (FIXTURES / "sso-sl-current-20261019.html").read_bytes()
+    item = definition()
+    recipe = recipe_for(item)
+    recipe["max_links"] = 20
+    result = discover_page(item["entries"][0]["url"], raw, "text/html", recipe)
+    assert result["matched"]
+    assert len(result["links"]) == 21
+    assert sum(link["purpose"] == "document" for link in result["links"]) == 20
+    assert sum(link["purpose"] == "catalog" for link in result["links"]) == 1
+
+
 def test_three_constitutional_documents_have_distinct_identity_and_no_extra_navigation():
     result = inspect(code="1.1")
     assert result["matched"] and result["scope"]["total"] == 3
@@ -71,6 +83,25 @@ def test_three_constitutional_documents_have_distinct_identity_and_no_extra_navi
     assert all(x["purpose"] == "document" for x in result["links"])
     assert result["scope"]["full_text_acquired"] is False
     assert result["scope"]["current_effect_verified"] is False
+
+
+def test_same_legislation_family_can_expose_distinct_current_editions():
+    raw = (FIXTURES / "sso-sl-current-20261019.html").read_text()
+    import re
+
+    rows = list(re.finditer(r'<tr class="(?:alternate)?".*?</tr>', raw, re.S))
+    assert len(rows) == 20
+    first = rows[0].group().replace("DocDate=19970926", "DocDate=19970927")
+    last = rows[-1]
+    raw = raw[: last.start()] + first + raw[last.end() :]
+
+    result = inspect(raw.encode())
+
+    assert result["matched"]
+    editions = [
+        row for row in result["scope"]["documents"] if row["identity_key"] == "sso:sl:scja1969-n2"
+    ]
+    assert [row["document_date"] for row in editions] == ["19970926", "19970927"]
 
 
 @pytest.mark.parametrize(

@@ -69,6 +69,7 @@ class SourceCatalog:
                 "html_document_paths",
                 "html_asset_hosts",
                 "setneg_type",
+                "discovery",
             )
             for source_id, before in previous.items():
                 after = updated[source_id]

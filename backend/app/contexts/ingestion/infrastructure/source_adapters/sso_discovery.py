@@ -213,9 +213,16 @@ def inspect_catalog(url, content, rules):
                 raise ValueError("row lacks one explicit title link")
             html_url, match, query, title = candidates[0]
             identity = f"sso:{match[1].lower()}:{match[2].lower()}"
-            if identity in identities:
-                raise ValueError("duplicate legislation row")
-            identities.add(identity)
+            # One legislation family can appear more than once in a current
+            # catalogue when the source exposes separate effective editions.
+            # Keep the family identity stable for version history, while using
+            # The canonical versioned detail URL retains DocDate (and any
+            # version path segment), while dropping cache-busting parameters.
+            # Use it to detect a repeated row without changing family identity.
+            edition = (identity, html_url)
+            if edition in identities:
+                raise ValueError("duplicate legislation edition row")
+            identities.add(edition)
             pdfs = set()
             for anchor in row["anchors"]:
                 if "file-download" not in anchor["classes"]:
@@ -261,6 +268,8 @@ def inspect_catalog(url, content, rules):
                     "title": title[:300],
                     "identity_key": identity,
                     "source_locator": locator,
+                    "document_date": query.get("docdate"),
+                    "source_status": context["state"],
                 }
             )
         next_links = {_url(value, url) for value in parser.next_links}
@@ -293,8 +302,9 @@ def inspect_catalog(url, content, rules):
             ):
                 raise ValueError("next page changes catalogue filters")
             links.append({"url": following, "purpose": "catalog", "title": "Next Page"})
-        if len(links) > rules.max_links:
-            raise ValueError("page exceeds candidate limit; reduce PageSize")
+        catalog_links = sum(link["purpose"] == "catalog" for link in links)
+        if len(documents) > rules.max_links or catalog_links > 1:
+            raise ValueError("page exceeds its document or pagination-link limit; reduce PageSize")
     except (ValueError, TypeError, UnicodeError, KeyError, AssertionError, OverflowError):
         return failure("SSO 目录行、版本链接、分页或总数无法完整对账，保留缺口。")
     return {

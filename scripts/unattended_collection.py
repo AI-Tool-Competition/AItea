@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlencode, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
@@ -174,6 +174,31 @@ def source_pool(path, country):
 
 
 def recipe(source):
+    discovery = source.get("discovery")
+    if discovery is not None:
+        category = discovery["category"]
+        page_size = discovery["page_size"]
+        return {
+            "adapter": "sso",
+            "allowed_hosts": source["allowed_hosts"],
+            "catalog_patterns": [
+                rf"^/Browse/{category}/Current(?:/All(?:/[0-9]{{1,6}})?)?(?:\?|$)"
+            ],
+            "detail_patterns": [
+                rf"^/{category}/[^/?]+/(?:Uncommenced|Repealed|Revoked|Spent)(?:/[^?]*)?(?:\?|$)"
+            ],
+            "document_patterns": [],
+            "html_document_patterns": [rf"^/{category}/[^/?]+(?:/\d{{8}})?/?(?:\?|$)"],
+            "include_terms": [],
+            "exclude_terms": [],
+            "required_query": {
+                "PageSize": str(page_size),
+                "SortBy": "Title",
+                "SortOrder": "ASC",
+            },
+            "sso_catalog_2026": True,
+            "max_links": page_size,
+        }
     root_path = urlsplit(source["url"]).path or "/"
     root_pattern = "^" + re.escape(root_path) + "$"
     result = {
@@ -229,6 +254,59 @@ def recipe(source):
             max_links=51,
         )
     return result
+
+
+def request_url(source, url):
+    """Use the registry's fixed page size without changing the source identity URL."""
+    discovery = source.get("discovery")
+    if discovery is None or url != source["url"]:
+        return url
+    query = urlencode(
+        {
+            "PageSize": discovery["page_size"],
+            "SortBy": "Title",
+            "SortOrder": "ASC",
+        }
+    )
+    return f"{url}?{query}"
+
+
+def source_reference_fields(source, link, parent_hash):
+    """Keep SSO row identity and source-byte location bound to the parent page."""
+    discovery = source.get("discovery", {})
+    if discovery.get("adapter") != "sso_catalog_2026":
+        return {}
+    if link.get("purpose") == "catalog":
+        return {}
+    identity = link.get("identity_key")
+    locator = link.get("source_locator")
+    category = discovery["category"].casefold()
+    if (
+        not isinstance(identity, str)
+        or not re.fullmatch(rf"sso:{re.escape(category)}:[a-z0-9_-]{{1,80}}", identity)
+        or not isinstance(locator, dict)
+        or locator.get("source_sha256") != parent_hash
+        or locator.get("table_class") != "browse-list"
+        or locator.get("unit") != "decoded_unicode_char"
+        or type(locator.get("row")) is not int
+        or not 1 <= locator["row"] <= discovery["page_size"]
+        or type(locator.get("start")) is not int
+        or type(locator.get("end")) is not int
+        or not 0 <= locator["start"] < locator["end"] <= 4 * 1024 * 1024
+        or not re.fullmatch(r"[a-f0-9]{64}", str(locator.get("fragment_sha256", "")))
+        or link.get("source_status") != "Current"
+        or (
+            link.get("document_date") is not None
+            and not re.fullmatch(r"\d{8}", str(link["document_date"]))
+        )
+    ):
+        raise ValueError("SSO catalogue row identity or locator is invalid")
+    return {
+        "identity_key": identity,
+        "source_locator": locator,
+        "document_date": link.get("document_date"),
+        "source_status": link["source_status"],
+    }
 
 
 def _revalidate_beacukai_discovery(self):
@@ -539,12 +617,15 @@ class Collector:
     def fetch(self, source, url, cached=None):
         path, receipt = self.reserve(source, url)
         outcome = None
+        network_url = request_url(source, url)
+        receipt["network_url"] = network_url
         try:
             validators = {}
-            if valid_cached(self.root, cached) and cached["url"] == url:
+            cached_request_url = (cached or {}).get("requested_url", (cached or {}).get("url"))
+            if valid_cached(self.root, cached) and cached_request_url == network_url:
                 validators = {k: cached.get(k) for k in ("etag", "last_modified")}
             fetched = _download(
-                url,
+                network_url,
                 deadline=time.monotonic() + self.limits["timeout_seconds"],
                 consume=lambda chunks: self.blobs.put(
                     "official-updates:" + self.country + ":" + source["id"], chunks
@@ -556,7 +637,7 @@ class Collector:
                 max_bytes=self.limits["max_response_bytes"],
             )
             if fetched.get("not_modified"):
-                if fetched["url"] != url or not valid_cached(self.root, cached):
+                if fetched["url"] != network_url or not valid_cached(self.root, cached):
                     raise ValueError("304 lacks its verified matching cached original")
                 asset = {**cached, "observed_at": time.time()}
                 outcome = {
@@ -606,7 +687,7 @@ class Collector:
                 else:
                     asset = {
                         "url": fetched["url"],
-                        "requested_url": url,
+                        "requested_url": network_url,
                         "path": str(blob.path.relative_to(self.root)),
                         "content_hash": blob.digest,
                         "size": blob.size,
@@ -767,7 +848,14 @@ class Collector:
             )
 
     def map_links(self, source, url, asset, previous_asset, frontier, cache, urls):
-        for link in asset.get("discovery", {}).get("links", []):
+        is_sso = source.get("discovery", {}).get("adapter") == "sso_catalog_2026"
+        parent_url = url
+        if is_sso and url == source["url"]:
+            parent_url = asset.get("requested_url", url)
+        links = asset.get("discovery", {}).get("links", [])
+        if is_sso:
+            links = sorted(links, key=lambda link: link.get("purpose") != "catalog")
+        for link in links:
             candidate, host = _validated_url(link["url"])
             if (
                 host not in source["allowed_hosts"]
@@ -775,7 +863,20 @@ class Collector:
                 or scope_excluded(source, candidate)
             ):
                 continue
-            parent = {"url": url, "content_hash": asset["content_hash"]}
+            cached_target = cache.get(candidate)
+            if is_sso and link["purpose"] != "catalog" and isinstance(cached_target, dict):
+                same_immutable_version = (
+                    link.get("document_date") is not None
+                    and cached_target.get("source_document_date") == link.get("document_date")
+                    and cached_target.get("source_original_verified") is True
+                )
+                if same_immutable_version or (
+                    cached_target.get("source_original_verified") is True
+                    and time.time() - cached_target.get("observed_at", 0) < 7 * 86400
+                ):
+                    continue
+            parent = {"url": parent_url, "content_hash": asset["content_hash"]}
+            reference_fields = source_reference_fields(source, link, asset["content_hash"])
             if candidate in frontier:
                 item = frontier[candidate]
                 parents = item.get(
@@ -783,7 +884,7 @@ class Collector:
                     [{"url": item["parent_url"], "content_hash": item["parent_hash"]}],
                 )
                 prior_parent = previous_asset or next(
-                    (known for known in reversed(parents) if known["url"] == url), None
+                    (known for known in reversed(parents) if known["url"] == parent_url), None
                 )
                 parent_changed = (
                     prior_parent is not None and prior_parent["content_hash"] != asset["content_hash"]
@@ -793,15 +894,17 @@ class Collector:
                 self.event(
                     "source_reference",
                     source_id=source["id"],
-                    parent_url=url,
+                    parent_url=parent_url,
                     parent_hash=asset["content_hash"],
                     target_url=candidate,
                     last_known_target_hash=cache.get(candidate, {}).get("content_hash"),
+                    **reference_fields,
                 )
                 item.update(
-                    parent_url=url,
+                    parent_url=parent_url,
                     parent_hash=asset["content_hash"],
                     parents=([known for known in parents if known != parent] + [parent])[-8:],
+                    **reference_fields,
                 )
                 # A changed known parent version invalidates its target.
                 # A first reference from a different page only adds a
@@ -812,7 +915,31 @@ class Collector:
                 if due(item.get("health"), time.time()):
                     urls.appendleft(candidate)
                 continue
+            if len(frontier) >= self.limits["max_frontier"] and is_sso and link["purpose"] == "catalog":
+                deferred_details = [
+                    key for key, value in frontier.items() if value.get("purpose") != "catalog"
+                ]
+                if deferred_details:
+                    victim = min(
+                        deferred_details,
+                        key=lambda key: (
+                            frontier[key].get("attempt_count", 0),
+                            frontier[key].get("discovered_at", 0),
+                            key,
+                        ),
+                    )
+                    self.event(
+                        "frontier_archived",
+                        source_id=source["id"],
+                        url=victim,
+                        mapping=frontier.pop(victim),
+                        reason="sso_catalogue_pagination_priority",
+                    )
             if len(frontier) >= self.limits["max_frontier"]:
+                if is_sso:
+                    # Cached catalogue snapshots are the durable backlog for
+                    # rows that do not fit in the bounded in-memory frontier.
+                    continue
                 victim = min(
                     frontier,
                     key=lambda k: (
@@ -828,25 +955,31 @@ class Collector:
                     mapping=frontier.pop(victim),
                 )
             frontier[candidate] = {
-                "parent_url": url,
+                "parent_url": parent_url,
                 "parent_hash": asset["content_hash"],
                 "parents": [parent],
                 "title": link.get("title", ""),
                 "purpose": link["purpose"],
                 "attempt_count": 0,
                 "discovered_at": time.time(),
+                **reference_fields,
             }
             self.event(
                 "source_reference",
                 source_id=source["id"],
-                parent_url=url,
+                parent_url=parent_url,
                 parent_hash=asset["content_hash"],
                 target_url=candidate,
                 last_known_target_hash=cache.get(candidate, {}).get("content_hash"),
+                **reference_fields,
             )
             # Use this same bounded cycle for newly discovered useful
             # originals, rather than delaying the first follow to tomorrow.
-            if link["purpose"] == "document":
+            if is_sso and link["purpose"] == "catalog":
+                urls.appendleft(candidate)
+            elif is_sso:
+                urls.append(candidate)
+            elif link["purpose"] == "document":
                 urls.appendleft(candidate)
             else:
                 urls.append(candidate)
@@ -858,23 +991,43 @@ class Collector:
             dict(current.get("frontier", {})),
         )
         root_due = time.time() >= current.get("root_next_at", 0) or source["url"] not in cache
-        urls = [source["url"]] if root_due else []
-        urls += [
-            url
-            for url, item in sorted(
-                frontier.items(),
-                key=lambda pair: (
-                    pair[1].get("attempt_count", 0),
-                    -int(pair[1].get("purpose") == "document"),
-                    pair[0],
+        urls = deque()
+        is_sso = source.get("discovery", {}).get("adapter") == "sso_catalog_2026"
+        if is_sso:
+            def catalogue_index(entry):
+                match = re.search(r"/All(?:/(\d+))?$", urlsplit(entry[0]).path)
+                return int(match.group(1) or 0) if match else 0
+
+            for catalogue_url, catalogue_asset in sorted(
+                (
+                    (cached_url, cached_asset)
+                    for cached_url, cached_asset in cache.items()
+                    if cached_asset.get("discovery", {}).get("purpose") == "catalog"
                 ),
-            )
-            if url != source["url"]
-            and not scope_excluded(source, url)
-            and urlsplit(url).hostname in source["allowed_hosts"]
-            and due(item.get("health"), time.time())
-        ]
-        urls = deque(urls)
+                key=catalogue_index,
+            ):
+                self.map_links(source, catalogue_url, catalogue_asset, None, frontier, cache, urls)
+            if root_due:
+                urls.appendleft(source["url"])
+        elif root_due:
+            urls.append(source["url"])
+        urls.extend(
+            [
+                url
+                for url, item in sorted(
+                    frontier.items(),
+                    key=lambda pair: (
+                        pair[1].get("attempt_count", 0),
+                        -int(pair[1].get("purpose") == "document"),
+                        pair[0],
+                    ),
+                )
+                if url != source["url"]
+                and not scope_excluded(source, url)
+                and urlsplit(url).hostname in source["allowed_hosts"]
+                and due(item.get("health"), time.time())
+            ]
+        )
         visited = set()
         root_outcome = None
         deferred = None
@@ -927,7 +1080,9 @@ class Collector:
                         content_hash=asset["content_hash"],
                         path=asset["path"],
                         mime_type=asset["mime_type"],
-                        discovery_matched=(
+                        discovery_matched=bool(asset.get("discovery", {}).get("matched"))
+                        if is_sso
+                        else (
                             True
                             if url != source["url"] and frontier.get(url, {}).get("purpose") == "document"
                             else bool(asset.get("discovery", {}).get("matched"))
@@ -944,11 +1099,21 @@ class Collector:
                             frontier.get(url, {}).get("parent_hash") if url != source["url"] else None
                         ),
                         discovery_title=frontier.get(url, {}).get("title") if url != source["url"] else None,
+                        requested_url=(asset or {}).get("requested_url"),
+                        source_identity_key=frontier.get(url, {}).get("identity_key"),
+                        source_locator=frontier.get(url, {}).get("source_locator"),
+                        source_document_date=frontier.get(url, {}).get("document_date"),
+                        source_status=frontier.get(url, {}).get("source_status"),
                         source_root=url == source["url"],
                         source_kind=source["kind"],
                         legal_review="unreviewed",
                     )
-                if url not in cache and len(cache) >= self.limits["max_frontier"] + 1:
+                cache_limit = (
+                    source["discovery"]["cache_limit"]
+                    if is_sso
+                    else self.limits["max_frontier"] + 1
+                )
+                if url not in cache and len(cache) >= cache_limit:
                     victim = min(
                         (k for k in cache if k != source["url"]),
                         key=lambda k: cache[k]["observed_at"],
@@ -959,8 +1124,19 @@ class Collector:
                         url=victim,
                         asset=cache.pop(victim),
                     )
+                if is_sso and url != source["url"]:
+                    asset["source_document_date"] = frontier.get(url, {}).get("document_date")
+                    asset["source_original_verified"] = bool(asset.get("discovery", {}).get("matched"))
                 cache[url] = asset
                 self.map_links(source, url, asset, previous_asset, frontier, cache, urls)
+                if (
+                    is_sso
+                    and url != source["url"]
+                    and frontier.get(url, {}).get("purpose") != "catalog"
+                    and outcome.get("status") == "success"
+                    and asset.get("source_original_verified") is True
+                ):
+                    frontier.pop(url, None)
             if url == source["url"] and outcome["status"] != "success":
                 break
             if self.host_cooldowns.get(urlsplit(url).hostname, 0) > time.time():

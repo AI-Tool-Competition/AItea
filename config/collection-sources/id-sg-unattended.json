@@ -982,6 +982,100 @@
       "status": "archived",
       "transport": "proxy",
       "group_id": "id-general-law-archived"
+    },
+    {
+      "id": "sg-sso-acts-current",
+      "country": "SG",
+      "topics": [
+        "singapore_law",
+        "current_acts",
+        "trade",
+        "food_regulation"
+      ],
+      "title": "新加坡现行法令目录",
+      "url": "https://sso.agc.gov.sg/Browse/Act/Current/All",
+      "priority": 98,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "sso.agc.gov.sg"
+      ],
+      "discovery_keywords": [],
+      "verification": {
+        "official_evidence_url": "https://sso.agc.gov.sg/Browse/Act/Current/All",
+        "checked_at": "2026-10-25T11:03:03.908997+00:00",
+        "official_identity": "Singapore Attorney-General’s Chambers Singapore Statutes Online 官方法规目录。",
+        "business_use": "发现并持续复核新加坡现行主法／附属法例，保留法规身份、版本日期、原目录行及正文原件供后续解析与检索。",
+        "checklist_items": [
+          "SG-1.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-sso-registration-97f2eb8161d8/SG/events/2026-10-25/1792926183909455159-ec1e882abacb44e9ab4e0c5a3fa4f68b.json",
+        "server_receipt_sha256": "ca573c912954af9e37fccf762f94467ff71afae710558369618980dda230d9bc",
+        "body_sha256": "6511278f4396493a0fc70972a517981109d24b4b12a98fd66be245b44a5e1e7a",
+        "limitations": [
+          "目录栏目 Current 不构成法律有效性或适用性审核。",
+          "目录探测只证明官方目录可达；目录行数不代表所有法规原件已经下载、完整解析或向量化。",
+          "原件版本、修订关系、生效日期与法律审核仍须分别核对。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-general-law",
+      "discovery": {
+        "adapter": "sso_catalog_2026",
+        "category": "Act",
+        "state": "Current",
+        "page_size": 500,
+        "cache_limit": 10000
+      }
+    },
+    {
+      "id": "sg-sso-statutes",
+      "country": "SG",
+      "topics": [
+        "singapore_law",
+        "subsidiary_legislation",
+        "food_imports",
+        "trade"
+      ],
+      "title": "新加坡现行附属法例目录",
+      "url": "https://sso.agc.gov.sg/Browse/SL/Current/All",
+      "priority": 98,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "sso.agc.gov.sg"
+      ],
+      "discovery_keywords": [],
+      "verification": {
+        "official_evidence_url": "https://sso.agc.gov.sg/Browse/SL/Current/All",
+        "checked_at": "2026-10-25T11:03:04.083939+00:00",
+        "official_identity": "Singapore Attorney-General’s Chambers Singapore Statutes Online 官方法规目录。",
+        "business_use": "发现并持续复核新加坡现行主法／附属法例，保留法规身份、版本日期、原目录行及正文原件供后续解析与检索。",
+        "checklist_items": [
+          "SG-1.3"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-sso-registration-97f2eb8161d8/SG/events/2026-10-25/1792926184084278648-9ab83f3671824a1ea855d2c35dd45857.json",
+        "server_receipt_sha256": "95c0480ba08c94d1c50d742af8601b6e9bc11b0913efd503049fdb66f6e89d05",
+        "body_sha256": "e4cd754fc669de8c2b86440522f145d93532053e34a957dbdc8f6ca26a11beaf",
+        "limitations": [
+          "目录栏目 Current 不构成法律有效性或适用性审核。",
+          "目录探测只证明官方目录可达；目录行数不代表所有法规原件已经下载、完整解析或向量化。",
+          "原件版本、修订关系、生效日期与法律审核仍须分别核对。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "sg-general-law",
+      "discovery": {
+        "adapter": "sso_catalog_2026",
+        "category": "SL",
+        "state": "Current",
+        "page_size": 500,
+        "cache_limit": 10000
+      }
     }
   ],
   "schema_version": 2,
@@ -1160,6 +1254,21 @@
             "sg-ccs-fair-trading"
           ],
           "children": []
+        },
+        {
+          "id": "sg-general-law",
+          "country": "SG",
+          "title": "现行主法与附属法例",
+          "parent_id": "sg",
+          "checklist_items": [
+            "SG-1.2",
+            "SG-1.3"
+          ],
+          "source_ids": [
+            "sg-sso-acts-current",
+            "sg-sso-statutes"
+          ],
+          "children": []
         }
       ]
     }
@@ -1286,6 +1395,36 @@
         "SG-3.5"
       ],
       "reason": "食品标签和产品声称由 SFA 指引，公平交易、误导宣传与价格透明由 CCS 指引补充；按具体义务并列核对。"
+    },
+    {
+      "source_id": "sg-sso-acts-current",
+      "related_source_id": "sg-sso-statutes",
+      "type": "complements",
+      "checklist_items": [
+        "SG-1.2",
+        "SG-1.3"
+      ],
+      "reason": "主法与附属法例分别构成不同层级的官方规范；目录关联便于从授权法回查实施细则，不能单凭目录关系推定授权有效。"
+    },
+    {
+      "source_id": "sg-sso-statutes",
+      "related_source_id": "sg-sfa-labelling",
+      "type": "cross_checks",
+      "checklist_items": [
+        "SG-1.3",
+        "SG-3.2"
+      ],
+      "reason": "SFA 标签指引用于定位具体业务义务，附属法例提供正式条文；解释与适用必须回到对应原件和版本审核。"
+    },
+    {
+      "source_id": "sg-sso-statutes",
+      "related_source_id": "sg-customs-import",
+      "type": "complements",
+      "checklist_items": [
+        "SG-1.3",
+        "SG-3.1"
+      ],
+      "reason": "进口和海关实施指引需与适用附属法例并列核对，行政操作说明不替代正式法例。"
     }
   ]
 }

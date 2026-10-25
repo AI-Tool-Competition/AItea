@@ -122,3 +122,14 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 ### 2026-10-24 新加坡公平交易来源迁站复核
 
 旧入口 `www.cccs.gov.sg` 已重定向到 CCS 现用的 `www.ccs.gov.sg` 域名；旧入口因目标主机未在该来源的精确白名单而被正确拒绝。对主管机关的规范页面 `https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/` 重新使用项目代理取得 HTTP 200。正式源只允许精确主机 `www.ccs.gov.sg`，并通过 `html_document_paths` 显式收录 7 篇已核验页面：公平交易基础、暗黑模式、CPFTA 指引、价格透明、化妆品行业、装修行业和 CPFTA 概览。它们从已缓存的 CCS 页面发现，无需扩大文档主机白名单；父页面、目录页、FAQ 和公开登记页不会因为同站链接而自动进入检索。正文图片另以 `html_asset_hosts` 精确批准政府 Isomer 静态资源主机；迁移须证明图片网址确实出现在已缓存、带不可变版本事件的 CCS 原文中。入库后只下载经结构映射确认的独立 `img/src`，经项目代理绑定原件 hash，再进入现有视觉 OCR 队列；响应式、脚本生成及未批准主机资源继续排除。此前被记为 `catalogue_page_not_document` 的 7 篇配置页面会由导入器按新清单自动复查，已有图片不完整的页面也会在保留 OCR 检查点的条件下自动补齐，其余未批准路径保持跳过。隔离回执及原件位于 `.dev/aitea-source-validation-20261024-ccs-1792857419275869076/SG/`；来源事件 SHA-256 为 `f9d5adcca1f65110ab817e80988205a0bca631bf8efab2c2b39537e3fba83d42`，正文 SHA-256 为 `afaee45d26e577e05bd1b0b5f6fafbdb43a150647cd9aa251852a4a9470c3a4f`。该节点归入 SG-3.5，并与 SFA 标签来源建立互补关系。CCS 页面是主管机关指引而非法规正文，仍须回到现行法规核对；已抓取或后续变化的内容均保持待审核状态。
+
+### 2026-10-25 新加坡 SSO 现行法目录恢复
+
+2026-10-24 的 SSO 403 保留为历史观测。2026-10-25 通过项目 HTTPS 代理重新取得官方 Current Acts 与 Current Subsidiary Legislation 目录，均为 HTTP 200：
+
+- [Current Acts](https://sso.agc.gov.sg/Browse/Act/Current/All)：526 条、每页 500 条、共 2 页；正文 SHA-256 `6511278f4396493a0fc70972a517981109d24b4b12a98fd66be245b44a5e1e7a`。
+- [Current Subsidiary Legislation](https://sso.agc.gov.sg/Browse/SL/Current/All)：5,872 条、每页 500 条、共 12 页；正文 SHA-256 `e4cd754fc669de8c2b86440522f145d93532053e34a957dbdc8f6ca26a11beaf`。
+
+经有界目录解析、稳定法规身份、来源行定位和来源池迁移后，两项已加入活动清单，分别关联 SG-1.2 与 SG-1.3，并置于“现行主法与附属法例”层级；与 SFA 标签、海关进口来源建立了明确交叉核验关系。代理白名单没有放宽，浏览器请求头仅对该精确官方主机启用。目录页按页面完整校验，超过 128 条活动候选容量的行会从保留的目录快照分批补入；单来源每日额度与主机冷却仍生效。
+
+本次证明的是官方目录入口和目录响应可达，不是 526 或 5,872 份法规正文均已下载、解析或建向量。目录记录 `Current` 也不是适用性或法律效力结论。两份隔离 `source_observation` 回执与原始页面保存在 `.dev/aitea-sso-registration-97f2eb8161d8/SG/`；正式运行后的分页、原件下载和索引进度以 `data/official-updates/SG/` 事件账本及 `make collection-catalog` 为准。

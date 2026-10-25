@@ -5,7 +5,10 @@ import json
 import time
 
 from app.bootstrap import Service
-from app.contexts.ingestion.application.official_source_import import OfficialSourceImporter
+from app.contexts.ingestion.application.official_source_import import (
+    OfficialSourceImporter,
+    _sso_catalogue_evidence,
+)
 from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 from app.interfaces.http.factory import create_app
 
@@ -447,6 +450,107 @@ def test_extensionless_detail_html_remains_a_catalogue_page(tmp_path):
         )
         receipt = conn.execute("SELECT status,reason FROM official_source_imports").fetchone()
     assert tuple(receipt) == ("skipped", "catalogue_page_not_document")
+
+
+def test_sso_current_html_versions_keep_catalogue_identity_and_row_evidence(tmp_path):
+    service, config = _importer(tmp_path)
+    source = {
+        "id": "sg-sso-statutes",
+        "country": "SG",
+        "kind": "catalogue",
+        "allowed_hosts": ["sso.agc.gov.sg"],
+        "url": "https://sso.agc.gov.sg/Browse/SL/Current/All",
+        "discovery": {
+            "adapter": "sso_catalog_2026",
+            "category": "SL",
+            "state": "Current",
+            "page_size": 500,
+        },
+        "verification": {"checklist_items": ["SG-1.3"]},
+    }
+    config.write_text(json.dumps({"sources": [source]}))
+    country_root = tmp_path / "official-updates/SG"
+    (country_root / "files").mkdir(parents=True)
+    catalogue_url = source["url"] + "?PageSize=500&SortBy=Title&SortOrder=ASC"
+    catalogue_hashes = [hashlib.sha256(f"catalogue-page-{index}".encode()).hexdigest() for index in (1, 2)]
+    urls = [
+        "https://sso.agc.gov.sg/SL/SFA1973-RG1?DocDate=20240520",
+        "https://sso.agc.gov.sg/SL/SFA1973-RG1?DocDate=20260101",
+    ]
+    cache = {}
+    events = []
+    first_event_ns = time.time_ns()
+    for index, (url, catalogue_hash) in enumerate(zip(urls, catalogue_hashes, strict=True), start=1):
+        original = f"<html><body><h1>Food Regulations edition {index}</h1></body></html>".encode()
+        digest = hashlib.sha256(original).hexdigest()
+        relative = f"files/sso-version-{index}.html"
+        (country_root / relative).write_bytes(original)
+        locator = {
+            "source_sha256": catalogue_hash,
+            "table_class": "browse-list",
+            "row": index,
+            "unit": "decoded_unicode_char",
+            "start": 100 * index,
+            "end": 200 * index,
+            "fragment_sha256": hashlib.sha256(f"row-{index}".encode()).hexdigest(),
+        }
+        event_ns = first_event_ns + index
+        event = {
+            "at": time.time() + index,
+            "kind": "content_version",
+            "source_id": source["id"],
+            "source_kind": "catalogue",
+            "source_root": False,
+            "url": url,
+            "content_hash": digest,
+            "previous_content_hash": None if index == 1 else "a" * 64,
+            "path": relative,
+            "mime_type": "text/html",
+            "discovery_matched": True,
+            "discovery_purpose": "detail",
+            "discovery_parent_url": catalogue_url,
+            "discovery_parent_hash": catalogue_hash,
+            "discovery_title": "Food Regulations",
+            "source_identity_key": "sso:sl:sfa1973-rg1",
+            "source_locator": locator,
+            "source_document_date": url.split("DocDate=", 1)[1],
+            "source_status": "Current",
+        }
+        if index == 1:
+            assert _sso_catalogue_evidence(source, event, url)
+            invalid_parent = event.copy()
+            invalid_parent["discovery_parent_url"] = source["url"]
+            assert _sso_catalogue_evidence(source, invalid_parent, url) is None
+        events.append((event_ns, event))
+        cache[url] = {
+            "content_hash": digest,
+            "mime_type": "text/html",
+            "discovery": {"matched": True, "purpose": "detail"},
+        }
+    event_dir = country_root / "events/2026-10-25"
+    event_dir.mkdir(parents=True)
+    for event_ns, event in events:
+        (event_dir / f"{event_ns}-sso-version.json").write_text(json.dumps(event))
+    (country_root / "state.json").write_text(
+        json.dumps({"updated_at": time.time() + 10, "sources": {source["id"]: {"cache": cache}}})
+    )
+
+    importer = OfficialSourceImporter(service, config_path=config)
+    assert importer.run_once() == {"stored": 2, "skipped": 0, "blocked": 0, "deferred": 0}
+    with service.db.connect() as conn:
+        docs = conn.execute(
+            "SELECT version,family_id,manifest FROM documents WHERE owner_id=? ORDER BY version",
+            (SYSTEM_OWNER_ID,),
+        ).fetchall()
+    assert [row["version"] for row in docs] == [1, 2]
+    assert docs[0]["family_id"] == docs[1]["family_id"]
+    for index, row in enumerate(docs, start=1):
+        source_response = json.loads(row["manifest"])["source_response"]
+        assert source_response["identity_key"] == "sso:sl:sfa1973-rg1"
+        assert source_response["checklist_items"] == ["SG-1.3"]
+        assert source_response["document_date"] == ("20240520" if index == 1 else "20260101")
+        assert source_response["source_locator"]["row"] == index
+        assert source_response["catalogue_sha256"] == catalogue_hashes[index - 1]
 
 
 def test_only_exactly_configured_guidance_html_detail_is_imported(tmp_path):

@@ -25,17 +25,18 @@ from urllib.parse import urlencode
 
 from dotenv import dotenv_values
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.configuration.paths import InstancePaths  # noqa: E402
 
-from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
+from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     discover_page,
-    recipe_for,
 )
-from app.shared.infrastructure.http.download import _download
+from app.shared.infrastructure.http.download import _download  # noqa: E402
+from unattended_collection import recipe as unattended_recipe  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
 CATALOGS = {
     "constitutional": ("1.1", "Act", "Current", "Constitutional"),
     "acts-current": ("1.2", "Act", "Current", None),
@@ -65,7 +66,6 @@ class CatalogCollector:
         self.host_gate = threading.BoundedSemaphore(2)
         self.metrics_lock = threading.Lock()
         self.active, self.peak, self.requests = 0, 0, 0
-        self.items = {item["id"]: item for item in plan["items"]}
 
     @contextmanager
     def slot(self, host):
@@ -94,11 +94,23 @@ class CatalogCollector:
     def collect(self, name):
         target = self.output / name
         target.mkdir(mode=0o700, exist_ok=True)
-        item = self.items[CATALOGS[name][0]]
-        recipe = recipe_for(item)
+        item_id, category, state_name, _ = CATALOGS[name]
+        source = {
+            "id": f"sg-sso-{name}",
+            "url": f"https://sso.agc.gov.sg/Browse/{category}/{state_name}/All",
+            "kind": "catalogue",
+            "allowed_hosts": ["sso.agc.gov.sg"],
+            "discovery": {
+                "adapter": "sso_catalog_2026",
+                "category": category,
+                "state": state_name,
+                "page_size": self.page_size,
+            },
+        }
+        recipe = unattended_recipe(source)
         state = {
             "catalog": name,
-            "item_id": item["id"],
+            "item_id": item_id,
             "status": "pending",
             "total": None,
             "pages": 0,
@@ -269,7 +281,7 @@ def main():
         choices=CATALOGS,
         default=["constitutional", "acts-current", "sl-current"],
     )
-    parser.add_argument("--page-size", type=int, choices=[10, 20, 50, 100], default=100)
+    parser.add_argument("--page-size", type=int, choices=[10, 20, 50, 100, 250, 500], default=500)
     parser.add_argument("--timeout", type=float, default=35)
     parser.add_argument("--time-budget", type=float, default=1800)
     parser.add_argument("--network-env", type=Path)

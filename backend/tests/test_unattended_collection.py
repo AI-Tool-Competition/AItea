@@ -53,6 +53,7 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
         if country == "SG":
             assert "sg-ccs-fair-trading" in {source["id"] for source in active}
+            assert {source["id"] for source in active} >= {"sg-sso-acts-current", "sg-sso-statutes"}
     archived_bpk = next(source for source in registry["sources"] if source["id"] == "id-bpk-regulations")
     assert archived_bpk["status"] == "archived"
     assert archived_bpk["verification"]["latest_probe"]["failure_code"] == "http_403"
@@ -79,12 +80,31 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
         and row["type"] == "complements"
         for row in registry["source_relations"]
     )
+    sso_acts = next(row for row in registry["sources"] if row["id"] == "sg-sso-acts-current")
+    sso_laws = next(row for row in registry["sources"] if row["id"] == "sg-sso-statutes")
+    assert sso_acts["discovery"] == {
+        "adapter": "sso_catalog_2026",
+        "category": "Act",
+        "state": "Current",
+        "page_size": 500,
+        "cache_limit": 10000,
+    }
+    assert sso_laws["discovery"]["category"] == "SL"
+    assert sso_laws["verification"]["checklist_items"] == ["SG-1.3"]
+
+    rejected = tmp_path / "unverified-active-source.json"
+    invalid_sso_policy = deepcopy(registry)
+    next(row for row in invalid_sso_policy["sources"] if row["id"] == "sg-sso-statutes")["discovery"][
+        "page_size"
+    ] = 501
+    rejected.write_text(json.dumps(invalid_sso_policy))
+    with pytest.raises(ValueError, match="discovery policy"):
+        collection.source_pool(rejected, "SG")
 
     inaccessible = deepcopy(registry)
     next(source for source in inaccessible["sources"] if source["status"] == "active")["verification"][
         "server_status"
     ] = "access_unavailable"
-    rejected = tmp_path / "unverified-active-source.json"
     rejected.write_text(json.dumps(inaccessible))
     with pytest.raises(ValueError, match="successful bounded content probe"):
         collection.source_pool(rejected, "ID")
@@ -125,6 +145,98 @@ def html(*links, text="Food import official guidance"):
         + "".join(f'<a href="{link}">Food official document {index}</a>' for index, link in enumerate(links))
         + "</body></html>"
     ).encode()
+
+
+def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
+    source_row = {
+        "id": "sg-sso-statutes",
+        "country": "SG",
+        "url": "https://sso.agc.gov.sg/Browse/SL/Current/All",
+        "allowed_hosts": ["sso.agc.gov.sg"],
+        "kind": "catalogue",
+        "discovery": {
+            "adapter": "sso_catalog_2026",
+            "category": "SL",
+            "state": "Current",
+            "page_size": 20,
+            "cache_limit": 10000,
+        },
+    }
+    network_url = collection.request_url(source_row, source_row["url"])
+    raw = (ROOT / "backend/tests/fixtures/discovery/sso-sl-current-20261019.html").read_bytes()
+    result = collection.discover_page(network_url, raw, "text/html", collection.recipe(source_row))
+
+    assert result["matched"]
+    assert result["scope"]["total"] == 5872
+    assert len(result["links"]) == 21
+    document = next(link for link in result["links"] if link["purpose"] != "catalog")
+    evidence = collection.source_reference_fields(source_row, document, hashlib.sha256(raw).hexdigest())
+    assert evidence["identity_key"] == document["identity_key"]
+    assert evidence["source_locator"] == document["source_locator"]
+    assert evidence["source_status"] == "Current"
+
+
+def test_sso_frontier_replays_catalogue_rows_after_each_bounded_batch(tmp_path):
+    source_row = {
+        "id": "sg-sso-statutes",
+        "country": "SG",
+        "url": "https://sso.agc.gov.sg/Browse/SL/Current/All",
+        "allowed_hosts": ["sso.agc.gov.sg"],
+        "kind": "catalogue",
+        "discovery": {
+            "adapter": "sso_catalog_2026",
+            "category": "SL",
+            "state": "Current",
+            "page_size": 500,
+            "cache_limit": 10000,
+        },
+    }
+    parent_hash = "a" * 64
+    links = [
+        {
+            "url": f"https://sso.agc.gov.sg/SL/Rule-{index}?DocDate=20260101",
+            "purpose": "document",
+            "identity_key": f"sso:sl:rule-{index}",
+            "source_locator": {
+                "source_sha256": parent_hash,
+                "table_class": "browse-list",
+                "row": index,
+                "unit": "decoded_unicode_char",
+                "start": index,
+                "end": index + 1,
+                "fragment_sha256": "b" * 64,
+            },
+            "document_date": "20260101",
+            "source_status": "Current",
+        }
+        for index in range(1, 145)
+    ]
+    catalog_asset = {
+        "requested_url": source_row["url"] + "?PageSize=500&SortBy=Title&SortOrder=ASC",
+        "content_hash": parent_hash,
+        "discovery": {"links": links},
+    }
+    collector = object.__new__(collection.Collector)
+    collector.limits = {"max_frontier": 128}
+    collector.root = tmp_path
+    collector.event = lambda *args, **kwargs: None
+    frontier, cache, urls = {}, {}, []
+
+    collector.map_links(source_row, source_row["url"], catalog_asset, None, frontier, cache, urls)
+    assert len(frontier) == 128
+    for url in list(frontier)[:16]:
+        frontier.pop(url)
+        cache[url] = {
+            "observed_at": collection.time.time(),
+            "source_document_date": "20260101",
+            "source_original_verified": True,
+        }
+
+    collector.map_links(source_row, source_row["url"], catalog_asset, None, frontier, cache, urls)
+    assert len(frontier) == 128
+    assert {row["identity_key"] for row in frontier.values()} == {
+        f"sso:sl:rule-{index}" for index in range(17, 145)
+    }
 
 
 def pdf(marker="one"):
@@ -991,8 +1103,12 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 20
-    originals = [row for row in configured if row["id"] != "id-setneg-perpu"]
+    assert len(configured) == 22
+    originals = [
+        row
+        for row in configured
+        if row["id"] != "id-setneg-perpu" and row.get("discovery") is None
+    ]
     assert len(originals) == 19
     for item in originals:
         recipe = collection.recipe(item)
@@ -1000,9 +1116,10 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
         assert "required_query_by_host" not in recipe
         assert recipe["max_links"] == (200 if item["id"] == "id-beacukai-regulations" else 32)
     collector = env.make(configured, country=country)
-    env.responses.update({item["url"]: html() for item in collector.sources})
+    probe_sources = [item for item in collector.sources if item.get("discovery") is None]
+    env.responses.update({item["url"]: html() for item in probe_sources})
     env.responses.update(setneg_responses(count=1))
-    for item in collector.sources:
+    for item in probe_sources:
         collector.fetch(item, item["url"])
     special = {item["url"] for item in collector.sources if item["id"] == "id-setneg-perpu"}
     assert all(row["accept_compressed_json"] == (row["url"] in special) for row in env.calls)

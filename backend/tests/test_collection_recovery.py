@@ -555,6 +555,105 @@ def test_incomplete_vision_page_and_mineru_table_review_are_retried_visually():
     assert decision.pages == (4,)
 
 
+def test_empty_mineru_page_is_automatically_sent_for_visual_review(monkeypatch):
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    page = {
+        "page": 37,
+        "status": "ocr_complete",
+        "source_hash": "a" * 64,
+        "text": "",
+        "reasons": [],
+        "ocr": {"provider": "mineru", "complete": True, "uncertain_spans": []},
+    }
+
+    decision = classify_processing({"pages": [page]}, phase="parse")
+
+    assert decision.reason == "mineru_empty_page_retry"
+    assert decision.retryable and decision.pages == (37,)
+
+
+def test_retry_checkpoint_starts_an_empty_mineru_page_visual_fallback(service):
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import EMPTY_PAGE_PROTOCOL
+
+    content = make_pdf([("source page", False)])
+    original = service.archive.blobs.put_bytes("owner", content)
+    manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_complete",
+        text="",
+        reasons=[],
+        ocr={
+            "provider": "mineru",
+            "task_id": "task-1",
+            "provider_page_idx": 0,
+            "result_hash": "c" * 64,
+            "text_sha256": hashlib.sha256(b"").hexdigest(),
+            "complete": True,
+            "uncertain_spans": [],
+        },
+    )
+    manifest.update(
+        parser="mineru",
+        parser_version="api-v4",
+        remote_parse={"provider": "mineru", "state": "done", "source_hash": original.digest},
+    )
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.pdf",
+            "application/pdf",
+            "https://example.org/law.pdf",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="empty-mineru-visual-retry",
+            kind_hint="law",
+        )
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        saved = service.collection.recovery._retry_pages(
+            conn,
+            {"id": "recovery", "owner_id": "owner", "recovery_count": 0},
+            {**document, "content_hash": original.digest},
+            manifest,
+            Decision("mineru_empty_page_retry", True, pages=(1,)),
+        )
+
+    with closing(service.db.connect()) as conn:
+        stored = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+    assert saved[0]["page"] == 1
+    assert stored["pages"][0]["status"] == "pending_ocr"
+    assert stored["pages"][0]["ocr_fallback"]["protocol"] == EMPTY_PAGE_PROTOCOL
+    assert stored["pages"][0]["ocr_fallback"]["attempts"] == 1
+    assert stored["pages"][0]["ocr_retry_cycles"][0]["previous_page"]["text"] == ""
+
+
+def test_empty_mineru_page_without_vision_access_stays_out_of_index(monkeypatch):
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: False)
+    page = {
+        "page": 37,
+        "status": "ocr_complete",
+        "source_hash": "a" * 64,
+        "text": "",
+        "reasons": [],
+        "ocr": {"provider": "mineru", "complete": True, "uncertain_spans": []},
+    }
+
+    decision = classify_processing({"pages": [page]}, phase="parse")
+
+    assert pdf_page_status(page) == "ocr_uncertain"
+    assert decision.reason == "quality_review" and not decision.retryable
+
+
 def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_cycles():
     page = {
         "page": 4,

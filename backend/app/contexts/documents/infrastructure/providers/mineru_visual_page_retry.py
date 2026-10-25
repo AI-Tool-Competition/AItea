@@ -6,6 +6,8 @@ import re
 from copy import deepcopy
 
 PROTOCOL = "mineru-table-visual-page-v1"
+EMPTY_PAGE_PROTOCOL = "mineru-empty-page-visual-v1"
+_VISUAL_PROTOCOLS = frozenset({PROTOCOL, EMPTY_PAGE_PROTOCOL})
 MAX_RETRY_CYCLES = 8
 
 
@@ -22,7 +24,46 @@ def is_mineru_table_review(page: dict) -> bool:
 
 def is_visual_fallback_page(page: dict) -> bool:
     marker = page.get("ocr_fallback")
+    return isinstance(marker, dict) and marker.get("protocol") in _VISUAL_PROTOCOLS
+
+
+def is_table_visual_fallback_page(page: dict) -> bool:
+    marker = page.get("ocr_fallback")
     return isinstance(marker, dict) and marker.get("protocol") == PROTOCOL
+
+
+def is_empty_page_visual_fallback_page(page: dict) -> bool:
+    marker = page.get("ocr_fallback")
+    return isinstance(marker, dict) and marker.get("protocol") == EMPTY_PAGE_PROTOCOL
+
+
+def is_accepted_empty_page_fallback(page: dict) -> bool:
+    proof = page.get("ocr") or {}
+    return (
+        is_empty_page_visual_fallback_page(page)
+        and (page.get("ocr_fallback") or {}).get("accepted") is True
+        and page.get("status") == "ocr_complete"
+        and proof.get("provider") == "vision"
+        and proof.get("is_blank") is True
+        and not str(page.get("text", "")).strip()
+    )
+
+
+def is_mineru_empty_page_review(page: dict) -> bool:
+    """Require a visual check when MinerU accepted a page without searchable text."""
+    proof = page.get("ocr") or {}
+    spans = proof.get("uncertain_spans", [])
+    reasons = page.get("reasons", [])
+    return (
+        page.get("status") in {"ocr_complete", "ocr_uncertain"}
+        and proof.get("provider") == "mineru"
+        and not str(page.get("text", "")).strip()
+        and isinstance(spans, list)
+        and all(item == "empty_text_unverified" for item in spans)
+        and isinstance(reasons, list)
+        and all(item == "empty_text_unverified" for item in reasons)
+        and not is_accepted_empty_page_fallback(page)
+    )
 
 
 def has_pending_visual_fallback(manifest: dict) -> bool:
@@ -159,7 +200,7 @@ def rebuild_manifest(manifest: dict) -> dict:
     if not isinstance(pages, list) or not isinstance(raw_elements, list):
         raise ValueError("MinerU 页面回退缺少完整正文结构。")
 
-    elements = []
+    replacements = {}
     for page in pages:
         if not is_visual_fallback_page(page) or page.get("status") != "ocr_complete":
             continue
@@ -170,7 +211,25 @@ def rebuild_manifest(manifest: dict) -> dict:
             or pdf_page_status(page) != "ocr_complete"
         ):
             continue
-        if not markdown_table_is_consistent(page.get("text", "")):
+        empty_fallback = is_empty_page_visual_fallback_page(page)
+        page_text = page.get("text", "")
+        if empty_fallback and not page_text.strip() and metadata.get("is_blank") is not True:
+            spans = list(metadata.get("uncertain_spans") or [])
+            if "empty_page_not_confirmed" not in spans:
+                spans.append("empty_page_not_confirmed")
+            metadata["uncertain_spans"] = spans
+            page["ocr"] = metadata
+            page["status"] = "ocr_uncertain"
+            continue
+        if empty_fallback and page_text.strip() and metadata.get("is_blank") is not False:
+            spans = list(metadata.get("uncertain_spans") or [])
+            if "blank_response_conflicts_with_transcription" not in spans:
+                spans.append("blank_response_conflicts_with_transcription")
+            metadata["uncertain_spans"] = spans
+            page["ocr"] = metadata
+            page["status"] = "ocr_uncertain"
+            continue
+        if not empty_fallback and not markdown_table_is_consistent(page_text):
             spans = list(metadata.get("uncertain_spans") or [])
             if "table_layout_not_preserved" not in spans:
                 spans.append("table_layout_not_preserved")
@@ -187,14 +246,25 @@ def rebuild_manifest(manifest: dict) -> dict:
             and isinstance(item.get("locator"), dict)
             and item["locator"].get("physical_page", item["locator"].get("page")) == number
         ]
-        if type(number) is not int or number < 1 or not page_elements:
+        if type(number) is not int or number < 1 or (not page_elements and not empty_fallback):
             raise ValueError("MinerU 页面回退无法绑定到原有版面元素。")
-        first_index, first_element = page_elements[0]
-        first_locator = first_element["locator"]
+        first_index = page_elements[0][0] if page_elements else next(
+            (
+                index
+                for index, item in enumerate(raw_elements)
+                if isinstance(item, dict)
+                and isinstance(item.get("locator"), dict)
+                and type(item["locator"].get("physical_page", item["locator"].get("page"))) is int
+                and item["locator"].get("physical_page", item["locator"].get("page")) > number
+            ),
+            len(raw_elements),
+        )
+        first_element = page_elements[0][1] if page_elements else None
+        first_locator = first_element["locator"] if first_element else {}
         source_hash = result.get("source_hash")
         if (
             page.get("source_hash") != source_hash
-            or first_locator.get("source_hash") != source_hash
+            or (first_element and first_locator.get("source_hash") != source_hash)
         ):
             raise ValueError("MinerU 页面回退原件 hash 不匹配。")
         marker = page.get("ocr_fallback")
@@ -202,49 +272,84 @@ def rebuild_manifest(manifest: dict) -> dict:
         marker["text_sha256"] = metadata.get("text_sha256")
         marker["prompt_version"] = metadata.get("prompt_version")
         page["ocr_fallback"] = marker
-        page["reasons"] = [reason for reason in page.get("reasons", []) if reason != "table_structure_ambiguous"]
+        removed_reason = "empty_text_unverified" if empty_fallback else "table_structure_ambiguous"
+        page["reasons"] = [reason for reason in page.get("reasons", []) if reason != removed_reason]
 
-        locator = {
-            "kind": "pdf",
-            "page": number,
-            "physical_page": number,
-            "bbox": [0, 0, 1000, 1000],
-            "coordinate_system": "mineru-0-1000",
-            "source_hash": source_hash,
-        }
-        for key in ("provider_task_id", "provider_page_idx"):
-            if key in first_locator:
-                locator[key] = first_locator[key]
-        elements.append(
-            {
-                "replace_at": first_index,
+        if empty_fallback and not page_text.strip():
+            replacement_value = None
+        else:
+            locator = {
+                "kind": "pdf",
                 "page": number,
-                "value": {
-                    "element_key": f"mineru-visual-page-{number:06d}",
-                    "kind": "table",
-                    "order": min(item.get("order", index) for index, item in page_elements),
-                    "content_text": page["text"],
-                    "locator": locator,
-                    "parent_key": first_element.get("parent_key"),
-                    "section_path": deepcopy(first_element.get("section_path", [])),
-                    "metadata_json": {
-                        "provider": "vision",
-                        "source_provider": "mineru",
-                        "fallback_protocol": PROTOCOL,
-                        "source_hash": source_hash,
-                        "page": number,
-                        "prompt_version": metadata.get("prompt_version"),
-                        "request_id": metadata.get("request_id"),
-                        "image_sha256": metadata.get("image_sha256"),
-                    },
+                "physical_page": number,
+                "bbox": [0, 0, 1000, 1000],
+                "coordinate_system": "mineru-0-1000",
+                "source_hash": source_hash,
+            }
+            if first_element:
+                for key in ("provider_task_id", "provider_page_idx"):
+                    if key in first_locator:
+                        locator[key] = first_locator[key]
+            else:
+                part = next(
+                    (
+                        part
+                        for part in (result.get("remote_parse") or {}).get("parts", [])
+                        if part.get("first_page", 0) <= number <= part.get("last_page", 0)
+                    ),
+                    None,
+                )
+                if part:
+                    locator["provider_task_id"] = part["task_id"]
+                    locator["provider_page_idx"] = number - part["first_page"]
+            section_path = (
+                deepcopy(first_element.get("section_path", []))
+                if first_element
+                else next(
+                    (
+                        deepcopy(item.get("section_path", []))
+                        for item in reversed(raw_elements[:first_index])
+                        if isinstance(item, dict)
+                    ),
+                    [],
+                )
+            )
+            replacement_value = {
+                "element_key": f"mineru-visual-page-{number:06d}",
+                "kind": "table" if markdown_table_is_consistent(page_text) else "paragraph",
+                "content_text": page_text,
+                "locator": locator,
+                "section_path": section_path,
+                "parent_key": first_element.get("parent_key") if first_element else None,
+                "metadata_json": {
+                    "provider": "vision",
+                    "source_provider": "mineru",
+                    "fallback_protocol": marker["protocol"],
+                    "source_hash": source_hash,
+                    "page": number,
+                    "prompt_version": metadata.get("prompt_version"),
+                    "request_id": metadata.get("request_id"),
+                    "image_sha256": metadata.get("image_sha256"),
                 },
             }
-        )
 
-    replacements = {entry["page"]: entry for entry in elements}
+        replacements[number] = {
+            "replace_at": first_index,
+            "value": replacement_value,
+        }
     replaced_pages = set()
     converted = []
-    for index, item in enumerate(raw_elements):
+    by_index = {}
+    for number, replacement in replacements.items():
+        by_index.setdefault(replacement["replace_at"], []).append((number, replacement))
+    for index in range(len(raw_elements) + 1):
+        for number, replacement in sorted(by_index.get(index, [])):
+            if replacement["value"] is not None:
+                converted.append(replacement["value"])
+            replaced_pages.add(number)
+        if index == len(raw_elements):
+            break
+        item = raw_elements[index]
         locator = item.get("locator") if isinstance(item, dict) else None
         number = (
             locator.get("physical_page", locator.get("page"))
@@ -252,14 +357,12 @@ def rebuild_manifest(manifest: dict) -> dict:
             else None
         )
         if number in replacements:
-            replacement = replacements[number]
-            if index == replacement["replace_at"]:
-                converted.append(replacement["value"])
-                replaced_pages.add(number)
             continue
         converted.append(item)
     if replaced_pages != set(replacements):
         raise ValueError("MinerU 页面回退重建未覆盖全部已接受页面。")
+    for order, item in enumerate(converted):
+        item["order"] = order
 
     try:
         parsed_elements = [

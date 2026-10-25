@@ -71,6 +71,13 @@ def pdf_page_status(page: dict) -> str:
             or metadata.get("validation_warnings")
         ):
             return "ocr_uncertain"
+        if metadata.get("provider") == "mineru" and not page.get("text", "").strip():
+            from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+                is_accepted_empty_page_fallback,
+            )
+
+            if not is_accepted_empty_page_fallback(page):
+                return "ocr_uncertain"
     return status
 
 
@@ -260,7 +267,7 @@ def text_complete(manifest: dict) -> bool:
             and manifest.get("quality", {}).get("complete") is True
             and all(asset["asset_status"] == "ocr_complete" for asset in chart_assets)
             and all(
-                page.get("status") == "ocr_complete" and page.get("ocr", {}).get("complete") is True
+                pdf_page_status(page) == "ocr_complete" and page.get("ocr", {}).get("complete") is True
                 for page in manifest.get("pages", [])
             )
         )

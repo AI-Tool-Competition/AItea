@@ -25,7 +25,9 @@ from app.shared.domain.values import dump, now, uid
 SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
-OCR_AUTOMATIC_RETRY_REASONS = frozenset({"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry"})
+OCR_AUTOMATIC_RETRY_REASONS = frozenset(
+    {"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry", "mineru_empty_page_retry"}
+)
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 MAX_AUTOMATIC_OCR_CHECKPOINT_BYTES = 8 * 1024 * 1024
@@ -310,11 +312,14 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
         MAX_RETRY_CYCLES as MAX_MINERU_VISUAL_RETRIES,
         fallback_attempts,
+        is_mineru_empty_page_review,
         is_mineru_table_review,
+        is_table_visual_fallback_page,
         is_visual_fallback_page,
         markdown_table_is_consistent,
         missing_visual_provider_pages,
     )
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
     from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
 
     if phase == "embed":
@@ -333,7 +338,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     if phase == "parse" and _legacy_mineru_chart_refresh(manifest):
         return Decision("mineru_chart_refresh", True)
 
-    retry_pages, retry_assets, mineru_visual_pages = [], [], []
+    retry_pages, retry_assets, mineru_visual_pages, mineru_empty_pages = [], [], [], []
     retry_not_before = 0
     unknown_outcome = False
     if phase == "parse":
@@ -367,7 +372,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             )
             visual_table_quality_retry = (
                 vision_ready
-                and visual_fallback
+                and is_table_visual_fallback_page(page)
                 and visual_attempts < MAX_MINERU_VISUAL_RETRIES
                 and status == "ocr_complete"
                 and metadata.get("complete") is True
@@ -375,6 +380,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 and isinstance(page.get("text"), str)
                 and not markdown_table_is_consistent(page["text"])
             )
+            empty_page_retry = vision_ready and is_mineru_empty_page_review(page)
             mineru_table_retry = is_mineru_table_review(page) and not visual_fallback
             # MinerU's page-level chart/table warning is not a failed vision
             # request. Ambiguous tables have a separate, page-bounded visual
@@ -396,8 +402,10 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             eligible = (
                 status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
                 or visual_table_quality_retry
+                or empty_page_retry
             ) and (
                 mineru_table_retry
+                or empty_page_retry
                 or unknown
                 or pending_visual_retry
                 or visual_table_quality_retry
@@ -430,8 +438,10 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                             retry_not_before,
                             _timestamp((previous_failure.get("ocr") or {}).get("retry_not_before")),
                         )
-                if mineru_table_retry or pending_visual_retry:
+                if mineru_table_retry or pending_visual_retry or empty_page_retry:
                     mineru_visual_pages.append(page["page"])
+                if empty_page_retry:
+                    mineru_empty_pages.append(page["page"])
 
         for asset in images:
             metadata = asset.get("ocr") or {}
@@ -455,6 +465,8 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             reason = (
                 "paid_ocr_retry"
                 if unknown_outcome
+                else "mineru_empty_page_retry"
+                if mineru_empty_pages and len(mineru_empty_pages) == len(retry_pages) and not retry_assets
                 else "mineru_visual_table_retry"
                 if mineru_visual_pages and len(mineru_visual_pages) == len(retry_pages) and not retry_assets
                 else "ocr_quality_retry"
@@ -472,7 +484,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         return Decision("paid_result_unknown")
 
     if any(
-        page.get("status") == "ocr_uncertain"
+        pdf_page_status(page) == "ocr_uncertain"
         or page.get("ocr", {}).get("phase") == "recovery"
         or page.get("ocr", {}).get("uncertain_spans")
         for page in pages
@@ -1126,9 +1138,11 @@ class CollectionRecovery:
         from app.contexts.documents.infrastructure.parsers.native_parser import pdf_quality
         from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import read_image_blob
         from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+            EMPTY_PAGE_PROTOCOL as MINERU_EMPTY_PAGE_FALLBACK_PROTOCOL,
             MAX_RETRY_CYCLES as MAX_MINERU_VISUAL_RETRIES,
             PROTOCOL as MINERU_VISUAL_FALLBACK_PROTOCOL,
             fallback_attempts,
+            is_mineru_empty_page_review,
             is_mineru_table_review,
             is_visual_fallback_page,
         )
@@ -1186,11 +1200,15 @@ class CollectionRecovery:
                     "ocr_quality_retry",
                 }
                 visual_fallback = is_visual_fallback_page(page)
+                mineru_empty_fallback = (
+                    decision.reason in {"mineru_empty_page_retry", "ocr_quality_retry", "paid_ocr_retry"}
+                    and is_mineru_empty_page_review(page)
+                )
                 try:
                     retryable_visual = visual_fallback and fallback_attempts(page) < MAX_MINERU_VISUAL_RETRIES
                 except ValueError:
                     retryable_visual = False
-                if not (mineru_fallback or retryable_visual):
+                if not (mineru_fallback or mineru_empty_fallback or retryable_visual):
                     raise ValueError("retry_page_checkpoint_not_eligible")
             if isinstance(envelope, dict) and isinstance(envelope.get("blob"), dict):
                 raw = read_image_blob(self.db.data_dir, row["owner_id"], envelope["blob"])
@@ -1243,6 +1261,13 @@ class CollectionRecovery:
             if is_mineru_table_review(previous):
                 page["ocr_fallback"] = {
                     "protocol": MINERU_VISUAL_FALLBACK_PROTOCOL,
+                    "attempts": 1,
+                    "source_result_hash": metadata.get("result_hash"),
+                    "source_page": number,
+                }
+            elif is_mineru_empty_page_review(previous):
+                page["ocr_fallback"] = {
+                    "protocol": MINERU_EMPTY_PAGE_FALLBACK_PROTOCOL,
                     "attempts": 1,
                     "source_result_hash": metadata.get("result_hash"),
                     "source_page": number,

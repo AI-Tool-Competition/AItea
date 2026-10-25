@@ -828,6 +828,10 @@ def manifest_valid(manifest):
     try:
         remote = manifest["remote_parse"]
         source = manifest["source_hash"]
+        from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+            EMPTY_PAGE_PROTOCOL,
+            PROTOCOL as TABLE_PROTOCOL,
+        )
         if (
             remote["state"] != "done"
             or remote["source_hash"] != source
@@ -860,7 +864,10 @@ def manifest_valid(manifest):
                 return False
             fallback = page.get("ocr_fallback")
             if fallback is not None:
-                if not isinstance(fallback, dict) or fallback.get("protocol") != "mineru-table-visual-page-v1":
+                if not isinstance(fallback, dict) or fallback.get("protocol") not in {
+                    TABLE_PROTOCOL,
+                    EMPTY_PAGE_PROTOCOL,
+                }:
                     return False
                 if not isinstance(page.get("text"), str):
                     return False
@@ -920,9 +927,39 @@ def manifest_valid(manifest):
                     or image.get("mime_type") != "image/png"
                     or type(image.get("size")) is not int
                     or image["size"] <= 0
-                    or "table_structure_ambiguous" in (page.get("reasons") or [])
+                    or (
+                        fallback["protocol"] == TABLE_PROTOCOL
+                        and "table_structure_ambiguous" in (page.get("reasons") or [])
+                    )
+                    or (
+                        fallback["protocol"] == EMPTY_PAGE_PROTOCOL
+                        and "empty_text_unverified" in (page.get("reasons") or [])
+                    )
                 ):
                     return False
+                if fallback["protocol"] == EMPTY_PAGE_PROTOCOL:
+                    text = page.get("text", "")
+                    elements = manifest.get("elements", [])
+                    fallback_elements = [
+                        element
+                        for element in elements
+                        if isinstance(element, dict)
+                        and isinstance(element.get("locator"), dict)
+                        and element["locator"].get(
+                            "physical_page", element["locator"].get("page")
+                        ) == number
+                        and (element.get("metadata_json") or {}).get("fallback_protocol")
+                        == EMPTY_PAGE_PROTOCOL
+                    ]
+                    if not text.strip():
+                        if proof.get("is_blank") is not True or fallback_elements:
+                            return False
+                    elif (
+                        proof.get("is_blank") is not False
+                        or len(fallback_elements) != 1
+                        or fallback_elements[0].get("content_text") != text
+                    ):
+                        return False
                 continue
             if (
                 proof["provider"] != "mineru"

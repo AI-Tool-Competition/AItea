@@ -3,11 +3,14 @@ import json
 from contextlib import closing
 from copy import deepcopy
 
+import pytest
 from app.bootstrap import Service
 from app.contexts.documents.infrastructure.parsers import document_parser
 from app.contexts.documents.infrastructure.providers.mineru import manifest_valid
 from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+    EMPTY_PAGE_PROTOCOL,
     PROTOCOL,
+    is_mineru_empty_page_review,
     markdown_table_is_consistent,
     rebuild_manifest,
 )
@@ -191,6 +194,163 @@ def test_visual_result_without_structured_table_stays_in_review():
     assert "table_layout_not_preserved" in rebuilt["pages"][0]["ocr"]["uncertain_spans"]
     assert rebuilt["quality"]["complete"] is False
     assert any(item["element_key"] == "mineru-000001-000001" for item in rebuilt["elements"])
+
+
+def _empty_page_visual_manifest(text, *, is_blank):
+    manifest = _manifest("MinerU returned no searchable body text")
+    source_hash = manifest["source_hash"]
+    result_hash = "c" * 64
+    text_hash = hashlib.sha256(text.encode()).hexdigest()
+    previous = {
+        "page": 1,
+        "status": "ocr_complete",
+        "source_hash": source_hash,
+        "text": "",
+        "ocr": {
+            "provider": "mineru",
+            "task_id": "task-1",
+            "provider_page_idx": 0,
+            "result_hash": result_hash,
+            "text_sha256": hashlib.sha256(b"").hexdigest(),
+        },
+    }
+    previous_digest = hashlib.sha256(
+        json.dumps(previous, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_complete",
+        text=text,
+        reasons=[],
+        ocr={
+            "provider": "vision",
+            "source_hash": source_hash,
+            "page": 1,
+            "complete": True,
+            "is_blank": is_blank,
+            "uncertain_spans": [],
+            "text_sha256": text_hash,
+            "image_sha256": "b" * 64,
+            "image_blob": {"content_hash": "b" * 64, "size": 100, "mime_type": "image/png"},
+            "prompt_version": "legal-page-transcription-v6",
+            "request_id": "1" * 32,
+        },
+        ocr_fallback={
+            "protocol": EMPTY_PAGE_PROTOCOL,
+            "attempts": 1,
+            "source_result_hash": result_hash,
+            "source_page": 1,
+        },
+        ocr_retry_cycles=[
+            {
+                "protocol": "ocr-automatic-retry-checkpoint-v1",
+                "previous_page": previous,
+                "previous_page_sha256": previous_digest,
+            }
+        ],
+    )
+    manifest["pages"][1]["ocr"].update(
+        task_id="task-1",
+        provider_page_idx=1,
+        result_hash=result_hash,
+        text_sha256=hashlib.sha256(manifest["pages"][1]["text"].encode()).hexdigest(),
+    )
+    manifest["remote_parse"].update(
+        page_count=2,
+        parts=[
+            {
+                "task_id": "task-1",
+                "batch_id": "batch-1",
+                "source_hash": source_hash,
+                "first_page": 1,
+                "last_page": 2,
+                "result_blob": {"content_hash": result_hash},
+            }
+        ],
+    )
+    return manifest
+
+
+def test_empty_mineru_pages_require_a_visual_check_before_indexing():
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
+
+    page = {
+        "page": 1,
+        "status": "ocr_complete",
+        "text": "",
+        "reasons": [],
+        "ocr": {"provider": "mineru", "complete": True, "uncertain_spans": []},
+    }
+    assert is_mineru_empty_page_review(page)
+    assert pdf_page_status(page) == "ocr_uncertain"
+
+
+def test_mineru_empty_page_cannot_pass_the_document_completeness_gate():
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+
+    source_hash, result_hash = "a" * 64, "c" * 64
+    page = {
+        "page": 1,
+        "status": "ocr_complete",
+        "source_hash": source_hash,
+        "text": "",
+        "reasons": [],
+        "ocr": {
+            "provider": "mineru",
+            "task_id": "task-1",
+            "provider_page_idx": 0,
+            "result_hash": result_hash,
+            "text_sha256": hashlib.sha256(b"").hexdigest(),
+            "complete": True,
+            "uncertain_spans": [],
+        },
+    }
+    manifest = {
+        "parser": "mineru",
+        "source_hash": source_hash,
+        "quality": {"complete": True},
+        "pages": [page],
+        "elements": [],
+        "remote_parse": {
+            "provider": "mineru",
+            "state": "done",
+            "source_hash": source_hash,
+            "page_count": 1,
+            "parts": [
+                {
+                    "task_id": "task-1",
+                    "source_hash": source_hash,
+                    "first_page": 1,
+                    "last_page": 1,
+                    "result_blob": {"content_hash": result_hash},
+                }
+            ],
+        },
+    }
+
+    assert manifest_valid(manifest)
+    assert not text_complete(manifest)
+
+
+@pytest.mark.parametrize(("text", "is_blank"), [("", True), ("Visible legal text", False)])
+def test_empty_mineru_page_fallback_requires_blank_proof_or_indexes_its_transcript(text, is_blank):
+    manifest = _empty_page_visual_manifest(text, is_blank=is_blank)
+    rebuilt = rebuild_manifest(manifest)
+    page_elements = [
+        item for item in rebuilt["elements"] if item["locator"].get("physical_page") == 1
+    ]
+
+    assert rebuilt["pages"][0]["ocr_fallback"]["accepted"] is True
+    if is_blank:
+        assert page_elements == []
+        assert not any(chunk["locator"].get("page") == 1 for chunk in rebuilt["chunks"])
+        assert manifest_valid(rebuilt)
+    else:
+        assert len(page_elements) == 1
+        assert page_elements[0]["content_text"] == text
+        assert page_elements[0]["metadata_json"]["fallback_protocol"] == EMPTY_PAGE_PROTOCOL
+        assert any(text in chunk["text"] for chunk in rebuilt["chunks"])
+        assert manifest_valid(rebuilt)
 
 
 def test_mineru_receipt_validation_accepts_only_source_bound_visual_page_evidence():

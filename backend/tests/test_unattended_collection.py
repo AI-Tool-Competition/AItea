@@ -1623,6 +1623,42 @@ def test_rcep_policy_replays_verified_cached_html_once_without_requests_or_quota
     assert len(env.calls) == before_calls
 
 
+def test_rcep_candidate_policy_replays_when_source_exclusions_change(environment, monkeypatch):
+    env = environment
+    configured, collector, _ = seed_legacy_rcep_cache(env, monkeypatch)
+    source_id = configured["id"]
+    current = collector.state["sources"][source_id]
+    current["candidate_policy"] = {"version": collection.RCEP_POLICY_VERSION}
+    target = RCEP_FILES + "RCEP_China_Schedule_for_Australia.pdf"
+    current["frontier"][target] = {
+        "parent_url": RCEP_ROOT,
+        "parent_hash": current["cache"][RCEP_ROOT]["content_hash"],
+        "parents": [{"url": RCEP_ROOT, "content_hash": current["cache"][RCEP_ROOT]["content_hash"]}],
+        "title": "China's Schedule for Australia",
+        "purpose": "document",
+        "attempt_count": 0,
+        "discovered_at": env.clock[0],
+    }
+    updated = {**configured, "discovery_exclude_keywords": ["Australia"]}
+    collector.sources = [updated]
+    assert target in current["frontier"]
+    before_calls = len(env.calls)
+    before_requests = {p: p.read_bytes() for p in collector.root.glob("requests/*/*.json")}
+
+    collector.apply_candidate_policy()
+
+    current = collector.state["sources"][source_id]
+    expected_version = collection.candidate_policy_version(updated)
+    assert expected_version.startswith(collection.RCEP_POLICY_VERSION + "+")
+    assert current["candidate_policy"]["version"] == expected_version
+    assert current["frontier"][target]["scope_excluded"]["term"] == "Australia"
+    policy_event = env.events(collector, "candidate_policy_applied")[-1]
+    assert policy_event["network_requests"] == 0
+    assert policy_event["replay_status"] == "verified_cached_discovery"
+    assert len(env.calls) == before_calls
+    assert {p: p.read_bytes() for p in before_requests} == before_requests
+
+
 def test_rcep_existing_excluded_frontier_is_retained_but_not_dispatched(environment, monkeypatch):
     env = environment
     configured, first, bad = seed_legacy_rcep_cache(env, monkeypatch)

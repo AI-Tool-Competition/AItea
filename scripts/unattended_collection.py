@@ -174,14 +174,13 @@ def scope_excluded(source, url, title=""):
 
 
 def candidate_policy_version(source):
-    if rcep_policy(source):
-        return RCEP_POLICY_VERSION
+    versions = [RCEP_POLICY_VERSION] if rcep_policy(source) else []
     terms = source.get("discovery_exclude_keywords", [])
-    if not terms:
-        return None
-    canonical = json.dumps(terms, ensure_ascii=False, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode()).hexdigest()
-    return f"{DISCOVERY_EXCLUSION_POLICY_VERSION}:{digest}"
+    if terms:
+        canonical = json.dumps(terms, ensure_ascii=False, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        versions.append(f"{DISCOVERY_EXCLUSION_POLICY_VERSION}:{digest}")
+    return "+".join(versions) or None
 
 
 class Deferred(Exception):

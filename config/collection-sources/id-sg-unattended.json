@@ -96,6 +96,55 @@
       "group_id": "sg-food-trade"
     },
     {
+      "id": "sg-sfa-commercial-import",
+      "title": "新加坡食品局商业食品进口登记与许可证要求",
+      "country": "SG",
+      "url": "https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food",
+      "allowed_hosts": [
+        "www.sfa.gov.sg"
+      ],
+      "kind": "guidance",
+      "topics": [
+        "food_import",
+        "food_safety",
+        "tea_imports"
+      ],
+      "group_id": "sg-food-trade",
+      "status": "active",
+      "priority": 98,
+      "interval_seconds": 86400,
+      "transport": "proxy",
+      "discovery_keywords": [
+        "food import",
+        "import of food",
+        "food permit",
+        "processed food",
+        "commercial import"
+      ],
+      "discovery_exclude_keywords": [
+        "establishment codes",
+        "japan prefectural codes"
+      ],
+      "verification": {
+        "official_evidence_url": "https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food",
+        "checked_at": "2026-10-25T21:40:58.111301+00:00",
+        "official_identity": "新加坡食品局（SFA）官网商业食品进口页面，明确列出进口商登记/许可和货物进口许可步骤；已核对官方域名、网页标题与实际采集正文。",
+        "business_use": "监测茶及其他加工食品商业进口的 SFA 登记、进口许可证、食品分类要求和官方操作文件；这是主管机关指引，不代替法规原文或适用审核。",
+        "checklist_items": [
+          "SG-3.1",
+          "SG-3.2"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-source-probe-20261026-sfa-commercial-import/collector/events/2026-10-25/1792964458111281984-7517ce7b14394e399902bc14e9ca4781.json",
+        "server_receipt_sha256": "a1e40a3d4ac3e8785ede38dcc5dfa97ed18f9f512ee1fe5d45e6f9d97efb40fd",
+        "body_sha256": "90e532651767342c2c390c997fdf4cd1edd9aae340f443f459212a49f0ab8c32",
+        "limitations": [
+          "页面包含多个食品类别；目录发现限定在食品进口/加工食品关键词，并排除两个无关代码表。",
+          "官方指引记录行政流程，不代表具体产品已符合准入条件；HS 分类、成分、标签和现行法条仍需按产品事实复核。"
+        ]
+      }
+    },
+    {
       "id": "id-bpom-regulations",
       "country": "ID",
       "topics": [
@@ -211,19 +260,19 @@
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-customs-import.json",
         "server_receipt_sha256": "e689b3140716def34a9d68f8e82f7c4ee170694c37d34a3f3d7e52564556533d",
         "body_sha256": "d6ddd8d823fca294f867ed10454bf62feca34fd9f0394f298c51d5f63be3fab4",
-      "discovery_scope_change": {
-        "previous_exclude_keywords": [],
-        "current_exclude_keywords": [
-          "arriving-in-singapore",
-          "precious-metals",
-          "duty-free-concession",
-          "hand-carried",
-          "export-operations",
-          "export-procedures",
-          "re-importing-goods-sent-overseas"
-        ],
-        "reason": "缓存页发现个人随身物品、贵金属和出口手续，偏离商业茶叶进口；保留允许主机与原始采集历史。"
-      },
+        "discovery_scope_change": {
+          "previous_exclude_keywords": [],
+          "current_exclude_keywords": [
+            "arriving-in-singapore",
+            "precious-metals",
+            "duty-free-concession",
+            "hand-carried",
+            "export-operations",
+            "export-procedures",
+            "re-importing-goods-sent-overseas"
+          ],
+          "reason": "缓存页发现个人随身物品、贵金属和出口手续，偏离商业茶叶进口；保留允许主机与原始采集历史。"
+        },
         "limitations": [
           "本页为官方指引，不能代替 Customs Act、GST Act 和 RIEA 的特定适用条文。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
@@ -1555,7 +1604,8 @@
           "source_ids": [
             "sg-sfa-labelling",
             "sg-customs-import",
-            "sg-iras-imports"
+            "sg-iras-imports",
+            "sg-sfa-commercial-import"
           ],
           "children": []
         },
@@ -1823,6 +1873,25 @@
       "type": "complements",
       "checklist_items": [],
       "reason": "人力部劳动法规目录与国家UU/PP目录互补；按劳动事项回查上位规范、实施文书和适用期间，不仅凭来源并存推断具体法律关系。"
+    },
+    {
+      "source_id": "sg-sfa-commercial-import",
+      "related_source_id": "sg-sfa-labelling",
+      "type": "complements",
+      "checklist_items": [
+        "SG-3.1",
+        "SG-3.2"
+      ],
+      "reason": "商业进口登记与许可证流程补充食品标签和声称指引；两者分别说明进口行政要求与产品信息要求，不能互相替代。"
+    },
+    {
+      "source_id": "sg-sfa-commercial-import",
+      "related_source_id": "sg-customs-import",
+      "type": "complements",
+      "checklist_items": [
+        "SG-3.1"
+      ],
+      "reason": "SFA 负责食品进口注册及食品类别要求，海关负责进口申报与许可；跨境流程需并列核对各主管机关职责。"
     }
   ]
 }

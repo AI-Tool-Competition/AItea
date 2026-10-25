@@ -396,11 +396,14 @@ def test_singapore_official_html_record_preserves_page_heading_and_link_context(
 
 
 def test_singapore_official_self_page_records_only_observed_page_metadata():
-    source = "https://www.customs.gov.sg/doing-business/import-operations/import-operations-overview/"
-    content = b"<html><head><title>Import operations | Customs</title></head><body><h1>Import operations</h1></body></html>"
+    source = "https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food"
+    content = b"""<html><head><title>What You Need to Know for Import of Food for Commercial Sale</title></head><body>
+    <nav><h1>About Us</h1><h2>For Industry</h2></nav>
+    <main><h1>What You Need to Know for Import of Food for Commercial Sale</h1>
+    <h2>Who is allowed to import food?</h2></main></body></html>"""
     rules = recipe(
-        allowed_hosts=["www.customs.gov.sg"],
-        html_document_patterns=[r"^/doing-business/import-operations/import-operations-overview/$"],
+        allowed_hosts=["www.sfa.gov.sg"],
+        html_document_patterns=[r"^/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food$"],
     )
     result = discover_page(source, content, "text/html", rules)
     record = result["source_record"]
@@ -409,6 +412,11 @@ def test_singapore_official_self_page_records_only_observed_page_metadata():
     assert record["fields"]["linked_url"] == source
     assert record["structure"]["link_mechanism"] == "page_url_self_reference"
     assert record["structure"]["unit_type"] == "official_html_page"
+    assert record["fields"]["document_heading"] == "What You Need to Know for Import of Food for Commercial Sale"
+    assert record["structure"]["parent_titles"] == [
+        "What You Need to Know for Import of Food for Commercial Sale",
+        "Who is allowed to import food?",
+    ]
 
 
 def test_mkri_self_original_record_requires_verified_pdf_signature():

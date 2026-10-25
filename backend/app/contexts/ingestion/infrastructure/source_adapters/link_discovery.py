@@ -1049,8 +1049,33 @@ class _Page:
         label_work_remaining = 200_000
         heading_context = {}
         active_headings = {}
+        sg_content_roots = (
+            {node.mem_id for node in nodes if node.tag in {"main", "article"}}
+            if self.sg_official_source
+            else set()
+        )
+
+        def in_sg_content(node):
+            if not sg_content_roots:
+                return True
+            parent = node
+            while parent is not None:
+                if parent.mem_id in sg_content_roots:
+                    return True
+                parent = parent.parent
+            return False
+
         for node in nodes:
-            if node.tag in {f"h{level}" for level in range(1, 7)} and not self._has_hidden_parent(node):
+            if self.sg_official_source and node.mem_id in sg_content_roots:
+                # Agency navigation often uses heading tags. Reset its outline
+                # before reading the semantic article body so those labels do
+                # not become the parent path of an official page or link.
+                active_headings = {}
+            if (
+                node.tag in {f"h{level}" for level in range(1, 7)}
+                and not self._has_hidden_parent(node)
+                and (not self.sg_official_source or in_sg_content(node))
+            ):
                 level = int(node.tag[1])
                 value, used = _bounded_dom_text(
                     node, max_chars=500, max_nodes=min(1000, label_work_remaining)
@@ -1060,7 +1085,11 @@ class _Page:
                     active_headings = {key: text for key, text in active_headings.items() if key < level}
                     active_headings[level] = value
             elif node.tag == "a":
-                heading_context[node.mem_id] = [active_headings[key] for key in sorted(active_headings)]
+                heading_context[node.mem_id] = (
+                    [active_headings[key] for key in sorted(active_headings)]
+                    if not self.sg_official_source or in_sg_content(node)
+                    else []
+                )
         title = tree.css_first("title")
         if title:
             value, used = _bounded_dom_text(title, max_chars=1000, max_nodes=min(2000, label_work_remaining))
@@ -1084,7 +1113,11 @@ class _Page:
                 "cf-error-details",
             }:
                 self.challenge = True
-            if node.tag in {"h1", "h2", "h3"} and not self._has_hidden_parent(node):
+            if (
+                node.tag in {"h1", "h2", "h3"}
+                and not self._has_hidden_parent(node)
+                and (not self.sg_official_source or in_sg_content(node))
+            ):
                 value, used = _bounded_dom_text(
                     node, max_chars=1000, max_nodes=min(2000, label_work_remaining)
                 )

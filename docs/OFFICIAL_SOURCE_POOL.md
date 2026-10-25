@@ -1,6 +1,6 @@
 # 无人值守官方来源池
 
-配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 26 个稳定来源节点：印度尼西亚 16 个（11 个活动、5 个归档），新加坡 10 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
+配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 27 个稳定来源节点：印度尼西亚 16 个（11 个活动、5 个归档），新加坡 11 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
 
 配置采用 `aitea-official-source-pool-v2`：`groups` 是国家根节点及主题子节点，子节点列出来源 ID 和对应核验清单项；来源自身保留正式入口、访问证据、主题、发现策略、优先级、轮询间隔和 `active` 状态。活动源须留有官方身份、业务用途、清单范围、近期开页回执与正文 SHA-256；空目录单独标记并低频复查。`source_relations` 是有方向的关系边，区分 `complements`（互补）、`cross_checks`（交叉核验）、`implements`（实施规则）与 `publishes_original`（正式原件发布），并说明适用清单项和关系理由。所有活动源都明确使用 `transport: proxy`；watchdog 将其精确允许主机并入代理白名单。归档用 `status: archived` 移出运行队列，原节点、关系和所有历史账本均保留；新增来源必须经有界代理抓取取得有效正文后才能登记。
 
@@ -12,12 +12,13 @@
 | --- | --- | --- |
 | 100 | [ID 贸易部法规目录](https://jdih.kemendag.go.id/peraturan) | 进口、贸易规则、原产地及消费者保护 |
 | 99 | [SG SFA 食品标签要求](https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food) | 茶叶食品标签、进口商责任与声称规则 |
+| 98 | [SG SFA 商业食品进口要求](https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food) | 食品进口登记、许可及类别要求 |
 | 98 | [ID BPOM 官方法规目录](https://jdih.pom.go.id/rule) | 食品注册、标签、包装与食品安全 |
 | 97 | [SG Customs 进口概览](https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/) | 商业进口、许可、估价、GST 与海关责任 |
 | 89 | [SG CCS 公平交易指引](https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/) | 销售宣传、误导性陈述、价格透明和消费者公平交易 |
 | 82 | [ID 海关总署法规目录](https://peraturan.beacukai.go.id/) | 印尼进出口、关税、海关及消费税规范 |
 
-这六个入口均已在当前服务器取得真实业务内容，适合按优先级和额度轮询。CCS 规范地址于 2026-10-24 经项目代理返回 HTTP 200，正文通过现有 HTML 结构发现器校验；首轮缓存了 4 个同站页面并留下 8 个待检链接。后续轮询已发现公平交易、暗黑模式、价格透明及行业指引等关联页面；配置以精确路径列出 7 篇已核验的 HTML 指引，作为正式资料入库，其他目录、FAQ 和公开登记页仍只保留发现记录。印尼海关目录于同日经项目代理成功获取，配置回执记录页面正文和来源事件 SHA；目录自述仍在更新，不能据此宣称覆盖完整。贸易部入口在另一次网页浏览中出现过拒绝请求，而服务器此次有界请求成功；不同访问结果分别保留，不能因此认定其网站已过期。
+这七个入口均已在当前服务器取得真实业务内容，适合按优先级和额度轮询。CCS 规范地址于 2026-10-24 经项目代理返回 HTTP 200，正文通过现有 HTML 结构发现器校验；首轮缓存了 4 个同站页面并留下 8 个待检链接。后续轮询已发现公平交易、暗黑模式、价格透明及行业指引等关联页面；配置以精确路径列出 7 篇已核验的 HTML 指引，作为正式资料入库，其他目录、FAQ 和公开登记页仍只保留发现记录。印尼海关目录于同日经项目代理成功获取，配置回执记录页面正文和来源事件 SHA；目录自述仍在更新，不能据此宣称覆盖完整。贸易部入口在另一次网页浏览中出现过拒绝请求，而服务器此次有界请求成功；不同访问结果分别保留，不能因此认定其网站已过期。
 
 运行账本曾观察到 BPOM 的食品包装关键词同时命中药品撤回规则，以及新加坡海关进口入口发现个人随身物品、贵金属和出口流程。来源清单现在用 `discovery_exclude_keywords` 明确排除这些非目标主题；正向食品/商业进口关键词仍保留。变更策略会用已校验的缓存根页无网络重放，并在来源事件中记录受排除候选，既不重置日额度也不删除原始回执。
 
@@ -43,6 +44,7 @@
 | `id-setneg-pp` | [国家秘书处 PP 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PP&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 2,610，首批 50 条通过校验，抽样详情发现 1 个官方原件入口；对应 ID-1.5。 |
 | `id-setneg-perpres` | [国家秘书处 Perpres 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPRES&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 2,453，首批 50 条通过校验，抽样详情发现 1 个官方原件入口；对应 ID-1.6。 |
 | `sg-sfa-labelling` | [Singapore Food Agency](https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food) | SG | 可达，食品标签和相应法规/官方指南转介。 |
+| `sg-sfa-commercial-import` | [Singapore Food Agency：商业食品进口要求](https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food) | SG | 2026-10-26 经项目代理返回 HTTP 200；补进口商登记、食品类别和进口许可证流程，对应 SG-3.1/SG-3.2，并与 SFA 标签及新加坡海关来源互补。 |
 | `sg-sso-acts-current` | [Singapore Statutes Online：Current Acts](https://sso.agc.gov.sg/Browse/Act/Current/All) | SG | 2026-10-25 经项目代理返回 HTTP 200；按页500条发现现行主法，并承载 1.1 的 Constitutional 子类过滤。目录行不等于正文入库或有效性审核。 |
 | `sg-sso-statutes` | [Singapore Statutes Online：Current Subsidiary Legislation](https://sso.agc.gov.sg/Browse/SL/Current/All) | SG | 2026-10-25 经项目代理返回 HTTP 200；按页500条发现现行附属法例。目录行不等于正文入库或有效性审核。 |
 | `sg-ccs-fair-trading` | [Competition and Consumer Commission of Singapore](https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/) | SG | 新加坡政府官方公平交易页面；补充误导宣传、价格透明及销售行为指引，对应 SG-3.5，与 SFA 标签规则互补。页面正文标注内容更新于 2025-09-26，仍按日轮询并保留后续版本。 |
@@ -163,6 +165,12 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 
 采集器只识别 `/peraturan` 与有界 `?hal=N` 分页、符合精确 ID/slug 形状的详情页，以及 `/asset/data_puu/` 下的 PDF/DOC 原件；新闻、词汇表、培训、地方规定、裁判文书和其他无关页面排除。原件单件上限 128 MiB、单日来源额度 256 MiB、单次超时 900 秒；普通目录页仍使用全局 8 MiB 响应上限。入口、回执和正文 SHA-256 已写入来源清单。此项验证证明入口和结构可抓取，不代表劳动法规已经完整收集、解析或完成适用性审核。
 
+### 2026-10-26 新加坡 SFA 商业食品进口指南
+
+[SFA 商业食品进口要求](https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food) 使用项目代理取得 HTTP 200、21,821 字节官方 HTML；隔离探测正文 SHA-256 为 `90e532651767342c2c390c997fdf4cd1edd9aae340f443f459212a49f0ab8c32`。受限离线解析提取 5 条食品进口、许可与申请流程链接，排除了两个无关的机构代码表；正式 SG 采集器随后也成功取得页面并留下版本缓存，之后进入来源每日额度冷却。
+
+来源 `sg-sfa-commercial-import` 纳入 `sg-food-trade`，对应 SG-3.1/SG-3.2，并分别与 SFA 标签指南、Singapore Customs 建立互补关系：SFA 指引负责食品类别、登记和许可证要求，海关来源覆盖进口申报；不能相互替代。来源池摘要迁移保留了原轮询历史，SG 采集任务现已按新摘要恢复。该页是行政指引，不是产品准入结论，也不代替法规原文、HS 分类及产品配方的适用性复核。
+
 ### 2026-10-26 当前来源池清单快照
 
-仓库中的 `aitea-official-source-pool-v2` 配置现有 26 个来源节点：印尼 11 个活动、5 个归档；新加坡 10 个活动；两国分属 2 个主题组，共记录 20 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 26 个节点内。
+仓库中的 `aitea-official-source-pool-v2` 配置现有 27 个来源节点：印尼 11 个活动、5 个归档；新加坡 11 个活动；两国分属 2 个主题组，共记录 22 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 27 个节点内。

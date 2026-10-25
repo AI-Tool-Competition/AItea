@@ -108,6 +108,21 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
         if country == "SG":
             assert "sg-ccs-fair-trading" in {source["id"] for source in active}
             assert {source["id"] for source in active} >= {"sg-sso-acts-current", "sg-sso-statutes"}
+            commercial_import = next(
+                row for row in registry["sources"] if row["id"] == "sg-sfa-commercial-import"
+            )
+            assert commercial_import["url"] == (
+                "https://www.sfa.gov.sg/food-import-export/commercial-imports/"
+                "what-you-need-to-know-for-import-of-food"
+            )
+            assert commercial_import["allowed_hosts"] == ["www.sfa.gov.sg"]
+            assert commercial_import["verification"]["checklist_items"] == ["SG-3.1", "SG-3.2"]
+            assert commercial_import["verification"]["server_status"] == "reachable_content"
+            assert {
+                relation["related_source_id"]
+                for relation in registry["source_relations"]
+                if relation["source_id"] == "sg-sfa-commercial-import"
+            } >= {"sg-sfa-labelling", "sg-customs-import"}
     archived_bpk = next(source for source in registry["sources"] if source["id"] == "id-bpk-regulations")
     assert archived_bpk["status"] == "archived"
     assert archived_bpk["verification"]["latest_probe"]["failure_code"] == "http_403"
@@ -1353,14 +1368,14 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 26
+    assert len(configured) == 27
     setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row
         for row in configured
         if row["id"] not in setneg_ids and row.get("discovery") is None
     ]
-    assert len(originals) == 20
+    assert len(originals) == 21
     for item in originals:
         recipe = collection.recipe(item)
         assert "setneg_type" not in recipe

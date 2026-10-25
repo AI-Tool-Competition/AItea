@@ -69,3 +69,33 @@ def test_non_deepseek_ocr_keeps_provider_default_reasoning(monkeypatch):
     vision.transcribe_page({"image_base64": "aW1hZ2U=", "native_text": ""})
 
     assert "thinking" not in captured
+
+
+def test_table_quality_retry_gets_blind_row_boundary_recheck(monkeypatch):
+    monkeypatch.setenv("VISION_OCR_ENABLED", "true")
+    monkeypatch.setenv("LLM_BASE_URL", "https://aerisun.top/sub2api/v1")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4.1-flash")
+    requests = []
+    raw = '{"complete":true,"printed_page":null,"text":"table","uncertain_spans":[],"is_blank":false}'
+
+    def invoke(body):
+        requests.append(body)
+        return {"model": body["model"], "choices": [{"message": {"content": raw}}]}, raw, "stop"
+
+    monkeypatch.setattr(vision, "_invoke", invoke)
+    vision.transcribe_page({"image_base64": "aW1hZ2U=", "native_text": ""})
+    retried = vision.transcribe_page(
+        {
+            "image_base64": "aW1hZ2U=",
+            "native_text": "",
+            "quality_retry": "table_layout_not_preserved",
+        }
+    )
+
+    first_text = requests[0]["messages"][1]["content"][1]["text"]
+    retry_text = requests[1]["messages"][1]["content"][1]["text"]
+    assert "previous visual transcription" not in first_text
+    assert "previous visual transcription reported table_layout_not_preserved" in retry_text
+    assert "its transcript is intentionally omitted" in retry_text
+    assert retried["prompt_version"] == "legal-page-transcription-v5"

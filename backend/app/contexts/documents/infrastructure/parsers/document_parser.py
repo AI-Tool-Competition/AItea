@@ -672,7 +672,13 @@ def _ocr_one_page(
         if current_profile() != profile:
             raise ValueError("图片识别配置已变更，请重新领取任务。")
         try:
-            transcript = transcribe_page({**rendered, "native_text": hint})
+            transcript = transcribe_page(
+                {
+                    **rendered,
+                    "native_text": hint,
+                    "quality_retry": _visual_table_retry_guidance(page),
+                }
+            )
         except (ValueError, OSError) as exc:
             return failure(exc)
         apply_page_transcription(updated, metadata, transcript, native_hint=hint)
@@ -775,6 +781,25 @@ def _mineru_index_rebuild_needed(previous: dict, updated: dict) -> bool:
         and (page.get("ocr_fallback") or {}).get("accepted") is not True
         for page in updated.get("pages", [])
     )
+
+
+def _visual_table_retry_guidance(page: dict) -> str | None:
+    """Pass only the prior quality failure category into a new blind visual read."""
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+        is_visual_fallback_page,
+    )
+
+    if not is_visual_fallback_page(page):
+        return None
+    cycles = page.get("ocr_retry_cycles")
+    if not isinstance(cycles, list) or not cycles or not isinstance(cycles[-1], dict):
+        return None
+    previous = cycles[-1].get("previous_page")
+    metadata = previous.get("ocr") if isinstance(previous, dict) else None
+    spans = metadata.get("uncertain_spans") if isinstance(metadata, dict) else None
+    if isinstance(spans, list) and "table_layout_not_preserved" in spans:
+        return "table_layout_not_preserved"
+    return None
 
 
 def ocr_bounded(

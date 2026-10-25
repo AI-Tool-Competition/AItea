@@ -172,6 +172,19 @@ def test_large_mineru_rebuild_has_a_bounded_document_scale_cpu_window(monkeypatc
     assert bounded_call["timeout"] == document_parser._MINERU_REBUILD_TIMEOUT_SECONDS
 
 
+def test_visual_table_retry_guidance_uses_the_saved_quality_failure_category():
+    page = {
+        "ocr_fallback": {"protocol": PROTOCOL, "attempts": 5},
+        "ocr_retry_cycles": [
+            {"previous_page": {"ocr": {"uncertain_spans": ["table_layout_not_preserved"]}}}
+        ],
+    }
+
+    assert document_parser._visual_table_retry_guidance(page) == "table_layout_not_preserved"
+    page["ocr_retry_cycles"][0]["previous_page"]["ocr"]["uncertain_spans"] = ["illegible_printed_text"]
+    assert document_parser._visual_table_retry_guidance(page) is None
+
+
 def test_visual_result_without_structured_table_stays_in_review():
     rebuilt = rebuild_manifest(_manifest("Code 0101, rate 0%"))
     assert rebuilt["pages"][0]["status"] == "ocr_uncertain"

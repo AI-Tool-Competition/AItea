@@ -14,8 +14,8 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
     url = "https://isomer-user-content.by.gov.sg/174/420282d6-4bf3-4200-ac0b-0f9f4ee31d99/how-to-import-ur-goods.jpg"
     body = f'<html><nav><img src="site-logo.png"></nav><main id="main-content"><nav><svg><path/></svg></nav><h1>Import Operations Overview</h1><p>Import pathways from a Free Trade Zone.</p><img src="{url}" alt="A flowchart illustrating import pathways." width="100%" height="auto"></main></html>'.encode()
     result = parse_file("customs.html", body, "text/html")
-    assert result["parser"] == "html-basic" and result["parser_version"] == "11"
-    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v11"
+    assert result["parser"] == "html-basic" and result["parser_version"] == "12"
+    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v12"
     assert result["html_source"]["source_hash"] == digest(body)
     assert not result["quality"]["complete"]
     objects = result["html_source"]["objects"]
@@ -39,7 +39,7 @@ def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_
     </main>"""
     result = parse_file("sfa.html", body, "text/html")
 
-    assert result["parser_version"] == "11"
+    assert result["parser_version"] == "12"
     assert result["quality"]["complete"] is True
     assert result["quality"]["pending_objects"] == []
     assert result["quality"]["decorative_ui_object_keys"] == [
@@ -98,16 +98,19 @@ def test_explicit_carousel_button_svg_controls_do_not_block_text_completeness(la
 
     assert result["html_source"]["objects"][0]["tag"] == "svg"
     assert result["html_source"]["objects"][0]["visual_role"] == "decorative_ui"
-    assert result["html_source"]["objects"][0]["visual_exclusion_reason"] == "svg_image_carousel_navigation_control"
+    assert (
+        result["html_source"]["objects"][0]["visual_exclusion_reason"]
+        == "svg_image_carousel_navigation_control"
+    )
     assert result["quality"]["pending_objects"] == []
     assert result["quality"]["complete"] is True
     assert text_complete(result) is True
 
 
 def test_unlabelled_svg_inside_button_remains_pending():
-    body = b'''<main><h1>Review warning signs</h1><p>Check the contract carefully.</p>
+    body = b"""<main><h1>Review warning signs</h1><p>Check the contract carefully.</p>
     <button aria-label="Open details"><svg viewBox="0 0 16 16"><text>Warning</text></svg></button>
-    </main>'''
+    </main>"""
     result = parse_file("ccs.html", body, "text/html")
 
     assert result["html_source"]["objects"][0].get("visual_role") is None
@@ -118,9 +121,9 @@ def test_unlabelled_svg_inside_button_remains_pending():
 def test_enterprisesg_check_icon_is_indexed_as_a_status_marker():
     from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import image_candidates_bounded
 
-    body = b'''<main><h1>RCEP benefits</h1><ul><li>
+    body = b"""<main><h1>RCEP benefits</h1><ul><li>
     <img src="/-/media/themes/esg-corporate/global/esgcorptheme/images/unicons/svg/line/check.svg" alt="Check">
-    <div>Tariff elimination and preference</div></li></ul></main>'''
+    <div>Tariff elimination and preference</div></li></ul></main>"""
     result = parse_file("rcep.html", body, "text/html")
 
     icon = result["html_source"]["objects"][0]
@@ -134,10 +137,10 @@ def test_enterprisesg_check_icon_is_indexed_as_a_status_marker():
 
 
 def test_enterprisesg_external_link_and_faq_promo_icons_are_ui_controls():
-    body = b'''<main><h1>Official guidance</h1><p><a href="/guide">Read the guide
+    body = b"""<main><h1>Official guidance</h1><p><a href="/guide">Read the guide
     <img alt="" src="/-/media/themes/esg-corporate/global/esgcorptheme/images/external-link.svg"></a></p>
     <div class="field-promoicon"><img alt="Chat" src="/-/media/themes/esg-corporate/global/esgcorptheme/images/unicons/svg/line/comments.svg"></div>
-    </main>'''
+    </main>"""
     result = parse_file("enterprisesg.html", body, "text/html")
 
     assert [row["visual_exclusion_reason"] for row in result["html_source"]["objects"]] == [
@@ -148,12 +151,12 @@ def test_enterprisesg_external_link_and_faq_promo_icons_are_ui_controls():
 
 
 def test_small_inline_svg_icons_resolve_only_with_icon_sizing_and_no_accessible_data():
-    body = b'''<main><h1>BPJPH regulation</h1><p>
+    body = b"""<main><h1>BPJPH regulation</h1><p>
     <svg width="1em" height="1em" class="w-3.5 h-3.5"><path d="M1 2"/></svg>
     <svg width="22" height="22" class="text-danger"><path d="M2 3"/></svg>
     <svg width="22" height="22" class="text-danger" aria-label="Warning"><path d="M3 4"/></svg>
     <svg width="22" height="22" class="text-danger"><text>Important data</text></svg>
-    </p></main>'''
+    </p></main>"""
     result = parse_file("bpjph.html", body, "text/html")
 
     objects = result["html_source"]["objects"]
@@ -166,6 +169,42 @@ def test_small_inline_svg_icons_resolve_only_with_icon_sizing_and_no_accessible_
     assert result["quality"]["pending_objects"] == ["html-object-000003", "html-object-000004"]
 
 
+def test_unlabelled_textless_header_svg_chrome_does_not_block_body_completeness():
+    body = b"""<main><header><svg width="289" height="97" viewBox="0 0 289 97">
+    <g><path d="M1 2h10v10z"/><defs><clipPath id="brand"><rect width="20" height="20"/></clipPath></defs>
+    </g></svg></header><h1>Consumer guidance</h1><p>Keep the written agreement.</p></main>"""
+    result = parse_file("guidance.html", body, "text/html")
+
+    logo = result["html_source"]["objects"][0]
+    assert result["parser_version"] == "12"
+    assert logo["visual_role"] == "decorative_ui"
+    assert logo["visual_exclusion_reason"] == "unlabelled_textless_header_svg_chrome"
+    assert result["quality"]["pending_objects"] == []
+    assert result["quality"]["complete"] is True
+    assert text_complete(result) is True
+
+
+@pytest.mark.parametrize(
+    "svg",
+    [
+        '<svg aria-label="Regulatory seal"><path d="M1 2"/></svg>',
+        '<svg aria-labelledby="brand-title"><title id="brand-title">Official mark</title><path d="M1 2"/></svg>',
+        "<svg><text>Important legal text</text></svg>",
+        '<svg><image href="/meaningful-chart.png"/></svg>',
+    ],
+)
+def test_header_svg_with_accessible_or_embedded_content_stays_pending(svg):
+    result = parse_file(
+        "guidance.html",
+        f"<main><header>{svg}</header><p>Keep the written agreement.</p></main>".encode(),
+        "text/html",
+    )
+
+    assert result["html_source"]["objects"][0].get("visual_role") is None
+    assert "html-object-000001" in result["quality"]["pending_objects"]
+    assert result["quality"]["complete"] is False
+
+
 def test_linked_pdf_requires_same_page_host_and_exact_iframe_proof():
     from copy import deepcopy
 
@@ -176,8 +215,8 @@ def test_linked_pdf_requires_same_page_host_and_exact_iframe_proof():
     )
     from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
 
-    body = b'''<main><h1>Formal regulation</h1><p>Official PDF below.</p>
-    <iframe src="/documents/regulation.pdf" title="Regulation.pdf"></iframe></main>'''
+    body = b"""<main><h1>Formal regulation</h1><p>Official PDF below.</p>
+    <iframe src="/documents/regulation.pdf" title="Regulation.pdf"></iframe></main>"""
     parent_url = "https://authority.gov.sg/guidance/regulation"
     result = parse_file("regulation.html", body, "text/html")
     row = result["html_source"]["objects"][0]
@@ -322,7 +361,7 @@ def test_long_style_metadata_keeps_source_proof_without_blocking_complete_body()
     locator = paragraph["locator"]
     start_tag = raw[locator["start_tag_char_start"] : locator["start_tag_char_end"]]
 
-    assert result["parser_version"] == "11"
+    assert result["parser_version"] == "12"
     assert result["quality"]["complete"] is True
     assert text_complete(result) is True
     assert locator["class_attribute_length"] == len(classes)
@@ -340,7 +379,7 @@ def test_v5_html_completeness_remains_compatible_after_v7_structured_table_evide
     result = parse_file("law.html", b"<main><p>Keep this legal text.</p></main>")
     legacy = dict(result)
     legacy["parser_version"] = "5"
-    legacy["pipeline_version"] = result["pipeline_version"].replace("v11", "v5")
+    legacy["pipeline_version"] = result["pipeline_version"].replace("v12", "v5")
     legacy["html_source"] = dict(result["html_source"])
     legacy["html_source"]["mapping_version"] = "html-source-mapping-v5"
 

@@ -19,7 +19,7 @@ from urllib.parse import quote, urljoin, urlsplit
 PROTOCOL = "html-linked-image-v1"
 LINKED_DOCUMENT_PROTOCOL = "official-html-pdf-link-v1"
 TEXTUAL_ICON_PROTOCOL = "verified_accessible_icon_name-v1"
-_HTML_PARSER_VERSIONS = {"3", "4", "5", "6", "7", "8", "9", "10", "11"}
+_HTML_PARSER_VERSIONS = {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 32 * 1024 * 1024
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -402,9 +402,7 @@ def _bind(content, manifest, object_key, source_url, image, reference, fetched_u
             "image_sha256",
             "image_size",
         )
-        rows[-1]["pixel_verification"] = {
-            key: rendered[key] for key in pixel_fields if key in rendered
-        }
+        rows[-1]["pixel_verification"] = {key: rendered[key] for key in pixel_fields if key in rendered}
     return result
 
 
@@ -559,9 +557,11 @@ def update_quality(manifest, values):
     linked_keys = set(linked_document_objects(manifest))
     textual_keys = textual_icon_objects(manifest)
     complete_keys = {value["object_key"] for value in values if value["asset_status"] == "ocr_complete"}
-    resolved_keys = linked_keys | textual_keys | {
-        row["object_key"] for row in rows if row.get("visual_role") == "decorative_ui"
-    }
+    resolved_keys = (
+        linked_keys
+        | textual_keys
+        | {row["object_key"] for row in rows if row.get("visual_role") == "decorative_ui"}
+    )
     pending = [
         row["object_key"]
         for row in rows
@@ -606,8 +606,10 @@ def complete(manifest, values):
         return True
     keys = [row.get("object_key") for row in objects]
     verified = [row.get("object_key") for row in values if row["asset_status"] == "ocr_complete"]
-    resolved = textual_keys | linked_keys | {
-        row["object_key"] for row in objects if row.get("visual_role") == "decorative_ui"
-    }
+    resolved = (
+        textual_keys
+        | linked_keys
+        | {row["object_key"] for row in objects if row.get("visual_role") == "decorative_ui"}
+    )
     resolved |= set(verified)
     return len(keys) == len(set(keys)) and len(verified) == len(set(verified)) and set(keys) == resolved

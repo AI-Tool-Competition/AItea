@@ -690,12 +690,13 @@ class CollectionService:
                 AND d.role='primary' AND d.source_url IS NOT NULL AND d.source_url<>''
                 AND json_extract({metadata},'$.review_status')='draft'
                 AND json_extract({manifest},'$.parser')='html-basic'
-                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9','10','11')
-                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10','html-source-mapping-v11')
+                AND json_extract({manifest},'$.parser_version') IN ('3','4','5','6','7','8','9','10','11','12')
+                AND (json_extract({manifest},'$.pipeline_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10','html-source-mapping-v11','html-source-mapping-v12')
                     OR substr(json_extract({manifest},'$.pipeline_version'),1,23) IN ('html-source-mapping-v3+','html-source-mapping-v4+','html-source-mapping-v5+','html-source-mapping-v6+','html-source-mapping-v7+','html-source-mapping-v8+','html-source-mapping-v9+')
                     OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v10+'
-                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v11+')
-                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10','html-source-mapping-v11')
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v11+'
+                    OR substr(json_extract({manifest},'$.pipeline_version'),1,24)='html-source-mapping-v12+')
+                AND json_extract({manifest},'$.html_source.mapping_version') IN ('html-source-mapping-v3','html-source-mapping-v4','html-source-mapping-v5','html-source-mapping-v6','html-source-mapping-v7','html-source-mapping-v8','html-source-mapping-v9','html-source-mapping-v10','html-source-mapping-v11','html-source-mapping-v12')
                 AND json_extract({manifest},'$.source_hash')=d.content_hash
                 AND json_extract({manifest},'$.html_source.source_hash')=d.content_hash
         )"""
@@ -1006,7 +1007,11 @@ class CollectionService:
                     private_embedding_available,
                     timestamp,
                     *((preferred,) if preferred else ()),
-                    *((SYSTEM_OWNER_ID,) if shared_embedding_pending and worker_scope.allows(SYSTEM_OWNER_ID) else ()),
+                    *(
+                        (SYSTEM_OWNER_ID,)
+                        if shared_embedding_pending and worker_scope.allows(SYSTEM_OWNER_ID)
+                        else ()
+                    ),
                 ),
             ).fetchone()
             if not row:
@@ -1319,7 +1324,11 @@ class CollectionService:
                                 WHERE binding_id=? AND url=? ORDER BY created_at DESC LIMIT 1""",
                                 (binding_id, parent_url),
                             ).fetchone()
-                        if parent is None or type(parent["size"]) is not int or not 1 <= parent["size"] <= MAX_BI_OFFICIAL_HTML_BYTES:
+                        if (
+                            parent is None
+                            or type(parent["size"]) is not int
+                            or not 1 <= parent["size"] <= MAX_BI_OFFICIAL_HTML_BYTES
+                        ):
                             raise ValueError("央行官网下一页请求缺少已保存的前一页证据。")
                         parent_path = Path(parent["storage_path"])
                         if not parent_path.resolve().is_relative_to(Path(self.db.data_dir).resolve()):
@@ -1607,7 +1616,9 @@ class CollectionService:
                         and asset_hosts is not None
                         and claim["owner_id"] == SYSTEM_OWNER_ID
                     ):
-                        from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
+                        from app.contexts.documents.infrastructure.providers.vision import (
+                            vision_ocr_configured,
+                        )
 
                         if vision_ocr_configured():
                             # Save the exact structural map before remote image

@@ -136,6 +136,7 @@ def assets(manifest: dict) -> list[dict]:
         "9",
         "10",
         "11",
+        "12",
     }:
         html = manifest.get("html_source") or {}
         if not isinstance(html, dict):
@@ -297,8 +298,7 @@ def prepare_asset_retries(
         not isinstance(statuses, (tuple, list, set, frozenset))
         or not statuses
         or any(
-            not isinstance(status, str)
-            or status not in {"ocr_failed", "ocr_uncertain", "pending_vision"}
+            not isinstance(status, str) or status not in {"ocr_failed", "ocr_uncertain", "pending_vision"}
             for status in statuses
         )
         or type(max_assets) is not int
@@ -318,8 +318,7 @@ def prepare_asset_retries(
     selected = [
         value
         for value in available
-        if value["asset_status"] in statuses
-        and (asset_keys is None or value["asset_key"] in asset_keys)
+        if value["asset_status"] in statuses and (asset_keys is None or value["asset_key"] in asset_keys)
     ]
     if asset_keys is not None and {value["asset_key"] for value in selected} != set(asset_keys):
         raise ValueError("原生图片重试清单与当前待识别图片不匹配。")

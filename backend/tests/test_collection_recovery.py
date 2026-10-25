@@ -628,7 +628,9 @@ def test_pending_mineru_visual_fallback_retries_archived_unknown_request(monkeyp
     assert decision.not_before == retry_not_before
 
 
-@pytest.mark.parametrize(("validator_accepts", "attempts", "expected"), [(True, 2, True), (False, 2, False), (True, 3, False)])
+@pytest.mark.parametrize(
+    ("validator_accepts", "attempts", "expected"), [(True, 2, True), (False, 2, False), (True, 3, False)]
+)
 def test_mineru_visual_page_with_missing_provider_tag_is_retried_only_when_receipt_valid(
     monkeypatch, validator_accepts, attempts, expected
 ):
@@ -808,7 +810,9 @@ def test_mineru_table_retry_preserves_original_page_and_marks_visual_fallback(se
             decision,
         )
     with closing(service.db.connect()) as conn:
-        stored = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0])
+        stored = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
     retried = stored["pages"][0]
     assert decision.reason == "mineru_visual_table_retry"
     assert retried["status"] == "pending_ocr"
@@ -1049,9 +1053,12 @@ def test_blocked_mineru_download_resumes_existing_batch_without_resubmitting(ser
         current = conn.execute(
             "SELECT id,owner_id,content_hash,manifest FROM documents WHERE id=?", (document["id"],)
         ).fetchone()
-        assert service.collection.recovery._resumable_mineru_parse(
-            conn, "owner", current, json.loads(current["manifest"])
-        ) is not None
+        assert (
+            service.collection.recovery._resumable_mineru_parse(
+                conn, "owner", current, json.loads(current["manifest"])
+            )
+            is not None
+        )
 
     result = service.collection.recovery.run_due(limit=32)
 
@@ -1148,19 +1155,22 @@ def test_confirmed_mineru_failure_retries_in_fresh_generation_and_reuses_other_p
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        scheduled_results = list(
-            pool.map(lambda _: service.collection.recovery.run_due(limit=32), range(2))
-        )
+        scheduled_results = list(pool.map(lambda _: service.collection.recovery.run_due(limit=32), range(2)))
     assert all(result["requeued"] == 0 for result in scheduled_results)
     with closing(service.db.connect()) as conn:
-        assert conn.execute(
-            "SELECT count(*) FROM collection_recovery_events WHERE event='terminal_mineru_failure_retry_scheduled'"
-        ).fetchone()[0] == 1
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM collection_recovery_events WHERE event='terminal_mineru_failure_retry_scheduled'"
+            ).fetchone()[0]
+            == 1
+        )
         recovery = conn.execute(
             "SELECT status,reason,retry_plan FROM collection_recovery_jobs WHERE item_id=?",
             (document["id"],),
         ).fetchone()
-        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0])
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
         old_tasks = conn.execute(
             "SELECT part_index,state,batch_id FROM document_parse_tasks WHERE document_id=? AND profile_hash=? ORDER BY part_index",
             (document["id"], profile_hash),
@@ -1404,7 +1414,9 @@ def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_prev
     assert [row["state"] for row in old_rows] == ["done", "done"]
     assert [(row["part_index"], row["state"]) for row in retry_rows] == [(0, "planned"), (1, "done")]
     assert retry_rows[1]["result_blob"] == tasks[1]["result_blob"]
-    previous_path = resolve_reference(saved["remote_parse"]["previous_manifest"], service.db.files_dir, "owner")
+    previous_path = resolve_reference(
+        saved["remote_parse"]["previous_manifest"], service.db.files_dir, "owner"
+    )
     assert json.loads(previous_path.read_bytes()) == manifest
 
     with service.db.transaction() as conn:
@@ -1455,9 +1467,13 @@ def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeyp
             (document["id"], "owner", document["content_hash"], profile_hash, part_blob, now(), now()),
         )
     monkeypatch.setenv("MINERU_API_TOKEN", "test-token")
-    monkeypatch.setattr(mineru.MinerUClient, "api", lambda *_args, **_kwargs: {
-        "extract_result": [{"data_id": "remote-task", "state": "failed", "err_code": "remote_failed"}]
-    })
+    monkeypatch.setattr(
+        mineru.MinerUClient,
+        "api",
+        lambda *_args, **_kwargs: {
+            "extract_result": [{"data_id": "remote-task", "state": "failed", "err_code": "remote_failed"}]
+        },
+    )
     claim = service.collection.claim_processing(owner_id="owner", document_ids=[document["id"]])
     assert claim
     with closing(service.db.connect()) as conn:
@@ -1548,7 +1564,9 @@ def test_budget_review_incomplete_image_is_automatically_retried_with_its_old_re
             identity_key="automatic-ocr-retry",
             kind_hint="law",
         )
-        conn.execute("UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(uncertain), doc["id"]))
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(uncertain), doc["id"])
+        )
         conn.execute(
             "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
             (doc["id"],),
@@ -1567,12 +1585,135 @@ def test_budget_review_incomplete_image_is_automatically_retried_with_its_old_re
     assert rows(service, "collection_recovery_events")[-2]["event"] == "automatic_ocr_retry_scheduled"
     with closing(service.db.connect()) as conn:
         row = conn.execute("SELECT manifest,status FROM documents WHERE id=?", (doc["id"],)).fetchone()
-        job = conn.execute("SELECT phase,status FROM processing_jobs WHERE document_id=?", (doc["id"],)).fetchone()
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (doc["id"],)
+        ).fetchone()
     retried = native_asset_ocr.assets(json.loads(row["manifest"]))[0]
     assert row["status"] == "processing" and tuple(job) == ("parse", "queued")
     assert retried["asset_status"] == "pending_vision" and "ocr" not in retried
     assert retried["ocr_attempt_history"][0]["previous_asset"] == previous
     assert retried["ocr_attempt_history"][0]["previous_asset"]["ocr"]["text"] == previous["ocr"]["text"]
+
+
+def test_failed_legacy_official_html_reparse_retries_are_automatic_and_bounded(service):
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+
+    source = (
+        b'<html><body><main><header><svg width="289" height="97" viewBox="0 0 289 97">'
+        b'<g><path d="M1 2h10v10z"/></g></svg></header>'
+        b"<h1>Consumer guidance</h1><p>Keep the written agreement.</p></main></body></html>"
+    )
+    parsed = parse_file("guidance.html", source, "text/html")
+    logo = parsed["html_source"]["objects"][0]
+    assert logo["visual_exclusion_reason"] == "unlabelled_textless_header_svg_chrome"
+
+    def save_failed(owner, key, url):
+        old = json.loads(json.dumps(parsed))
+        old["parser_version"] = "11"
+        old["pipeline_version"] = old["pipeline_version"].replace("v12", "v11", 1)
+        old["html_source"]["mapping_version"] = "html-source-mapping-v11"
+        old["html_source"]["objects"][0].pop("visual_role")
+        old["html_source"]["objects"][0].pop("visual_exclusion_reason")
+        old["quality"].update(
+            status="partial",
+            complete=False,
+            pending_objects=[logo["object_key"]],
+            visual_verification_required=True,
+            decorative_ui_object_keys=[],
+        )
+        blob = service.archive.blobs.put_bytes(owner, source)
+        with service.db.transaction() as conn:
+            doc = service.archive.store_original(
+                conn,
+                owner,
+                blob,
+                key + ".html",
+                "text/html",
+                url,
+                collection="country:SG",
+                level="primary",
+                tags=[],
+                identity_key=key,
+                kind_hint="law",
+            )
+            conn.execute(
+                "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+                (dump(old), doc["id"]),
+            )
+            conn.execute(
+                "UPDATE processing_jobs SET phase='parse',status='failed',attempts=1,available_at=0 WHERE document_id=?",
+                (doc["id"],),
+            )
+            service.collection.recovery.record_failure(
+                conn,
+                {"document_id": doc["id"], "owner_id": owner, "phase": "parse", "attempts": 1},
+                processing=True,
+                decision=Decision("processing_review"),
+                exhausted=True,
+                error_type="incomplete_checkpoint",
+            )
+        return doc["id"]
+
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    official_id = save_failed(
+        SYSTEM_OWNER_ID,
+        "legacy-official-html",
+        "https://www.pdpc.gov.sg/consumer-protection",
+    )
+    private_id = save_failed("owner", "legacy-private-html", "https://example.org/consumer-protection")
+
+    result = service.collection.recovery.run_due(limit=32)
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        official_job = conn.execute(
+            "SELECT status FROM processing_jobs WHERE document_id=?", (official_id,)
+        ).fetchone()
+        private_recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (private_id,)
+        ).fetchone()
+        official_recovery = conn.execute(
+            "SELECT id,status,reason FROM collection_recovery_jobs WHERE item_id=?", (official_id,)
+        ).fetchone()
+    assert official_job["status"] == "queued"
+    assert tuple(private_recovery) == ("blocked", "processing_review")
+    assert tuple(official_recovery[1:]) == ("queued", "html_parser_refresh")
+
+    def mark_refresh_failed():
+        with service.db.transaction() as conn:
+            conn.execute(
+                "UPDATE processing_jobs SET status='failed',attempts=1,available_at=0 WHERE document_id=?",
+                (official_id,),
+            )
+            conn.execute("UPDATE documents SET status='failed' WHERE id=?", (official_id,))
+            service.collection.recovery.record_failure(
+                conn,
+                {
+                    "document_id": official_id,
+                    "owner_id": SYSTEM_OWNER_ID,
+                    "phase": "parse",
+                    "attempts": 1,
+                },
+                processing=True,
+                decision=Decision("processing_review"),
+                exhausted=True,
+                error_type="incomplete_checkpoint",
+            )
+
+    mark_refresh_failed()
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 1
+    mark_refresh_failed()
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 1
+    mark_refresh_failed()
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 0
+    with closing(service.db.connect()) as conn:
+        scheduled = conn.execute(
+            "SELECT detail FROM collection_recovery_events WHERE recovery_id=? AND event='html_parser_refresh_scheduled' ORDER BY created_at",
+            (official_recovery["id"],),
+        ).fetchall()
+    attempts = [json.loads(row["detail"]) for row in scheduled]
+    assert [event["attempt"] for event in attempts] == [1, 2, 3]
+    assert all(event["max_attempts"] == 3 for event in attempts)
 
 
 def test_embed_last_rejection_does_not_prove_entire_multibatch_call_was_unpaid():

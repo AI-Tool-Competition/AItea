@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from app.shared.infrastructure.vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v11"
+VERSION = "html-source-mapping-v12"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -146,13 +146,12 @@ def _small_unlabelled_svg_ui(frame, fragment):
     if frame.get("tag") != "svg" or frame.get("aria_label") or frame.get("role") == "img":
         return False
     metadata = frame.get("object_metadata") or {}
-    if metadata.get("title") or re.search(r"<(?:title|desc|text|textpath|foreignobject|image)\b", fragment, re.I):
+    if metadata.get("title") or re.search(
+        r"<(?:title|desc|text|textpath|foreignobject|image)\b", fragment, re.I
+    ):
         return False
     classes = set(frame.get("classes", []))
-    known_icon_styles = (
-        {"w-3.5", "h-3.5"}.issubset(classes)
-        or classes == {"text-danger"}
-    )
+    known_icon_styles = {"w-3.5", "h-3.5"}.issubset(classes) or classes == {"text-danger"}
     if not known_icon_styles:
         return False
 
@@ -164,6 +163,35 @@ def _small_unlabelled_svg_ui(frame, fragment):
         return amount <= (1.5 if unit in {"em", "rem"} else 24)
 
     return small_dimension(metadata.get("width")) and small_dimension(metadata.get("height"))
+
+
+def _unlabelled_header_svg_chrome(frame, fragment):
+    """Exclude textless inline brand chrome from body-image completeness checks."""
+    if (
+        frame.get("tag") != "svg"
+        or not frame.get("inside_header")
+        or frame.get("aria_label")
+        or frame.get("aria_labelledby")
+        or frame.get("aria_describedby")
+        or frame.get("role")
+        or (frame.get("object_metadata") or {}).get("title")
+    ):
+        return False
+    tags = re.findall(r"</?\s*([a-z][a-z0-9:-]*)\b", fragment, re.I)
+    allowed = {
+        "svg",
+        "g",
+        "path",
+        "defs",
+        "clippath",
+        "rect",
+        "circle",
+        "ellipse",
+        "line",
+        "polygon",
+        "polyline",
+    }
+    return bool(tags) and all(tag.casefold() in allowed for tag in tags)
 
 
 def _rsc_videos(source, source_hash, scripts, objects):
@@ -861,6 +889,9 @@ class HTMLDocument(HTMLParser):
         if _small_unlabelled_svg_ui(frame, self.source[frame["start"] : end]):
             record["visual_role"] = "decorative_ui"
             record["visual_exclusion_reason"] = "small_unlabelled_inline_svg_ui_icon"
+        elif _unlabelled_header_svg_chrome(frame, self.source[frame["start"] : end]):
+            record["visual_role"] = "decorative_ui"
+            record["visual_exclusion_reason"] = "unlabelled_textless_header_svg_chrome"
         if not closed:
             self._uncertain = True
 
@@ -1002,7 +1033,10 @@ class HTMLDocument(HTMLParser):
             "tag": tag,
             "classes": str(values.get("class", ""))[:4096].split()[:32],
             "aria_label": str(values.get("aria-label", ""))[:256].strip().casefold(),
+            "aria_labelledby": str(values.get("aria-labelledby", ""))[:256].strip(),
+            "aria_describedby": str(values.get("aria-describedby", ""))[:256].strip(),
             "role": str(values.get("role", "")).strip().casefold(),
+            "inside_header": tag == "svg" and any(ancestor["tag"] == "header" for ancestor in self._stack),
             "hidden": hidden,
             "main": in_main,
             "path": path,
@@ -1126,7 +1160,9 @@ class HTMLDocument(HTMLParser):
                 )
                 self._pending_textual_icons.append({"object_key": key, "text": marker})
             else:
-                exclusion_reason = _decorative_ui_image(tag, references, metadata, parent_classes, self._stack)
+                exclusion_reason = _decorative_ui_image(
+                    tag, references, metadata, parent_classes, self._stack
+                )
             if exclusion_reason:
                 record["visual_role"] = "decorative_ui"
                 record["visual_exclusion_reason"] = exclusion_reason
@@ -1384,7 +1420,7 @@ class HTMLDocument(HTMLParser):
         }
         return HTMLParsedDocument(
             "html-basic",
-            "11",
+            VERSION.removeprefix("html-source-mapping-v"),
             VERSION,
             self.elements,
             [],

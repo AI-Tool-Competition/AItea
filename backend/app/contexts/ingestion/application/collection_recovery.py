@@ -25,12 +25,11 @@ from app.shared.domain.values import dump, now, uid
 SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
-OCR_AUTOMATIC_RETRY_REASONS = frozenset(
-    {"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry"}
-)
+OCR_AUTOMATIC_RETRY_REASONS = frozenset({"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry"})
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 3
+MAX_HTML_PARSER_REFRESH_ATTEMPTS = 3
 PROCESSING_QUEUE_LIMIT = 200
 # Keep one bounded admission slot so recovery work cannot starve behind new imports.
 RECOVERY_QUEUE_RESERVE = 1
@@ -183,6 +182,38 @@ def _legacy_mineru_chart_refresh(manifest):
         if not isinstance(text, str) or proof.get("text_sha256") != hashlib.sha256(text.encode()).hexdigest():
             return False
     return chart_pages > 0
+
+
+def _legacy_html_parser_refresh_plan(manifest, source_hash):
+    """Bind a parser refresh to an older, intact official HTML source version."""
+    from app.contexts.documents.infrastructure.parsers.html_parsing import VERSION
+
+    prefix = "html-source-mapping-v"
+    target_version = VERSION.removeprefix(prefix)
+    if not isinstance(manifest, dict):
+        return None
+    old_version = manifest.get("parser_version")
+    html_source = manifest.get("html_source")
+    if (
+        not target_version.isdecimal()
+        or manifest.get("parser") != "html-basic"
+        or not isinstance(old_version, str)
+        or not old_version.isdecimal()
+        or int(old_version) >= int(target_version)
+        or manifest.get("source_hash") != source_hash
+        or not isinstance(html_source, dict)
+        or html_source.get("source_hash") != source_hash
+        or html_source.get("mapping_version") != f"{prefix}{old_version}"
+        or str(manifest.get("pipeline_version", "")).split("+", 1)[0] != f"{prefix}{old_version}"
+        or not isinstance(html_source.get("objects"), list)
+    ):
+        return None
+    return {
+        "protocol": "official-html-parser-refresh-v1",
+        "source_hash": source_hash,
+        "previous_parser_version": old_version,
+        "target_parser_version": target_version,
+    }
 
 
 def _is_decode_replacement_page(page, source_hash):
@@ -341,12 +372,14 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             # the preserved response receipt and retry checkpoint make each
             # repeated attempt auditable. Successful but still ambiguous visual
             # output remains capped by MAX_MINERU_VISUAL_RETRIES.
-            vision_page = metadata.get("provider") != "mineru" and bool(
-                metadata.get("prompt_version") or metadata.get("request_id")
-            ) and (
-                not visual_fallback
-                or status == "ocr_failed"
-                or visual_attempts < MAX_MINERU_VISUAL_RETRIES
+            vision_page = (
+                metadata.get("provider") != "mineru"
+                and bool(metadata.get("prompt_version") or metadata.get("request_id"))
+                and (
+                    not visual_fallback
+                    or status == "ocr_failed"
+                    or visual_attempts < MAX_MINERU_VISUAL_RETRIES
+                )
             )
             eligible = (
                 status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
@@ -412,9 +445,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 "paid_ocr_retry"
                 if unknown_outcome
                 else "mineru_visual_table_retry"
-                if mineru_visual_pages
-                and len(mineru_visual_pages) == len(retry_pages)
-                and not retry_assets
+                if mineru_visual_pages and len(mineru_visual_pages) == len(retry_pages) and not retry_assets
                 else "ocr_quality_retry"
             )
             return Decision(
@@ -707,17 +738,20 @@ class CollectionRecovery:
             if (
                 task["source_hash"] != document["content_hash"]
                 or task["profile_hash"] != plan["retry_profile_hash"]
-                or hashlib.sha256(task["part_blob"].encode()).hexdigest()
-                != original["part_blob_sha256"]
+                or hashlib.sha256(task["part_blob"].encode()).hexdigest() != original["part_blob_sha256"]
                 or task["state"] != ("planned" if failed else original["state"])
                 or task["batch_id"] != (None if failed else original["batch_id"])
                 or (failed and (task["private_data"] != "{}" or task["result_blob"] is not None))
-                or (not failed and task["private_data"] != next(
-                    old["private_data"] for old in old_tasks if old["id"] == original["task_id"]
-                ))
-                or (not failed and task["result_blob"] != next(
-                    old["result_blob"] for old in old_tasks if old["id"] == original["task_id"]
-                ))
+                or (
+                    not failed
+                    and task["private_data"]
+                    != next(old["private_data"] for old in old_tasks if old["id"] == original["task_id"])
+                )
+                or (
+                    not failed
+                    and task["result_blob"]
+                    != next(old["result_blob"] for old in old_tasks if old["id"] == original["task_id"])
+                )
             ):
                 return False
         return True
@@ -801,9 +835,7 @@ class CollectionRecovery:
             return False
         if any(index >= len(old_tasks) for index in retry_parts):
             return False
-        new_tasks = cls._mineru_parse_tasks(
-            conn, owner, document["id"], document["content_hash"], retry_hash
-        )
+        new_tasks = cls._mineru_parse_tasks(conn, owner, document["id"], document["content_hash"], retry_hash)
         if len(new_tasks) != len(old_tasks):
             return False
         retry_set = set(retry_parts)
@@ -1288,7 +1320,26 @@ class CollectionRecovery:
                 "SELECT * FROM documents WHERE id=? AND owner_id=?", (row["item_id"], row["owner_id"])
             ).fetchone()
             manifest = json.loads(document["manifest"])
-            if row["reason"] == "mineru_parse_resume":
+            if row["reason"] == "html_parser_refresh":
+                from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+                try:
+                    plan = json.loads(row["retry_plan"])
+                except (TypeError, ValueError):
+                    self._block(conn, row, "html_parser_retry_plan_invalid")
+                    return "blocked"
+                expected = _legacy_html_parser_refresh_plan(manifest, document["content_hash"])
+                if (
+                    document["owner_id"] != SYSTEM_OWNER_ID
+                    or document["mime_type"] != "text/html"
+                    or not document["source_url"]
+                    or expected is None
+                    or plan != expected
+                ):
+                    self._block(conn, row, "html_parser_checkpoint_changed")
+                    return "blocked"
+                decision = Decision("html_parser_refresh", True)
+            elif row["reason"] == "mineru_parse_resume":
                 resumable = self._resumable_mineru_parse(conn, row["owner_id"], document, manifest)
                 if resumable is None:
                     self._block(conn, row, "mineru_checkpoint_changed")
@@ -1555,6 +1606,107 @@ class CollectionRecovery:
                 promoted += 1
         return promoted
 
+    def _queue_legacy_html_parser_refreshes(self, *, limit, worker_scope):
+        """Reparse failed official HTML after a mapping upgrade, with a small retry cap."""
+        from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    JOIN documents d ON d.id=r.item_id AND d.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
+                        AND r.reason='processing_review' AND j.phase='parse' AND j.status='failed'
+                        AND d.owner_id=? AND d.mime_type='text/html' AND d.source_url IS NOT NULL"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (SYSTEM_OWNER_ID, *arguments, limit),
+                )
+            ]
+        scheduled = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                recovery = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='processing_review'",
+                    (identifier,),
+                ).fetchone()
+                if recovery is None or not worker_scope.allows(recovery["owner_id"]):
+                    continue
+                binding = self._binding(
+                    conn, recovery["owner_id"], "processing", recovery["item_id"], "parse"
+                )
+                if binding is None or _digest(binding) != recovery["binding_sha256"]:
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                document = conn.execute(
+                    "SELECT owner_id,content_hash,manifest,mime_type,source_url FROM documents WHERE id=? AND owner_id=?",
+                    (recovery["item_id"], recovery["owner_id"]),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT phase,status,available_at FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (recovery["item_id"], recovery["owner_id"]),
+                ).fetchone()
+                if (
+                    document is None
+                    or job is None
+                    or job["phase"] != "parse"
+                    or job["status"] != "failed"
+                    or document["owner_id"] != SYSTEM_OWNER_ID
+                    or document["mime_type"] != "text/html"
+                    or not document["source_url"]
+                ):
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    continue
+                plan = _legacy_html_parser_refresh_plan(manifest, document["content_hash"])
+                if plan is None:
+                    continue
+                prior = conn.execute(
+                    "SELECT detail FROM collection_recovery_events WHERE recovery_id=? AND event='html_parser_refresh_scheduled'",
+                    (recovery["id"],),
+                ).fetchall()
+                matching_attempts = 0
+                for event in prior:
+                    try:
+                        detail = json.loads(event["detail"])
+                    except (TypeError, ValueError):
+                        continue
+                    if (
+                        isinstance(detail, dict)
+                        and detail.get("source_hash") == plan["source_hash"]
+                        and detail.get("target_parser_version") == plan["target_parser_version"]
+                    ):
+                        matching_attempts += 1
+                if matching_attempts >= MAX_HTML_PARSER_REFRESH_ATTEMPTS:
+                    continue
+                # A parser-version upgrade is a new, local parse operation. Do
+                # not let exponential backoff accumulated by the old parser
+                # postpone the first corrected parse or its bounded retries.
+                available = time.time()
+                attempt = matching_attempts + 1
+                conn.execute(
+                    "UPDATE processing_jobs SET available_at=? WHERE document_id=? AND owner_id=? AND status='failed'",
+                    (available, recovery["item_id"], recovery["owner_id"]),
+                )
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='waiting',reason='html_parser_refresh',
+                    available_at=?,retry_plan=?,revision=revision+1,updated_at=? WHERE id=?""",
+                    (available, dump(plan), now(), recovery["id"]),
+                )
+                self._event(
+                    conn,
+                    recovery["id"],
+                    "html_parser_refresh_scheduled",
+                    {**plan, "attempt": attempt, "max_attempts": MAX_HTML_PARSER_REFRESH_ATTEMPTS},
+                )
+                scheduled += 1
+        return scheduled
+
     def _queue_pending_mineru_resumes(self, *, limit, worker_scope):
         """Requeue failed parses with intact, already-submitted MinerU batches."""
         scope, arguments = worker_scope.sql("j.owner_id")
@@ -1698,7 +1850,8 @@ class CollectionRecovery:
                     old_hash = remote["profile_hash"]
                     if (
                         parse_profile_hash(remote["profile"], remote.get("retry_generation")) != old_hash
-                        or parse_profile_hash(MinerUParser.profile(), remote.get("retry_generation")) != old_hash
+                        or parse_profile_hash(MinerUParser.profile(), remote.get("retry_generation"))
+                        != old_hash
                     ):
                         continue
                 except ValueError:
@@ -1710,7 +1863,10 @@ class CollectionRecovery:
                     not old_tasks
                     or len(old_tasks) > (page_count if page_count is not None else 3000)
                     or [task["part_index"] for task in old_tasks] != list(range(len(old_tasks)))
-                    or any(task["state"] not in {"planned", *ACTIVE, "done", "failed", "blocked"} for task in old_tasks)
+                    or any(
+                        task["state"] not in {"planned", *ACTIVE, "done", "failed", "blocked"}
+                        for task in old_tasks
+                    )
                     or not any(self._mineru_remote_terminal_failure(task) for task in old_tasks)
                 ):
                     continue
@@ -1734,9 +1890,7 @@ class CollectionRecovery:
                     old_hash=old_hash,
                     old_tasks=old_tasks,
                     retry_parts=[
-                        task["part_index"]
-                        for task in old_tasks
-                        if self._mineru_remote_terminal_failure(task)
+                        task["part_index"] for task in old_tasks if self._mineru_remote_terminal_failure(task)
                     ],
                     reason="mineru_terminal_retry",
                     event="terminal_mineru_failure_retry_scheduled",
@@ -1809,12 +1963,15 @@ class CollectionRecovery:
                     if (
                         not isinstance(profile, dict)
                         or parse_profile_hash(profile, remote.get("retry_generation")) != old_hash
-                        or parse_profile_hash(MinerUParser.profile(), remote.get("retry_generation")) != old_hash
+                        or parse_profile_hash(MinerUParser.profile(), remote.get("retry_generation"))
+                        != old_hash
                     ):
                         continue
                 except ValueError:
                     continue
-                old_tasks = self._mineru_parse_tasks(conn, owner, document_id, document["content_hash"], old_hash)
+                old_tasks = self._mineru_parse_tasks(
+                    conn, owner, document_id, document["content_hash"], old_hash
+                )
                 parts = remote.get("parts")
                 if not isinstance(parts, list) or len(old_tasks) != len(parts) or not old_tasks:
                     continue
@@ -2481,6 +2638,7 @@ class CollectionRecovery:
             if not adopted:
                 break
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(limit=limit, worker_scope=worker_scope)
+        self._queue_legacy_html_parser_refreshes(limit=limit, worker_scope=worker_scope)
         self._queue_pending_mineru_resumes(limit=limit, worker_scope=worker_scope)
         self._queue_terminal_mineru_retries(limit=limit, worker_scope=worker_scope)
         self._queue_mineru_quality_retries(limit=limit, worker_scope=worker_scope)

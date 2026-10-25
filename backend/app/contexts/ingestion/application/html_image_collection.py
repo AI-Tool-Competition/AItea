@@ -66,9 +66,7 @@ class HtmlImageCollector:
             self.state = candidate
             self.checkpoint(deepcopy(self.state))
 
-    def _snapshot(
-        self, owner, document, *, allow_processing=False, official_source=False, active_claim=None
-    ):
+    def _snapshot(self, owner, document, *, allow_processing=False, official_source=False, active_claim=None):
         with closing(self.service.db.connect()) as conn:
             row = dict(self.service.own_document(conn, owner, document))
             enriched = self.service.document_dict(row, conn=conn)
@@ -109,7 +107,7 @@ class HtmlImageCollector:
         manifest = json.loads(row["manifest"])
         if (
             manifest.get("parser") != "html-basic"
-            or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9", "10", "11"}
+            or manifest.get("parser_version") not in {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}
             or not row["source_url"]
         ):
             raise ValueError("需要有实际来源网址的当前 HTML 原件映射。")
@@ -463,10 +461,7 @@ class HtmlImageCollector:
                     )
                     or current_enriched["metadata_revision"] != enriched["metadata_revision"]
                     or current_enriched["classifications"] != enriched["classifications"]
-                    or (
-                        not official_source
-                        and current_enriched["metadata"].get("review_status") != "draft"
-                    )
+                    or (not official_source and current_enriched["metadata"].get("review_status") != "draft")
                     or (
                         active_claim is None
                         and conn.execute(

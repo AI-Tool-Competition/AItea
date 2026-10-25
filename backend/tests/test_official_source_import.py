@@ -371,6 +371,52 @@ def test_newly_approved_source_replays_events_blocked_by_previous_pool(tmp_path)
     assert recovered["status"] == "stored" and recovered["reason"] is None
 
 
+def test_source_size_limit_increase_retries_saved_original_without_refetching(tmp_path):
+    service, config = _importer(tmp_path)
+    content = b"%PDF-1.7\n" + b"x" * (8 * 1024 * 1024)
+    event_path = _write_version(
+        tmp_path,
+        content=content,
+        at_ns=time.time_ns(),
+        mime_type="application/pdf",
+    )
+    country_root = tmp_path / "official-updates/ID"
+    state_path = country_root / "state.json"
+    state = json.loads(state_path.read_text())
+    state["sources"]["id-bpom-regulations"]["cache"]["https://jdih.pom.go.id/document/food-packaging"][
+        "size"
+    ] = len(content)
+    state_path.write_text(json.dumps(state))
+    importer = OfficialSourceImporter(service, config_path=config)
+
+    assert importer.run_once() == {"stored": 0, "skipped": 0, "blocked": 1, "deferred": 0}
+    with service.db.connect() as conn:
+        failed = conn.execute(
+            "SELECT status,reason FROM official_source_imports WHERE event_key=?",
+            (event_path.relative_to(tmp_path).as_posix(),),
+        ).fetchone()
+    assert tuple(failed) == ("blocked", "original_type_or_size_invalid")
+
+    pool = json.loads(config.read_text())
+    pool["sources"][0]["collection_limits"] = {
+        "max_document_bytes": 16 * 1024 * 1024,
+        "daily_bytes": 32 * 1024 * 1024,
+        "timeout_seconds": 900,
+    }
+    config.write_text(json.dumps(pool))
+    assert importer.run_once() == {"stored": 1, "skipped": 0, "blocked": 0, "deferred": 0}
+    assert importer.run_once() == {"stored": 0, "skipped": 0, "blocked": 0, "deferred": 0}
+
+    with service.db.connect() as conn:
+        imported = conn.execute(
+            "SELECT status,reason,document_id FROM official_source_imports WHERE event_key=?",
+            (event_path.relative_to(tmp_path).as_posix(),),
+        ).fetchone()
+        document = conn.execute("SELECT mime_type,status FROM documents WHERE id=?", (imported["document_id"],)).fetchone()
+    assert tuple(imported[:2]) == ("stored", None)
+    assert tuple(document) == ("application/pdf", "processing")
+
+
 def test_catalogue_page_and_out_of_scope_url_are_not_imported(tmp_path):
     service, config = _importer(tmp_path)
     event_path = _write_version(

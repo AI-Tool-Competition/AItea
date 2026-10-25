@@ -21,6 +21,8 @@ SERVER_STATUSES = {
     "http_410_resource_removed",
 }
 SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+MAX_SOURCE_DOCUMENT_BYTES = 300 * 1024 * 1024
+MAX_SOURCE_DAILY_BYTES = 512 * 1024 * 1024
 
 
 def _validate_html_document_paths(source: dict) -> None:
@@ -97,6 +99,7 @@ def _validate_verification(source: dict, country: str, hosts: list[str], validat
     checked_at = verification.get("checked_at")
     checklist_items = verification.get("checklist_items")
     server_status = verification.get("server_status")
+    checklist_scope_change = verification.get("checklist_scope_change")
     active = source["status"] == "active"
     if (
         not isinstance(evidence_url, str)
@@ -117,6 +120,23 @@ def _validate_verification(source: dict, country: str, hosts: list[str], validat
         raise ValueError("Every active source needs an official identity, business use and checklist scope")
     if not isinstance(checklist_items, list):
         checklist_items = []
+    if checklist_scope_change is not None:
+        previous_items = (
+            checklist_scope_change.get("previous_items")
+            if isinstance(checklist_scope_change, dict)
+            else None
+        )
+        reason = checklist_scope_change.get("reason") if isinstance(checklist_scope_change, dict) else None
+        if (
+            not isinstance(checklist_scope_change, dict)
+            or set(checklist_scope_change) != {"previous_items", "reason"}
+            or not isinstance(previous_items, list)
+            or len(previous_items) > 40
+            or any(not isinstance(item, str) or not CHECKLIST_ITEM.fullmatch(item) for item in previous_items)
+            or not isinstance(reason, str)
+            or not 10 <= len(reason) <= 500
+        ):
+            raise ValueError("Checklist scope changes need a bounded previous mapping and reason")
     try:
         checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
     except ValueError as error:
@@ -188,6 +208,25 @@ def _validate_discovery_policy(source: dict, validate_url) -> None:
         or parsed.fragment
     ):
         raise ValueError("SSO source must use its exact current catalogue root")
+
+
+def _validate_collection_limits(source: dict) -> None:
+    """Validate bounded per-source settings for unusually large official files."""
+    limits = source.get("collection_limits")
+    if limits is None:
+        return
+    if (
+        not isinstance(limits, dict)
+        or set(limits) != {"max_document_bytes", "daily_bytes", "timeout_seconds"}
+        or type(limits.get("max_document_bytes")) is not int
+        or not 1 <= limits["max_document_bytes"] <= MAX_SOURCE_DOCUMENT_BYTES
+        or type(limits.get("daily_bytes")) is not int
+        or limits["max_document_bytes"] > limits["daily_bytes"]
+        or limits["daily_bytes"] > MAX_SOURCE_DAILY_BYTES
+        or type(limits.get("timeout_seconds")) is not int
+        or not 1 <= limits["timeout_seconds"] <= 900
+    ):
+        raise ValueError("Official source transfer limits exceed their reviewed bounds")
 
 
 def validate_source_registry(
@@ -263,6 +302,7 @@ def validate_source_registry(
         _validate_html_document_paths(source)
         _validate_html_asset_hosts(source, scope, validate_url)
         _validate_discovery_policy(source, validate_url)
+        _validate_collection_limits(source)
         if protocol == "aitea-official-source-pool-v2":
             if source.get("status") not in {"active", "archived"} or source.get("transport") != "proxy":
                 raise ValueError("Every v2 source needs an explicit status and proxy transport")

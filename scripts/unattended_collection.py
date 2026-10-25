@@ -38,6 +38,7 @@ from app.contexts.ingestion.application.source_catalog import (  # noqa: E402
 from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     discover_page,
+    page_purpose,
     setneg_request_parameters,
 )
 from app.contexts.ingestion.infrastructure.source_registry_json import (  # noqa: E402
@@ -246,6 +247,30 @@ def recipe(source):
             include_terms=[],
             max_links=200,
         )
+    if source["id"] == "id-kemnaker-regulations":
+        # The ministry renders a server-side catalogue with bounded pagination,
+        # detail records, and originals under one exact path.
+        # Keep unrelated news, regional laws, training and informational pages
+        # out of the labour-law crawl.
+        result.update(
+            catalog_patterns=[root_pattern, r"^/peraturan\?hal=[1-9][0-9]{0,3}$"],
+            detail_patterns=[r"^/peraturan/detail/[1-9][0-9]{0,6}/[a-z0-9-]{1,180}$"],
+            document_patterns=[r"^/asset/data_puu/[^/?#]{1,240}\.(?:pdf|docx?)$"],
+            exclude_terms=[
+                *result["exclude_terms"],
+                "berita",
+                "glosarium",
+                "infografis",
+                "artikel",
+                "monografi",
+                "pelatihan",
+                "panduan",
+                "tutorial",
+                "peraturan daerah",
+                "putusan pengadilan",
+            ],
+            max_links=200,
+        )
     if rcep_policy(source):
         result["exclude_patterns"] = [RCEP_OUTSIDE_SCOPE]
     instrument = source.get("setneg_type", "PERPU" if source["id"] == SETNEG_ID else None)
@@ -449,7 +474,17 @@ class Collector:
         self.host_slots = {}
         self.host_cooldowns_path = self.root / "host-cooldowns.json"
         self.host_cooldowns = load(self.host_cooldowns_path) if self.host_cooldowns_path.exists() else {}
-        self.blobs = BlobStore(self.root / "files", max_bytes=self.limits["max_response_bytes"])
+        max_document_bytes = max(
+            (
+                source.get("collection_limits", {}).get("max_document_bytes", 0)
+                for source in self.sources
+            ),
+            default=0,
+        )
+        self.blobs = BlobStore(
+            self.root / "files",
+            max_bytes=max(self.limits["max_response_bytes"], max_document_bytes),
+        )
         self.request_day = None
         self.requests = {}
         self.roll_budget()
@@ -556,7 +591,7 @@ class Collector:
             self.requests = {path.stem: load(path) for path in files}
             self.request_day = day
 
-    def reserve(self, source, url):
+    def reserve(self, source, url, *, response_limit=None):
         with self.mutex:
             self.roll_budget()
             if self.stop.is_set() or (self.root / "STOP").exists():
@@ -564,16 +599,22 @@ class Collector:
             wait = self.host_cooldowns.get(urlsplit(url).hostname, 0) - time.time()
             if wait > 0:
                 raise Deferred("budget_wait", retry_after=wait, reason="HostCooldown")
-            if shutil.disk_usage(self.root).free < self.limits["min_free_bytes"] + 128 * 1024**2:
+            limit = self.limits["max_response_bytes"] if response_limit is None else response_limit
+            if type(limit) is not int or limit < 1:
+                raise ValueError("Response limit must be a positive integer")
+            disk_reserve = max(128 * 1024**2, limit)
+            if shutil.disk_usage(self.root).free < self.limits["min_free_bytes"] + disk_reserve:
                 raise Deferred("storage_wait")
             own = [row for row in self.requests.values() if row["source_id"] == source["id"]]
-            limit = self.limits["max_response_bytes"]
+            source_daily_bytes = source.get("collection_limits", {}).get(
+                "daily_bytes", self.limits["daily_source_bytes"]
+            )
             if (
                 len(self.requests) >= self.limits["daily_requests"]
                 or len(own) >= self.limits["daily_source_requests"]
                 or sum(row["charged_bytes"] for row in self.requests.values()) + limit
                 > self.limits["daily_bytes"]
-                or sum(row["charged_bytes"] for row in own) + limit > self.limits["daily_source_bytes"]
+                or sum(row["charged_bytes"] for row in own) + limit > source_daily_bytes
             ):
                 raise Deferred(
                     "budget_wait",
@@ -602,14 +643,15 @@ class Collector:
             write(self.host_cooldowns_path, self.host_cooldowns)
 
     @contextmanager
-    def slot(self, host, source):
+    def slot(self, host, source, *, timeout_seconds=None):
         if host not in source["allowed_hosts"]:
             raise DownloadError("Redirect host is outside the reviewed official source scope")
         if source.get("transport") == "proxy" and proxy_for_host(host) is None:
             raise DownloadError("Required collection proxy is not configured for this source")
         with self.mutex:
             semaphore = self.host_slots.setdefault(host, threading.BoundedSemaphore(self.limits["per_host"]))
-        if not semaphore.acquire(timeout=self.limits["timeout_seconds"]):
+        timeout = self.limits["timeout_seconds"] if timeout_seconds is None else timeout_seconds
+        if not semaphore.acquire(timeout=timeout):
             raise DownloadError("Official source concurrency wait exceeded deadline", retryable=True)
         try:
             yield
@@ -617,7 +659,19 @@ class Collector:
             semaphore.release()
 
     def fetch(self, source, url, cached=None):
-        path, receipt = self.reserve(source, url)
+        collection_limits = source.get("collection_limits", {})
+        is_document = page_purpose(url, recipe(source)) == "document"
+        response_limit = (
+            collection_limits.get("max_document_bytes", self.limits["max_response_bytes"])
+            if is_document
+            else self.limits["max_response_bytes"]
+        )
+        timeout_seconds = (
+            collection_limits.get("timeout_seconds", self.limits["timeout_seconds"])
+            if is_document
+            else self.limits["timeout_seconds"]
+        )
+        path, receipt = self.reserve(source, url, response_limit=response_limit)
         outcome = None
         network_url = request_url(source, url)
         receipt["network_url"] = network_url
@@ -632,14 +686,14 @@ class Collector:
                 validators = {}
             fetched = _download(
                 network_url,
-                deadline=time.monotonic() + self.limits["timeout_seconds"],
+                deadline=time.monotonic() + timeout_seconds,
                 consume=lambda chunks: self.blobs.put(
                     "official-updates:" + self.country + ":" + source["id"], chunks
                 ),
                 validators=validators,
-                connection_slot=lambda host: self.slot(host, source),
+                connection_slot=lambda host: self.slot(host, source, timeout_seconds=timeout_seconds),
                 accept_compressed_html=True,
-                max_bytes=self.limits["max_response_bytes"],
+                max_bytes=response_limit,
                 **request_options,
             )
             if fetched.get("not_modified"):

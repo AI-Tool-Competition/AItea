@@ -1,6 +1,6 @@
 # 无人值守官方来源池
 
-配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 25 个稳定来源节点：印度尼西亚 15 个（10 个活动、5 个归档），新加坡 10 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
+配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 26 个稳定来源节点：印度尼西亚 16 个（11 个活动、5 个归档），新加坡 10 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
 
 配置采用 `aitea-official-source-pool-v2`：`groups` 是国家根节点及主题子节点，子节点列出来源 ID 和对应核验清单项；来源自身保留正式入口、访问证据、主题、发现策略、优先级、轮询间隔和 `active` 状态。活动源须留有官方身份、业务用途、清单范围、近期开页回执与正文 SHA-256；空目录单独标记并低频复查。`source_relations` 是有方向的关系边，区分 `complements`（互补）、`cross_checks`（交叉核验）、`implements`（实施规则）与 `publishes_original`（正式原件发布），并说明适用清单项和关系理由。所有活动源都明确使用 `transport: proxy`；watchdog 将其精确允许主机并入代理白名单。归档用 `status: archived` 移出运行队列，原节点、关系和所有历史账本均保留；新增来源必须经有界代理抓取取得有效正文后才能登记。
 
@@ -146,3 +146,9 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 常驻采集器现按来源的 `setneg_type` 生成只读目录/详情 POST 请求体，原件仍通过原有受限 GET 下载。Perppu 继续使用原稳定 source ID，保留旧失败计数、缓存与历史原件；UU、PP、Perpres 分别新增独立来源节点。四类分别对应 ID-1.3 至 ID-1.6，并在层级清单中互相标为不同文种的互补目录，不据此推断法规范位阶。探测正文和 `source_observation` 回执位于 `.dev/aitea-setneg-20261025/`。
 
 `scripts/migrate_unattended_source_pool.py` 为印尼与新加坡保留了原账本并迁移清单摘要，随后恢复 `aitea-collection.service`。采集器按每日来源额度、每轮请求上限、主机并发和代理白名单继续轮询；4 个类型的首屏发现不等于完整收齐，目录后续分页、详情、原件、解析和索引状态分别记录。法律效力、修订关联和适用期间仍须人工/业务复核。
+
+### 2026-10-25 印尼劳动法规目录接入
+
+[人力部 JDIH `/peraturan`](https://jdih.kemnaker.go.id/peraturan) 经项目代理返回 HTTP 200，服务器渲染的目录包含分页、法规详情和 `/asset/data_puu/` 官方原件链接。此前 `/beranda` 的 HTTP 500 仅代表旧首页异常，不等于当前法规目录不可用。来源绑定清单 ID-4.4，归入“劳动、雇佣与劳动条件”，并与国家层级 UU、PP 目录互补；来源关系用于回查，不据此判断法律位阶或适用性。
+
+采集器只识别 `/peraturan` 与有界 `?hal=N` 分页、符合精确 ID/slug 形状的详情页，以及 `/asset/data_puu/` 下的 PDF/DOC 原件；新闻、词汇表、培训、地方规定、裁判文书和其他无关页面排除。原件单件上限 128 MiB、单日来源额度 256 MiB、单次超时 900 秒；普通目录页仍使用全局 8 MiB 响应上限。入口、回执和正文 SHA-256 已写入来源清单。此项验证证明入口和结构可抓取，不代表劳动法规已经完整收集、解析或完成适用性审核。

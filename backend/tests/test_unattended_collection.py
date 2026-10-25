@@ -58,6 +58,14 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert bpom["status"] == "active" and bpom["transport"] == "proxy"
             assert bpjph["verification"]["checklist_items"] == ["ID-4.8"]
             assert bpjph["group_id"] == "id-food-regulatory"
+            kemnaker = next(row for row in registry["sources"] if row["id"] == "id-kemnaker-regulations")
+            assert kemnaker["verification"]["checklist_items"] == ["ID-4.4"]
+            assert kemnaker["group_id"] == "id-labor-employment"
+            assert kemnaker["collection_limits"] == {
+                "max_document_bytes": 128 * 1024**2,
+                "daily_bytes": 256 * 1024**2,
+                "timeout_seconds": 900,
+            }
             food_group = next(
                 group
                 for group in registry["groups"][0]["children"]
@@ -169,6 +177,15 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     with pytest.raises(ValueError, match="HTML asset hosts"):
         collection.source_pool(rejected, "SG")
 
+    transfer_limits = deepcopy(registry)
+    limits = next(
+        source for source in transfer_limits["sources"] if source["id"] == "id-kemnaker-regulations"
+    )["collection_limits"]
+    limits["daily_bytes"] = limits["max_document_bytes"] - 1
+    rejected.write_text(json.dumps(transfer_limits))
+    with pytest.raises(ValueError, match="transfer limits"):
+        collection.source_pool(rejected, "ID")
+
     archived_id = "id-setneg-perpu"
     next(source for source in registry["sources"] if source["id"] == archived_id)["status"] = "archived"
     migrated = tmp_path / "registry.json"
@@ -179,6 +196,71 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     migrated.write_text(json.dumps(registry))
     with pytest.raises(ValueError, match="source relationship"):
         collection.source_pool(migrated, "ID")
+
+
+def test_kemnaker_catalogue_scope_and_large_original_limits(environment, monkeypatch):
+    env = environment
+    pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    configured = next(row for row in pool["sources"] if row["id"] == "id-kemnaker-regulations")
+    recipe = collection.recipe(configured)
+    root = configured["url"]
+    detail = "https://jdih.kemnaker.go.id/peraturan/detail/2302/undang-undang-nomor-6-tahun-2023"
+    unrelated = "https://jdih.kemnaker.go.id/peraturan/detail/12/peraturan-menteri-pelatihan"
+    page_two = "https://jdih.kemnaker.go.id/peraturan?hal=2"
+
+    def page(links):
+        anchors = "".join(f'<a href="{url}">{label}</a>' for url, label in links)
+        return (
+            "<html><head><title>JDIH Kementerian Ketenagakerjaan</title></head>"
+            "<body><h1>Daftar Peraturan Ketenagakerjaan</h1>"
+            + anchors
+            + "</body></html>"
+        ).encode()
+
+    index = page(
+        [
+            (detail, "Undang-Undang Nomor 6 Tahun 2023 tentang Cipta Kerja"),
+            (unrelated, "Peraturan Menteri Pelatihan"),
+            (page_two, "Halaman 2"),
+            ("/glosarium", "Glosarium"),
+        ]
+    )
+    discovered = collection.discover_page(root, index, "text/html", recipe)
+    assert discovered["matched"]
+    assert {row["url"] for row in discovered["links"]} == {detail, page_two}
+
+    original = "https://jdih.kemnaker.go.id/asset/data_puu/2023UU06_Klaster%20Ketenagakerjaan.pdf"
+    detail_html = page(
+        [
+            (original, "Undang-Undang Nomor 6 Tahun 2023 PDF"),
+            ("/asset/data_puu/panduan-pelatihan.pdf", "Panduan Pelatihan"),
+            ("https://other.example/asset/data_puu/uu.pdf", "UU PDF"),
+        ]
+    )
+    discovered_detail = collection.discover_page(detail, detail_html, "text/html", recipe)
+    assert discovered_detail["matched"]
+    assert [row["url"] for row in discovered_detail["links"]] == [original]
+
+    # Reviewed original files get a larger source-specific cap and deadline.
+    configured = {**configured, "transport": None}
+    collector = env.make(
+        [configured],
+        country="ID",
+        limits={"max_response_bytes": 1024**2, "timeout_seconds": 20, "daily_bytes": 512 * 1024**2},
+    )
+    seen = {}
+
+    def response(_url, options):
+        seen["max_bytes"] = options["max_bytes"]
+        seen["deadline"] = options["deadline"]
+        return pdf("kemnaker")
+
+    env.responses[original] = response
+    monkeypatch.setattr(collection.time, "monotonic", lambda: 100.0)
+    receipt = collector.fetch(configured, original)
+    assert receipt["outcome"]["status"] == "success"
+    assert seen == {"max_bytes": 128 * 1024**2, "deadline": 1000.0}
+    assert receipt["charged_bytes"] == len(pdf("kemnaker"))
 
 
 def html(*links, text="Food import official guidance"):
@@ -1191,19 +1273,21 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 25
+    assert len(configured) == 26
     setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row
         for row in configured
         if row["id"] not in setneg_ids and row.get("discovery") is None
     ]
-    assert len(originals) == 19
+    assert len(originals) == 20
     for item in originals:
         recipe = collection.recipe(item)
         assert "setneg_type" not in recipe
         assert "required_query_by_host" not in recipe
-        assert recipe["max_links"] == (200 if item["id"] == "id-beacukai-regulations" else 32)
+        assert recipe["max_links"] == (
+            200 if item["id"] in {"id-beacukai-regulations", "id-kemnaker-regulations"} else 32
+        )
     collector = env.make(configured, country=country)
     probe_sources = [
         item for item in collector.sources if item["id"] not in setneg_ids and item.get("discovery") is None

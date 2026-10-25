@@ -1627,6 +1627,16 @@ def _bkpm_json(url: str, content: bytes, mime: str, rules) -> dict:
     return result
 
 
+def page_purpose(url: str, recipe: dict) -> str | None:
+    """Return the reviewed role of one URL without inspecting or downloading it."""
+    rules = _Recipe(recipe)
+    try:
+        current, _ = _canonical(url)
+    except ValueError:
+        return None
+    return rules.purpose(current)
+
+
 def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dict:
     """Inspect one already downloaded page; never treat a match as scope review."""
     rules = _Recipe(recipe)

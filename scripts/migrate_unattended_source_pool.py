@@ -451,6 +451,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
     expanded_source_hosts = {}
     expanded_html_document_paths = {}
     expanded_html_asset_hosts = {}
+    checklist_scope_changes = {}
     for source_id in added_source_ids:
         source = new_sources[source_id]
         verification_status = source.get("verification", {}).get("server_status")
@@ -485,9 +486,23 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             source_id in reactivated_source_ids and prior_checklists <= updated_checklists
         )
         if any(prior.get(key) != updated.get(key) for key in protected) or (
-            prior_checklists != updated_checklists and not checklist_expansion
+            prior_checklists != updated_checklists
+            and not checklist_expansion
+            and not updated.get("verification", {}).get("checklist_scope_change")
         ):
             raise ValueError("Pool migration cannot change a source's reviewed network/document scope")
+        if prior_checklists != updated_checklists and not checklist_expansion:
+            mapping = updated.get("verification", {}).get("checklist_scope_change", {})
+            reason = mapping.get("reason") if isinstance(mapping, dict) else None
+            previous_items = mapping.get("previous_items") if isinstance(mapping, dict) else None
+            prior_items = prior.get("verification", {}).get("checklist_items", [])
+            if previous_items != prior_items or not isinstance(reason, str) or not 10 <= len(reason) <= 500:
+                raise ValueError("Checklist remapping needs an exact reviewed prior mapping and reason")
+            checklist_scope_changes[source_id] = {
+                "previous_items": prior_items,
+                "checklist_items": updated.get("verification", {}).get("checklist_items", []),
+                "reason": reason,
+            }
         prior_paths = set(prior.get("html_document_paths", []))
         updated_paths = set(updated.get("html_document_paths", []))
         if not prior_paths <= updated_paths:
@@ -555,6 +570,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             "expanded_source_hosts": expanded_source_hosts,
             "expanded_html_document_paths": expanded_html_document_paths,
             "expanded_html_asset_hosts": expanded_html_asset_hosts,
+            "checklist_scope_changes": checklist_scope_changes,
             "binding_reconciled": already_reloaded,
             "prior_state_sha256": hashlib.sha256(
                 json.dumps(original, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
@@ -591,6 +607,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
         "expanded_source_hosts": expanded_source_hosts,
         "expanded_html_document_paths": expanded_html_document_paths,
         "expanded_html_asset_hosts": expanded_html_asset_hosts,
+        "checklist_scope_changes": checklist_scope_changes,
         "binding_reconciled": already_reloaded,
     }
 

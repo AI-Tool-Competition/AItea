@@ -27,6 +27,7 @@ _INTERVAL_SECONDS = 30
 _MAX_EVENT_BYTES = 64 * 1024
 _MAX_SOURCE_POOL_BYTES = 1024 * 1024
 _MAX_ORIGINAL_BYTES = 8 * 1024 * 1024
+_MAX_CONFIGURED_ORIGINAL_BYTES = 300 * 1024 * 1024
 _SUPPORTED_MIME = {
     "text/html",
     "application/pdf",
@@ -142,7 +143,11 @@ def _sso_catalogue_evidence(source: dict, event: dict, url: str) -> dict | None:
     }
 
 
-def _safe_file(root: Path, relative: str, expected_hash: str) -> bytes:
+def _safe_file(
+    root: Path, relative: str, expected_hash: str, *, max_bytes: int = _MAX_ORIGINAL_BYTES
+) -> bytes:
+    if type(max_bytes) is not int or not 1 <= max_bytes <= _MAX_CONFIGURED_ORIGINAL_BYTES:
+        raise ValueError("invalid_original_size_limit")
     if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
         raise ValueError("invalid_original_path")
     root = root.resolve(strict=True)
@@ -157,7 +162,7 @@ def _safe_file(root: Path, relative: str, expected_hash: str) -> bytes:
         not stat.S_ISREG(info.st_mode)
         or candidate.is_symlink()
         or info.st_size < 1
-        or info.st_size > _MAX_ORIGINAL_BYTES
+        or info.st_size > max_bytes
     ):
         raise ValueError("original_type_or_size_invalid")
     digest = hashlib.sha256()
@@ -171,7 +176,7 @@ def _safe_file(root: Path, relative: str, expected_hash: str) -> bytes:
         size = 0
         while chunk := os.read(descriptor, 64 * 1024):
             size += len(chunk)
-            if size > _MAX_ORIGINAL_BYTES:
+            if size > max_bytes:
                 raise ValueError("original_exceeds_size_limit")
             digest.update(chunk)
             chunks.append(chunk)
@@ -280,6 +285,13 @@ class OfficialSourceImporter:
             os.environ["COLLECTION_PROXY_HOSTS"] = ",".join(sorted(proxy_hosts))
         self.pool = pool
         self.sources = sources
+
+    @staticmethod
+    def _source_document_limit(source: dict) -> int:
+        configured = source.get("collection_limits", {}).get("max_document_bytes")
+        if type(configured) is int and 1 <= configured <= _MAX_CONFIGURED_ORIGINAL_BYTES:
+            return configured
+        return _MAX_ORIGINAL_BYTES
 
     def _migrate(self) -> None:
         with self.service.db.transaction() as conn:
@@ -479,7 +491,11 @@ class OfficialSourceImporter:
                 WHERE (official_source_imports.status='skipped'
                     AND official_source_imports.reason='catalogue_page_not_document')
                     OR (official_source_imports.status='blocked'
-                    AND official_source_imports.reason='source_not_in_approved_pool')""",
+                    AND official_source_imports.reason IN (
+                        'source_not_in_approved_pool',
+                        'original_type_or_size_invalid',
+                        'original_exceeds_size_limit'
+                    ))""",
                 (
                     event_key,
                     source_id,
@@ -612,7 +628,12 @@ class OfficialSourceImporter:
         )
         path_value = event.get("path")
         try:
-            original = _safe_file(self.root / "official-updates" / country, path_value, digest)
+            original = _safe_file(
+                self.root / "official-updates" / country,
+                path_value,
+                digest,
+                max_bytes=self._source_document_limit(source),
+            )
         except ValueError as error:
             reason = str(error)[:120] if str(error) else type(error).__name__
             self._record(
@@ -695,7 +716,11 @@ class OfficialSourceImporter:
                     WHERE (official_source_imports.status='skipped'
                         AND official_source_imports.reason='catalogue_page_not_document')
                         OR (official_source_imports.status='blocked'
-                        AND official_source_imports.reason='source_not_in_approved_pool')""",
+                        AND official_source_imports.reason IN (
+                            'source_not_in_approved_pool',
+                            'original_type_or_size_invalid',
+                            'original_exceeds_size_limit'
+                        ))""",
                     (
                         event_key,
                         source["id"],
@@ -781,6 +806,29 @@ class OfficialSourceImporter:
                     if (source := self.sources.get(row["source_id"])) is not None
                     and source.get("country") == country
                 )
+                for row in conn.execute(
+                    """SELECT event_key,source_id,source_url FROM official_source_imports
+                    WHERE country=? AND status='blocked'
+                        AND reason IN ('original_type_or_size_invalid','original_exceeds_size_limit')""",
+                    (country,),
+                ):
+                    source = self.sources.get(row["source_id"])
+                    if source is None or source.get("country") != country:
+                        continue
+                    limit = self._source_document_limit(source)
+                    size = (
+                        state.get("sources", {})
+                        .get(row["source_id"], {})
+                        .get("cache", {})
+                        .get(row["source_url"], {})
+                        .get("size")
+                    )
+                    if (
+                        limit > _MAX_ORIGINAL_BYTES
+                        and type(size) is int
+                        and _MAX_ORIGINAL_BYTES < size <= limit
+                    ):
+                        retryable.add(row["event_key"])
             processed = 0
             for path in self._event_files(country):
                 event_ns = self._event_timestamp(path)

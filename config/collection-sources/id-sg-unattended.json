@@ -133,7 +133,14 @@
           "BPOM 同时监管药品、化妆品；只收与茶叶食品相关材料，不扩采无关药品栏目。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。",
           "目录根页可达且继续经代理轮询；正式法规详情分页与原件路径尚未形成已核验的结构化解析链，当前不绑定正式清单任务。"
-        ]
+        ],
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.2"
+          ],
+          "reason": "保留 BPOM 为发现观察来源，暂不绑定正式业务清单项，避免未验证的分页与原件覆盖被计作完成。"
+        }
       },
       "status": "active",
       "transport": "proxy",
@@ -221,7 +228,14 @@
         "limitations": [
           "规则是否适用于具体纯茶、配料茶必须按原文核验；页面可达不等于原件已下载或法律效力已审核。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+        ],
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.2"
+          ],
+          "reason": "将该特定 BPJPH 非清真标签规范从通用商业登记映射到食品与清真 ID-4.8；网络主机、主题、关键词及原件范围不变。"
+        }
       },
       "status": "active",
       "transport": "proxy",
@@ -807,7 +821,14 @@
           "首页能访问，但本次页面明确显示 Belum Ada Peraturan / Tidak ada kategori tersedia；保持空目录记录，不计已取得任何法规正文。",
           "2026-10-24 项目代理核验确认可用的法规检索列表位于同站 /cari；此首页仅作为历史入口保留，不再参与活动轮询。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+        ],
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.2"
+          ],
+          "reason": "该历史来源保持归档，只校正留存分类为食品与清真 ID-4.8，不会恢复采集，也不改变既有资料。"
+        }
       },
       "empty_catalogue": true,
       "status": "archived",
@@ -862,6 +883,13 @@
           "detail_candidates": 10,
           "document_candidates": 2,
           "cycle_requests": 4
+        },
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.2"
+          ],
+          "reason": "将 BPJPH 正式法规目录从通用业务映射改为食品与清真 ID-4.8；网络主机、主题、关键词及原件范围不变。"
         }
       },
       "status": "active",
@@ -1270,6 +1298,71 @@
       "status": "active",
       "transport": "proxy",
       "group_id": "id-general-law"
+    },
+    {
+      "id": "id-kemnaker-regulations",
+      "country": "ID",
+      "topics": [
+        "labor",
+        "employment",
+        "wages",
+        "foreign_workers",
+        "industrial_relations"
+      ],
+      "title": "印度尼西亚人力部官方劳动法规目录",
+      "url": "https://jdih.kemnaker.go.id/peraturan",
+      "priority": 92,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.kemnaker.go.id"
+      ],
+      "discovery_keywords": [
+        "ketenagakerjaan",
+        "upah",
+        "thr",
+        "phk",
+        "pkwt",
+        "hubungan industrial",
+        "tenaga kerja asing",
+        "pekerja migran",
+        "perlindungan pekerja migran",
+        "cipta kerja",
+        "undang-undang nomor 6 tahun 2023",
+        "undang-undang nomor 18 tahun 2017",
+        "peraturan menteri ketenagakerjaan",
+        "peraturan pemerintah nomor 35 tahun 2021",
+        "peraturan pemerintah nomor 36 tahun 2021",
+        "permennaker",
+        "jaminan sosial tenaga kerja",
+        "waktu kerja",
+        "pesangon"
+      ],
+      "verification": {
+        "official_evidence_url": "https://jdih.kemnaker.go.id/peraturan",
+        "checked_at": "2026-10-25T18:55:38.393647+00:00",
+        "official_identity": "印度尼西亚人力部（Kementerian Ketenagakerjaan）官方法律信息网络系统（JDIH）法规目录。",
+        "business_use": "补充劳动关系、工资与节日津贴、终止劳动关系和外籍用工的正式规范；按主体、地域及适用期间筛选。",
+        "checklist_items": [
+          "ID-4.4"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-kemnaker-expansion-20261026/probe/ID/events/2026-10-25/1792954195840088053-2f606032a2964421909b59d7a2bfb7be.json",
+        "server_receipt_sha256": "548c2a644cfc2ab1f8b5716ce9b1600aed947cf900f8de4defde2b1c040cb162",
+        "body_sha256": "ba957f05b143ef3fb09b3f6fe9cedd0490b0c9c1322461944e6c3450f937469c",
+        "limitations": [
+          "目录仅用于 ID-4.4 劳动事项；关键词和分页用于发现，不代表已经覆盖所有劳动规范。",
+          "入口及目录通过有界代理核验；详情原件仍需保留元数据、附件、修订关系和原始版本。培训、机关人事、指南及无关法规不进入劳动检索。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-labor-employment",
+      "collection_limits": {
+        "max_document_bytes": 134217728,
+        "daily_bytes": 268435456,
+        "timeout_seconds": 900
+      }
     }
   ],
   "schema_version": 2,
@@ -1384,6 +1477,18 @@
             "id-bpom-regulations"
           ],
           "children": []
+        },
+        {
+          "id": "id-labor-employment",
+          "parent_id": "id",
+          "country": "ID",
+          "title": "劳动、雇佣与劳动条件",
+          "checklist_items": [
+            "ID-4.4"
+          ],
+          "source_ids": [
+            "id-kemnaker-regulations"
+          ]
         }
       ]
     },
@@ -1662,6 +1767,20 @@
         "ID-1.4"
       ],
       "reason": "Setneg publishes the PERPRES and PERPU instruments in separate catalogues; these scopes complement one another for checklist items ID-1.6 and ID-1.4, without asserting legal hierarchy."
+    },
+    {
+      "source_id": "id-kemnaker-regulations",
+      "related_source_id": "id-setneg-uu",
+      "type": "complements",
+      "checklist_items": [],
+      "reason": "人力部劳动法规目录与国家UU/PP目录互补；按劳动事项回查上位规范、实施文书和适用期间，不仅凭来源并存推断具体法律关系。"
+    },
+    {
+      "source_id": "id-kemnaker-regulations",
+      "related_source_id": "id-setneg-pp",
+      "type": "complements",
+      "checklist_items": [],
+      "reason": "人力部劳动法规目录与国家UU/PP目录互补；按劳动事项回查上位规范、实施文书和适用期间，不仅凭来源并存推断具体法律关系。"
     }
   ]
 }

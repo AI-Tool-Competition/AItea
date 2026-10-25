@@ -92,6 +92,49 @@ def test_migration_refuses_scope_changes_and_active_requests(tmp_path):
         migration.migrate(old_path, new_path, root, "ID")
 
 
+def test_migration_records_explicit_checklist_reclassification(tmp_path):
+    new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    old_pool = copy.deepcopy(new_pool)
+    source_id = "id-bpjph-jdih-cari"
+    old_source = next(row for row in old_pool["sources"] if row["id"] == source_id)
+    old_source["verification"]["checklist_items"] = ["ID-1.8", "ID-4.2"]
+    old_source["verification"].pop("checklist_scope_change")
+    food_group = next(
+        child
+        for group in old_pool["groups"]
+        for child in group.get("children", [])
+        if child["id"] == "id-food-regulatory"
+    )
+    food_group["checklist_items"] = ["ID-1.8", "ID-4.2", "ID-4.8"]
+
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    root = tmp_path / "collector"
+    root.mkdir()
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "binding": {"pool_sha256": old_hash, "country": "ID", "root": str(root.resolve())},
+                "active_sources": [],
+                "sources": {source_id: {"attempts": 4}},
+            }
+        )
+    )
+
+    result = migration.migrate(old_path, new_path, root, "ID")
+
+    change = result["checklist_scope_changes"][source_id]
+    assert change["previous_items"] == ["ID-1.8", "ID-4.2"]
+    assert change["checklist_items"] == ["ID-4.8"]
+    state = json.loads((root / "state.json").read_text())
+    assert state["sources"][source_id]["attempts"] == 4
+    assert state["pool_migrations"][0]["checklist_scope_changes"] == result[
+        "checklist_scope_changes"
+    ]
+
+
 def test_migration_refuses_unreviewed_html_document_path_changes(tmp_path):
     old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     new_pool = copy.deepcopy(old_pool)

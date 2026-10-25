@@ -25,7 +25,9 @@ from app.shared.domain.values import dump, now, uid
 SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
-OCR_AUTOMATIC_RETRY_REASONS = frozenset({"ocr_quality_retry", "paid_ocr_retry"})
+OCR_AUTOMATIC_RETRY_REASONS = frozenset(
+    {"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry"}
+)
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 3
@@ -80,6 +82,61 @@ def _unknown(record):
         and not metadata.get("error_response")
         and not record.get("error")
     )
+
+
+def _saved_visual_provider_retry(page):
+    """Find the latest intact failed or uncertain vision request archived by a page retry."""
+    cycles = page.get("ocr_retry_cycles", [])
+    if not isinstance(cycles, list):
+        return None
+    for cycle in reversed(cycles):
+        if not isinstance(cycle, dict) or cycle.get("protocol") != "ocr-automatic-retry-checkpoint-v1":
+            continue
+        previous = cycle.get("previous_page")
+        if not isinstance(previous, dict):
+            return None
+        try:
+            if cycle.get("previous_page_sha256") != _digest(previous):
+                return None
+        except (TypeError, ValueError):
+            return None
+        if previous.get("page") != page.get("page") or previous.get("source_hash") != page.get("source_hash"):
+            return None
+        metadata = previous.get("ocr")
+        if not isinstance(metadata, dict):
+            return None
+        if previous.get("status") == "pending_ocr":
+            uncertain_request = (
+                _unknown(previous)
+                and metadata.get("source_hash") == page.get("source_hash")
+                and metadata.get("page") == page.get("page")
+                and type(metadata.get("attempts")) is int
+                and metadata["attempts"] > 0
+                and isinstance(metadata.get("request_id"), str)
+                and bool(metadata["request_id"])
+                and isinstance(metadata.get("image_sha256"), str)
+                and re.fullmatch(r"[a-f0-9]{64}", metadata["image_sha256"])
+                and isinstance(metadata.get("prompt_version"), str)
+                and isinstance(metadata.get("requested_model"), str)
+            )
+            if uncertain_request:
+                return previous
+            if _unknown(previous):
+                return None
+            continue
+        if previous.get("status") != "ocr_failed":
+            return None
+        envelope = metadata.get("error_response")
+        if (
+            metadata.get("provider") != "mineru"
+            and (metadata.get("prompt_version") or metadata.get("request_id"))
+            and isinstance(envelope, dict)
+            and envelope.get("format") == "ocr-error-response-v1"
+            and isinstance(envelope.get("blob"), dict)
+        ):
+            return previous
+        return None
+    return None
 
 
 def _legacy_mineru_chart_refresh(manifest):
@@ -244,6 +301,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         return Decision("mineru_chart_refresh", True)
 
     retry_pages, retry_assets, mineru_visual_pages = [], [], []
+    retry_not_before = 0
     unknown_outcome = False
     if phase == "parse":
         vision_ready = vision_ocr_configured()
@@ -265,6 +323,15 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 visual_attempts = fallback_attempts(page) if visual_fallback else 0
             except ValueError:
                 return Decision("invalid_checkpoint")
+            pending_visual_retry = (
+                vision_ready
+                and visual_fallback
+                and status == "pending_ocr"
+                and (
+                    visual_attempts < MAX_MINERU_VISUAL_RETRIES
+                    or _saved_visual_provider_retry(page) is not None
+                )
+            )
             mineru_table_retry = is_mineru_table_review(page) and not visual_fallback
             # MinerU's page-level chart/table warning is not a failed vision
             # request. Ambiguous tables have a separate, page-bounded visual
@@ -286,6 +353,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 and (
                     mineru_table_retry
                     or unknown
+                    or pending_visual_retry
                     or (
                         vision_page
                         and (
@@ -309,7 +377,16 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 return Decision("invalid_checkpoint")
             if len(retry_pages) < MAX_AUTOMATIC_OCR_TARGETS:
                 retry_pages.append(page["page"])
-                if mineru_table_retry:
+                retry_not_before = max(retry_not_before, _timestamp(metadata.get("retry_not_before")))
+                if pending_visual_retry:
+                    previous_failure = _saved_visual_provider_retry(page)
+                    if previous_failure is not None:
+                        unknown_outcome |= _unknown(previous_failure)
+                        retry_not_before = max(
+                            retry_not_before,
+                            _timestamp((previous_failure.get("ocr") or {}).get("retry_not_before")),
+                        )
+                if mineru_table_retry or pending_visual_retry:
                     mineru_visual_pages.append(page["page"])
 
         for asset in images:
@@ -328,6 +405,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 return Decision("invalid_checkpoint")
             if len(retry_assets) < MAX_AUTOMATIC_OCR_TARGETS:
                 retry_assets.append(asset["asset_key"])
+                retry_not_before = max(retry_not_before, _timestamp(metadata.get("retry_not_before")))
 
         if retry_pages or retry_assets:
             reason = (
@@ -343,7 +421,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 reason,
                 True,
                 tuple(retry_pages),
-                0,
+                retry_not_before,
                 tuple(retry_assets),
             )
         if unknown_outcome:
@@ -1023,10 +1101,20 @@ class CollectionRecovery:
             if page.get("source_hash") != document["content_hash"]:
                 raise ValueError("retry_page_source_mismatch")
             metadata = page.get("ocr") or {}
+            previous_failure = (
+                _saved_visual_provider_retry(page) if page.get("status") == "pending_ocr" else None
+            )
             vision_page = metadata.get("provider") != "mineru" and bool(
                 metadata.get("prompt_version") or metadata.get("request_id")
             )
             envelope = metadata.get("error_response")
+            evidence_page, evidence_metadata = page, metadata
+            if previous_failure is not None and not (
+                isinstance(envelope, dict) and isinstance(envelope.get("blob"), dict)
+            ):
+                evidence_page = previous_failure
+                evidence_metadata = previous_failure.get("ocr") or {}
+                envelope = evidence_metadata.get("error_response")
             bound_failed_vision = (
                 page.get("status") == "ocr_failed"
                 and vision_page
@@ -1035,6 +1123,7 @@ class CollectionRecovery:
             )
             retryable_page = page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"} and (
                 _unknown(page)
+                or previous_failure is not None
                 or (
                     vision_page
                     and (
@@ -1063,10 +1152,10 @@ class CollectionRecovery:
             if isinstance(envelope, dict) and isinstance(envelope.get("blob"), dict):
                 raw = read_image_blob(self.db.data_dir, row["owner_id"], envelope["blob"])
                 evidence = json.loads(raw)
-                validate_response_binding(evidence, document["content_hash"], page)
+                validate_response_binding(evidence, document["content_hash"], evidence_page)
                 if any(evidence.get(key) != value for key, value in envelope.items() if key != "blob"):
                     raise ValueError("retry_requires_bound_ocr_error_receipt")
-                if metadata.get("http_status") == 429 and evidence.get("http_status") != 429:
+                if evidence_metadata.get("http_status") == 429 and evidence.get("http_status") != 429:
                     raise ValueError("retry_requires_bound_429_receipt")
             elif bound_failed_vision:
                 raise ValueError("retry_requires_bound_ocr_error_receipt")

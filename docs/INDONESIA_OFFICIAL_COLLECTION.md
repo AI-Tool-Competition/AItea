@@ -1,5 +1,11 @@
 # 印尼官方目录与原件续采
 
+当前活动配置为 [`indonesia-20261003.json`](../config/collection-plans/indonesia-20261003.json) v18，共 17 项；v17 历史快照保留在 [`versions/indonesia-20261003.v17.json`](../config/collection-plans/versions/indonesia-20261003.v17.json)。本版本新增 4.8 BPJPH 清真产品法规目录：`https://jdih.halal.go.id/cari`。官方页面在 2026-10-24 的代理观察中报告 172 条、18 页；后续请求须逐页校验当前页、每页 10 条、UUID 唯一性和总数一致性。已通过实时代理检查前两页结构，动态分页遍历不构成同一时刻的原子全量快照。
+
+BPJPH 专用适配器读取页面内嵌的公开 Next.js Flight JSON 数据，不执行页面脚本；按标题和文种筛选清真产品保证、认证、食品、进口产品及标签规则，并排除草案、内部管理和无关专题。候选详情必须匹配目录 UUID；PDF 只能来自该详情页公开的同源 `/api/jdih/pdf?path=jdih/dokumen/...pdf` iframe，且响应 MIME 和 `%PDF-` 签名均须有效。目录值作为未审核来源数据保留，法律效力、茶产品适用性和版本关系仍须依据原文审核。
+
+BPOM 仍在代理来源池中轮询，当前没有绑定正式任务。根目录可访问还不足以证明正式法规目录分页及原件路径可可靠采集；验证完成前不把它计入正式清单覆盖。
+
 `scripts/collect_indonesia_official.py` 按当前印尼清单的 1.3–1.6 项遍历 [Setneg 官方法规库](https://jdih.setneg.go.id/produk-hukum/instrumen/peraturan)。该机关的目录是这四项的一份官方来源，不能替代 BPK、地方与其他机关的范围，也不能据目录记录或原件到手推断法律有效、正文完整或已进入 RAG。
 
 常驻来源轮询由 `scripts/unattended_collection.py` 执行，来源节点在 `config/collection-sources/id-sg-unattended.json`。Setneg 的 UU、PERPU、PP、PERPRES 使用各自固定的只读 JSON POST 目录和详情请求，按 50 条分页；原件仍通过校验过的官方 URL 下载。各类型的页面、详情、原件与正文索引分别计数，不能把目录总数当成已完成入库数。

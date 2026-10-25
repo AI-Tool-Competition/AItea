@@ -124,22 +124,20 @@
         "checked_at": "2026-10-20T06:43:50.289935+00:00",
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "发现加工食品注册、食品标签、包装、食品安全和进口监管正式文件及修改关系。",
-        "checklist_items": [
-          "ID-1.8",
-          "ID-4.2"
-        ],
+        "checklist_items": [],
         "server_status": "reachable_content",
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpom-regulations.json",
         "server_receipt_sha256": "c3ec41c2124a4d11609fa4c27c4f2aa127d9f002cd7ee384cd37cf89687a58d0",
         "body_sha256": "0b6125a34b321dc790b545ab5055b0f2799ad64b7abcb7556d68abb0bb535668",
         "limitations": [
           "BPOM 同时监管药品、化妆品；只收与茶叶食品相关材料，不扩采无关药品栏目。",
-          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
+          "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。",
+          "目录根页可达且继续经代理轮询；正式法规详情分页与原件路径尚未形成已核验的结构化解析链，当前不绑定正式清单任务。"
         ]
       },
       "status": "active",
       "transport": "proxy",
-      "group_id": "id-food-regulatory"
+      "group_id": "id-food-validation"
     },
     {
       "id": "sg-customs-import",
@@ -214,8 +212,7 @@
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "发布机关页面直接列示 BPJPH 3/2026 正式规则原件入口；用于核对非清真说明、产品适用条件及食品标识。",
         "checklist_items": [
-          "ID-1.8",
-          "ID-4.2"
+          "ID-4.8"
         ],
         "server_status": "reachable_content",
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpjph-nonhalal-regulation.json",
@@ -800,8 +797,7 @@
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "监测发布机关新的清真法规、行政义务和正式规则原件目录。",
         "checklist_items": [
-          "ID-1.8",
-          "ID-4.2"
+          "ID-4.8"
         ],
         "server_status": "reachable_empty_catalogue",
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpjph-regulations.json",
@@ -847,8 +843,7 @@
         "official_identity": "印度尼西亚 BPJPH 官方 JDIH 法规目录，页面标明由 BPJPH 提供并连接 JDIH Nasional。",
         "business_use": "监测 BPJPH 清真法规、正式行政规则和原件链接，用于清真认证、食品标签及进口义务核对。",
         "checklist_items": [
-          "ID-1.8",
-          "ID-4.2"
+          "ID-4.8"
         ],
         "server_status": "reachable_content",
         "server_receipt_path": ".dev/official-source-probes/id-bpjph-jdih-cari-20261024/server-receipt.json",
@@ -1315,11 +1310,9 @@
           "title": "食品、标签、包装与清真",
           "parent_id": "id",
           "checklist_items": [
-            "ID-1.8",
-            "ID-4.2"
+            "ID-4.8"
           ],
           "source_ids": [
-            "id-bpom-regulations",
             "id-bpjph-nonhalal-regulation",
             "id-bpjph-regulations",
             "id-bpjph-jdih-cari"
@@ -1378,6 +1371,17 @@
           ],
           "source_ids": [
             "id-bpk-regulations"
+          ],
+          "children": []
+        },
+        {
+          "id": "id-food-validation",
+          "country": "ID",
+          "title": "食品监管来源适配验证",
+          "parent_id": "id",
+          "checklist_items": [],
+          "source_ids": [
+            "id-bpom-regulations"
           ],
           "children": []
         }
@@ -1485,19 +1489,15 @@
       "source_id": "id-bpom-regulations",
       "related_source_id": "id-bpjph-jdih-cari",
       "type": "complements",
-      "checklist_items": [
-        "ID-1.8",
-        "ID-4.2"
-      ],
-      "reason": "BPOM 侧重食品安全与标签监管，BPJPH 提供清真制度来源；同一茶类问题需要并列核对适用范围。"
+      "checklist_items": [],
+      "reason": "BPOM 是食品安全/标签主管来源，BPJPH 是清真制度来源；继续并列代理监测，BPOM 的正式目录解析和原件路径核验完成前不声明清单覆盖。"
     },
     {
       "source_id": "id-bpjph-jdih-cari",
       "related_source_id": "id-bpjph-nonhalal-regulation",
       "type": "publishes_original",
       "checklist_items": [
-        "ID-1.8",
-        "ID-4.2"
+        "ID-4.8"
       ],
       "reason": "BPJPH 法规目录用于发现正式规则，专题说明页用于找到非清真标识规则原件入口。"
     },

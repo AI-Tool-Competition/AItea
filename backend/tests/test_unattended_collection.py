@@ -51,6 +51,27 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert "id-bpk-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
+            bpom = next(row for row in registry["sources"] if row["id"] == "id-bpom-regulations")
+            bpjph = next(row for row in registry["sources"] if row["id"] == "id-bpjph-jdih-cari")
+            assert bpom["verification"]["checklist_items"] == []
+            assert bpom["group_id"] == "id-food-validation"
+            assert bpom["status"] == "active" and bpom["transport"] == "proxy"
+            assert bpjph["verification"]["checklist_items"] == ["ID-4.8"]
+            assert bpjph["group_id"] == "id-food-regulatory"
+            food_group = next(
+                group
+                for group in registry["groups"][0]["children"]
+                if group["id"] == "id-food-regulatory"
+            )
+            assert food_group["checklist_items"] == ["ID-4.8"]
+            assert "id-bpom-regulations" not in food_group["source_ids"]
+            bpom_relation = next(
+                relation
+                for relation in registry["source_relations"]
+                if relation["source_id"] == "id-bpom-regulations"
+                and relation["related_source_id"] == "id-bpjph-jdih-cari"
+            )
+            assert bpom_relation["checklist_items"] == []
             setneg = {
                 row["id"]: row
                 for row in registry["sources"]

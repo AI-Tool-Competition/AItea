@@ -65,7 +65,15 @@ class ChecklistItem(Definition):
     verbatim_requirements: str
     execution: Literal["discovery", "dataset_review"]
     adapter: Literal[
-        "bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "bi_jdih", "bi_official", "manual"
+        "bpk",
+        "ma_jdih",
+        "sso",
+        "html_links",
+        "kemenkeu_tax",
+        "bi_jdih",
+        "bi_official",
+        "bpjph_jdih",
+        "manual",
     ]
     limits: dict
 
@@ -257,6 +265,7 @@ class ChecklistService:
                 "mkri",
                 "jdih_kemenkeu",
                 "bi_official",
+                "bpjph",
             }
             if providers is None
             else set(providers)
@@ -273,6 +282,7 @@ class ChecklistService:
             "jdih_kemenkeu",
             "bi_jdih",
             "bi_official",
+            "bpjph",
         }
         if not providers or not providers <= allowed_providers:
             raise ValueError("unsupported candidate source provider")
@@ -339,6 +349,12 @@ class ChecklistService:
                 "AND p.purpose='detail' AND p.final_url LIKE "
                 "'https://www.bi.go.id/id/publikasi/peraturan/Pages/%')"
             )
+        if "bpjph" in providers:
+            source_filters.append(
+                "(b.country='ID' AND b.plan_id='indonesia-20261003' AND b.item_id='4.8' "
+                "AND p.purpose='detail' AND p.final_url LIKE "
+                "'https://jdih.halal.go.id/jdih/dokumen/%')"
+            )
         candidates = []
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
@@ -388,12 +404,16 @@ class ChecklistService:
                     if row["final_url"].startswith(
                         "https://www.bi.go.id/id/publikasi/peraturan/Pages/"
                     )
+                    else "bpjph"
+                    if row["final_url"].startswith("https://jdih.halal.go.id/jdih/dokumen/")
                     else "wto"
                     if row["final_url"].startswith("https://docs.wto.org/")
                     or row["final_url"].startswith("https://www.wto.org/")
                     else "sg_official_html"
                 )
-                expected_purpose = "detail" if provider in {"setneg", "bi_jdih", "bi_official"} else "catalog"
+                expected_purpose = (
+                    "detail" if provider in {"setneg", "bi_jdih", "bi_official", "bpjph"} else "catalog"
+                )
                 if (
                     plan["id"] != row["plan_id"]
                     or plan["version"] != row["version"]
@@ -409,6 +429,7 @@ class ChecklistService:
                             or (provider == "jdih_kemenkeu" and item["id"] != "4.3")
                             or (provider == "bi_jdih" and item["id"] != "4.6")
                             or (provider == "bi_official" and item["id"] != "4.6")
+                            or (provider == "bpjph" and item["id"] != "4.8")
                         )
                     )
                     or (
@@ -485,7 +506,15 @@ class ChecklistService:
                     else "application/xml"
                     if provider == "wto" and "/GetXMLResults.aspx?" in row["final_url"]
                     else "text/html"
-                    if provider in {"rcepsec", "ipos", "acra", "wto", "sg_official_html", "jdih_kemenkeu"}
+                    if provider in {
+                        "rcepsec",
+                        "ipos",
+                        "acra",
+                        "wto",
+                        "sg_official_html",
+                        "jdih_kemenkeu",
+                        "bpjph",
+                    }
                     else "application/json"
                 )
                 result = discover_page(row["final_url"], body, mime, recipe_for(item))
@@ -501,7 +530,15 @@ class ChecklistService:
                 )
                 purpose_matches = (
                     result.get("purpose") in {"catalog", "detail", "document"}
-                    if provider in {"ipos", "acra", "wto", "sg_official_html", "mkri", "jdih_kemenkeu"}
+                    if provider in {
+                        "ipos",
+                        "acra",
+                        "wto",
+                        "sg_official_html",
+                        "mkri",
+                        "jdih_kemenkeu",
+                        "bpjph",
+                    }
                     else result.get("purpose") == expected_purpose
                 )
                 if not result.get("matched") or not purpose_matches:
@@ -1154,6 +1191,7 @@ class ChecklistService:
                             "jdih_kemenkeu",
                             "bi_jdih",
                             "bi_official",
+                            "bpjph",
                         }
                         or source_record.get("interpretation") != "unreviewed_source_values"
                         or not isinstance(source_record.get("fields"), dict)

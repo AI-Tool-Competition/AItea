@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 17,
+  "version": 18,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -8,7 +8,7 @@
     "date": "2026-10-03",
     "sha256": "eee5a9d8b42183dd4a3ad09ca53903ded3e47141ad9b187360b6d5a27a38e944"
   },
-  "description": "按五章16个当前配置任务组织印尼法规、司法材料、部门补强与国际条约；来源入口经项目代理核验后启用，清单记录访问边界、历史版本及覆盖缺口，不把局部来源宣称为全国完整。",
+  "description": "印尼法规及部门补强清单；v18 新增 BPJPH 清真食品目录逐页发现和同源原件核验，保留旧版本并区分来源覆盖与法律审核。",
   "principles": [
     "本配置忠实记录用户提供方案，文件中历史核验、法效和网站状态均非本次已核结论。来源、适用期与关系初始待核；未经审核的命题和法规不得作为已核有效依据。",
     "章号、材料种类和法律效力不决定一级／二级。只有指定主资料及有原文证据的引用或关联关系确定分级；规则描述只生成待核关系建议，不能自动捏造父资料。",
@@ -75,7 +75,7 @@
       "id": "4",
       "title": "部门补强",
       "notes": [
-        "v14 保留投资、贸易、税务、劳动和央行来源，并将央行目录切换到 Bank Indonesia JDIH 官方只读元数据与 PDF 接口。政府采购 JDIH 在项目代理下多个目录页连续连接超时，4.7 已从活动清单移除并保留于 v13 历史快照；KPPU JDIH 与站点入口也受代理限制，商业竞争规范暂不启用。部门资料仍需核对制定权限、对象、地域和时间，不能将解释材料等同正式法规。",
+        "v14 保留投资、贸易、税务、劳动和央行来源，并将央行目录切换到 Bank Indonesia JDIH 官方只读元数据与 PDF 接口。政府采购 JDIH 在项目代理下多个目录页连续连接超时，4.7 已从活动清单移除并保留于 v13 历史快照；KPPU JDIH 与站点入口也受代理限制，商业竞争规范暂不启用。部门资料仍需核对制定权限、对象、地域和时间，不能将解释材料等同正式法规。 v18 新增 4.8 BPJPH 清真食品法规及标签来源；BPOM 当前仅作为待验证目录轮询，不归入正式清单任务。",
         "先查相关UU、PP、Perpres及正式部门Peraturan，再调用相同领域的部门补强材料。文件名为Keputusan、Surat Edaran或指南时，须核对制定权限、约束对象和内容，区分一般规范、解释口径与个别决定，不能仅凭发布机关赋予相同效力。",
         "筛选前提是缺失该材料是否会显著影响法律回答：准入条件、禁止事项、法定义务、税率或税额参数、合同要求、责任与救济保留。下载表格、填写示范、办理地点、平台操作和逐步办事说明不收。司法总局实施文件按第二章范围处理。",
         "检索提示词：请按法律问题选择对应领域，优先核对正式法规，再补充部门材料；说明材料性质、授权依据、适用主体及期间。税务须核对税种、年度及动态参数；解释口径与法规冲突时标明冲突并回查正式依据。回答集中于权利义务、条件、风险和救济，不展开政务平台操作。"
@@ -95,7 +95,7 @@
   ],
   "channels": [],
   "limits": {
-    "item_count": 16,
+    "item_count": 17,
     "exhaustive_scope": false,
     "ordinary_cases": {
       "rolling_years": 5,
@@ -1098,6 +1098,101 @@
       "trusted_hosts": [
         "www.bi.go.id"
       ]
+    },
+    {
+      "id": "4.8",
+      "chapter_id": "4",
+      "title": "清真食品法规及标签（BPJPH）",
+      "kind": "guidance",
+      "conditional": false,
+      "trigger": "",
+      "priority": 4,
+      "entries": [
+        {
+          "url": "https://jdih.halal.go.id/cari",
+          "purpose": "catalog",
+          "note": "BPJPH 官方 JDIH 默认目录；适配器从经核验的 Next.js 公共目录数据逐页发现文书，再从详情页 PDF iframe 获取正式原件。"
+        }
+      ],
+      "trusted_hosts": [
+        "jdih.halal.go.id"
+      ],
+      "tags": [
+        "country:ID",
+        "checklist:ID-4.8",
+        "kind:guidance",
+        "topic:food_safety",
+        "topic:halal"
+      ],
+      "scope_include": [
+        "BPJPH 官方目录中与清真产品保证、认证、食品/茶产品、进口产品和清真/非清真标签相关的正式规则、决定及具一般适用意义的官方文件。",
+        "按原文保留文种和发布机关；文件类型不等同于法阶或对经营者的约束力。"
+      ],
+      "scope_exclude": [
+        "未通过的草案、法律专著、文章、判决、纯内部人员管理文件及与食品/清真义务无关的化妆品、医疗器械专题规则。",
+        "不以目录标题推断具体茶产品适用；必须核对正式原文、授权依据、适用主体及生效期间。"
+      ],
+      "steps": [
+        "读取默认目录页及服务器报告的总页数，固定每页10项；按官方页码逐页续采，保留每页观察到的总数、页码与请求 URL。目录可能在遍历期间变化，不宣称原子快照或全国覆盖。",
+        "只对标题和文种匹配清单主题且不属于排除范围的条目进入详情页；目录中的 UUID、标题、类型、编号、年份、公布时间、状态和附件标识作为未审核来源字段保留。",
+        "详情页必须与目录 UUID 一致；正式 PDF 只接受详情页 iframe 中同源 /api/jdih/pdf?path=jdih/dokumen/...pdf 地址，保存完整响应、PDF 签名、SHA-256 与详情页证据。",
+        "采集原件后进入现有 MinerU 解析、分段、结构化及 RAGFlow 索引流程；目录和详情页面仅作来源证据，草案或状态疑点不得默认为现行规则。"
+      ],
+      "fields": [
+        "文书 UUID、文种、标题、编号、年份、制定与公布日期、官方状态、发布机关、领域、附件路径、详情页与原件 URL、来源页哈希、获取时间、原文哈希、解析状态、版本关系、审核状态。"
+      ],
+      "version_rules": [
+        "同一文书 UUID 下的原文改变时创建新版本并保留旧版；编号相同但官方 ID 不同的文书不得覆盖。",
+        "目录总数、发布时间和“berlaku”等状态字段均作为来源值，不单独证明现行有效或对具体产品适用。"
+      ],
+      "relation_rules": [
+        "只有原文或正式目录明确表达时才建立修订、替代、撤销、实施或附件关系；所有关系需保留来源页和原文位置供复核。",
+        "BPJPH 与 BPOM、Kemendag 资料分别保存，通过明确业务主题关联，不合并其主管职责或法源效力。"
+      ],
+      "acceptance": [
+        "每页返回记录数与其页码、固定页长、目录总数相符；异常页、未知结构、超过100页上限或总数变化均记录缺口并停止虚报完整。",
+        "每个原件候选有唯一 UUID、匹配详情页、唯一同源 PDF iframe、PDF 文件签名及可复验哈希；索引引用回到具体原文页和版本。",
+        "法律效力、适用主体、茶类适用性及法律关系经审核后才可用于正式法律结论；网络可达或解析成功不代替审核。"
+      ],
+      "verbatim_requirements": "采集标题 | 清真食品法规及标签｜BPJPH 官方 JDIH\n官方入口 | https://jdih.halal.go.id/cari\n目录规则 | 官方 HTML 的公开数据报告每页10条、当前页、总数及总页数；使用该页明确支持的 ?page=N 继续遍历，最多100页。总数可能在轮询期间变化，逐页保存观测值，不把动态遍历解释为原子全量快照。\n范围 | 仅收清真产品保证、认证、食品/茶产品、进口产品及清真/非清真标签相关正式规则和官方文书；过滤草案、专著、文章、内部人员管理和无关非食品专题。每件仍需人工审核文种、法律效力、授权和适用范围。\n详情及原件 | 目录 UUID 必须与详情页路径一致。附件只接受该详情页 iframe 明确引用的同源 /api/jdih/pdf?path=jdih/dokumen/...pdf，要求响应为 PDF 且签名有效；不得猜路径、改文件名或把 iframe 预览页当正文。\n记录 | 保留 UUID、标题、类型、编号、年份、制定/公布日期、官方状态、发布机关、领域、附件路径、目录与详情 URL、源页哈希、获取时间和原文哈希。目录值未审核，不代表现行效力；旧版本不覆盖。\n访问与完整性 | 页面验证/错误、分页结构变化、匹配 UUID 缺失、附件不一致或 PDF 失败均记缺口并自动按既有重试策略恢复；不得把目录页已浏览或 OCR 完成写成资料入库和法律审核完成。",
+      "execution": "discovery",
+      "adapter": "bpjph_jdih",
+      "limits": {
+        "max_catalog_pages": 100,
+        "max_original_bytes": 134217728,
+        "download_timeout_seconds": 900,
+        "discovery_include_terms": [
+          "jaminan produk halal",
+          "produk halal",
+          "sertifikat halal",
+          "sertifikasi halal",
+          "label halal",
+          "pangan",
+          "produk luar negeri",
+          "bahan baku halal",
+          "halal"
+        ],
+        "discovery_exclude_terms": [
+          "rancangan",
+          "monografi hukum",
+          "artikel hukum",
+          "putusan pengadilan",
+          "sistem kerja aparatur sipil negara",
+          "data badan penyelenggara jaminan produk halal",
+          "pengajuan pengangkatan",
+          "pengawasan intern",
+          "daftar data badan",
+          "pegawai negeri sipil",
+          "penyembelihan hewan",
+          "produk rekayasa genetik",
+          "kosmetik",
+          "obat bahan alam",
+          "obat kuasi",
+          "suplemen kesehatan",
+          "alat kesehatan",
+          "perbekalan kesehatan rumah tangga"
+        ]
+      }
     },
     {
       "id": "5.1",

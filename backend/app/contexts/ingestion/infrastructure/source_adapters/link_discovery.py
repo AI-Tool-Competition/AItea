@@ -28,10 +28,21 @@ _PATTERN_FIELDS = (
     "html_document_patterns",
     "exclude_patterns",
 )
-_ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "bi_jdih", "bi_official", "manual"}
+_ADAPTERS = {
+    "bpk",
+    "ma_jdih",
+    "sso",
+    "html_links",
+    "kemenkeu_tax",
+    "bi_jdih",
+    "bi_official",
+    "bpjph_jdih",
+    "manual",
+}
 _SETNEG_HOST = "jdih.setneg.go.id"
 _SETNEG_API = "https://jdih.setneg.go.id/api/hukumproduk/"
 _SETNEG_TYPES = {"1.3": "UU", "1.4": "PERPU", "1.5": "PP", "1.6": "PERPRES"}
+_BPJPH_HOST = "jdih.halal.go.id"
 _SETNEG_SOURCE_FIELDS = (
     "idperaturan",
     "jns",
@@ -320,6 +331,22 @@ def request_parameters(url: str, definition: dict) -> dict:
             raise ValueError("BKPM 请求没有对应的可信投资清单配置。")
         _bkpm_query(current)
         return {"accept_compressed_json": True}
+    if host == _BPJPH_HOST:
+        from app.contexts.ingestion.infrastructure.source_adapters.bpjph_discovery import purpose
+
+        item = definition.get("item", definition)
+        expected_country = definition.get(
+            "country", definition.get("plan", {}).get("country", _country(item))
+        )
+        if (
+            _country(item) != "ID"
+            or expected_country != "ID"
+            or item.get("id") != "4.8"
+            or not recipe_for(item).get("bpjph_jdih")
+            or not purpose(current)
+        ):
+            raise ValueError("BPJPH 请求没有对应的可信清真法规清单配置。")
+        return {}
     if host != _SETNEG_HOST:
         return {}
     item = definition.get("item", definition)
@@ -1240,6 +1267,9 @@ class _Recipe:
         self.dephub_regulations = recipe.get("dephub_regulations", False)
         if not isinstance(self.dephub_regulations, bool):
             raise ValueError("交通部法规目录配置无效。")
+        self.bpjph_jdih = recipe.get("bpjph_jdih", False)
+        if not isinstance(self.bpjph_jdih, bool):
+            raise ValueError("BPJPH 法规目录配置无效。")
         self.kemenkeu_tax = recipe.get("kemenkeu_tax", False)
         if not isinstance(self.kemenkeu_tax, bool):
             raise ValueError("财政部税务法规目录配置无效。")
@@ -1323,6 +1353,10 @@ class _Recipe:
             from app.contexts.ingestion.infrastructure.source_adapters.dephub_discovery import purpose
 
             return purpose(url)
+        if parsed.hostname == _BPJPH_HOST:
+            from app.contexts.ingestion.infrastructure.source_adapters.bpjph_discovery import purpose
+
+            return purpose(url) if self.bpjph_jdih else None
         if parsed.hostname == "jdih.kemenkeu.go.id" and self.kemenkeu_tax:
             from app.contexts.ingestion.infrastructure.source_adapters.kemenkeu_discovery import purpose
 
@@ -1608,6 +1642,10 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
     if not content:
         return _result(reason="页面为空，不能确认原文。")
     mime = mime_type.split(";", 1)[0].strip().casefold()
+    if rules.bpjph_jdih and purpose == "catalog":
+        from app.contexts.ingestion.infrastructure.source_adapters.bpjph_discovery import inspect_catalog
+
+        return inspect_catalog(current, content, mime, rules)
     if rules.adapter == "bi_jdih":
         from app.contexts.ingestion.infrastructure.source_adapters.bi_jdih_discovery import inspect
 
@@ -1696,6 +1734,13 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         or (len(visible) < 1500 and _ERROR_BODY.search(visible))
     ):
         return _result(reason="来源返回验证、登录或错误页面，未取得原文。")
+    bpjph_detail = None
+    if rules.bpjph_jdih and purpose == "detail":
+        from app.contexts.ingestion.infrastructure.source_adapters.bpjph_discovery import detail_evidence
+
+        bpjph_detail = detail_evidence(current, content)
+        if "reason" in bpjph_detail:
+            return _result(reason=bpjph_detail["reason"])
     if rules.wto_services and urlsplit(current).hostname == "docs.wto.org" and purpose == "detail":
         # Docs Online's public viewer redirects using one literal location URL.
         # Require the same official member/document, and do not run its scripts.
@@ -1769,6 +1814,8 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
             continue
         candidate_purpose = rules.purpose(candidate)
         if not candidate_purpose or (link.tag != "a" and candidate_purpose != "document"):
+            continue
+        if bpjph_detail and (candidate_purpose != "document" or candidate != bpjph_detail["expected_url"]):
             continue
         label = (" ".join(link.text) or link.title or unquote(urlsplit(candidate).path.rsplit("/", 1)[-1]))[
             :300
@@ -1854,6 +1901,12 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
                     -1
                 ].casefold()
         entry = {"url": candidate, "purpose": candidate_purpose, "title": label}
+        if bpjph_detail:
+            entry.update(
+                title=bpjph_detail["title"],
+                identity_key=bpjph_detail["identity_key"],
+                source_record=bpjph_detail["source_record"],
+            )
         if link.source_locator:
             entry["source_locator"] = link.source_locator
         if link.source_record:
@@ -1862,6 +1915,8 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         if identity:
             entry["identity_key"] = identity
         candidates.append(entry)
+    if bpjph_detail and not candidates:
+        return _result(reason="BPJPH 详情页未显示与元数据一致的正式原件 iframe。")
     if page.truncated:
         warnings.append("页面链接超过扫描上限，需缩小范围或补充适配。")
     if not candidates and purpose != "document":
@@ -2032,6 +2087,26 @@ def recipe_for(item: dict) -> dict:
         ):
             return {"adapter": "manual", "reason": "央行官网法规适配仅允许印尼 4.6 项的官方受限目录入口。"}
         return result | {"max_links": 100}
+    if adapter == "bpjph_jdih":
+        if (
+            _country(item) != "ID"
+            or item.get("id") != "4.8"
+            or hosts != [_BPJPH_HOST]
+            or len(seeds) != 1
+            or seeds[0].get("url") != "https://jdih.halal.go.id/cari"
+            or seeds[0].get("purpose") != "catalog"
+            or item.get("limits", {}).get("max_catalog_pages") != 100
+        ):
+            return {"adapter": "manual", "reason": "BPJPH 适配仅允许印尼 4.8 项的官方 JDIH 目录。"}
+        return result | {
+            "bpjph_jdih": True,
+            "catalog_patterns": [r"^/cari(?:\?page=[1-9]\d{0,2})?$"],
+            "detail_patterns": [r"^/jdih/dokumen/[0-9a-f-]{36}$"],
+            "document_patterns": [r"^/api/jdih/pdf$"],
+            "include_terms": item.get("limits", {}).get("discovery_include_terms", []),
+            "exclude_terms": item.get("limits", {}).get("discovery_exclude_terms", []),
+            "max_links": 200,
+        }
     wto_member = _country(item)
     if (wto_member, item.get("id")) in {("ID", "5.4"), ("SG", "5.2")} and item.get("limits", {}).get(
         "wto_public_catalog"

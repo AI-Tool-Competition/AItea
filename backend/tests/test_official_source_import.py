@@ -452,6 +452,51 @@ def test_extensionless_detail_html_remains_a_catalogue_page(tmp_path):
     assert tuple(receipt) == ("skipped", "catalogue_page_not_document")
 
 
+def test_sso_catalogue_pages_are_not_reported_as_invalid_document_evidence(tmp_path):
+    service, config = _importer(tmp_path)
+    importer = OfficialSourceImporter(service, config_path=config)
+    source = {
+        "id": "sg-sso-statutes",
+        "country": "SG",
+        "kind": "catalogue",
+        "allowed_hosts": ["sso.agc.gov.sg"],
+        "url": "https://sso.agc.gov.sg/Browse/SL/Current/All",
+        "discovery": {
+            "adapter": "sso_catalog_2026",
+            "category": "SL",
+            "state": "Current",
+            "page_size": 500,
+        },
+    }
+    catalogue_urls = (
+        source["url"] + "?PageSize=500&SortBy=Title&SortOrder=ASC",
+        source["url"] + "/1?PageSize=500&SortBy=Title&SortOrder=ASC",
+    )
+    for index, url in enumerate(catalogue_urls):
+        at = time.time()
+        event = {
+            "at": at,
+            "kind": "content_version",
+            "url": url,
+            "source_kind": "catalogue",
+            "source_root": index == 0,
+            "discovery_matched": True,
+            "discovery_purpose": "catalog",
+        }
+        state = {
+            "updated_at": at + 1,
+            "sources": {
+                source["id"]: {
+                    "cache": {url: {"discovery": {"matched": True, "purpose": "catalog"}}}
+                }
+            },
+        }
+        assert importer._eligible("SG", source, event, state, verified_mime_type="text/html") == (
+            False,
+            "catalogue_page_not_document",
+        )
+
+
 def test_sso_current_html_versions_keep_catalogue_identity_and_row_evidence(tmp_path):
     service, config = _importer(tmp_path)
     source = {

@@ -423,13 +423,14 @@ class OfficialSourceImporter:
         purpose = event.get("discovery_purpose") or discovery.get("purpose")
         matched = event.get("discovery_matched", discovery.get("matched"))
         if source.get("discovery", {}).get("adapter") == "sso_catalog_2026":
+            is_document = purpose == "document" or (
+                purpose == "detail" and verified_mime_type in _SUPPORTED_MIME
+            )
+            if not is_document:
+                return False, "catalogue_page_not_document"
             if _sso_catalogue_evidence(source, event, url) is None or matched is not True:
                 return False, "sso_catalogue_evidence_invalid"
-            if purpose == "document":
-                return True, None
-            if purpose == "detail" and verified_mime_type in _SUPPORTED_MIME:
-                return True, None
-            return False, "catalogue_page_not_document"
+            return True, None
         if matched is True and purpose == "document":
             return True, None
         if (

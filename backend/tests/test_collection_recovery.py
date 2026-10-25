@@ -305,6 +305,81 @@ def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
     assert decision.retryable and decision.pages == (1,)
 
 
+def test_unreceipted_source_bound_vision_failure_is_automatically_retried(service):
+    content = make_pdf([("source page", False)])
+    document = register(service, content, key="unreceipted-vision-failure")
+    manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
+    manifest["parser"] = "mineru"
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_failed",
+        source_hash=document["content_hash"],
+        text="",
+        error="PDF 页面处理失败，请检查原件。",
+        ocr={
+            "prompt_version": "legal-page-transcription-v6",
+            "requested_model": "vision-test-model",
+            "source_hash": document["content_hash"],
+            "page": page["page"],
+            "attempts": 0,
+        },
+        ocr_retry_cycles=[{"protocol": "legacy-attempt"} for _ in range(8)],
+    )
+    manifest["remote_parse"] = {
+        "provider": "mineru",
+        "state": "done",
+        "source_hash": document["content_hash"],
+        "page_count": 1,
+        "parts": [],
+    }
+    decision = classify_processing(manifest, phase="parse")
+    assert decision.reason == "paid_ocr_retry"
+    assert decision.retryable and decision.pages == (page["page"],)
+
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {
+                "document_id": document["id"],
+                "owner_id": "owner",
+                "phase": "parse",
+                "attempts": 3,
+            },
+            processing=True,
+            decision=Decision("ocr_failure_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "paid_ocr_retry")
+    assert saved["pages"][0]["status"] == "pending_ocr"
+    assert len(saved["pages"][0]["ocr_retry_cycles"]) == 9
+    assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["source_hash"] == document[
+        "content_hash"
+    ]
+
+
 def test_failed_vision_page_with_bound_response_retries_after_visual_quality_budget(service):
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
         MAX_RETRY_CYCLES,

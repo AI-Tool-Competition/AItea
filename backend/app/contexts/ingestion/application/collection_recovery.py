@@ -4,7 +4,8 @@ Each processing attempt remains bounded. Eligible uncertain or incomplete OCR
 results can start another attempt after backoff. Confirmed terminal MinerU failures
 start a fresh generation after backoff, reusing successful and live part receipts.
 OCR provider failures, including HTTP rejection responses, remain eligible for
-automatic retry after backoff. Source/checkpoint changes stay held. Unknown
+automatic retry after backoff. Source-bound legacy OCR failures with unknown
+provider outcomes also retry automatically. Source/checkpoint changes stay held. Unknown
 RAGFlow writes are checked by exact receipt before they are automatically repeated;
 unmatched writes resume after the provider backoff expires.
 """
@@ -83,6 +84,29 @@ def _unknown(record):
         and "complete" not in metadata
         and not metadata.get("error_response")
         and not record.get("error")
+    )
+
+
+def _unreceipted_vision_failure(page, source_hash):
+    """Allow a source-bound legacy OCR failure to retry without a provider receipt."""
+    metadata = page.get("ocr")
+    page_number = page.get("page")
+    return bool(
+        page.get("status") == "ocr_failed"
+        and not page.get("ocr_fallback")
+        and isinstance(source_hash, str)
+        and re.fullmatch(r"[a-f0-9]{64}", source_hash)
+        and page.get("source_hash") == source_hash
+        and isinstance(metadata, dict)
+        and metadata.get("provider") != "mineru"
+        and isinstance(metadata.get("prompt_version"), str)
+        and bool(metadata["prompt_version"])
+        and isinstance(metadata.get("requested_model"), str)
+        and bool(metadata["requested_model"])
+        and metadata.get("source_hash") == source_hash
+        and type(page_number) is int
+        and page_number > 0
+        and metadata.get("page") == page_number
     )
 
 
@@ -364,6 +388,10 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             metadata = page.get("ocr") or {}
             status = page.get("status")
             unknown = _unknown(page)
+            unreceipted_vision_failure = _unreceipted_vision_failure(
+                page, manifest.get("source_hash")
+            )
+            unknown |= unreceipted_vision_failure
             unknown_outcome |= unknown
             try:
                 visual_fallback = is_visual_fallback_page(page)
@@ -445,6 +473,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                             and isinstance(metadata.get("error_response"), dict)
                             and isinstance(metadata["error_response"].get("blob"), dict)
                         )
+                        or unreceipted_vision_failure
                     )
                 )
             ) and type(page.get("page")) is int and page["page"] > 0
@@ -1184,6 +1213,9 @@ class CollectionRecovery:
             if page.get("source_hash") != document["content_hash"]:
                 raise ValueError("retry_page_source_mismatch")
             metadata = page.get("ocr") or {}
+            unreceipted_vision_failure = _unreceipted_vision_failure(
+                page, document["content_hash"]
+            )
             previous_failure = (
                 _saved_visual_provider_retry(page) if page.get("status") == "pending_ocr" else None
             )
@@ -1206,6 +1238,7 @@ class CollectionRecovery:
             )
             retryable_page = page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"} and (
                 _unknown(page)
+                or unreceipted_vision_failure
                 or previous_failure is not None
                 or (
                     vision_page

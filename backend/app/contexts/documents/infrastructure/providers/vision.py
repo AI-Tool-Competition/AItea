@@ -22,10 +22,10 @@ import httpx
 
 from app.configuration.paths import InstancePaths
 
-PROMPT_VERSION = "legal-page-transcription-v5"
+PROMPT_VERSION = "legal-page-transcription-v6"
 PAGE_REQUEST_RECIPE = (
     "page-png-high-physical-page-scope-v1-masked-unverified-native-hint-v1-"
-    "or-native-hint-20000-json-temperature0-max16384-conditional-nonthinking-table-grid-retry-review-v5"
+    "or-native-hint-20000-json-temperature0-max16384-conditional-nonthinking-table-grid-retry-review-v6"
 )
 MAX_PAGE_TEXT = 100_000
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -66,7 +66,10 @@ _TABLE_LAYOUT_RETRY_HINT = (
     "not as ground truth; its transcript is intentionally omitted. Reinspect the image independently, count and "
     "verify each row against the visible cell boundaries, and transcribe every readable cell exactly. Do not infer "
     "uncertainty merely from a table's width or length. If a particular boundary or cell is still unreadable, name "
-    "the affected row or cell in uncertain_spans and do not guess its contents."
+    "the affected row or cell in uncertain_spans and do not guess its contents. Return only one JSON object with "
+    "exactly these five required keys: complete (boolean), printed_page (string or null), text (string), "
+    "uncertain_spans (array of strings), and is_blank (boolean). Do not omit is_blank, including when text is "
+    "present; set it to false whenever text is non-empty, and true only when no text is visible."
 )
 
 
@@ -552,6 +555,15 @@ def decode_page_response(body, payload, raw, finish, *, model, native_hint):
         value = {key: item for key, item in value.items() if key != "type"}
     elif isinstance(value, dict) and set(value) == {"type", "content"} and value.get("type") == "json_object":
         value = value["content"]
+    # is_blank is derivable only when a non-empty transcript is present. A
+    # missing flag on an empty transcription remains ambiguous and is rejected.
+    if (
+        isinstance(value, dict)
+        and set(value) == {"complete", "printed_page", "text", "uncertain_spans"}
+        and isinstance(value.get("text"), str)
+        and bool(value["text"].strip())
+    ):
+        value = {**value, "is_blank": False}
     if (
         not isinstance(value, dict)
         or set(value) != {"complete", "printed_page", "text", "uncertain_spans", "is_blank"}

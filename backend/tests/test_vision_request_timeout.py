@@ -98,4 +98,27 @@ def test_table_quality_retry_gets_blind_row_boundary_recheck(monkeypatch):
     assert "previous visual transcription" not in first_text
     assert "previous visual transcription reported table_layout_not_preserved" in retry_text
     assert "its transcript is intentionally omitted" in retry_text
-    assert retried["prompt_version"] == "legal-page-transcription-v5"
+    assert 'exactly these five required keys' in retry_text
+    assert "Do not omit is_blank" in retry_text
+    assert retried["prompt_version"] == "legal-page-transcription-v6"
+
+
+def test_page_transcription_derives_only_a_missing_nonblank_flag():
+    body = {"model": "vision", "messages": []}
+    payload = {"choices": [{"message": {"content": ""}}]}
+
+    nonblank = '{"complete":true,"printed_page":null,"text":"visible text","uncertain_spans":[]}'
+    decoded = vision.decode_page_response(
+        body,
+        payload,
+        nonblank,
+        "stop",
+        model="vision",
+        native_hint="",
+    )
+    assert decoded["text"] == "visible text"
+    assert decoded["is_blank"] is False
+
+    blank = '{"complete":true,"printed_page":null,"text":"","uncertain_spans":[]}'
+    with pytest.raises(vision.OCRResponseError, match="结构与长度校验"):
+        vision.decode_page_response(body, payload, blank, "stop", model="vision", native_hint="")

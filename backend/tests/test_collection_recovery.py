@@ -305,7 +305,8 @@ def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
     assert decision.retryable and decision.pages == (1,)
 
 
-def test_unreceipted_source_bound_vision_failure_is_automatically_retried(service):
+@pytest.mark.parametrize("fallback_attempts", [None, MAX_RETRY_CYCLES])
+def test_unreceipted_source_bound_vision_failure_is_automatically_retried(service, fallback_attempts):
     content = make_pdf([("source page", False)])
     document = register(service, content, key="unreceipted-vision-failure")
     manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
@@ -325,6 +326,13 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
         },
         ocr_retry_cycles=[{"protocol": "legacy-attempt"} for _ in range(8)],
     )
+    if fallback_attempts is not None:
+        page["ocr_fallback"] = {
+            "protocol": "mineru-empty-page-visual-v1",
+            "attempts": fallback_attempts,
+            "source_result_hash": "a" * 64,
+            "source_page": page["page"],
+        }
     manifest["remote_parse"] = {
         "provider": "mineru",
         "state": "done",
@@ -378,6 +386,8 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
     assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["source_hash"] == document[
         "content_hash"
     ]
+    if fallback_attempts is not None:
+        assert saved["pages"][0]["ocr_fallback"]["attempts"] == MAX_RETRY_CYCLES
 
 
 def test_incomplete_embed_retry_routes_to_ocr_before_reconciling(service, monkeypatch):
@@ -1430,7 +1440,7 @@ def test_failed_bound_mineru_visual_page_is_automatically_retried(service, monke
         ).fetchone()
 
     assert tuple(job) == ("parse", "queued")
-    assert tuple(recovery) == ("queued", "mineru_empty_page_retry")
+    assert tuple(recovery) == ("queued", "paid_ocr_retry")
     assert saved["pages"][0]["status"] == "pending_ocr"
     assert saved["pages"][0]["ocr_fallback"]["attempts"] == 2
     assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["status"] == "ocr_failed"

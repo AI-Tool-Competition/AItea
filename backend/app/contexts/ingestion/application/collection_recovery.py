@@ -90,11 +90,26 @@ def _unknown(record):
 
 def _unreceipted_vision_failure(page, source_hash):
     """Allow a source-bound legacy OCR failure to retry without a provider receipt."""
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+        EMPTY_PAGE_PROTOCOL,
+        PROTOCOL,
+    )
+
     metadata = page.get("ocr")
     page_number = page.get("page")
+    fallback = page.get("ocr_fallback")
+    bound_fallback = not fallback or (
+        isinstance(fallback, dict)
+        and fallback.get("protocol") in {PROTOCOL, EMPTY_PAGE_PROTOCOL}
+        and fallback.get("source_page") == page_number
+        and isinstance(fallback.get("source_result_hash"), str)
+        and re.fullmatch(r"[a-f0-9]{64}", fallback["source_result_hash"])
+        and type(fallback.get("attempts")) is int
+        and fallback["attempts"] > 0
+    )
     return bool(
         page.get("status") == "ocr_failed"
-        and not page.get("ocr_fallback")
+        and bound_fallback
         and isinstance(source_hash, str)
         and re.fullmatch(r"[a-f0-9]{64}", source_hash)
         and page.get("source_hash") == source_hash

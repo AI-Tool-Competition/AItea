@@ -26,6 +26,7 @@ from app.shared.domain.values import dump, now, uid
 
 SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
+PAID_OCR_RETRY_SECONDS = 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
 OCR_AUTOMATIC_RETRY_REASONS = frozenset(
     {"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry", "mineru_empty_page_retry"}
@@ -55,7 +56,9 @@ def _timestamp(value):
 
 
 def _recovery_delay(decision, recovery_count):
-    """Keep OCR retries automatic without letting local backoff grow to a day."""
+    """Keep OCR retries automatic while honoring the provider's longer delay."""
+    if decision.reason == "paid_ocr_retry":
+        return PAID_OCR_RETRY_SECONDS
     if decision.reason in OCR_AUTOMATIC_RETRY_REASONS:
         return BASE_RECOVERY_SECONDS
     return min(MAX_RECOVERY_SECONDS, BASE_RECOVERY_SECONDS * 2 ** min(recovery_count, 7))

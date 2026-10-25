@@ -15,6 +15,7 @@ from app.contexts.ingestion.application.collection_recovery import (
     CollectionRecovery,
     Decision,
     MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS,
+    PAID_OCR_RETRY_SECONDS,
     classify_processing,
 )
 from app.contexts.documents.infrastructure.parsers.native_parser import (
@@ -231,9 +232,10 @@ def test_retry_after_is_persistent_and_not_shortened(service):
     "reason,provider_delay,expected_delay",
     [
         ("ocr_quality_retry", 0, BASE_RECOVERY_SECONDS),
-        ("paid_ocr_retry", 0, BASE_RECOVERY_SECONDS),
+        ("paid_ocr_retry", 0, PAID_OCR_RETRY_SECONDS),
         ("mineru_visual_table_retry", 0, BASE_RECOVERY_SECONDS),
         ("ocr_quality_retry", 7200, 7200),
+        ("paid_ocr_retry", 7200, 7200),
         ("transient_processing", 0, BASE_RECOVERY_SECONDS * 2**6),
     ],
 )

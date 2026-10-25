@@ -22,3 +22,50 @@ def test_vision_request_timeout_rejects_invalid_values(monkeypatch, value):
 
     with pytest.raises(ValueError, match="VISION_OCR_REQUEST_TIMEOUT_SECONDS"):
         vision.vision_ocr_request_timeout()
+
+
+def test_deepseek_ocr_requests_disable_thinking_to_reserve_output_for_transcription(monkeypatch):
+    monkeypatch.setenv("VISION_OCR_ENABLED", "true")
+    monkeypatch.setenv("LLM_BASE_URL", "https://aerisun.top/sub2api/v1")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4.1-flash")
+    requests = []
+
+    def invoke(body):
+        requests.append(body)
+        if body["messages"][0]["content"] == vision._REGION_PROMPT:
+            raw = '{"text":"visible text","uncertain_spans":[],"graphic_marks":[]}'
+        elif body["messages"][0]["content"] == vision._IMAGE_PROMPT:
+            raw = '{"complete":true,"text":"visible text","uncertain_spans":[],"is_blank":false}'
+        else:
+            raw = '{"complete":true,"printed_page":null,"text":"visible text","uncertain_spans":[],"is_blank":false}'
+        return {"model": body["model"], "choices": [{"message": {"content": raw}}]}, raw, "stop"
+
+    monkeypatch.setattr(vision, "_invoke", invoke)
+    rendered = {"image_base64": "aW1hZ2U=", "native_text": ""}
+    vision.transcribe_page(rendered)
+    vision.transcribe_region(rendered)
+    vision.transcribe_image(rendered)
+
+    assert len(requests) == 3
+    assert all(request["thinking"] == {"type": "disabled"} for request in requests)
+    assert "reasoning_effort" not in requests[1]
+    assert requests[0]["max_tokens"] == 16384
+
+
+def test_non_deepseek_ocr_keeps_provider_default_reasoning(monkeypatch):
+    monkeypatch.setenv("VISION_OCR_ENABLED", "true")
+    monkeypatch.setenv("LLM_BASE_URL", "https://aerisun.top/sub2api/v1")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "other-vision-model")
+    captured = {}
+    raw = '{"complete":true,"printed_page":null,"text":"visible text","uncertain_spans":[],"is_blank":false}'
+
+    def invoke(body):
+        captured.update(body)
+        return {"model": body["model"], "choices": [{"message": {"content": raw}}]}, raw, "stop"
+
+    monkeypatch.setattr(vision, "_invoke", invoke)
+    vision.transcribe_page({"image_base64": "aW1hZ2U=", "native_text": ""})
+
+    assert "thinking" not in captured

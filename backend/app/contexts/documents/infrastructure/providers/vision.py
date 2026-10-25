@@ -25,7 +25,7 @@ from app.configuration.paths import InstancePaths
 PROMPT_VERSION = "legal-page-transcription-v3"
 PAGE_REQUEST_RECIPE = (
     "page-png-high-physical-page-scope-v1-masked-unverified-native-hint-v1-"
-    "or-native-hint-20000-json-temperature0-max16384-v2"
+    "or-native-hint-20000-json-temperature0-max16384-conditional-nonthinking-v3"
 )
 MAX_PAGE_TEXT = 100_000
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -153,6 +153,13 @@ def deepseek_vision_model(model=None) -> bool:
         "api.deepseek.com",
         "api.deepseek.cn",
     }
+
+
+def _reasoning_parameters(model: str, *, fallback_effort: str | None = None) -> dict:
+    """Reserve DeepSeek's output budget for transcription instead of hidden reasoning."""
+    if deepseek_vision_model(model):
+        return {"thinking": {"type": "disabled"}}
+    return {"reasoning_effort": fallback_effort} if fallback_effort else {}
 
 
 class _DeepSeekImageSlot:
@@ -478,6 +485,7 @@ def transcribe_page(rendered: dict) -> dict:
     native_hint = str(rendered.get("native_text", ""))[:20_000]
     body = {
         "model": model,
+        **_reasoning_parameters(model),
         "temperature": 0,
         "max_tokens": 16384,
         "response_format": {"type": "json_object"},
@@ -635,6 +643,7 @@ def _transcribe_asset(rendered: dict, *, prompt: str, prompt_version: str, instr
     payload, raw, finish = _invoke(
         {
             "model": model,
+            **_reasoning_parameters(model),
             "temperature": 0,
             "max_tokens": 16384,
             "response_format": {"type": "json_object"},
@@ -754,9 +763,9 @@ def transcribe_region(rendered: dict) -> dict:
     model = os.environ["LLM_MODEL"].strip()
     body = {
         "model": model,
+        **_reasoning_parameters(model, fallback_effort="low"),
         "temperature": 0,
         "max_tokens": 16384,
-        "reasoning_effort": "low",
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": _REGION_PROMPT},

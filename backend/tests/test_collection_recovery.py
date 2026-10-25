@@ -380,6 +380,85 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
     ]
 
 
+def test_incomplete_embed_retry_routes_to_ocr_before_reconciling(service, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import vision
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    content = make_pdf([("source page", False)])
+    document = register(service, content, key="embed-requires-empty-page-ocr")
+    manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
+    manifest["parser"] = "mineru"
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_complete",
+        source_hash=document["content_hash"],
+        text="",
+        reasons=[],
+        ocr={
+            "provider": "mineru",
+            "complete": True,
+            "uncertain_spans": [],
+        },
+    )
+    manifest["quality"] = {"complete": True}
+    manifest["remote_parse"] = {
+        "provider": "mineru",
+        "state": "done",
+        "source_hash": document["content_hash"],
+        "page_count": 1,
+        "parts": [],
+    }
+
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='embed',status='failed',attempts=0,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {
+                "document_id": document["id"],
+                "owner_id": "owner",
+                "phase": "embed",
+                "attempts": 1,
+            },
+            processing=True,
+            decision=Decision("paid_result_unknown"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    result = service.collection.recovery.run_due(limit=32)
+
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recoveries = {
+            row["phase"]: dict(row)
+            for row in conn.execute(
+                "SELECT phase,status,reason,retry_plan FROM collection_recovery_jobs WHERE item_id=?",
+                (document["id"],),
+            )
+        }
+
+    assert tuple(job) == ("parse", "failed")
+    assert (recoveries["embed"]["status"], recoveries["embed"]["reason"]) == (
+        "blocked",
+        "ocr_precondition_retry",
+    )
+    assert (recoveries["parse"]["status"], recoveries["parse"]["reason"]) == (
+        "waiting",
+        "mineru_empty_page_retry",
+    )
+    assert json.loads(recoveries["parse"]["retry_plan"])[0]["page"] == page["page"]
+
+
 def test_failed_vision_page_with_bound_response_retries_after_visual_quality_budget(service):
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
         MAX_RETRY_CYCLES,

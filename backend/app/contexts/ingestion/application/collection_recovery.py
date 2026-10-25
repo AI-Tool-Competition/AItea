@@ -7,7 +7,8 @@ OCR provider failures, including HTTP rejection responses, remain eligible for
 automatic retry after backoff. Source-bound legacy OCR failures with unknown
 provider outcomes also retry automatically. Source/checkpoint changes stay held. Unknown
 RAGFlow writes are checked by exact receipt before they are automatically repeated;
-unmatched writes resume after the provider backoff expires.
+unmatched writes resume after the provider backoff expires. If text completeness fails,
+the worker returns to the source-bound OCR recovery queue before indexing resumes.
 """
 
 import hashlib
@@ -2190,6 +2191,122 @@ class CollectionRecovery:
                 scheduled += 1
         return scheduled
 
+    def _route_incomplete_embeddings_to_parse(self, *, limit, worker_scope):
+        """Resume OCR first when a legacy embed retry is fenced by incomplete text."""
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='embed' AND r.status='blocked'
+                        AND r.reason='paid_result_unknown' AND j.phase='embed' AND j.status='failed'"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (*arguments, limit),
+                )
+            ]
+        rerouted = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                recovery = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='paid_result_unknown'",
+                    (identifier,),
+                ).fetchone()
+                if recovery is None or not worker_scope.allows(recovery["owner_id"]):
+                    continue
+                owner, document_id = recovery["owner_id"], recovery["item_id"]
+                embed_binding = self._binding(conn, owner, "processing", document_id, "embed")
+                if embed_binding is None or _digest(embed_binding) != recovery["binding_sha256"]:
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                job = conn.execute(
+                    "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (document_id, owner),
+                ).fetchone()
+                document = conn.execute(
+                    "SELECT content_hash,manifest FROM documents WHERE id=? AND owner_id=?",
+                    (document_id, owner),
+                ).fetchone()
+                if (
+                    job is None
+                    or job["phase"] != "embed"
+                    or job["status"] != "failed"
+                    or document is None
+                ):
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    self._block(conn, recovery, "invalid_checkpoint")
+                    continue
+                from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+
+                if text_complete(manifest):
+                    continue
+                if manifest.get("source_hash") != document["content_hash"]:
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                decision = classify_processing(manifest, phase="parse")
+                if not decision.retryable or not (decision.pages or decision.asset_keys):
+                    continue
+                parse_binding = self._binding(conn, owner, "processing", document_id, "parse")
+                if parse_binding is None:
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                previous_parse = conn.execute(
+                    """SELECT * FROM collection_recovery_jobs WHERE owner_id=? AND queue_kind='processing'
+                    AND item_id=? AND phase='parse'""",
+                    (owner, document_id),
+                ).fetchone()
+                if previous_parse and previous_parse["binding_sha256"] != _digest(parse_binding):
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                conn.execute(
+                    """UPDATE processing_jobs SET phase='parse',status='failed',attempts=0,available_at=0,
+                    lease_token=NULL,lease_until=NULL,error=NULL,updated_at=?
+                    WHERE document_id=? AND owner_id=? AND phase='embed' AND status='failed'""",
+                    (now(), document_id, owner),
+                )
+                conn.execute(
+                    "UPDATE documents SET status='processing',error=NULL WHERE id=? AND owner_id=?",
+                    (document_id, owner),
+                )
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='blocked',reason='ocr_precondition_retry',
+                    available_at=0,revision=revision+1,updated_at=? WHERE id=?""",
+                    (now(), identifier),
+                )
+                self._event(
+                    conn,
+                    identifier,
+                    "embedding_retry_routed_to_ocr",
+                    {
+                        "source_hash": document["content_hash"],
+                        "ocr_reason": decision.reason,
+                        "physical_pages": list(decision.pages),
+                        "assets": list(decision.asset_keys),
+                        "requires_parse_before_index": True,
+                        "old_remote_generation_preserved": True,
+                    },
+                )
+                self.record_failure(
+                    conn,
+                    {
+                        "document_id": document_id,
+                        "owner_id": owner,
+                        "phase": "parse",
+                        "attempts": 0,
+                    },
+                    processing=True,
+                    decision=decision,
+                    exhausted=True,
+                    error_type="embedding_waiting_for_ocr",
+                )
+                rerouted += 1
+        return rerouted
+
     def _retry_unknown_ragflow_after_audit_error(
         self, conn, recovery, *, owner, document_id, fingerprint, wait, queue_scope, queue_arguments
     ):
@@ -2738,6 +2855,9 @@ class CollectionRecovery:
         self._queue_terminal_mineru_retries(limit=limit, worker_scope=worker_scope)
         self._queue_mineru_quality_retries(limit=limit, worker_scope=worker_scope)
         self._queue_automatic_ocr_retries(limit=limit, worker_scope=worker_scope)
+        result["requeued"] += self._route_incomplete_embeddings_to_parse(
+            limit=limit, worker_scope=worker_scope
+        )
         for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
             result["requeued" if key in {"unmatched_requeued", "unstarted_requeued"} else key] += value
         with closing(self.db.connect()) as conn:

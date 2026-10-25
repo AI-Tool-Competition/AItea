@@ -501,6 +501,68 @@ def test_migration_accepts_receipt_verified_additions_and_archives(tmp_path, mon
         migration.migrate(old_path, bad_path, bad_root, "ID")
 
 
+def test_query_source_probe_proof_uses_exact_root_request_when_health_redacts_query(tmp_path, monkeypatch):
+    source = copy.deepcopy(
+        next(
+            row
+            for row in json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())[
+                "sources"
+            ]
+            if row["id"] == "id-beacukai-regulations"
+        )
+    )
+    source["id"] = "id-query-source-proof"
+    source["url"] = "https://peraturan.beacukai.go.id/index.html?category=regulation"
+    body_hash = hashlib.sha256(b"verified query catalogue").hexdigest()
+    source["verification"].update(
+        checked_at=datetime.now(UTC).isoformat(),
+        body_sha256=body_hash,
+        server_receipt_path=".dev/query-receipt.json",
+    )
+    root_request = {
+        "request_id": "a" * 32,
+        "source_id": source["id"],
+        "url": source["url"],
+        "network_url": source["url"],
+        "status": "finished",
+        "outcome": {
+            "status": "success",
+            "http_status": 200,
+            "url": source["url"],
+            "content_hash": body_hash,
+        },
+        "request_evidence": {"method": "GET"},
+    }
+    receipt = {
+        "kind": "source_observation",
+        "source_id": source["id"],
+        "last_observation": {
+            "status": "success",
+            "http_status": 200,
+            "url": "https://peraturan.beacukai.go.id/index.html",
+            "content_hash": body_hash,
+        },
+        "root_request": root_request,
+    }
+    monkeypatch.setattr(migration, "ROOT", tmp_path)
+    receipt_path = tmp_path / source["verification"]["server_receipt_path"]
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps(receipt))
+    source["verification"]["server_receipt_sha256"] = hashlib.sha256(
+        receipt_path.read_bytes()
+    ).hexdigest()
+
+    migration._verified_addition(source)
+
+    receipt["root_request"]["network_url"] = "https://peraturan.beacukai.go.id/index.html?category=other"
+    receipt_path.write_text(json.dumps(receipt))
+    source["verification"]["server_receipt_sha256"] = hashlib.sha256(
+        receipt_path.read_bytes()
+    ).hexdigest()
+    with pytest.raises(ValueError, match="recent HTTP 200 content"):
+        migration._verified_addition(source)
+
+
 def test_migration_reactivates_archived_source_with_verified_checklist_mapping(tmp_path, monkeypatch):
     new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     old_pool = copy.deepcopy(new_pool)

@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -69,10 +69,31 @@ def _verified_addition(source: dict) -> None:
             raise ValueError("New source receipt checksum does not match")
         proof = json.loads(raw)
         observation = proof.get("last_observation", {})
+        root_request = proof.get("root_request")
         checked = datetime.fromisoformat(verification["checked_at"])
     except (OSError, KeyError, TypeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError("New source needs a valid successful collection receipt") from error
     age = datetime.now(UTC) - checked.astimezone(UTC)
+    expected_url = source.get("url")
+    observed_url = urlunsplit((*urlsplit(expected_url)[:3], "", "")) if isinstance(expected_url, str) else None
+    exact_root_request = (
+        isinstance(root_request, dict)
+        and re.fullmatch(r"[a-f0-9]{32}", str(root_request.get("request_id", "")))
+        and root_request.get("source_id") == source.get("id")
+        and root_request.get("url") == expected_url
+        and root_request.get("network_url") == expected_url
+        and root_request.get("status") == "finished"
+        and isinstance(root_request.get("outcome"), dict)
+        and root_request["outcome"].get("status") == "success"
+        and root_request["outcome"].get("http_status") == 200
+        and root_request["outcome"].get("url") == expected_url
+        and root_request["outcome"].get("content_hash") == verification.get("body_sha256")
+        and isinstance(root_request.get("request_evidence"), dict)
+        and root_request["request_evidence"].get("method") == "GET"
+    )
+    observation_url_matches = observation.get("url") == expected_url or (
+        observation.get("url") == observed_url and exact_root_request
+    )
     if (
         age < timedelta(minutes=-5)
         or age > timedelta(days=30)
@@ -80,7 +101,7 @@ def _verified_addition(source: dict) -> None:
         or proof.get("source_id") != source.get("id")
         or observation.get("status") != "success"
         or observation.get("http_status") != 200
-        or observation.get("url") != source.get("url")
+        or not observation_url_matches
         or observation.get("content_hash") != verification.get("body_sha256")
         or not _SHA256.fullmatch(str(verification.get("body_sha256", "")))
     ):

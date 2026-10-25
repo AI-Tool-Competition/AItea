@@ -1464,6 +1464,50 @@
         "daily_bytes": 268435456,
         "timeout_seconds": 900
       }
+    },
+    {
+      "id": "id-bi-regulations",
+      "country": "ID",
+      "topics": [
+        "banking",
+        "monetary_policy",
+        "financial_services"
+      ],
+      "title": "印度尼西亚银行官方法规目录",
+      "url": "https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia",
+      "priority": 95,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "www.bi.go.id"
+      ],
+      "discovery_keywords": [],
+      "discovery": {
+        "adapter": "bi_official",
+        "page_size": 10,
+        "max_pages": 2000,
+        "max_records": 20000
+      },
+      "verification": {
+        "official_evidence_url": "https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia",
+        "checked_at": "2026-10-25T23:32:42.712962+00:00",
+        "official_identity": "印度尼西亚银行官网法规目录，已通过项目采集代理取得200响应并完成连续同源目录页解析验证。",
+        "business_use": "跟踪央行法规及其详情页附件，供金融服务、支付、消费者保护和外汇相关问题检索核验；仅发现官方候选，不代替效力审查。",
+        "checklist_items": [
+          "ID-4.6"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-bi-official-probe-20261026-r2/collector/events/2026-10-25/1792971162712925535-49d070c049ce4c81a43ec953e301a290.json",
+        "server_receipt_sha256": "f056d07c85f3cb94eb257b0dc29054e374e197d939ccc29c670b721cf537cd10",
+        "body_sha256": "0f7ccc2863682bc392c2b74f4eb2dc4353540f671c204af7750955d6603d5d7b",
+        "limitations": [
+          "本次代理验证已读取目录首页及三个连续分页；门户显示目录总量为1359项，后续由常驻队列按每日请求预算继续遍历。",
+          "详情页字段及PDF附件按官方页面保留为未审核来源值；法规编号、效力、修订关系和附件角色仍需后续核验。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-central-bank-regulations"
     }
   ],
   "schema_version": 2,
@@ -1590,6 +1634,19 @@
           "source_ids": [
             "id-kemnaker-regulations"
           ]
+        },
+        {
+          "id": "id-central-bank-regulations",
+          "country": "ID",
+          "title": "中央银行与金融监管",
+          "parent_id": "id",
+          "checklist_items": [
+            "ID-4.6"
+          ],
+          "source_ids": [
+            "id-bi-regulations"
+          ],
+          "children": []
         }
       ]
     },
@@ -1902,6 +1959,13 @@
         "SG-3.1"
       ],
       "reason": "SFA 负责食品进口注册及食品类别要求，海关负责进口申报与许可；跨境流程需并列核对各主管机关职责。"
+    },
+    {
+      "source_id": "id-bi-regulations",
+      "related_source_id": "id-setneg-uu",
+      "type": "cross_checks",
+      "checklist_items": [],
+      "reason": "央行官网法规目录与国家法规发布平台并列核对规范文本及发布身份；来源关联不推定两类规范具有相同层级或效力。"
     }
   ]
 }

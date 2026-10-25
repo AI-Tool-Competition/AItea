@@ -1,10 +1,10 @@
 # 无人值守官方来源池
 
-配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 27 个稳定来源节点：印度尼西亚 16 个（11 个活动、5 个归档），新加坡 11 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
+配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 28 个稳定来源节点：印度尼西亚 17 个（12 个活动、5 个归档），新加坡 11 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
 
 配置采用 `aitea-official-source-pool-v2`：`groups` 是国家根节点及主题子节点，子节点列出来源 ID 和对应核验清单项；来源自身保留正式入口、访问证据、主题、发现策略、优先级、轮询间隔和 `active` 状态。活动源须留有官方身份、业务用途、清单范围、近期开页回执与正文 SHA-256；空目录单独标记并低频复查。`source_relations` 是有方向的关系边，区分 `complements`（互补）、`cross_checks`（交叉核验）、`implements`（实施规则）与 `publishes_original`（正式原件发布），并说明适用清单项和关系理由。所有活动源都明确使用 `transport: proxy`；watchdog 将其精确允许主机并入代理白名单。归档用 `status: archived` 移出运行队列，原节点、关系和所有历史账本均保留；新增来源必须经有界代理抓取取得有效正文后才能登记。
 
-本池服务于两份既有法律清单：印度尼西亚当前 v18 的 17 项配置任务（v17 的 16 项、v16 升额前配置、v14 的 17 项、v13 的 19 项、v12 与原 29 项 v11 范围分别保留历史快照），以及新加坡六堡茶进口经营、食品、税务、公司、个人资料、知识产权及贸易协定事项。v18 新增 BPJPH 清真目录适配器，按页读取公开数据并从对应详情核验原件；代理观察总数 172 条、18 页，已验证前两页结构。BPOM 仍代理轮询但未绑定正式任务，待其正式分页和原件路径解析通过验证。新加坡当前 v7 有 15 项活动任务；v6 的 12 项状态和 v5 的 16 项定义均保留不可变快照。项目代理于 2026-10-25 重新取得 SSO Current Acts 与 Current Subsidiary Legislation 目录，现行主法、附属法例和宪制文件任务 1.1–1.3 已恢复；SG-LegalCite 页面与 API 仍超时，案例数据 2.1 保留为覆盖缺口。政府采购 JDIH 与 RCEP 官方入口连续超时或无法解析，已从活动清单移除并保留历史配置。食品和清真来源用于补足茶叶食品经营的监管法源，不表示扩采全部药品、化妆品、政务操作或所有行业材料。全部原件、状态和版本关系仍须通过既有采集、解析、审核和入库规则。
+本池服务于两份既有法律清单：印度尼西亚当前 v18 的 17 项配置任务（v17 的 16 项、v16 升额前配置、v14 的 17 项、v13 的 19 项、v12 与原 29 项 v11 范围分别保留历史快照），以及新加坡六堡茶进口经营、食品、税务、公司、个人资料、知识产权及贸易协定事项。v18 新增 BPJPH 清真目录适配器，按页读取公开数据并从对应详情核验原件；代理观察总数 172 条、18 页，已验证前两页结构。2026-10-26 新增央行官网法规目录来源并接入常驻采集器；代理验证报告目录总数 1,359 项，首页及连续三个分页成功，余下页面由有界队列继续处理。该适配器仅在同一官方主机上重放相邻页 WebForms 状态，回执保存页码、父页摘要和请求体摘要，不保存隐藏令牌；详情页元数据及正文、FAQ、英文版和附件候选均保留为未审核来源值。BPOM 仍代理轮询但未绑定正式任务，待其正式分页和原件路径解析通过验证。新加坡当前 v7 有 15 项活动任务；v6 的 12 项状态和 v5 的 16 项定义均保留不可变快照。项目代理于 2026-10-25 重新取得 SSO Current Acts 与 Current Subsidiary Legislation 目录，现行主法、附属法例和宪制文件任务 1.1–1.3 已恢复；SG-LegalCite 页面与 API 仍超时，案例数据 2.1 保留为覆盖缺口。政府采购 JDIH 与 RCEP 官方入口连续超时或无法解析，已从活动清单移除并保留历史配置。食品和清真来源用于补足茶叶食品经营的监管法源，不表示扩采全部药品、化妆品、政务操作或所有行业材料。全部原件、状态和版本关系仍须通过既有采集、解析、审核和入库规则。
 
 ## 优先启动的互补来源
 
@@ -15,6 +15,7 @@
 | 98 | [SG SFA 商业食品进口要求](https://www.sfa.gov.sg/food-import-export/commercial-imports/what-you-need-to-know-for-import-of-food) | 食品进口登记、许可及类别要求 |
 | 98 | [ID BPOM 官方法规目录](https://jdih.pom.go.id/rule) | 食品注册、标签、包装与食品安全 |
 | 97 | [SG Customs 进口概览](https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/) | 商业进口、许可、估价、GST 与海关责任 |
+| 95 | [印尼央行官网法规目录](https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia) | ID-4.6，央行法规、金融服务、支付及消费者保护 |
 | 89 | [SG CCS 公平交易指引](https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/) | 销售宣传、误导性陈述、价格透明和消费者公平交易 |
 | 82 | [ID 海关总署法规目录](https://peraturan.beacukai.go.id/) | 印尼进出口、关税、海关及消费税规范 |
 
@@ -39,6 +40,7 @@
 | `id-bpk-regulations`（归档） | [印尼审计委员会法规数据库](https://peraturan.bpk.go.id/) | ID | 受限入口返回 HTTP 403；保留全国目录覆盖缺口和旧回执，不绕过访问限制。 |
 | `id-bpjph-regulations`（归档） | [BPJPH 新版法律资料库](https://jdih.halal.go.id/)，[发布机关官方转介](https://bpjph.halal.go.id/berita/) | ID | 首页可达但明确显示尚无法规、无分类；空目录仅保留低频复查历史，不计入正文采集。 |
 | `id-bpjph-jdih-cari` | [BPJPH 法规检索目录](https://jdih.halal.go.id/cari) | ID | 经有界请求取得可解析目录和文书候选；只收清真及食品标签相关规则，不代替正式原件和适用性审核。 |
+| `id-bi-regulations` | [印度尼西亚银行法规目录](https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia) | ID | `ID-4.6`；2026-10-26 项目代理返回 HTTP 200，首页及三个连续 POST 分页通过目录数量、范围与唯一详情链接校验。候选总量随官网更新，具体法规身份、附件角色和效力仍需原件审核。 |
 | `id-setneg-uu` | [国家秘书处 UU 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 901，首批 50 条通过类型、总数和唯一 ID 校验，抽样详情发现 1 个官方原件入口；对应 ID-1.3。 |
 | `id-setneg-perpu` | [国家秘书处 PERPU 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200，目录总数 33，33 条全部通过校验，抽样详情发现官方原件入口；恢复原稳定 ID 并保留此前 404、历史成功和原件账本；对应 ID-1.4。 |
 | `id-setneg-pp` | [国家秘书处 PP 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PP&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 2,610，首批 50 条通过校验，抽样详情发现 1 个官方原件入口；对应 ID-1.5。 |
@@ -173,4 +175,4 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 
 ### 2026-10-26 当前来源池清单快照
 
-仓库中的 `aitea-official-source-pool-v2` 配置现有 27 个来源节点：印尼 11 个活动、5 个归档；新加坡 11 个活动；两国分属 2 个主题组，共记录 22 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 27 个节点内。
+仓库中的 `aitea-official-source-pool-v2` 配置现有 28 个来源节点：印尼 12 个活动、5 个归档；新加坡 11 个活动；两国分属 2 个主题组，共记录 23 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 28 个节点内。

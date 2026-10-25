@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from app.configuration.paths import PROJECT_ROOT
+from app.contexts.ingestion.infrastructure.source_adapters import bi_official_discovery
 
 ROOT = PROJECT_ROOT
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -54,6 +55,47 @@ def sso_source():
         },
         request_window={"timezone": "Asia/Singapore", "start": "03:00", "end": "07:00"},
     )
+
+
+def bi_official_source():
+    return source(
+        "id-bi-regulations",
+        host="www.bi.go.id",
+        path="/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia",
+        country="ID",
+        kind="catalogue",
+        topics=["banking", "monetary_policy", "financial_services"],
+        discovery_keywords=[],
+        discovery={
+            "adapter": "bi_official",
+            "page_size": 10,
+            "max_pages": 2000,
+            "max_records": 20000,
+        },
+    )
+
+
+def bi_catalogue_page(page_number, *, total=20):
+    start = (page_number - 1) * 10 + 1
+    end = min(start + 9, total)
+    entries = "".join(
+        f'<a href="/id/publikasi/peraturan/Pages/PBI_{number:02d}2026.aspx">'
+        f"Peraturan Bank Indonesia Nomor {number} Tahun 2026</a>"
+        for number in range(start, end + 1)
+    )
+    pager = (
+        f"<a href=\"javascript:__doPostBack('ctl00$ctl51$DataPagerPeraturan$ctl01$ctl01','')\">"
+        f"{page_number + 1}</a>"
+        if end < total
+        else "<span>2</span>"
+    )
+    return (
+        '<html><head><title>Peraturan</title></head><body><h1>Peraturan</h1>'
+        '<form action=""><input type="hidden" name="__VIEWSTATE" value="private-state">'
+        '<input type="hidden" name="__EVENTVALIDATION" value="private-validation">'
+        f"<p>Menampilkan {start}–{end} data dari total {total}</p>"
+        f"{entries}<div id=\"ctl00_ctl51_DataPagerPeraturan\">{pager}</div></form></body></html>"
+    ).encode()
 
 
 def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tmp_path):
@@ -193,6 +235,18 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     rejected.write_text(json.dumps(invalid_sso_policy))
     with pytest.raises(ValueError, match="discovery policy"):
         collection.source_pool(rejected, "SG")
+
+    bi_probe = {
+        "protocol": "aitea-official-source-pool-v1",
+        "sources": [bi_official_source()],
+    }
+    rejected.write_text(json.dumps(bi_probe))
+    assert collection.source_pool(rejected, "ID")[0]["discovery"]["adapter"] == "bi_official"
+    invalid_bi_policy = deepcopy(bi_probe)
+    invalid_bi_policy["sources"][0]["discovery"]["max_pages"] = 2_001
+    rejected.write_text(json.dumps(invalid_bi_policy))
+    with pytest.raises(ValueError, match="Bank Indonesia discovery policy"):
+        collection.source_pool(rejected, "ID")
 
     invalid_sso_window = deepcopy(registry)
     legacy_sso = next(row for row in invalid_sso_window["sources"] if row["id"] == "sg-sso-statutes")
@@ -446,6 +500,104 @@ def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
         collection.source_reference_fields(source_row, invalid, hashlib.sha256(raw).hexdigest())
 
 
+def test_bi_official_collector_posts_only_from_verified_adjacent_catalogue_page(environment):
+    env = environment
+    configured = bi_official_source()
+    root = configured["url"]
+    env.responses[root] = lambda _url, options: bi_catalogue_page(
+        2 if options.get("form_fields") is not None else 1
+    )
+    collector = env.make(
+        [configured],
+        country="ID",
+        limits={"requests_per_source_cycle": 2, "max_frontier": 4},
+    )
+
+    assert collector.tick() == [configured["id"]]
+    assert [call["request_method"] for call in env.calls] == ["GET", "POST"]
+    assert [call["url"] for call in env.calls] == [root, root]
+    assert env.calls[1]["validators"] == {}
+    state = collector.state["sources"][configured["id"]]
+    page_two = next(url for url, item in state["frontier"].items() if item["purpose"] == "catalog")
+    assert bi_official_discovery.page_number(page_two) == 2
+    assert state["cache"][page_two]["queued_url"] == page_two
+    assert state["cache"][page_two]["discovery"]["scope"]["page"] == 2
+
+    receipt = next(
+        row for row in collector.requests.values() if row.get("request_evidence", {}).get("method") == "POST"
+    )
+    stored = json.loads(
+        (collector.root / "requests" / receipt["day"] / f"{receipt['request_id']}.json").read_text()
+    )
+    evidence = stored["request_evidence"]
+    assert evidence["method"] == "POST"
+    assert evidence["parent_page"] == 1 and evidence["target_page"] == 2
+    assert evidence["parent_content_hash"] == state["cache"][root]["content_hash"]
+    assert evidence["request_body_sha256"] == env.calls[1]["request_body_sha256"]
+    serialized = json.dumps(stored)
+    assert "private-state" not in serialized
+    assert "private-validation" not in serialized
+
+
+def test_bi_catalogue_total_drift_forces_unconditional_root_recheck(environment):
+    env = environment
+    configured = bi_official_source()
+    root = configured["url"]
+    env.responses[root] = lambda _url, options: bi_catalogue_page(
+        2 if options.get("form_fields") is not None else 1,
+        total=550 if options.get("form_fields") is not None else 1_359,
+    )
+    collector = env.make(
+        [configured],
+        country="ID",
+        limits={"requests_per_source_cycle": 2, "max_frontier": 4},
+    )
+
+    collector.tick()
+    state = collector.state["sources"][configured["id"]]
+    assert state["force_root_refresh"] is True
+    assert state["root_next_at"] <= env.clock[0]
+    assert len(env.events(collector, "catalog_total_drift")) == 1
+    state.pop("force_root_refresh")
+    state.pop("catalog_total_drift_root_rechecked_at", None)
+    state["root_next_at"] = env.clock[0] + 300
+    collector.save()
+    collector = env.restart(collector)
+
+    env.clock[0] += collector.limits["tick_seconds"]
+    collector.tick()
+
+    root_recheck = env.calls[2]
+    assert root_recheck["url"] == root
+    assert root_recheck["request_method"] == "GET"
+    assert root_recheck["validators"] == {}
+    assert collector.state["sources"][configured["id"]].get("force_root_refresh") is None
+
+
+def test_bi_official_attachment_record_stays_bound_to_its_detail_page_bytes():
+    configured = bi_official_source()
+    detail = "https://www.bi.go.id/id/publikasi/peraturan/Pages/PBI_092026.aspx"
+    raw = (
+        '<html><head><title>Peraturan Bank Indonesia Nomor 9 Tahun 2026 tentang Edukasi</title></head>'
+        "<body><h1>Peraturan Bank Indonesia Nomor 9 Tahun 2026 tentang Edukasi</h1>"
+        "<p>Official regulation detail and explanatory text. "
+        + "More published legal context. " * 30
+        + '<a href="/id/publikasi/peraturan/Documents/PBI_092026.pdf">Peraturan Bank Indonesia Nomor 9 Tahun 2026.pdf</a>'
+        + "</body></html>"
+    ).encode()
+    inspected = collection.discover_page(detail, raw, "text/html", collection.recipe(configured))
+    assert inspected["matched"] and len(inspected["links"]) == 1
+    link = inspected["links"][0]
+    body_hash = hashlib.sha256(raw).hexdigest()
+
+    evidence = collection.source_reference_fields(configured, link, body_hash, detail)
+
+    assert evidence["source_record"]["fields"]["detail_page_sha256"] == body_hash
+    assert evidence["source_record"]["fields"]["attachment_role"] == "document_candidate"
+    with pytest.raises(ValueError, match="source record"):
+        collection.source_reference_fields(configured, link, "a" * 64, detail)
+
+
 def test_sso_request_window_uses_singapore_local_time_and_excludes_closing_time():
     zone = ZoneInfo("Asia/Singapore")
     policy_source = sso_source()
@@ -617,6 +769,12 @@ def environment(tmp_path, monkeypatch):
                         "validators": dict(options.get("validators", {})),
                         "accept_compressed_json": options.get("accept_compressed_json", False),
                         "json_body": options.get("json_body"),
+                        "request_method": "POST" if options.get("form_fields") is not None else "GET",
+                        "request_body_sha256": (
+                            hashlib.sha256(urlencode(options["form_fields"]).encode("ascii")).hexdigest()
+                            if options.get("form_fields") is not None
+                            else None
+                        ),
                         "at": clock[0],
                     }
                 )
@@ -640,6 +798,16 @@ def environment(tmp_path, monkeypatch):
                     "mime_type", "application/pdf" if content.startswith(b"%PDF-") else "text/html"
                 ),
                 "response_status": 200,
+                "request_method": "POST" if options.get("form_fields") is not None else "GET",
+                **(
+                    {
+                        "request_body_sha256": hashlib.sha256(
+                            urlencode(options["form_fields"]).encode("ascii")
+                        ).hexdigest()
+                    }
+                    if options.get("form_fields") is not None
+                    else {}
+                ),
                 "etag": response.get("etag", '"v1"'),
                 "last_modified": "Tue, 20 Oct 2026 00:00:00 GMT",
             }
@@ -1465,7 +1633,7 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 27
+    assert len(configured) == 28
     setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row

@@ -492,6 +492,7 @@ def _detail_result(url: str, content: bytes, mime: str, rules):
             "fields": {
                 "detail_page_url": url,
                 "detail_page_title": title,
+                "detail_page_sha256": hashlib.sha256(content).hexdigest(),
                 "page_metadata": metadata,
                 "attachment_url": attachment["url"],
                 "attachment_label": attachment["label"],

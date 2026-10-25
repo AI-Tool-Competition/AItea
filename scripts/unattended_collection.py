@@ -38,8 +38,10 @@ from app.contexts.ingestion.application.source_catalog import (  # noqa: E402
     active_sources,
 )
 from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
+from app.contexts.ingestion.infrastructure.source_adapters import bi_official_discovery  # noqa: E402
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     discover_page,
+    page_body_limit,
     page_purpose,
     setneg_request_parameters,
 )
@@ -228,6 +230,18 @@ def request_window_wait_until(source, now):
 def recipe(source):
     discovery = source.get("discovery")
     if discovery is not None:
+        if discovery.get("adapter") == "bi_official":
+            return {
+                "adapter": "bi_official",
+                "allowed_hosts": source["allowed_hosts"],
+                "catalog_patterns": [],
+                "detail_patterns": [],
+                "document_patterns": [],
+                "html_document_patterns": [],
+                "include_terms": [],
+                "exclude_terms": [],
+                "max_links": 100,
+            }
         category = discovery["category"]
         page_size = discovery["page_size"]
         return {
@@ -337,6 +351,10 @@ def recipe(source):
 def request_url(source, url):
     """Use the registry's fixed page size without changing the source identity URL."""
     discovery = source.get("discovery")
+    if discovery and discovery.get("adapter") == "bi_official":
+        if bi_official_discovery.page_number(url) is not None:
+            return bi_official_discovery.network_catalog_url(url)
+        return url
     if discovery is None or url != source["url"]:
         return url
     query = urlencode(
@@ -349,9 +367,80 @@ def request_url(source, url):
     return f"{url}?{query}"
 
 
-def source_reference_fields(source, link, parent_hash):
+def source_reference_fields(source, link, parent_hash, parent_url=None):
     """Keep SSO row identity and source-byte location bound to the parent page."""
     discovery = source.get("discovery", {})
+    if discovery.get("adapter") == "bi_official":
+        record = link.get("source_record")
+        if record is None:
+            return {}
+        if not isinstance(record, dict):
+            raise ValueError("Bank Indonesia attachment source record is invalid")
+        fields = record.get("fields")
+        structure = record.get("structure")
+        if not isinstance(fields, dict) or not isinstance(structure, dict):
+            raise ValueError("Bank Indonesia attachment source record is incomplete")
+        metadata = fields.get("page_metadata")
+        detail_url = fields.get("detail_page_url")
+        detail_id = structure.get("parent_detail_id")
+        if (
+            record.get("provider") != "bi_official"
+            or record.get("interpretation") != "unreviewed_source_values"
+            or set(fields)
+            != {
+                "detail_page_url",
+                "detail_page_title",
+                "detail_page_sha256",
+                "page_metadata",
+                "attachment_url",
+                "attachment_label",
+                "attachment_role",
+                "filename",
+                "filename_identity_verified",
+            }
+            or set(structure)
+            != {
+                "unit_type",
+                "number",
+                "title",
+                "instrument_type",
+                "parent_titles",
+                "file_name",
+                "anchor_class",
+                "link_mechanism",
+                "parent_detail_id",
+            }
+            or not isinstance(detail_url, str)
+            or detail_url != parent_url
+            or fields.get("detail_page_sha256") != parent_hash
+            or not isinstance(metadata, dict)
+            or len(metadata) > 20
+            or any(
+                not isinstance(key, str)
+                or not 1 <= len(key) <= 120
+                or not isinstance(value, str)
+                or len(value) > 1_800
+                for key, value in metadata.items()
+            )
+            or fields.get("attachment_url") != link.get("url")
+            or not isinstance(fields.get("detail_page_title"), str)
+            or not 1 <= len(fields["detail_page_title"]) <= 1_000
+            or not isinstance(fields.get("attachment_label"), str)
+            or not 1 <= len(fields["attachment_label"]) <= 500
+            or fields.get("attachment_role")
+            not in {"document_candidate", "official_attachment", "faq", "english_version"}
+            or not isinstance(fields.get("filename"), str)
+            or not 1 <= len(fields["filename"]) <= 240
+            or fields.get("filename_identity_verified") is not False
+            or structure.get("unit_type") != "official_attachment_candidate"
+            or detail_id != urlsplit(detail_url).path.rsplit("/", 1)[-1]
+            or structure.get("number") is not None
+            or structure.get("parent_titles") != []
+            or structure.get("link_mechanism") != "official_detail_page_attachment_link"
+            or structure.get("title") != fields["detail_page_title"]
+        ):
+            raise ValueError("Bank Indonesia attachment source record is invalid or detached")
+        return {"source_record": copy.deepcopy(record)}
     if discovery.get("adapter") != "sso_catalog_2026":
         return {}
     if link.get("purpose") == "catalog":
@@ -709,7 +798,7 @@ class Collector:
         finally:
             semaphore.release()
 
-    def fetch(self, source, url, cached=None):
+    def fetch(self, source, url, cached=None, *, parent_cached=None):
         collection_limits = source.get("collection_limits", {})
         is_document = page_purpose(url, recipe(source)) == "document"
         response_limit = (
@@ -729,10 +818,60 @@ class Collector:
         try:
             validators = {}
             cached_request_url = (cached or {}).get("requested_url", (cached or {}).get("url"))
-            if valid_cached(self.root, cached) and cached_request_url == network_url:
+            is_bi_official = source.get("discovery", {}).get("adapter") == "bi_official"
+            page = bi_official_discovery.page_number(url) if is_bi_official else None
+            if (
+                valid_cached(self.root, cached)
+                and cached_request_url == network_url
+                and (not is_bi_official or page in (None, 1))
+            ):
                 validators = {k: cached.get(k) for k in ("etag", "last_modified")}
             instrument = source.get("setneg_type", "PERPU" if source["id"] == SETNEG_ID else None)
             request_options = setneg_request_parameters(network_url, instrument) if instrument else {}
+            if is_bi_official:
+                request_options["max_compressed_html_bytes"] = bi_official_discovery.MAX_HTML_BYTES
+                if page is not None and page > 1:
+                    parent_url = bi_official_discovery.previous_catalog_url(url)
+                    parent_scope = ((parent_cached or {}).get("discovery") or {}).get("scope", {})
+                    if (
+                        not valid_cached(self.root, parent_cached)
+                        or (parent_cached or {}).get("queued_url", (parent_cached or {}).get("url"))
+                        != parent_url
+                        or parent_scope.get("page") != page - 1
+                        or (parent_cached or {}).get("discovery", {}).get("purpose") != "catalog"
+                    ):
+                        raise DownloadError(
+                            "央行目录下一页缺少已校验的相邻父页。", retryable=True
+                        )
+                    parent_path = self.root / parent_cached["path"]
+                    parent_content = parent_path.read_bytes()
+                    if len(parent_content) > bi_official_discovery.MAX_HTML_BYTES:
+                        raise DownloadError("央行目录父页超过解析大小上限。")
+                    fields, evidence = bi_official_discovery.catalog_form_request(
+                        parent_url, parent_content, page
+                    )
+                    validators = {}
+                    request_options.update(
+                        form_fields=fields,
+                        required_host=bi_official_discovery.HOST,
+                    )
+                    receipt["request_evidence"] = {
+                        "method": "POST",
+                        "queued_url": url,
+                        "network_url": network_url,
+                        "parent_url": parent_url,
+                        "parent_content_hash": parent_cached["content_hash"],
+                        "parent_page": evidence["parent_page"],
+                        "target_page": evidence["target_page"],
+                        "event_target": evidence["event_target"],
+                        "image_submit": evidence["image_submit"],
+                    }
+                else:
+                    receipt["request_evidence"] = {
+                        "method": "GET",
+                        "queued_url": url,
+                        "network_url": network_url,
+                    }
             if request_options.get("json_body"):
                 validators = {}
             fetched = _download(
@@ -760,10 +899,23 @@ class Collector:
                 }
                 receipt["charged_bytes"] = 0
             else:
+                if is_bi_official and fetched["url"] != network_url:
+                    raise DownloadError("央行官方目录请求重定向到了未核验页面。")
+                if receipt.get("request_evidence") is not None:
+                    receipt["request_evidence"].update(
+                        method=fetched.get("request_method", receipt["request_evidence"]["method"]),
+                        request_body_sha256=fetched.get("request_body_sha256"),
+                    )
                 blob = fetched["blob"]
                 with blob.path.open("rb") as stream:
-                    content = stream.read(4 * 1024**2 + 1)
-                inspected = discover_page(fetched["url"], content, fetched["mime_type"], recipe(source))
+                    inspection_url = url if is_bi_official else fetched["url"]
+                    inspection_limit = (
+                        page_body_limit(inspection_url, fetched["mime_type"], recipe(source))
+                        if is_bi_official
+                        else 4 * 1024**2
+                    )
+                    content = stream.read(inspection_limit + 1)
+                inspected = discover_page(inspection_url, content, fetched["mime_type"], recipe(source))
                 if content.startswith(b"%PDF-"):
                     inspected = {
                         "matched": True,
@@ -798,6 +950,7 @@ class Collector:
                 else:
                     asset = {
                         "url": fetched["url"],
+                        "queued_url": url,
                         "requested_url": network_url,
                         "path": str(blob.path.relative_to(self.root)),
                         "content_hash": blob.digest,
@@ -807,6 +960,7 @@ class Collector:
                         "last_modified": fetched.get("last_modified"),
                         "observed_at": time.time(),
                         "discovery": inspected,
+                        "request_evidence": copy.deepcopy(receipt.get("request_evidence")),
                         "legal_review": "unreviewed",
                         "source_id": source["id"],
                         "country": self.country,
@@ -975,12 +1129,20 @@ class Collector:
             )
 
     def map_links(self, source, url, asset, previous_asset, frontier, cache, urls):
-        is_sso = source.get("discovery", {}).get("adapter") == "sso_catalog_2026"
+        adapter = source.get("discovery", {}).get("adapter")
+        is_sso = adapter == "sso_catalog_2026"
+        is_bi_official = adapter == "bi_official"
+        is_catalog_adapter = is_sso or is_bi_official
+        frontier_limit = (
+            source["discovery"]["max_records"] + source["discovery"]["max_pages"]
+            if is_bi_official
+            else self.limits["max_frontier"]
+        )
         parent_url = url
         if is_sso and url == source["url"]:
             parent_url = asset.get("requested_url", url)
         links = asset.get("discovery", {}).get("links", [])
-        if is_sso:
+        if is_catalog_adapter:
             links = sorted(links, key=lambda link: link.get("purpose") != "catalog")
         for link in links:
             candidate, host = _validated_url(link["url"])
@@ -990,7 +1152,20 @@ class Collector:
                 or scope_excluded(source, candidate, link.get("title", ""))
             ):
                 continue
+            link_catalog_page = (
+                bi_official_discovery.page_number(candidate)
+                or bi_official_discovery.page_number(parent_url)
+                or asset.get("catalog_page_number")
+            ) if is_bi_official else None
             cached_target = cache.get(candidate)
+            if (
+                is_bi_official
+                and isinstance(cached_target, dict)
+                and cached_target.get("source_parent_url") == parent_url
+                and cached_target.get("source_parent_hash") == asset["content_hash"]
+                and time.time() - cached_target.get("observed_at", 0) < 7 * 86400
+            ):
+                continue
             if is_sso and link["purpose"] != "catalog" and isinstance(cached_target, dict):
                 same_immutable_version = (
                     link.get("document_date") is not None
@@ -1003,7 +1178,7 @@ class Collector:
                 ):
                     continue
             parent = {"url": parent_url, "content_hash": asset["content_hash"]}
-            reference_fields = source_reference_fields(source, link, asset["content_hash"])
+            reference_fields = source_reference_fields(source, link, asset["content_hash"], parent_url)
             if candidate in frontier:
                 item = frontier[candidate]
                 parents = item.get(
@@ -1033,6 +1208,11 @@ class Collector:
                     parents=([known for known in parents if known != parent] + [parent])[-8:],
                     **reference_fields,
                 )
+                if is_bi_official and link_catalog_page is not None:
+                    item["catalog_page_number"] = min(
+                        link_catalog_page,
+                        item.get("catalog_page_number", link_catalog_page),
+                    )
                 # A changed known parent version invalidates its target.
                 # A first reference from a different page only adds a
                 # mapping: shared navigation must not repeatedly consume
@@ -1042,7 +1222,7 @@ class Collector:
                 if due(item.get("health"), time.time()):
                     urls.appendleft(candidate)
                 continue
-            if len(frontier) >= self.limits["max_frontier"] and is_sso and link["purpose"] == "catalog":
+            if len(frontier) >= frontier_limit and is_catalog_adapter and link["purpose"] == "catalog":
                 deferred_details = [
                     key for key, value in frontier.items() if value.get("purpose") != "catalog"
                 ]
@@ -1054,32 +1234,64 @@ class Collector:
                             frontier[key].get("discovered_at", 0),
                             key,
                         ),
+                    ) if is_sso else max(
+                        deferred_details,
+                        key=lambda key: (
+                            frontier[key].get("catalog_page_number", 0),
+                            frontier[key].get("discovered_at", 0),
+                            key,
+                        ),
                     )
                     self.event(
                         "frontier_archived",
                         source_id=source["id"],
                         url=victim,
                         mapping=frontier.pop(victim),
-                        reason="sso_catalogue_pagination_priority",
+                        reason=(
+                            "sso_catalogue_pagination_priority"
+                            if is_sso
+                            else "bi_official_catalogue_pagination_priority"
+                        ),
                     )
-            if len(frontier) >= self.limits["max_frontier"]:
-                if is_sso:
+            if len(frontier) >= frontier_limit:
+                if is_sso or link["purpose"] == "catalog":
                     # Cached catalogue snapshots are the durable backlog for
                     # rows that do not fit in the bounded in-memory frontier.
                     continue
-                victim = min(
-                    frontier,
-                    key=lambda k: (
-                        -int(bool(frontier[k].get("attempt_count"))),
-                        frontier[k].get("discovered_at", 0),
-                        k,
-                    ),
+                candidates = (
+                    [key for key, value in frontier.items() if value.get("purpose") != "catalog"]
+                    if is_bi_official
+                    else list(frontier)
                 )
+                if not candidates:
+                    continue
+                if is_bi_official:
+                    victim = max(
+                        candidates,
+                        key=lambda key: (
+                            frontier[key].get("catalog_page_number", 0),
+                            frontier[key].get("discovered_at", 0),
+                            key,
+                        ),
+                    )
+                    victim_page = frontier[victim].get("catalog_page_number", 0)
+                    if link_catalog_page is None or link_catalog_page > victim_page:
+                        continue
+                else:
+                    victim = min(
+                        candidates,
+                        key=lambda k: (
+                            -int(bool(frontier[k].get("attempt_count"))),
+                            frontier[k].get("discovered_at", 0),
+                            k,
+                        ),
+                    )
                 self.event(
                     "frontier_archived",
                     source_id=source["id"],
                     url=victim,
                     mapping=frontier.pop(victim),
+                    **({"reason": "bi_official_frontier_rotation"} if is_bi_official else {}),
                 )
             frontier[candidate] = {
                 "parent_url": parent_url,
@@ -1089,6 +1301,7 @@ class Collector:
                 "purpose": link["purpose"],
                 "attempt_count": 0,
                 "discovered_at": time.time(),
+                **({"catalog_page_number": link_catalog_page} if is_bi_official else {}),
                 **reference_fields,
             }
             self.event(
@@ -1102,7 +1315,7 @@ class Collector:
             )
             # Use this same bounded cycle for newly discovered useful
             # originals, rather than delaying the first follow to tomorrow.
-            if is_sso and link["purpose"] == "catalog":
+            if is_catalog_adapter and link["purpose"] == "catalog":
                 urls.appendleft(candidate)
             elif is_sso:
                 urls.append(candidate)
@@ -1127,11 +1340,42 @@ class Collector:
             )
             current["scheduling_status"] = "request_window_wait"
             return current
-        root_due = time.time() >= current.get("root_next_at", 0) or source["url"] not in cache
+        adapter = source.get("discovery", {}).get("adapter")
+        is_sso = adapter == "sso_catalog_2026"
+        is_bi_official = adapter == "bi_official"
+        is_catalog_adapter = is_sso or is_bi_official
+        if is_bi_official:
+            latest_catalog_drift = max(
+                (
+                    asset.get("observed_at", 0)
+                    for asset in cache.values()
+                    if (asset.get("discovery", {}).get("scope") or {}).get("total_changed") is True
+                ),
+                default=0,
+            )
+            if latest_catalog_drift > current.get("catalog_total_drift_root_rechecked_at", 0):
+                # Resume an already observed mismatch after a process restart as
+                # an unconditional root read, even if older code wrote the cache.
+                current["force_root_refresh"] = True
+                current["root_next_at"] = min(current.get("root_next_at", 0), time.time())
+        root_due = (
+            time.time() >= current.get("root_next_at", 0)
+            or source["url"] not in cache
+            or current.get("force_root_refresh") is True
+        )
         urls = deque()
-        is_sso = source.get("discovery", {}).get("adapter") == "sso_catalog_2026"
-        if is_sso:
+        cached_detail_replay = is_bi_official and len(frontier) < (
+            source["discovery"]["max_records"] + source["discovery"]["max_pages"]
+        )
+        if is_catalog_adapter:
             def catalogue_index(entry):
+                if is_bi_official:
+                    page = bi_official_discovery.page_number(entry[0])
+                    asset = entry[1]
+                    return (
+                        page or asset.get("catalog_page_number") or 0,
+                        0 if asset.get("discovery", {}).get("purpose") == "catalog" else 1,
+                    )
                 match = re.search(r"/All(?:/(\d+))?$", urlsplit(entry[0]).path)
                 return int(match.group(1) or 0) if match else 0
 
@@ -1140,6 +1384,10 @@ class Collector:
                     (cached_url, cached_asset)
                     for cached_url, cached_asset in cache.items()
                     if cached_asset.get("discovery", {}).get("purpose") == "catalog"
+                    or (
+                        cached_detail_replay
+                        and cached_asset.get("discovery", {}).get("purpose") == "detail"
+                    )
                 ),
                 key=catalogue_index,
             ):
@@ -1155,6 +1403,7 @@ class Collector:
                     frontier.items(),
                     key=lambda pair: (
                         pair[1].get("attempt_count", 0),
+                            -int(is_bi_official and pair[1].get("purpose") == "catalog"),
                         -int(pair[1].get("purpose") == "document"),
                         pair[0],
                     ),
@@ -1167,6 +1416,8 @@ class Collector:
         )
         visited = set()
         root_outcome = None
+        root_request_id = None
+        catalog_total_drift = False
         deferred = None
         receipts = []
         while urls and len(receipts) < self.limits["requests_per_source_cycle"]:
@@ -1182,7 +1433,18 @@ class Collector:
                 continue
             visited.add(url)
             try:
-                receipt = self.fetch(source, url, cache.get(url))
+                if is_bi_official and (bi_official_discovery.page_number(url) or 1) > 1:
+                    parent_url = bi_official_discovery.previous_catalog_url(url)
+                    receipt = self.fetch(
+                        source,
+                        url,
+                        cache.get(url),
+                        parent_cached=cache.get(parent_url),
+                    )
+                elif url == source["url"] and current.get("force_root_refresh") is True:
+                    receipt = self.fetch(source, url, None)
+                else:
+                    receipt = self.fetch(source, url, cache.get(url))
             except Deferred as error:
                 deferred = error
                 break
@@ -1190,6 +1452,7 @@ class Collector:
             outcome, asset = receipt["outcome"], receipt.get("asset")
             if url == source["url"]:
                 root_outcome = outcome
+                root_request_id = receipt["request_id"]
             else:
                 item = frontier[url]
                 item["attempt_count"] = item.get("attempt_count", 0) + 1
@@ -1208,9 +1471,15 @@ class Collector:
                     target_url=url,
                     outcome=outcome,
                     target_hash=asset["content_hash"] if asset else None,
+                    **({"source_record": item["source_record"]} if item.get("source_record") else {}),
                 )
             if asset:
                 previous_asset = cache.get(url)
+                if is_bi_official and url != source["url"]:
+                    mapping = frontier.get(url, {})
+                    asset["source_parent_url"] = mapping.get("parent_url")
+                    asset["source_parent_hash"] = mapping.get("parent_hash")
+                    asset["catalog_page_number"] = mapping.get("catalog_page_number")
                 if previous_asset is None or previous_asset["content_hash"] != asset["content_hash"]:
                     self.event(
                         "content_version",
@@ -1244,18 +1513,31 @@ class Collector:
                         source_locator=frontier.get(url, {}).get("source_locator"),
                         source_document_date=frontier.get(url, {}).get("document_date"),
                         source_status=frontier.get(url, {}).get("source_status"),
+                        source_record=frontier.get(url, {}).get("source_record"),
                         source_root=url == source["url"],
                         source_kind=source["kind"],
+                        request_evidence=(asset or {}).get("request_evidence"),
                         legal_review="unreviewed",
                     )
-                cache_limit = (
-                    source["discovery"]["cache_limit"]
-                    if is_sso
-                    else self.limits["max_frontier"] + 1
-                )
+                cache_limit = source["discovery"]["cache_limit"] if is_sso else self.limits["max_frontier"] + 1
+                if is_bi_official:
+                    cache_limit = (
+                        2 * source["discovery"]["max_records"]
+                        + source["discovery"]["max_pages"]
+                        + 1
+                    )
                 if url not in cache and len(cache) >= cache_limit:
+                    candidates = [key for key in cache if key != source["url"]]
+                    if is_bi_official:
+                        non_catalogue = [
+                            key
+                            for key in candidates
+                            if cache[key].get("discovery", {}).get("purpose") != "catalog"
+                        ]
+                        if non_catalogue:
+                            candidates = non_catalogue
                     victim = min(
-                        (k for k in cache if k != source["url"]),
+                        candidates,
                         key=lambda k: cache[k]["observed_at"],
                     )
                     self.event(
@@ -1268,6 +1550,18 @@ class Collector:
                     asset["source_document_date"] = frontier.get(url, {}).get("document_date")
                     asset["source_original_verified"] = bool(asset.get("discovery", {}).get("matched"))
                 cache[url] = asset
+                page_scope = asset.get("discovery", {}).get("scope", {})
+                if is_bi_official and page_scope.get("total_changed") is True:
+                    catalog_total_drift = True
+                    self.event(
+                        "catalog_total_drift",
+                        source_id=source["id"],
+                        url=url,
+                        page=page_scope.get("page"),
+                        previous_total=page_scope.get("previous_total"),
+                        reported_total=page_scope.get("total"),
+                        action="unconditional_root_recheck_scheduled",
+                    )
                 self.map_links(source, url, asset, previous_asset, frontier, cache, urls)
                 if (
                     is_sso
@@ -1275,6 +1569,14 @@ class Collector:
                     and frontier.get(url, {}).get("purpose") != "catalog"
                     and outcome.get("status") == "success"
                     and asset.get("source_original_verified") is True
+                ):
+                    frontier.pop(url, None)
+                if (
+                    is_bi_official
+                    and url != source["url"]
+                    and frontier.get(url, {}).get("purpose") != "catalog"
+                    and outcome.get("status") == "success"
+                    and asset.get("discovery", {}).get("matched") is True
                 ):
                     frontier.pop(url, None)
             if url == source["url"] and outcome["status"] != "success":
@@ -1293,6 +1595,14 @@ class Collector:
                 current["root_next_at"] = max(
                     current["root_next_at"], time.time() + source["interval_seconds"]
                 )
+            if root_outcome.get("status") == "success" and current.get("force_root_refresh") is True:
+                current["catalog_total_drift_root_rechecked_at"] = time.time()
+                current.pop("force_root_refresh", None)
+        if catalog_total_drift:
+            current["force_root_refresh"] = True
+            current["root_next_at"] = time.time()
+        elif root_outcome is not None and root_outcome.get("status") == "success":
+            current.pop("force_root_refresh", None)
         if deferred is not None and deferred.status != "stopping":
             current = observe(
                 current,
@@ -1330,6 +1640,7 @@ class Collector:
             cache=cache,
             frontier=frontier,
             last_receipts=[r["request_id"] for r in receipts],
+            last_root_request_id=root_request_id,
         )
         return current
 
@@ -1389,12 +1700,25 @@ class Collector:
                 self.state["sources"][identifier] = result
                 self.state["active_sources"].remove(identifier)
                 self.state["last_progress_at"] = time.time()
+                root_request = self.requests.get(result.get("last_root_request_id"))
+                root_evidence = None
+                if root_request is not None:
+                    root_evidence = {
+                        "request_id": root_request["request_id"],
+                        "source_id": root_request["source_id"],
+                        "url": root_request["url"],
+                        "network_url": root_request.get("network_url"),
+                        "status": root_request["status"],
+                        "outcome": root_request.get("outcome"),
+                        "request_evidence": root_request.get("request_evidence"),
+                    }
                 self.event(
                     "source_observation",
                     source_id=identifier,
                     health=result.get("health"),
                     next_at=result.get("next_at"),
                     last_observation=result.get("last_observation"),
+                    root_request=root_evidence,
                 )
                 self.save()
         self.state["status"] = "waiting"

@@ -235,37 +235,67 @@ def _validate_discovery_policy(source: dict, validate_url) -> None:
     policy = source.get("discovery")
     if policy is None:
         return
-    if (
-        not isinstance(policy, dict)
-        or set(policy) != {"adapter", "category", "state", "page_size", "cache_limit"}
-        or policy.get("adapter") != "sso_catalog_2026"
-        or policy.get("category") not in {"Act", "SL"}
-        or policy.get("state") != "Current"
-        or type(policy.get("page_size")) is not int
-        or policy["page_size"] not in {20, 50, 100, 250, 500}
-        or type(policy.get("cache_limit")) is not int
-        or not policy["page_size"] <= policy["cache_limit"] <= 10_000
-    ):
+    if not isinstance(policy, dict):
         raise ValueError("Invalid bounded source discovery policy")
-    try:
-        normalized, host = validate_url(source["url"])
-        parsed = urlsplit(source["url"])
-        expected_path = f"/Browse/{policy['category']}/Current/All"
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("SSO source must use its exact current catalogue root") from error
-    if (
-        source.get("country") != "SG"
-        or source.get("kind") != "catalogue"
-        or source.get("allowed_hosts") != ["sso.agc.gov.sg"]
-        or host != "sso.agc.gov.sg"
-        or normalized != source["url"]
-        or parsed.path != expected_path
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("SSO source must use its exact current catalogue root")
+    if policy.get("adapter") == "sso_catalog_2026":
+        if (
+            set(policy) != {"adapter", "category", "state", "page_size", "cache_limit"}
+            or policy.get("category") not in {"Act", "SL"}
+            or policy.get("state") != "Current"
+            or type(policy.get("page_size")) is not int
+            or policy["page_size"] not in {20, 50, 100, 250, 500}
+            or type(policy.get("cache_limit")) is not int
+            or not policy["page_size"] <= policy["cache_limit"] <= 10_000
+        ):
+            raise ValueError("Invalid bounded source discovery policy")
+        try:
+            normalized, host = validate_url(source["url"])
+            parsed = urlsplit(source["url"])
+            expected_path = f"/Browse/{policy['category']}/Current/All"
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("SSO source must use its exact current catalogue root") from error
+        if (
+            source.get("country") != "SG"
+            or source.get("kind") != "catalogue"
+            or source.get("allowed_hosts") != ["sso.agc.gov.sg"]
+            or host != "sso.agc.gov.sg"
+            or normalized != source["url"]
+            or parsed.path != expected_path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("SSO source must use its exact current catalogue root")
+    elif policy.get("adapter") == "bi_official":
+        if (
+            set(policy) != {"adapter", "page_size", "max_pages", "max_records"}
+            or type(policy.get("page_size")) is not int
+            or policy["page_size"] != 10
+            or type(policy.get("max_pages")) is not int
+            or policy["max_pages"] != 2_000
+            or type(policy.get("max_records")) is not int
+            or policy["max_records"] != 20_000
+        ):
+            raise ValueError("Invalid bounded Bank Indonesia discovery policy")
+        try:
+            normalized, host = validate_url(source["url"])
+            parsed = urlsplit(source["url"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Bank Indonesia source must use its exact official catalogue root") from error
+        if (
+            source.get("country") != "ID"
+            or source.get("kind") != "catalogue"
+            or source.get("allowed_hosts") != ["www.bi.go.id"]
+            or host != "www.bi.go.id"
+            or normalized != source["url"]
+            or parsed.path != "/id/publikasi/peraturan/default.aspx"
+            or parsed.query != "Kategori=peraturan+bank+indonesia"
+            or parsed.fragment
+        ):
+            raise ValueError("Bank Indonesia source must use its exact official catalogue root")
+    else:
+        raise ValueError("Invalid bounded source discovery policy")
     request_window = source.get("request_window")
-    if request_window is not None and request_window != {
+    if policy.get("adapter") == "sso_catalog_2026" and request_window is not None and request_window != {
         "timezone": "Asia/Singapore",
         "start": "03:00",
         "end": "07:00",
@@ -337,7 +367,7 @@ def validate_source_registry(
         discovery_exclude_keywords = source.get("discovery_exclude_keywords", [])
         specialized_discovery = (
             isinstance(source.get("discovery"), dict)
-            and source["discovery"].get("adapter") == "sso_catalog_2026"
+            and source["discovery"].get("adapter") in {"sso_catalog_2026", "bi_official"}
         )
         normalized, host = validate_url(source["url"])
         if identifier == SETNEG_ID or host == "jdih.setneg.go.id" or "setneg_type" in source:

@@ -890,12 +890,16 @@ def test_empty_mineru_page_without_vision_access_stays_out_of_index(monkeypatch)
     assert decision.reason == "quality_review" and not decision.retryable
 
 
-def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_cycles():
+def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_cycles(monkeypatch):
+    from app.contexts.documents.infrastructure.providers import vision
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
     page = {
         "page": 4,
         "status": "ocr_uncertain",
         "ocr_fallback": {"protocol": "mineru-table-visual-page-v1", "attempts": 2},
         "ocr": {
+            "provider": "vision",
             "prompt_version": "legal-page-transcription-v3",
             "request_id": "completed-request",
             "attempts": 1,
@@ -905,6 +909,11 @@ def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_c
     }
     decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.reason == "ocr_quality_retry" and decision.pages == (4,)
+
+    # Keep retrying after the former eight-attempt ceiling.
+    page["ocr_fallback"]["attempts"] = 8
+    decision = classify_processing({"pages": [page]}, phase="parse")
+    assert decision.retryable and decision.pages == (4,)
 
     page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES - 1
     decision = classify_processing({"pages": [page]}, phase="parse")

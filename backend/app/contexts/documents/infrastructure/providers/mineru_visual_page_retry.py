@@ -8,7 +8,10 @@ from copy import deepcopy
 PROTOCOL = "mineru-table-visual-page-v1"
 EMPTY_PAGE_PROTOCOL = "mineru-empty-page-visual-v1"
 _VISUAL_PROTOCOLS = frozenset({PROTOCOL, EMPTY_PAGE_PROTOCOL})
-MAX_RETRY_CYCLES = 8
+# Long legal tables can remain ambiguous after several blind reads. Keep the
+# retries finite, but allow enough checkpointed attempts for the persisted OCR
+# worker to recover them without requiring an operator to reset the job.
+MAX_RETRY_CYCLES = 32
 
 
 def is_mineru_table_review(page: dict) -> bool:

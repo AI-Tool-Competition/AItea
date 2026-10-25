@@ -1201,6 +1201,87 @@ def test_blocked_mineru_table_review_is_automatically_queued_for_visual_fallback
     assert saved["pages"][0]["ocr_fallback"]["attempts"] == 2
 
 
+def test_failed_bound_mineru_visual_page_is_automatically_retried(service, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import vision
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import EMPTY_PAGE_PROTOCOL
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    content = make_pdf([("source page", False)])
+    document = register(service, content, key="mineru-empty-page-auto-retry")
+    manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
+    manifest["parser"] = "mineru"
+    manifest["pages"][0].update(
+        status="ocr_failed",
+        source_hash=document["content_hash"],
+        text="",
+        reasons=[],
+        ocr_required=False,
+        error="PDF 页面处理失败，请检查原件。",
+        ocr={
+            "prompt_version": "legal-page-transcription-v6",
+            "requested_model": "vision-test-model",
+            "source_hash": document["content_hash"],
+            "page": 1,
+            "attempts": 0,
+        },
+        ocr_fallback={
+            "protocol": EMPTY_PAGE_PROTOCOL,
+            "attempts": 1,
+            "source_result_hash": "d" * 64,
+            "source_page": 1,
+        },
+    )
+    manifest["remote_parse"] = {
+        "provider": "mineru",
+        "state": "done",
+        "source_hash": document["content_hash"],
+        "page_count": 1,
+        "parts": [],
+    }
+
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        claim = {
+            "document_id": document["id"],
+            "owner_id": "owner",
+            "phase": "parse",
+            "attempts": 3,
+        }
+        service.collection.recovery.record_failure(
+            conn,
+            claim,
+            processing=True,
+            decision=Decision("ocr_failure_review"),
+            exhausted=True,
+            error_type="OCRResponseError",
+        )
+
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "mineru_empty_page_retry")
+    assert saved["pages"][0]["status"] == "pending_ocr"
+    assert saved["pages"][0]["ocr_fallback"]["attempts"] == 2
+    assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["status"] == "ocr_failed"
+
+
 def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(service, monkeypatch):
     from copy import deepcopy
 

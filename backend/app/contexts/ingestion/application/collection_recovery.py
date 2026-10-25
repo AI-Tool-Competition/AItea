@@ -312,6 +312,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
         MAX_RETRY_CYCLES as MAX_MINERU_VISUAL_RETRIES,
         fallback_attempts,
+        is_empty_page_visual_fallback_page,
         is_mineru_empty_page_review,
         is_mineru_table_review,
         is_table_visual_fallback_page,
@@ -338,6 +339,14 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
     if phase == "parse" and _legacy_mineru_chart_refresh(manifest):
         return Decision("mineru_chart_refresh", True)
 
+    remote_parse = manifest.get("remote_parse") or {}
+    mineru_source_bound = (
+        manifest.get("parser") == "mineru"
+        and remote_parse.get("provider") == "mineru"
+        and remote_parse.get("state") == "done"
+        and isinstance(manifest.get("source_hash"), str)
+        and remote_parse.get("source_hash") == manifest.get("source_hash")
+    )
     retry_pages, retry_assets, mineru_visual_pages, mineru_empty_pages = [], [], [], []
     retry_not_before = 0
     unknown_outcome = False
@@ -361,6 +370,21 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 visual_attempts = fallback_attempts(page) if visual_fallback else 0
             except ValueError:
                 return Decision("invalid_checkpoint")
+            fallback = page.get("ocr_fallback") or {}
+            source_result_hash = fallback.get("source_result_hash")
+            failed_visual_retry = (
+                vision_ready
+                and status == "ocr_failed"
+                and visual_fallback
+                and mineru_source_bound
+                and page.get("source_hash") == manifest.get("source_hash")
+                and fallback.get("source_page") == page.get("page")
+                and isinstance(source_result_hash, str)
+                and len(source_result_hash) == 64
+                and all(character in "0123456789abcdef" for character in source_result_hash)
+                and visual_attempts < MAX_MINERU_VISUAL_RETRIES
+            )
+            failed_empty_visual_retry = failed_visual_retry and is_empty_page_visual_fallback_page(page)
             pending_visual_retry = (
                 vision_ready
                 and visual_fallback
@@ -403,9 +427,11 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
                 or visual_table_quality_retry
                 or empty_page_retry
+                or failed_visual_retry
             ) and (
                 mineru_table_retry
                 or empty_page_retry
+                or failed_visual_retry
                 or unknown
                 or pending_visual_retry
                 or visual_table_quality_retry
@@ -438,9 +464,9 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                             retry_not_before,
                             _timestamp((previous_failure.get("ocr") or {}).get("retry_not_before")),
                         )
-                if mineru_table_retry or pending_visual_retry or empty_page_retry:
+                if mineru_table_retry or pending_visual_retry or empty_page_retry or failed_visual_retry:
                     mineru_visual_pages.append(page["page"])
-                if empty_page_retry:
+                if empty_page_retry or failed_empty_visual_retry:
                     mineru_empty_pages.append(page["page"])
 
         for asset in images:

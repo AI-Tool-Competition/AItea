@@ -40,9 +40,9 @@ def test_html_uses_source_mapped_structuring_instead_of_mineru_vlm():
     result = parse_file("official.html", b"<main><h1>Official title</h1><p>Preserve legal text.</p></main>")
 
     assert result["parser"] == "html-basic"
-    assert result["parser_version"] == "12"
+    assert result["parser_version"] == "13"
     assert result["html_source"]["dom_validation"]["engine"] == "selectolax.lexbor"
-    assert result["pipeline_version"].startswith("html-source-mapping-v12+")
+    assert result["pipeline_version"].startswith("html-source-mapping-v13+")
     assert "remote_parse" not in result
     assert any(chunk["text"] == "Preserve legal text." for chunk in result["chunks"])
 

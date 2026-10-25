@@ -14,8 +14,8 @@ def test_actual_customs_flow_image_is_mapped_and_blocks_complete_text():
     url = "https://isomer-user-content.by.gov.sg/174/420282d6-4bf3-4200-ac0b-0f9f4ee31d99/how-to-import-ur-goods.jpg"
     body = f'<html><nav><img src="site-logo.png"></nav><main id="main-content"><nav><svg><path/></svg></nav><h1>Import Operations Overview</h1><p>Import pathways from a Free Trade Zone.</p><img src="{url}" alt="A flowchart illustrating import pathways." width="100%" height="auto"></main></html>'.encode()
     result = parse_file("customs.html", body, "text/html")
-    assert result["parser"] == "html-basic" and result["parser_version"] == "12"
-    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v12"
+    assert result["parser"] == "html-basic" and result["parser_version"] == "13"
+    assert result["pipeline_version"].split("+", 1)[0] == "html-source-mapping-v13"
     assert result["html_source"]["source_hash"] == digest(body)
     assert not result["quality"]["complete"]
     objects = result["html_source"]["objects"]
@@ -39,7 +39,7 @@ def test_named_svg_ui_icons_remain_mapped_without_blocking_body_or_becoming_ocr_
     </main>"""
     result = parse_file("sfa.html", body, "text/html")
 
-    assert result["parser_version"] == "12"
+    assert result["parser_version"] == "13"
     assert result["quality"]["complete"] is True
     assert result["quality"]["pending_objects"] == []
     assert result["quality"]["decorative_ui_object_keys"] == [
@@ -83,6 +83,37 @@ def test_caution_icon_without_matching_container_remains_pending():
     body = b"""<main><h1>Food label changes</h1><p>Review the cited notice.</p>
     <img src="/assets/images/icons/icon-info-circle.svg" alt="Icon Caution"></main>"""
     result = parse_file("sfa.html", body, "text/html")
+
+    assert result["html_source"]["objects"][0].get("visual_role") is None
+    assert result["quality"]["pending_objects"] == ["html-object-000001"]
+    assert result["quality"]["complete"] is False
+
+
+def test_sfa_warning_notification_icon_is_resolved_only_in_its_textual_notice():
+    source = b"""<main><h1>Commercial food imports</h1>
+    <div class="callout-type"><div class="warning-notification">
+    <img src="/ResourcePackages/ResourceSFA/dist/assets/images/icons/icon-warning-notification.svg" alt="Icon Warning">
+    <div class="notification-content"><p><strong>Suspension of source/exporter/importer</strong>
+    The source, exporter, and importer may be suspended for non-compliance.</p></div>
+    </div></div></main>"""
+    result = parse_file("sfa.html", source, "text/html")
+
+    icon = result["html_source"]["objects"][0]
+    assert result["parser_version"] == "13"
+    assert icon["visual_role"] == "decorative_ui"
+    assert icon["visual_exclusion_reason"] == "svg_warning_symbol_with_textual_notice"
+    assert result["quality"]["pending_objects"] == []
+    assert result["quality"]["complete"] is True
+    assert "may be suspended for non-compliance" in " ".join(
+        element["content_text"] for element in result["elements"]
+    )
+
+
+def test_sfa_warning_icon_outside_its_notice_remains_pending():
+    source = b"""<main><h1>Commercial food imports</h1><p>Check the requirements.</p>
+    <img src="/ResourcePackages/ResourceSFA/dist/assets/images/icons/icon-warning-notification.svg" alt="Icon Warning">
+    </main>"""
+    result = parse_file("sfa.html", source, "text/html")
 
     assert result["html_source"]["objects"][0].get("visual_role") is None
     assert result["quality"]["pending_objects"] == ["html-object-000001"]
@@ -176,7 +207,7 @@ def test_unlabelled_textless_header_svg_chrome_does_not_block_body_completeness(
     result = parse_file("guidance.html", body, "text/html")
 
     logo = result["html_source"]["objects"][0]
-    assert result["parser_version"] == "12"
+    assert result["parser_version"] == "13"
     assert logo["visual_role"] == "decorative_ui"
     assert logo["visual_exclusion_reason"] == "unlabelled_textless_header_svg_chrome"
     assert result["quality"]["pending_objects"] == []
@@ -361,7 +392,7 @@ def test_long_style_metadata_keeps_source_proof_without_blocking_complete_body()
     locator = paragraph["locator"]
     start_tag = raw[locator["start_tag_char_start"] : locator["start_tag_char_end"]]
 
-    assert result["parser_version"] == "12"
+    assert result["parser_version"] == "13"
     assert result["quality"]["complete"] is True
     assert text_complete(result) is True
     assert locator["class_attribute_length"] == len(classes)
@@ -379,7 +410,7 @@ def test_v5_html_completeness_remains_compatible_after_v7_structured_table_evide
     result = parse_file("law.html", b"<main><p>Keep this legal text.</p></main>")
     legacy = dict(result)
     legacy["parser_version"] = "5"
-    legacy["pipeline_version"] = result["pipeline_version"].replace("v12", "v5")
+    legacy["pipeline_version"] = result["pipeline_version"].replace("v13", "v5")
     legacy["html_source"] = dict(result["html_source"])
     legacy["html_source"]["mapping_version"] = "html-source-mapping-v5"
 

@@ -19,7 +19,7 @@ from urllib.parse import quote, urljoin, urlsplit
 PROTOCOL = "html-linked-image-v1"
 LINKED_DOCUMENT_PROTOCOL = "official-html-pdf-link-v1"
 TEXTUAL_ICON_PROTOCOL = "verified_accessible_icon_name-v1"
-_HTML_PARSER_VERSIONS = {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}
+_HTML_PARSER_VERSIONS = {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 32 * 1024 * 1024
 _HASH = re.compile(r"[0-9a-f]{64}\Z")

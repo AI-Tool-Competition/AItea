@@ -143,7 +143,10 @@ def bound(service, monkeypatch):
     doc = document(service, level="secondary")
     requests = downloader(service, monkeypatch)
     prepared = HtmlImageCollector(service).prepare("owner", doc["id"], deadline=time.monotonic() + 30)
-    assert prepared["bound_images"] and requests
+    assert prepared["bound_images"] and requests, (
+        prepared.get("unresolved_objects"),
+        prepared.get("errors"),
+    )
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
     return doc
 
@@ -256,8 +259,8 @@ def test_html_ocr_checkpoints_use_the_reparsed_mapping_version(service, monkeypa
     service.collection.process_item(claim)
 
     updated = json.loads(row(service, "documents", doc["id"])["manifest"])
-    assert updated["parser_version"] == "12"
-    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v12"
+    assert updated["parser_version"] == "13"
+    assert updated["html_source"]["mapping_version"] == "html-source-mapping-v13"
     assert updated["html_source"]["linked_images"][0]["asset_status"] == "ocr_complete"
     assert row(service, "processing_jobs", doc["id"])["status"] == "completed"
 

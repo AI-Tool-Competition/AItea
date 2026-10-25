@@ -2232,7 +2232,7 @@ def test_failed_legacy_official_html_reparse_retries_are_automatic_and_bounded(s
     def save_failed(owner, key, url):
         old = json.loads(json.dumps(parsed))
         old["parser_version"] = "11"
-        old["pipeline_version"] = old["pipeline_version"].replace("v12", "v11", 1)
+        old["pipeline_version"] = old["pipeline_version"].replace("v13", "v11", 1)
         old["html_source"]["mapping_version"] = "html-source-mapping-v11"
         old["html_source"]["objects"][0].pop("visual_role")
         old["html_source"]["objects"][0].pop("visual_exclusion_reason")

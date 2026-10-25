@@ -137,6 +137,7 @@ def assets(manifest: dict) -> list[dict]:
         "10",
         "11",
         "12",
+        "13",
     }:
         html = manifest.get("html_source") or {}
         if not isinstance(html, dict):

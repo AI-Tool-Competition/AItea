@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from app.shared.infrastructure.vendor.geo_parser.document_ingestion import ParsedDocument, ParsedElement
 
-VERSION = "html-source-mapping-v12"
+VERSION = "html-source-mapping-v13"
 VISUAL_PENDING_WARNING = "HTML 正文图像或对象已保留来源映射，尚未视觉核验；替代文字不代表图像正文。"
 _VOID = {
     "area",
@@ -111,6 +111,12 @@ def _decorative_ui_image(tag, references, metadata, parent_classes, parent_frame
         return "svg_sharing_control"
     if stem == "icon-info-circle" and label == "icon caution" and "caution-notification" in parent_classes:
         return "svg_caution_symbol_with_textual_notice"
+    if (
+        stem == "icon-warning-notification"
+        and label == "icon warning"
+        and "warning-notification" in parent_classes
+    ):
+        return "svg_warning_symbol_with_textual_notice"
     if stem == "icon-next-page" and label in {"next page", "next page icon"}:
         return "svg_navigation_control"
     if stem == "back-to-top" and label in {"back to top", "back to top icon"}:

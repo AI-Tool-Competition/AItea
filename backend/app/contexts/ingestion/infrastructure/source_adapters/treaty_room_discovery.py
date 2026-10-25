@@ -14,6 +14,8 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 HOST = "api-treaty-room.kemlu.go.id"
 BASE = f"https://{HOST}"
+SHELL_HOST = "treaty-room.kemlu.go.id"
+SHELL_PATH = "/daftar-perjanjian"
 CATALOG_PATH = "/publik/perjanjian"
 FILTERS = ("judul_perjanjian", "id_negara", "id_organisasi", "jenis_perjanjian", "id_subjek")
 MAX_JSON_BYTES = 4 * 1024 * 1024
@@ -34,6 +36,21 @@ def catalog_url(page=1, limit=40, *, filters=None):
     query.update(filters or {})
     query.update(page=str(page), limit=str(limit))
     return BASE + CATALOG_PATH + "?" + urlencode(sorted(query.items()))
+
+
+def is_catalog_shell(url: str) -> bool:
+    """Identify the public client-rendered shell, never a directory data source."""
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == SHELL_HOST
+        and parsed.port in (None, 443)
+        and not parsed.username
+        and not parsed.password
+        and parsed.path == SHELL_PATH
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def catalog_query(url: str) -> dict:

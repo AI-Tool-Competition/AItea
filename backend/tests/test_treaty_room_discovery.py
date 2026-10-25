@@ -32,6 +32,33 @@ def item():
     return definition
 
 
+def test_client_rendered_entry_is_audited_as_a_shell_when_json_catalog_is_configured():
+    definition = deepcopy(next(row for row in load_blueprints()[PLAN]["items"] if row["id"] == "5.1"))
+    result = discover_page(
+        "https://treaty-room.kemlu.go.id/daftar-perjanjian",
+        b"<html><body></body></html>",
+        "text/html",
+        recipe_for(definition),
+    )
+
+    assert result["matched"] is True
+    assert result["purpose"] == "catalog"
+    assert result["links"] == []
+    assert "官方 JSON 接口" in result["warnings"][0]
+
+
+def test_unconfigured_blank_treaty_room_paths_remain_a_failure():
+    result = discover_page(
+        "https://treaty-room.kemlu.go.id/other",
+        b"<html><body></body></html>",
+        "text/html",
+        recipe_for(item()),
+    )
+
+    assert result["matched"] is False
+    assert result["reason"] == "页面不在清单配置的路径或筛选范围内。"
+
+
 def row(identifier=1, title="Agreement on trade, investment and taxation", **updates):
     result = {
         "id_perjanjian": identifier,

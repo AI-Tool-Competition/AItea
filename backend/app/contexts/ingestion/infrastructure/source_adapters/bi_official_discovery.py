@@ -214,6 +214,22 @@ def _catalog_state(url: str, page):
     return state
 
 
+def classify_attachment_role(label: str, url: str) -> str:
+    """Separate the statute body from FAQ, translation, and supporting files."""
+    combined = re.sub(r"[_-]+", " ", f"{label} {url.rsplit('/', 1)[-1]}".casefold())
+    if re.search(r"\bfaq\b|tanya\s*jawab|pertanyaan", combined):
+        return "faq"
+    if re.search(r"\benglish\b|\bbahasa inggris\b", combined):
+        return "english_version"
+    if re.search(
+        r"\b(?:lampiran|appendix|annex|attachment)\b|petunjuk\s+(?:teknis|pelaksanaan)|"
+        r"panduan\s+teknis|technical\s+guide|user\s+guide|\bmanual\b|\btutorial\b",
+        combined,
+    ):
+        return "official_attachment"
+    return "document_candidate"
+
+
 def _next_page_controls(pager, target_page: int):
     anchor_target = None
     for anchor in pager.css("a"):
@@ -463,16 +479,7 @@ def _detail_result(url: str, content: bytes, mime: str, rules):
 
     attachments = {}
     for target, label in visible_targets.items():
-        combined = f"{label} {target.rsplit('/', 1)[-1]}".casefold()
-        role = (
-            "faq"
-            if re.search(r"\bfaq\b|tanya\s*jawab|pertanyaan", combined)
-            else "official_attachment"
-            if re.search(r"\b(?:lampiran|appendix|annex|attachment)\b", combined)
-            else "english_version"
-            if re.search(r"\benglish\b|\bbahasa inggris\b", combined)
-            else "document_candidate"
-        )
+        role = classify_attachment_role(label, target)
         attachments[target] = {"url": target, "label": label, "role": role}
 
     detail_id = urlsplit(url).path.removeprefix(DETAIL_PREFIX)

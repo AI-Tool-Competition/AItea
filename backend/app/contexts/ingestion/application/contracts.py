@@ -9,7 +9,7 @@ from app.shared.domain.models import PublicURL, StrictModel, Tag
 
 class CollectionPlan(StrictModel):
     collection: str = Field(default="default", min_length=1, max_length=100)
-    level: Literal["primary", "secondary"] = "primary"
+    level: Literal["primary", "secondary", "attachment"] = "primary"
     seed_urls: list[PublicURL] = Field(default_factory=list, max_length=200)
     primary_document_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
         default_factory=list, max_length=20
@@ -20,11 +20,13 @@ class CollectionPlan(StrictModel):
     download_timeout_seconds: int = Field(default=90, ge=30, le=900)
 
     @model_validator(mode="after")
-    def valid_secondary(self):
+    def valid_level(self):
         if self.level == "secondary" and not self.primary_document_ids:
             raise ValueError("二级法规需关联至少一份一级法规")
         if self.level == "primary" and self.primary_document_ids:
             raise ValueError("一级法规不能指定引用它的一级资料")
+        if self.level == "attachment" and len(self.primary_document_ids) != 1:
+            raise ValueError("关联附件必须且只能指定一份主文件")
         return self
 
 
@@ -51,7 +53,7 @@ class ChecklistCollect(ChecklistDiscover):
     candidate_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
         min_length=1, max_length=200
     )
-    level: Literal["primary", "secondary"]
+    level: Literal["primary", "secondary", "attachment"]
     primary_document_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
         default_factory=list, max_length=20
     )
@@ -62,6 +64,8 @@ class ChecklistCollect(ChecklistDiscover):
             raise ValueError("二级法规需关联至少一份本国一级法规")
         if self.level == "primary" and self.primary_document_ids:
             raise ValueError("一级法规不能指定父法规")
+        if self.level == "attachment" and len(self.primary_document_ids) != 1:
+            raise ValueError("关联附件必须且只能指定一份本国主文件")
         return self
 
 

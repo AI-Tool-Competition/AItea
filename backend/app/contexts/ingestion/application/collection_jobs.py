@@ -205,6 +205,132 @@ class CollectionService:
             is not None
         )
 
+    @staticmethod
+    def _scheduled_checklist_candidates(conn, binding, states):
+        """Choose one safe BI collection class at a time; keep other sources unchanged."""
+        from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
+            classify_attachment_role,
+        )
+
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT c.*,r.source_record source_record_json,f.last_fetched
+                FROM checklist_candidates c
+                LEFT JOIN checklist_candidate_source_records r ON r.candidate_id=c.id
+                LEFT JOIN (
+                    SELECT candidate_id,MAX(fetched_at) last_fetched FROM collection_items
+                    WHERE candidate_id IS NOT NULL GROUP BY candidate_id
+                ) f ON f.candidate_id=c.id
+                WHERE c.binding_id=? AND c.status IN ('pending','stored','queued','excluded')
+                ORDER BY COALESCE(julianday(f.last_fetched),julianday(c.created_at)),c.created_at,c.id""",
+                (binding["id"],),
+            )
+        ]
+
+        def record_for(row):
+            try:
+                value = json.loads(row["source_record_json"] or "null")
+            except (TypeError, ValueError):
+                return {}
+            return value if isinstance(value, dict) else {}
+
+        records = {row["id"]: record_for(row) for row in rows}
+
+        def role_for(row):
+            record = records[row["id"]]
+            if record.get("provider") != "bi_official":
+                return "document_candidate"
+            fields = record.get("fields")
+            if not isinstance(fields, dict):
+                return "document_candidate"
+            role = fields.get("attachment_role")
+            inferred = classify_attachment_role(fields.get("attachment_label", row["title"]), row["url"])
+            if inferred != "document_candidate":
+                return inferred
+            if role in {"faq", "official_attachment", "english_version"}:
+                return role
+            return "document_candidate"
+
+        roles = {row["id"]: role_for(row) for row in rows}
+        eligible_states = set(states)
+        detail_main_candidates = {}
+        stored_primary_documents = {}
+        for row in rows:
+            record = records[row["id"]]
+            fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+            detail_url = fields.get("detail_page_url")
+            if roles[row["id"]] != "document_candidate" or not isinstance(detail_url, str):
+                continue
+            detail_main_candidates.setdefault(detail_url, []).append(row)
+            if row["status"] != "stored" or not row["document_id"]:
+                continue
+            valid = conn.execute(
+                """SELECT 1 FROM documents d JOIN legal_classifications l ON l.document_id=d.id
+                WHERE d.id=? AND d.owner_id=? AND d.role='primary' AND l.collection=? AND l.level='primary'""",
+                (row["document_id"], binding["owner_id"], f"country:{binding['country']}"),
+            ).fetchone()
+            if valid:
+                stored_primary_documents.setdefault(detail_url, []).append(row["document_id"])
+
+        primary, attachments, eligible_order = [], {}, []
+        for row in rows:
+            if row["status"] not in eligible_states:
+                continue
+            role = roles[row["id"]]
+            record = records[row["id"]]
+            fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+            if record.get("provider") != "bi_official":
+                primary.append(row)
+                eligible_order.append(("primary", None))
+                continue
+            if role == "faq":
+                if row["status"] == "pending":
+                    reason = "清单范围：FAQ 仅用于定位，不进入资料库。"
+                    note = row["note"] or ""
+                    if reason not in note:
+                        note = f"{note}\n{reason}".strip()
+                    conn.execute(
+                        "UPDATE checklist_candidates SET status='excluded',note=?,revision=revision+1 WHERE id=? AND status='pending'",
+                        (note[:1000], row["id"]),
+                    )
+                continue
+            if role in {"official_attachment", "english_version"}:
+                detail_url = fields.get("detail_page_url")
+                matching_mains = detail_main_candidates.get(detail_url, [])
+                unresolved_mains = any(main["status"] in {"pending", "queued"} for main in matching_mains)
+                parent_ids = stored_primary_documents.get(detail_url, [])
+                if unresolved_mains:
+                    continue
+                if len(parent_ids) == 1:
+                    attachments.setdefault(parent_ids[0], []).append(row)
+                    eligible_order.append(("attachment", parent_ids[0]))
+                    continue
+                if row["status"] == "pending":
+                    reason = "未找到唯一、已入库的同页正文候选；附件仅保留发现记录。"
+                    note = row["note"] or ""
+                    if reason not in note:
+                        note = f"{note}\n{reason}".strip()
+                    conn.execute(
+                        "UPDATE checklist_candidates SET status='excluded',note=?,revision=revision+1 WHERE id=? AND status='pending'",
+                        (note[:1000], row["id"]),
+                    )
+                continue
+            primary.append(row)
+            eligible_order.append(("primary", None))
+
+        # Newly discovered main documents take precedence. Once stored, supporting
+        # files are archived without OCR/indexing and linked to their single parent.
+        if "pending" in eligible_states and primary:
+            return [row["id"] for row in primary[:200]], "primary", []
+        if eligible_order:
+            level, parent_id = eligible_order[0]
+            if level == "primary":
+                return [row["id"] for row in primary[:200]], "primary", []
+            candidates = attachments[parent_id]
+            return [row["id"] for row in candidates[:200]], "attachment", [parent_id]
+        return [], "primary", []
+
     def enqueue_scheduled(self, owner, source_id):
         """Poll a source while preserving its checklist and legal review gates."""
         from app.shared.domain.errors import AppError, fail
@@ -236,19 +362,9 @@ class CollectionService:
                 if pending or previous_kind == "discovery":
                     kind = "collection"
                     states = ("pending",) if pending else ("stored",)
-                    marks = ",".join("?" for _ in states)
-                    candidate_ids = [
-                        row[0]
-                        for row in conn.execute(
-                            f"""SELECT c.id FROM checklist_candidates c
-                            LEFT JOIN (SELECT candidate_id,MAX(fetched_at) last_fetched
-                                FROM collection_items WHERE candidate_id IS NOT NULL GROUP BY candidate_id) f
-                                ON f.candidate_id=c.id
-                            WHERE c.binding_id=? AND c.status IN ({marks})
-                            ORDER BY COALESCE(julianday(f.last_fetched),julianday(c.created_at)),c.id LIMIT 200""",
-                            (binding["id"], *states),
-                        )
-                    ]
+                    candidate_ids, level, anchors = self._scheduled_checklist_candidates(
+                        conn, binding, states
+                    )
                     if not candidate_ids:
                         kind = "discovery"
         if not source["checklist"]:
@@ -257,7 +373,7 @@ class CollectionService:
             fail(409, "checklist_binding_missing", "清单来源缺少版本绑定，请核验配置")
         payload = {"client_request_id": "schedule-" + uid(), "confirm_condition": False}
         if kind == "collection":
-            payload.update(candidate_ids=candidate_ids, level="primary", primary_document_ids=[])
+            payload.update(candidate_ids=candidate_ids, level=level, primary_document_ids=anchors)
         try:
             return self.service.checklists.start(
                 owner,
@@ -377,6 +493,7 @@ class CollectionService:
                 entry["url"],
                 plan["level"],
                 identity_key=entry.get("identity_key"),
+                parent=plan["primary_document_ids"][0] if plan["level"] == "attachment" else None,
                 purpose=entry.get("purpose", "document") if trusted_plan else "document",
                 depth=entry.get("depth", 0) if trusted_plan else 0,
                 candidate_id=entry.get("candidate_id") if trusted_plan else None,

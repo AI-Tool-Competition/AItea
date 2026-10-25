@@ -345,7 +345,7 @@ export interface Source {
 }
 export interface CollectionPlan {
   collection: string;
-  level: "primary" | "secondary";
+  level: "primary" | "secondary" | "attachment";
   seed_urls: string[];
   primary_document_ids: string[];
   discover_attachments: boolean;

@@ -157,12 +157,15 @@ def test_detail_preserves_metadata_and_distinguishes_body_faq_and_annex_candidat
       <tr><td><a href="/id/publikasi/peraturan/Documents/PBI_082026.pdf">Peraturan Bank Indonesia Nomor 09 Tahun 2026.pdf</a></td></tr>
       <tr><td><a href="/id/publikasi/peraturan/Documents/FAQ-PBI_092026.pdf">Tanya Jawab Peraturan Bank Indonesia Nomor 09 Tahun 2026.pdf</a></td></tr>
       <tr><td><a href="/id/publikasi/peraturan/Documents/Lampiran-PBI_092026.pdf">Lampiran PBI 09 Tahun 2026.pdf</a></td></tr>
+      <tr><td><a href="/id/publikasi/peraturan/Documents/PADG-092026-Petunjuk-Teknis.pdf">Petunjuk Teknis Pelaporan.pdf</a></td></tr>
     </table></body></html>"""
     result = inspect(url, content, "text/html", _Recipe(RULES))
     assert result["matched"] and result["purpose"] == "detail"
-    assert result["scope"]["attachment_candidates"] == 3
+    assert result["scope"]["attachment_candidates"] == 4
     links = {link["source_record"]["fields"]["attachment_role"]: link for link in result["links"]}
     assert set(links) == {"document_candidate", "faq", "official_attachment"}
+    technical_guide = next(link for link in result["links"] if "Petunjuk-Teknis" in link["url"])
+    assert technical_guide["source_record"]["fields"]["attachment_role"] == "official_attachment"
     main = links["document_candidate"]["source_record"]
     assert main["provider"] == "bi_official"
     assert main["fields"]["filename_identity_verified"] is False

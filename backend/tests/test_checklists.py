@@ -34,6 +34,51 @@ def configure(client):
     return response.json()
 
 
+def add_bi_candidate(
+    service, binding, *, identifier, detail_url, url, role, status="pending", document_id=None
+):
+    from hashlib import sha256
+
+    source_record = {
+        "provider": "bi_official",
+        "interpretation": "unreviewed_source_values",
+        "fields": {
+            "detail_page_url": detail_url,
+            "attachment_url": url,
+            "attachment_label": url.rsplit("/", 1)[-1],
+            "attachment_role": role,
+        },
+    }
+    with service.db.transaction() as conn:
+        conn.execute(
+            """INSERT INTO checklist_candidates
+            (id,binding_id,url,title,identity_key,discovered_from,status,document_id,created_at)
+            VALUES(?,?,?,?,NULL,?,?,?,?)""",
+            (
+                identifier,
+                binding["id"],
+                url,
+                source_record["fields"]["attachment_label"],
+                detail_url,
+                status,
+                document_id,
+                now(),
+            ),
+        )
+        conn.execute(
+            """INSERT INTO checklist_candidate_source_records
+            (candidate_id,source_record,source_page_url,source_page_sha256,created_at)
+            VALUES(?,?,?,?,?)""",
+            (
+                identifier,
+                json.dumps(source_record),
+                detail_url,
+                sha256(detail_url.encode()).hexdigest(),
+                now(),
+            ),
+        )
+
+
 def discover(client, code="1.3", request="first"):
     response = client.post(BASE + f"/items/{code}/discover", json={"client_request_id": request})
     assert response.status_code == 202, response.text
@@ -944,6 +989,135 @@ def test_scheduled_checklist_collects_pending_candidates_without_manual_request(
             "SELECT json_extract(plan,'$.checklist.kind') FROM collection_runs WHERE id=?", (run["id"],)
         ).fetchone()[0]
     assert queued == "queued" and kind == "collection"
+
+
+def test_bi_scheduler_collects_only_main_documents_and_excludes_faq(client):
+    configure(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with service.db.transaction() as conn:
+        binding = conn.execute(
+            "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='4.6'",
+            (owner, PLAN),
+        ).fetchone()
+        conn.execute(
+            "UPDATE sources SET enabled=1,last_attempt_at='2020-01-01T00:00:00+00:00' WHERE id=?",
+            (binding["source_id"],),
+        )
+    detail = "https://www.bi.go.id/id/publikasi/peraturan/Pages/PBI_092026.aspx"
+    base = "https://www.bi.go.id/id/publikasi/peraturan/Documents/"
+    add_bi_candidate(
+        service,
+        binding,
+        identifier="bi-main",
+        detail_url=detail,
+        url=base + "PBI_092026.pdf",
+        role="document_candidate",
+    )
+    add_bi_candidate(
+        service,
+        binding,
+        identifier="bi-faq",
+        detail_url=detail,
+        url=base + "FAQ-PBI_092026.pdf",
+        role="faq",
+    )
+    add_bi_candidate(
+        service,
+        binding,
+        identifier="bi-annex",
+        detail_url=detail,
+        url=base + "Lampiran-PBI_092026.pdf",
+        role="official_attachment",
+    )
+
+    run = service.collection.enqueue_scheduled(owner, binding["source_id"])
+    assert run["kind"] == "collection" and run["total"] == 1
+    with closing(service.db.connect()) as conn:
+        item = conn.execute(
+            "SELECT candidate_id,level FROM collection_items WHERE run_id=?", (run["id"],)
+        ).fetchone()
+        faq = conn.execute("SELECT status,note FROM checklist_candidates WHERE id='bi-faq'").fetchone()
+        annex = conn.execute("SELECT status FROM checklist_candidates WHERE id='bi-annex'").fetchone()[0]
+    assert tuple(item) == ("bi-main", "primary")
+    assert faq["status"] == "excluded" and "FAQ 仅用于定位" in faq["note"]
+    assert annex == "pending"
+
+
+def test_bi_scheduler_archives_linked_attachments_without_parsing(client, monkeypatch):
+    configure(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with service.db.transaction() as conn:
+        binding = conn.execute(
+            "SELECT * FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND item_id='4.6'",
+            (owner, PLAN),
+        ).fetchone()
+        conn.execute(
+            "UPDATE sources SET enabled=1,last_attempt_at='2020-01-01T00:00:00+00:00' WHERE id=?",
+            (binding["source_id"],),
+        )
+    parent = client.post(
+        "/api/tea/documents", files={"file": ("main.txt", b"official regulation", "text/plain")}
+    ).json()
+    classified = client.patch(
+        f"/api/tea/documents/{parent['id']}/classification",
+        json={"collection": "country:ID", "level": "primary", "tags": ["country:ID"], "expected_revision": 0},
+    )
+    assert classified.status_code == 200, classified.text
+    detail = "https://www.bi.go.id/id/publikasi/peraturan/Pages/PBI_092026.aspx"
+    base = "https://www.bi.go.id/id/publikasi/peraturan/Documents/"
+    add_bi_candidate(
+        service,
+        binding,
+        identifier="bi-stored-main",
+        detail_url=detail,
+        url=base + "PBI_092026.pdf",
+        role="document_candidate",
+        status="stored",
+        document_id=parent["id"],
+    )
+    add_bi_candidate(
+        service,
+        binding,
+        identifier="bi-stored-guide",
+        detail_url=detail,
+        url=base + "PADG-292026-Petunjuk-Teknis.pdf",
+        role="document_candidate",
+    )
+
+    run = service.collection.enqueue_scheduled(owner, binding["source_id"])
+    assert run["kind"] == "collection" and run["total"] == 1
+    with closing(service.db.connect()) as conn:
+        item = conn.execute(
+            "SELECT candidate_id,level,parent_document_id FROM collection_items WHERE run_id=?", (run["id"],)
+        ).fetchone()
+    assert tuple(item) == ("bi-stored-guide", "attachment", parent["id"])
+
+    def download(url, *, consume, **options):
+        return {
+            "url": url,
+            "filename": url.rsplit("/", 1)[-1],
+            "mime_type": "application/pdf",
+            "blob": consume(iter([b"%PDF-1.7\\nraw annex\\n%%EOF"])),
+        }
+
+    monkeypatch.setattr(ingestion_download, "_download", download)
+    service.collection.fetch_item(service.collection.claim_fetch())
+    with closing(service.db.connect()) as conn:
+        item = conn.execute(
+            "SELECT document_id FROM collection_items WHERE run_id=?", (run["id"],)
+        ).fetchone()
+        doc = conn.execute(
+            "SELECT role,status,parent_id FROM documents WHERE id=?", (item["document_id"],)
+        ).fetchone()
+        assert (
+            conn.execute(
+                "SELECT 1 FROM processing_jobs WHERE document_id=?", (item["document_id"],)
+            ).fetchone()
+            is None
+        )
+    assert tuple(doc) == ("secondary", "stored", parent["id"])
 
 
 def test_new_candidates_bypass_poll_interval_once_but_failed_fetches_keep_backoff(client):

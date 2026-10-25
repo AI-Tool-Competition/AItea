@@ -181,9 +181,18 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             # MinerU's page-level chart/table warning is not a failed vision
             # request. Ambiguous tables have a separate, page-bounded visual
             # fallback; chart assets continue through their mapped checkpoints.
+            # A provider failure is not a completed quality fallback. Keep
+            # retrying failed requests after the visual-quality budget expires;
+            # the preserved response receipt and retry checkpoint make each
+            # repeated attempt auditable. Successful but still ambiguous visual
+            # output remains capped by MAX_MINERU_VISUAL_RETRIES.
             vision_page = metadata.get("provider") != "mineru" and bool(
                 metadata.get("prompt_version") or metadata.get("request_id")
-            ) and (not visual_fallback or visual_attempts < MAX_MINERU_VISUAL_RETRIES)
+            ) and (
+                not visual_fallback
+                or status == "ocr_failed"
+                or visual_attempts < MAX_MINERU_VISUAL_RETRIES
+            )
             eligible = (
                 status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
                 and (

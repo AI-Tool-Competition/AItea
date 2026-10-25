@@ -302,13 +302,20 @@ def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
     assert decision.retryable and decision.pages == (1,)
 
 
-def test_failed_vision_page_with_bound_response_is_automatically_retried_without_complete_flag(service):
+def test_failed_vision_page_with_bound_response_retries_after_visual_quality_budget(service):
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+        MAX_RETRY_CYCLES,
+        PROTOCOL,
+    )
+
     content = make_pdf([("Official text", False)])
     original = service.archive.blobs.put_bytes("owner", content)
     manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
     page = manifest["pages"][0]
     page.update(status="ocr_failed", source_hash=original.digest)
     bound_failed_vision_page(service, page)
+    page["ocr_fallback"] = {"protocol": PROTOCOL, "attempts": MAX_RETRY_CYCLES}
+    page["ocr_retry_cycles"] = [{"protocol": "previous-attempt"} for _ in range(MAX_RETRY_CYCLES)]
     decision = classify_processing(manifest, phase="parse")
     assert decision.reason == "ocr_quality_retry"
     assert decision.retryable and decision.pages == (page["page"],)
@@ -361,6 +368,7 @@ def test_failed_vision_page_with_bound_response_is_automatically_retried_without
     assert tuple(recovery) == ("queued", "ocr_quality_retry")
     retried = saved["pages"][0]
     assert retried["status"] == "pending_ocr" and retried["ocr"] == {"attempts": 0}
+    assert len(retried["ocr_retry_cycles"]) == MAX_RETRY_CYCLES + 1
     assert retried["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["error_response"]["blob"]
 
 

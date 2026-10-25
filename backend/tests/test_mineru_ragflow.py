@@ -337,6 +337,55 @@ def test_recovery_requeues_legacy_unknown_embedding_without_remote_write_ledger(
     assert job["status"] == "queued"
 
 
+def test_prior_generation_remote_document_does_not_block_unknown_index_retry(workspace, monkeypatch):
+    remote, _document, _old_claim = prepared(workspace, monkeypatch)
+    with workspace.db.transaction() as conn:
+        old_document, _old_chunks, old_generation = workspace.ragflow.binding(
+            conn, "target", workspace.embedding_fingerprint(), include_chunks=False
+        )
+        conn.execute(
+            """INSERT INTO ragflow_documents(
+                generation,document_id,owner_id,profile,source_hash,source_version,index_revision,
+                dataset_id,remote_id,name,state,chunk_count,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,'dataset-owner','remote-old','target-old.txt','ready',0,?,?)""",
+            (
+                old_generation,
+                old_document["id"],
+                old_document["owner_id"],
+                workspace.embedding_fingerprint(),
+                old_document["content_hash"],
+                old_document["version"],
+                old_document["index_revision"],
+                now(),
+                now(),
+            ),
+        )
+        conn.execute("UPDATE processing_jobs SET status='completed' WHERE document_id='target'")
+        conn.execute("UPDATE documents SET version=version+1 WHERE id='target'")
+        workspace.collection.queue_processing(conn, "target", "owner")
+        conn.execute("UPDATE processing_jobs SET phase='embed' WHERE document_id='target'")
+
+    claim = workspace.collection.claim_processing(owner_id="owner", document_ids=["target"])
+    assert claim
+    workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+
+    result = workspace.collection.recovery.run_due()
+
+    assert result["requeued"] == 1
+    assert remote.calls == []
+    with closing(workspace.db.connect()) as conn:
+        recovery = conn.execute("SELECT status,reason FROM collection_recovery_jobs").fetchone()
+        job = conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()
+        event = conn.execute(
+            "SELECT detail FROM collection_recovery_events WHERE event='unstarted_ragflow_retry_queued'"
+        ).fetchone()
+    assert tuple(recovery) == ("queued", "unstarted_ragflow_retry")
+    assert job["status"] == "queued"
+    assert json.loads(event["detail"])["previous_generation_remote_document_ignored"] is True
+
+
 def test_recovery_reconciles_partial_receipts_and_retries_unmatched_paid_intents(workspace, monkeypatch):
     remote, document, claim = prepared(workspace, monkeypatch, count=2)
     assert workspace.ragflow.step(document, claim) == 1

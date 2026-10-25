@@ -71,6 +71,24 @@ def test_pagination_does_not_consume_the_document_candidate_limit():
     assert sum(link["purpose"] == "catalog" for link in result["links"]) == 1
 
 
+def test_configured_sso_catalogue_accepts_its_500_row_page_limit():
+    rows = "".join(
+        f'<tr><td class="col-no">{number}</td><td><a href="/SL/TEST{number:03d}">Rule {number}</a></td></tr>'
+        for number in range(1, 501)
+    )
+    raw = (
+        '<span class="page-count">500 results in 1 pages</span>'
+        '<span class="page-index">1</span><span class="page-size">500 items</span>'
+        f'<table class="browse-list"><tbody>{rows}</tbody></table>'
+    ).encode()
+
+    result = inspect(raw)
+
+    assert result["matched"]
+    assert result["scope"]["returned"] == 500
+    assert len(result["links"]) == 500
+
+
 def test_three_constitutional_documents_have_distinct_identity_and_no_extra_navigation():
     result = inspect(code="1.1")
     assert result["matched"] and result["scope"]["total"] == 3

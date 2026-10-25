@@ -2807,12 +2807,12 @@ class CollectionRecovery:
         return result
 
     def _requeue_unstarted_ragflow(self, *, limit, worker_scope, fingerprint):
-        """Resume failed indexes only when no remote document or chunk write is recorded.
+        """Resume failed indexes when the current generation has no chunk intent.
 
-        An `intent` row is an uncertain remote write and must go through exact
-        receipt reconciliation first. A missing generation, or a planned
-        generation with no remote document ID and no chunk intents, can restart
-        through RAGFlow's stable dataset/document lookup path.
+        Chunk requests are recorded as durable intents before they are sent, so
+        any current-generation intent must go through receipt reconciliation.
+        Remote documents from older generations do not prevent a new generation
+        from resuming through RAGFlow's stable dataset/document lookup path.
         """
         result = {"requeued": 0, "deferred": 0}
         scope, arguments = worker_scope.sql("j.owner_id")
@@ -2827,17 +2827,10 @@ class CollectionRecovery:
                     WHERE r.queue_kind='processing' AND r.phase='embed' AND r.status='blocked'
                     AND r.reason='paid_result_unknown' AND r.available_at<=?
                     AND j.phase='embed' AND j.status='failed'
-                    AND NOT EXISTS(
-                        SELECT 1 FROM ragflow_documents d
-                        WHERE d.document_id=r.item_id AND d.owner_id=r.owner_id
-                        AND (d.remote_id IS NOT NULL OR EXISTS(
-                            SELECT 1 FROM ragflow_chunks c
-                            WHERE c.generation=d.generation AND c.state='intent'
-                        ))
-                    )"""
+                    """
                     + scope
                     + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
-                    (timestamp, *arguments, limit),
+                    (timestamp, *arguments, min(128, limit * 4)),
                 )
             ]
         for identifier in identifiers:
@@ -2859,21 +2852,21 @@ class CollectionRecovery:
                 current = self.service.ragflow.binding(
                     conn, row["item_id"], fingerprint, include_chunks=False
                 )
-                has_remote_write = conn.execute(
-                    """SELECT 1 FROM ragflow_documents d WHERE d.document_id=? AND d.owner_id=?
-                    AND (d.remote_id IS NOT NULL OR EXISTS(
-                        SELECT 1 FROM ragflow_chunks c
-                        WHERE c.generation=d.generation AND c.state='intent'
-                    )) LIMIT 1""",
-                    (row["item_id"], row["owner_id"]),
-                ).fetchone()
+                has_current_intent = (
+                    conn.execute(
+                        "SELECT 1 FROM ragflow_chunks WHERE generation=? AND state='intent' LIMIT 1",
+                        (current[2],),
+                    ).fetchone()
+                    if current is not None
+                    else None
+                )
                 if (
                     job is None
                     or job["phase"] != "embed"
                     or job["status"] != "failed"
                     or current is None
                     or current[2] is None
-                    or has_remote_write is not None
+                    or has_current_intent is not None
                 ):
                     continue
                 if (
@@ -2919,7 +2912,9 @@ class CollectionRecovery:
                     {
                         "source_hash": current[0]["content_hash"],
                         "generation": current[2],
-                        "remote_document_or_chunk_intent": False,
+                        "current_generation_chunk_intent": False,
+                        "previous_generation_remote_document_ignored": True,
+                        "duplicate_provider_charge_possible": True,
                     },
                 )
                 self.collection._refresh_document(conn, row["item_id"])

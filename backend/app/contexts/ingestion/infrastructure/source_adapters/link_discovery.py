@@ -2190,6 +2190,10 @@ def recipe_for(item: dict) -> dict:
     if adapter == "sso":
         if item.get("limits", {}).get("sso_catalog_2026") is True:
             result["sso_catalog_2026"] = True
+            # The SSO adapter reconciles at most 500 catalogue rows per page.
+            # Its configured PageSize=500 must not be rejected by the generic
+            # 200-candidate ceiling after the adapter has already validated it.
+            result["max_links"] = 500
         category = "SL" if any("/browse/sl/" in x["url"].casefold() for x in seeds) else "Act"
         result.update(
             catalog_patterns=[

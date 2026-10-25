@@ -180,6 +180,52 @@ def test_retry_after_is_persistent_and_not_shortened(service):
 
 
 @pytest.mark.parametrize(
+    "reason,provider_delay,expected_delay",
+    [
+        ("ocr_quality_retry", 0, BASE_RECOVERY_SECONDS),
+        ("paid_ocr_retry", 0, BASE_RECOVERY_SECONDS),
+        ("ocr_quality_retry", 7200, 7200),
+        ("transient_processing", 0, BASE_RECOVERY_SECONDS * 2**6),
+    ],
+)
+def test_ocr_retry_backoff_stays_automatic_and_preserves_provider_delay(
+    service, reason, provider_delay, expected_delay
+):
+    document = register(service, make_pdf([("Official terms", False)]), key=f"retry-delay-{reason}")
+    claim = {
+        "document_id": document["id"],
+        "owner_id": "owner",
+        "phase": "parse",
+        "attempts": 3,
+    }
+    with service.db.transaction() as conn:
+        service.collection.recovery.record_failure(
+            conn,
+            claim,
+            processing=True,
+            decision=Decision("transient_processing", True),
+            exhausted=True,
+        )
+        conn.execute(
+            "UPDATE collection_recovery_jobs SET recovery_count=6 WHERE item_id=?",
+            (document["id"],),
+        )
+        before = time.time()
+        service.collection.recovery.record_failure(
+            conn,
+            claim,
+            processing=True,
+            decision=Decision(reason, True, not_before=before + provider_delay),
+            exhausted=True,
+        )
+
+    recovery = rows(service, "collection_recovery_jobs")[0]
+    assert recovery["status"] == "waiting"
+    assert recovery["available_at"] >= before + expected_delay - 3
+    assert recovery["available_at"] <= before + expected_delay + 3
+
+
+@pytest.mark.parametrize(
     "metadata",
     [
         {"attempts": 1, "request_id": "lost"},

@@ -25,6 +25,7 @@ from app.shared.domain.values import dump, now, uid
 SCHEMA_VERSION = 19
 BASE_RECOVERY_SECONDS = 15 * 60
 MAX_RECOVERY_SECONDS = 24 * 60 * 60
+OCR_AUTOMATIC_RETRY_REASONS = frozenset({"ocr_quality_retry", "paid_ocr_retry"})
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 PROCESSING_QUEUE_LIMIT = 200
@@ -44,6 +45,13 @@ def _digest(value):
 
 def _timestamp(value):
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else 0
+
+
+def _recovery_delay(decision, recovery_count):
+    """Keep OCR retries automatic without letting local backoff grow to a day."""
+    if decision.reason in OCR_AUTOMATIC_RETRY_REASONS:
+        return BASE_RECOVERY_SECONDS
+    return min(MAX_RECOVERY_SECONDS, BASE_RECOVERY_SECONDS * 2 ** min(recovery_count, 7))
 
 
 @dataclass(frozen=True)
@@ -566,7 +574,7 @@ class CollectionRecovery:
         if row["binding_sha256"] != fingerprint:
             decision = Decision("source_changed")
             exhausted = True
-        delay = min(MAX_RECOVERY_SECONDS, BASE_RECOVERY_SECONDS * 2 ** min(row["recovery_count"], 7))
+        delay = _recovery_delay(decision, row["recovery_count"])
         available = (
             max(timestamp + delay, _timestamp(ready_at), decision.not_before)
             if exhausted and decision.retryable

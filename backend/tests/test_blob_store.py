@@ -2,9 +2,10 @@ import hashlib
 import multiprocessing
 import os
 import stat
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 from app.shared.infrastructure.persistence.blob_store import BlobIntegrityError, BlobStore
@@ -15,6 +16,10 @@ def blob_path(files_dir, owner, content):
     return (
         files_dir / "blobs" / hashlib.sha256(owner.encode()).hexdigest() / digest[:2] / digest[2:4] / digest
     )
+
+
+def staged_parts(files_dir):
+    return list((files_dir / ".staging").glob("blob-*.part"))
 
 
 def test_stream_is_only_published_when_complete_and_preserves_legacy_files(tmp_path):
@@ -29,7 +34,7 @@ def test_stream_is_only_published_when_complete_and_preserves_legacy_files(tmp_p
     def chunks():
         yield b"first-"
         assert not destination.exists()
-        assert len(list((files_dir / ".staging").iterdir())) == 1
+        assert len(staged_parts(files_dir)) == 1
         yield b"second"
 
     result = store.put("alice", chunks())
@@ -43,7 +48,7 @@ def test_stream_is_only_published_when_complete_and_preserves_legacy_files(tmp_p
         if parent == files_dir:
             break
         assert stat.S_IMODE(parent.stat().st_mode) & 0o077 == 0
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
     assert legacy.read_bytes() == b"legacy"
 
 
@@ -77,7 +82,7 @@ def test_concurrent_threads_publish_the_same_blob_once(tmp_path):
     assert len({blob.path for blob in blobs}) == 1
     assert blobs[0].path.read_bytes() == b"shared-content"
     assert len([path for path in (files_dir / "blobs").rglob("*") if path.is_file()]) == 1
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
 
 
 def _publish_in_process(files_dir, barrier, results):
@@ -111,7 +116,7 @@ def test_concurrent_processes_publish_the_same_blob_once(tmp_path):
         assert all(error is None for _, _, error in received), received
         assert len({(path, inode) for path, inode, _ in received}) == 1
         assert Path(received[0][0]).read_bytes() == b"process-content"
-        assert not list((files_dir / ".staging").iterdir())
+        assert not staged_parts(files_dir)
     finally:
         for process in processes:
             if process.is_alive():
@@ -137,7 +142,8 @@ def test_interrupted_stream_removes_only_its_own_temporary_file(tmp_path, failur
         store.put("alice", chunks())
 
     assert existing.path.read_bytes() == b"already published"
-    assert list((files_dir / ".staging").iterdir()) == [other_pending]
+    assert not staged_parts(files_dir)
+    assert other_pending.read_bytes() == b"in progress"
     assert len([path for path in (files_dir / "blobs").rglob("*") if path.is_file()]) == 1
 
 
@@ -146,7 +152,7 @@ def test_empty_content_is_rejected_without_publishing(tmp_path, chunks):
     files_dir = tmp_path / "files"
     with pytest.raises(ValueError, match="empty"):
         BlobStore(files_dir).put("alice", chunks)
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
     assert not list((files_dir / "blobs").rglob("*"))
 
 
@@ -161,7 +167,7 @@ def test_size_limit_is_checked_while_reading_and_stops_consuming_stream(tmp_path
 
     with pytest.raises(ValueError, match="size"):
         store.put("alice", chunks())
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
     assert store.put_bytes("alice", b"1234").size == 4
 
 
@@ -170,7 +176,7 @@ def test_non_bytes_chunks_are_rejected_without_publishing(tmp_path, chunk):
     files_dir = tmp_path / "files"
     with pytest.raises(TypeError, match="bytes"):
         BlobStore(files_dir).put("alice", [b"valid", chunk])
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
 
 
 def test_existing_corrupt_blob_is_rejected_and_never_overwritten(tmp_path):
@@ -184,7 +190,7 @@ def test_existing_corrupt_blob_is_rejected_and_never_overwritten(tmp_path):
         store.put_bytes("alice", b"law-v1")
 
     assert original.path.read_bytes() == b"broken"
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
 
 
 def test_dedup_tolerates_another_publisher_removing_its_staging_link(tmp_path, monkeypatch):
@@ -205,7 +211,7 @@ def test_dedup_tolerates_another_publisher_removing_its_staging_link(tmp_path, m
     monkeypatch.setattr(os, "fstat", finish_other_publisher)
 
     assert store.put_bytes("alice", b"law") == original
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
 
 
 def test_existing_symlink_is_rejected_without_modifying_its_target(tmp_path):
@@ -222,7 +228,7 @@ def test_existing_symlink_is_rejected_without_modifying_its_target(tmp_path):
 
     assert destination.is_symlink()
     assert outside.read_bytes() == b"law"
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
 
 
 def test_symlinked_owner_directory_does_not_receive_any_blob_files(tmp_path):
@@ -237,7 +243,7 @@ def test_symlinked_owner_directory_does_not_receive_any_blob_files(tmp_path):
         store.put_bytes("alice", b"law")
 
     assert not list(outside.iterdir())
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
 
 
 def test_failed_disk_sync_does_not_publish_partial_content(tmp_path, monkeypatch):
@@ -254,4 +260,53 @@ def test_failed_disk_sync_does_not_publish_partial_content(tmp_path, monkeypatch
     with pytest.raises(OSError, match="disk failure"):
         store.put_bytes("alice", b"law")
     assert not blob_path(files_dir, "alice", b"law").exists()
-    assert not list((files_dir / ".staging").iterdir())
+    assert not staged_parts(files_dir)
+
+
+def test_startup_prunes_only_old_blob_parts(tmp_path):
+    files_dir = tmp_path / "files"
+    staging = files_dir / ".staging"
+    staging.mkdir(parents=True)
+    stale = staging / "blob-stale.part"
+    recent = staging / "blob-recent.part"
+    unrelated = staging / "other-stale.part"
+    stale.write_bytes(b"abandoned")
+    recent.write_bytes(b"active")
+    unrelated.write_bytes(b"unrelated")
+    old = time.time() - 2 * 60 * 60
+    os.utime(stale, (old, old))
+    os.utime(unrelated, (old, old))
+
+    BlobStore(files_dir)
+
+    assert not stale.exists()
+    assert recent.read_bytes() == b"active"
+    assert unrelated.read_bytes() == b"unrelated"
+
+
+def test_staging_cleanup_does_not_race_an_active_blob_writer(tmp_path):
+    files_dir = tmp_path / "files"
+    store = BlobStore(files_dir)
+    stale = files_dir / ".staging" / "blob-stale.part"
+    stale.write_bytes(b"abandoned")
+    old = time.time() - 2 * 60 * 60
+    os.utime(stale, (old, old))
+    entered = Event()
+    release = Event()
+
+    def chunks():
+        yield b"active-"
+        entered.set()
+        assert release.wait(timeout=5)
+        yield b"writer"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(store.put, "alice", chunks())
+        assert entered.wait(timeout=5)
+        assert store._cleanup_stale_staging() is False
+        assert stale.exists()
+        release.set()
+        assert pending.result(timeout=5).path.read_bytes() == b"active-writer"
+
+    assert store._cleanup_stale_staging() is True
+    assert not stale.exists()

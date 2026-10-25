@@ -5,18 +5,27 @@ hard links and directory fsync support. A completed put is durable before a
 caller records its reference in SQLite. A failed database transaction must not
 unlink the blob: another document or worker may already reference it.
 
-Hard process termination can leave an unreferenced blob or staging file. This
-class deliberately does not run a global cleanup that could race active writers.
+Hard process termination can leave an unreferenced blob or staging file. Staging
+writers share a process lock; startup removes only old, unreferenced temporary
+files while holding its exclusive counterpart.
 """
 
+import fcntl
 import hashlib
 import os
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
+
+_STAGING_LOCK = ".writers.lock"
+_STAGING_ORPHAN_AGE_SECONDS = 60 * 60
+_CLEANED_STAGING_PATHS: set[Path] = set()
+_CLEANUP_GUARD = Lock()
 
 
 @dataclass(frozen=True)
@@ -85,6 +94,59 @@ class BlobStore:
         self.staging_dir = self.files_dir / ".staging"
         for directory in (self.files_dir, self.blobs_dir, self.staging_dir):
             _make_directory(directory)
+        self._cleanup_stale_staging_once()
+
+    def _open_staging_lock(self):
+        path = self.staging_dir / _STAGING_LOCK
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("blob staging lock must be a regular file")
+            os.fchmod(fd, 0o600)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _cleanup_stale_staging_once(self):
+        with _CLEANUP_GUARD:
+            if self.staging_dir in _CLEANED_STAGING_PATHS:
+                return
+            try:
+                completed = self._cleanup_stale_staging()
+            except OSError:
+                return
+            if completed:
+                _CLEANED_STAGING_PATHS.add(self.staging_dir)
+
+    def _cleanup_stale_staging(self):
+        lock_fd = self._open_staging_lock()
+        try:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            cutoff = time.time() - _STAGING_ORPHAN_AGE_SECONDS
+            removed = False
+            for path in self.staging_dir.iterdir():
+                if not (path.name.startswith("blob-") and path.name.endswith(".part")):
+                    continue
+                try:
+                    info = path.lstat()
+                    if not stat.S_ISREG(info.st_mode) or info.st_mtime > cutoff:
+                        continue
+                    path.unlink()
+                    removed = True
+                except FileNotFoundError:
+                    continue
+            if removed:
+                _sync_directory(self.staging_dir)
+            return True
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
 
     def put_bytes(self, owner: str, content: bytes) -> Blob:
         return self.put(owner, (content,))
@@ -92,6 +154,21 @@ class BlobStore:
     def put(self, owner: str, chunks: Iterable[bytes]) -> Blob:
         if not isinstance(owner, str) or not owner:
             raise ValueError("blob owner must be a nonempty string")
+        lock_fd = self._open_staging_lock()
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_SH)
+        except BaseException:
+            os.close(lock_fd)
+            raise
+        try:
+            return self._put_locked(owner, chunks)
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
+
+    def _put_locked(self, owner: str, chunks: Iterable[bytes]) -> Blob:
         owner_digest = hashlib.sha256(owner.encode("utf-8")).hexdigest()
         fd, temporary_name = tempfile.mkstemp(prefix="blob-", suffix=".part", dir=self.staging_dir)
         temporary = Path(temporary_name)

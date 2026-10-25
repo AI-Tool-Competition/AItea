@@ -297,7 +297,7 @@ def source_reference_fields(source, link, parent_hash):
         or link.get("source_status") != "Current"
         or (
             link.get("document_date") is not None
-            and not re.fullmatch(r"\d{8}", str(link["document_date"]))
+            and not re.fullmatch(r"\d{8}(?:\d{6})?", str(link["document_date"]))
         )
     ):
         raise ValueError("SSO catalogue row identity or locator is invalid")

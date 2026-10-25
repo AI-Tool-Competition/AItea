@@ -117,7 +117,7 @@ def _sso_catalogue_evidence(source: dict, event: dict, url: str) -> dict | None:
     ):
         return None
     document_date = event.get("source_document_date")
-    if document_date is not None and not re.fullmatch(r"\d{8}", str(document_date)):
+    if document_date is not None and not re.fullmatch(r"\d{8}(?:\d{6})?", str(document_date)):
         return None
     try:
         detail_pairs = parse_qsl(urlsplit(url).query, keep_blank_values=True, max_num_fields=20)

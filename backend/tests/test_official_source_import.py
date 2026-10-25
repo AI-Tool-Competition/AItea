@@ -475,7 +475,7 @@ def test_sso_current_html_versions_keep_catalogue_identity_and_row_evidence(tmp_
     catalogue_hashes = [hashlib.sha256(f"catalogue-page-{index}".encode()).hexdigest() for index in (1, 2)]
     urls = [
         "https://sso.agc.gov.sg/SL/SFA1973-RG1?DocDate=20240520",
-        "https://sso.agc.gov.sg/SL/SFA1973-RG1?DocDate=20260101",
+        "https://sso.agc.gov.sg/SL/SFA1973-RG1?DocDate=20171229170000",
     ]
     cache = {}
     events = []
@@ -548,7 +548,7 @@ def test_sso_current_html_versions_keep_catalogue_identity_and_row_evidence(tmp_
         source_response = json.loads(row["manifest"])["source_response"]
         assert source_response["identity_key"] == "sso:sl:sfa1973-rg1"
         assert source_response["checklist_items"] == ["SG-1.3"]
-        assert source_response["document_date"] == ("20240520" if index == 1 else "20260101")
+        assert source_response["document_date"] == ("20240520" if index == 1 else "20171229170000")
         assert source_response["source_locator"]["row"] == index
         assert source_response["catalogue_sha256"] == catalogue_hashes[index - 1]
 

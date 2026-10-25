@@ -175,6 +175,14 @@ def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
     assert evidence["source_locator"] == document["source_locator"]
     assert evidence["source_status"] == "Current"
 
+    timestamped = {**document, "document_date": "20171229170000"}
+    assert collection.source_reference_fields(source_row, timestamped, hashlib.sha256(raw).hexdigest())[
+        "document_date"
+    ] == "20171229170000"
+    invalid = {**document, "document_date": "2017122917000"}
+    with pytest.raises(ValueError, match="row identity or locator"):
+        collection.source_reference_fields(source_row, invalid, hashlib.sha256(raw).hexdigest())
+
 
 def test_sso_frontier_replays_catalogue_rows_after_each_bounded_batch(tmp_path):
     source_row = {

@@ -202,10 +202,16 @@ def _catalog_state(url: str, page):
         or end != expected_end
         or end < start
         or number > MAX_PAGES
-        or (expected_total is not None and int(expected_total) != total)
     ):
         return None
-    return {"page": number, "start": start, "end": end, "total": total, "page_size": PAGE_SIZE}
+    state = {"page": number, "start": start, "end": end, "total": total, "page_size": PAGE_SIZE}
+    if expected_total is not None and int(expected_total) != total:
+        # The internal marker records the count seen on the previous page. It
+        # must not turn an otherwise valid live update into a permanent fetch
+        # failure. The current page's own count/range and detail links are
+        # still checked below, and the drift is retained as explicit evidence.
+        state.update(previous_total=int(expected_total), total_changed=True)
+    return state
 
 
 def _next_page_controls(pager, target_page: int):
@@ -389,7 +395,13 @@ def _catalog_result(url: str, content: bytes, mime: str, rules):
         links.append({"url": continuation, "purpose": "catalog", "title": f"目录第 {next_page} 页"})
     if len(links) > rules.max_links or len(links) > MAX_PAGE_LINKS:
         return _result(reason="央行官网目录候选超过单页限制。")
-    result = _result(matched=True, purpose="catalog", links=links)
+    warnings = []
+    if state.get("total_changed"):
+        warnings.append(
+            f"央行官网目录总量由 {state['previous_total']} 变为 {state['total']}；"
+            "当前页范围和详情已核验，后续按最新总量继续分页。"
+        )
+    result = _result(matched=True, purpose="catalog", links=links, warnings=warnings)
     result["scope"] = {
         "provider": "bi-official-regulations-v1",
         "catalog_sha256": hashlib.sha256(content).hexdigest(),

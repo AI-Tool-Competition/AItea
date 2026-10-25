@@ -81,11 +81,14 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 16
+    assert plan["version"] == 17
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
-    for item_id in ("1.8", "1.10", "2.4", "5.1"):
+    for item_id in ("1.8", "5.1"):
+        assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
+        assert items[item_id]["limits"]["download_timeout_seconds"] == 900
+    for item_id in ("1.10", "2.4", "4.4"):
         assert items[item_id]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
 
@@ -93,25 +96,28 @@ def test_oversized_official_law_items_have_explicit_bounded_caps(client):
 def test_large_source_caps_are_frozen_into_each_collection_run(client):
     configure(client)
     with closing(client.app.state.service.db.connect()) as conn:
-        for item_id in ("1.8", "5.1"):
+        for item_id in ("1.8", "5.1", "4.4"):
             run = discover(client, code=item_id, request=f"bounded-original-{item_id}")
             saved = conn.execute("SELECT plan FROM collection_runs WHERE id=?", (run["id"],)).fetchone()
             plan = json.loads(saved["plan"])
-            assert plan["max_original_bytes"] == 128 * 1024 * 1024
+            expected_bytes = 128 * 1024 * 1024 if item_id == "4.4" else 300 * 1024 * 1024
+            assert plan["max_original_bytes"] == expected_bytes
             assert plan["download_timeout_seconds"] == 900
 
 
-def test_indonesia_v16_uses_reachable_sources_and_keeps_version_history(client):
+def test_indonesia_v17_uses_reachable_sources_and_keeps_version_history(client):
     from app.contexts.ingestion.application.checklists import load_blueprint_version
 
     current = client.app.state.service.checklists.plans[PLAN]
     previous_v15 = load_blueprint_version(PLAN, 15)
+    previous_v16 = load_blueprint_version(PLAN, 16)
     previous_v14 = load_blueprint_version(PLAN, 14)
     previous_v13 = load_blueprint_version(PLAN, 13)
     previous = load_blueprint_version(PLAN, 12)
     previous_v11 = load_blueprint_version(PLAN, 11)
     current_ids = {item["id"] for item in current["items"]}
     previous_v15_ids = {item["id"] for item in previous_v15["items"]}
+    previous_v16_items = {item["id"]: item for item in previous_v16["items"]}
     previous_v14_ids = {item["id"] for item in previous_v14["items"]}
     previous_v13_ids = {item["id"] for item in previous_v13["items"]}
     previous_ids = {item["id"] for item in previous["items"]}
@@ -120,8 +126,11 @@ def test_indonesia_v16_uses_reachable_sources_and_keeps_version_history(client):
     removed_v14 = {"4.7", "5.3"}
     removed_v13 = {"5.2"}
     v11_removed = {"1.2", "1.9", "2.1", "2.2", "2.3", "3.2", "3.3", "3.4", "4.5"}
-    assert current["version"] == 16 and len(current_ids) == 16
+    assert current["version"] == 17 and len(current_ids) == 16
     assert current["limits"]["exhaustive_scope"] is False
+    assert previous_v16["version"] == 16 and len(previous_v16_items) == 16
+    assert previous_v16_items["1.8"]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
+    assert previous_v16_items["5.1"]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
     assert len(previous_v15_ids) == 16 and previous_v15["version"] == 15
     previous_v15_items = {item["id"]: item for item in previous_v15["items"]}
     assert "max_original_bytes" not in previous_v15_items["1.8"]["limits"]
@@ -159,6 +168,9 @@ def test_indonesia_v16_uses_reachable_sources_and_keeps_version_history(client):
     assert current_items["4.6"]["entries"][0]["url"] == (
         "https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia"
     )
+    assert current_items["4.4"]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
+    assert current_items["1.8"]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
+    assert current_items["5.1"]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
     assert "jdih.bi.go.id" not in {urlsplit(url).hostname for url in active_urls}
 
 
@@ -170,7 +182,7 @@ def test_indonesia_v14_preserves_official_kemenkeu_tax_catalog_and_historical_ve
     previous = load_blueprint_version(PLAN, 12)
     previous_v13 = load_blueprint_version(PLAN, 13)
     old_tax = next(item for item in previous["items"] if item["id"] == "4.3")
-    assert current["version"] == 16
+    assert current["version"] == 17
     assert tax["adapter"] == "kemenkeu_tax"
     assert tax["entries"][0]["url"] == (
         "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak"

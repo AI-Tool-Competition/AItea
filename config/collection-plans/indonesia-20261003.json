@@ -1,6 +1,6 @@
 {
   "id": "indonesia-20261003",
-  "version": 16,
+  "version": 17,
   "country": "ID",
   "title": "印度尼西亚法律 Agent 第一期采集清单",
   "source_document": {
@@ -518,7 +518,7 @@
       "execution": "discovery",
       "adapter": "bpk",
       "limits": {
-        "max_original_bytes": 134217728,
+        "max_original_bytes": 314572800,
         "download_timeout_seconds": 900
       }
     },
@@ -1019,7 +1019,10 @@
       "verbatim_requirements": "抓取内容标题 | 劳动｜Kemnaker正式规范及法律适用补强\n网页链接 | https://jdih.kemnaker.go.id/peraturan\n截图示范 | \n\n抓取注意事项 | 采集步骤：在Kemnaker按类型、年份和劳动事项筛选，点击列表截图红框内的法规条目进入详情页；在详情页红框内 FILE-FILE PERATURAN 区域点击 Dokumen 下载 PDF 法律文件，保存正文、附件及实施依据。同步抓取保存 Metadata 栏全部法规元数据，包括页面实际提供的文档类型、完整标题、制定机关／主要著录项、编号、年份、法规形式、简称、制定地点、制定日期、公布日期、来源、存放机构、主题及效力状态；关联页面提供的修改废止关系及审查记录，记录详情页链接、PDF链接和采集时间。空白、横线或异常值原样留存并标记待核，日期不得推定补齐；截图中的宪法文件仅为操作示范，不扩大劳动采集范围。与主库去重；工资、THR、外籍员工等材料须核适用期间。\n内容取舍：合同、工资、节日津贴、解雇、劳动责任及外籍用工的法定条件必须收录，年度金额与附件不能省略。培训通知、机关人事、办事操作及申请教程不收。\n检索适用：劳动问题先查UU及PP，再调用Permenaker和相关规范性决定、通函；工资等地域性要求同时核对应地方规则，按劳动关系主体和事实时点匹配。\n冲突与更新：年度通函与正式法规分别判断权限和效力，不能将当年要求当作永久规则。核后续修订、上位法变更及司法意见，按期间并存版本，失效文本退出现行召回。",
       "execution": "discovery",
       "adapter": "html_links",
-      "limits": {}
+      "limits": {
+        "max_original_bytes": 134217728,
+        "download_timeout_seconds": 900
+      }
     },
     {
       "id": "4.6",
@@ -1178,7 +1181,7 @@
       "limits": {
         "exhaustive_catalog": true,
         "prioritize_legal_topics": true,
-        "max_original_bytes": 134217728,
+        "max_original_bytes": 314572800,
         "download_timeout_seconds": 900
       },
       "trusted_hosts": [

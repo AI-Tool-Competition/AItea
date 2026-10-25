@@ -85,7 +85,15 @@ def test_catalog_requires_full_page_range_matches_detail_rows_and_continues_one_
     changed_total = inspect(
         catalog_url(2, expected_total=20), catalog_page(2, total=30), "text/html", _Recipe(RULES)
     )
-    assert not changed_total["matched"]
+    assert changed_total["matched"]
+    assert changed_total["scope"]["total"] == 30
+    assert changed_total["scope"]["previous_total"] == 20
+    assert changed_total["scope"]["total_changed"] is True
+    assert changed_total["warnings"] == [
+        "央行官网目录总量由 20 变为 30；当前页范围和详情已核验，后续按最新总量继续分页。"
+    ]
+    continuation = [link for link in changed_total["links"] if link["purpose"] == "catalog"]
+    assert continuation == [{"url": catalog_url(3, expected_total=30), "purpose": "catalog", "title": "目录第 3 页"}]
 
     incomplete = catalog_page(1).replace(
         b"/id/publikasi/peraturan/Pages/PBI_102026.aspx", b"/outside/PBI_102026.aspx"

@@ -27,6 +27,8 @@ from app.contexts.documents.infrastructure.providers.vision import (
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MINERU_REBUILD_CPU_SECONDS = 90
+_MINERU_REBUILD_TIMEOUT_SECONDS = 120
 
 
 class ProcessingDeferred(ValueError):
@@ -301,12 +303,13 @@ def _run_bounded(worker: Callable, args: tuple, timeout: float) -> dict:
 
 
 def _auxiliary_worker(connection, operation: str, payload) -> None:
-    """Rendering/reassembly get their own per-page CPU and memory deadline."""
+    """Rendering/reassembly get bounded CPU and memory deadlines."""
     try:
         import resource
 
         resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
-        resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
+        cpu_limit = _MINERU_REBUILD_CPU_SECONDS if operation == "mineru_rebuild" else 35
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit,) * 2)
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         if operation == "render":
             result = _render_pdf_page(*payload)
@@ -715,7 +718,11 @@ def rebuild_pdf_bounded(manifest: dict) -> dict:
 
         return archive_rebuild_bounded(manifest)
     if manifest.get("parser") == "mineru":
-        return _run_bounded(_auxiliary_worker, ("mineru_rebuild", manifest), 45)
+        return _run_bounded(
+            _auxiliary_worker,
+            ("mineru_rebuild", manifest),
+            _MINERU_REBUILD_TIMEOUT_SECONDS,
+        )
     return _run_bounded(_auxiliary_worker, ("assemble", manifest), 45)
 
 

@@ -136,6 +136,42 @@ def test_accepted_visual_fallback_replaces_only_that_page_and_rebuilds_chunks():
     assert rebuilt["remote_parse"]["state"] == "done"
 
 
+def test_large_mineru_rebuild_has_a_bounded_document_scale_cpu_window(monkeypatch):
+    import resource
+
+    from app.contexts.documents.infrastructure.providers import mineru_visual_page_retry
+
+    limits = []
+    sent = []
+
+    class Connection:
+        def send_bytes(self, payload):
+            sent.append(json.loads(payload))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(resource, "setrlimit", lambda kind, value: limits.append((kind, value)))
+    monkeypatch.setattr(mineru_visual_page_retry, "rebuild_manifest", lambda value: value)
+    payload = {"parser": "mineru", "pages": []}
+    document_parser._auxiliary_worker(Connection(), "mineru_rebuild", payload)
+
+    assert (resource.RLIMIT_CPU, (document_parser._MINERU_REBUILD_CPU_SECONDS,) * 2) in limits
+    assert sent == [{"result": payload}]
+
+    bounded_call = {}
+
+    def run_bounded(worker, args, timeout):
+        bounded_call.update(worker=worker, args=args, timeout=timeout)
+        return payload
+
+    monkeypatch.setattr(document_parser, "_run_bounded", run_bounded)
+    assert document_parser.rebuild_pdf_bounded(payload) == payload
+    assert bounded_call["worker"] is document_parser._auxiliary_worker
+    assert bounded_call["args"] == ("mineru_rebuild", payload)
+    assert bounded_call["timeout"] == document_parser._MINERU_REBUILD_TIMEOUT_SECONDS
+
+
 def test_visual_result_without_structured_table_stays_in_review():
     rebuilt = rebuild_manifest(_manifest("Code 0101, rate 0%"))
     assert rebuilt["pages"][0]["status"] == "ocr_uncertain"

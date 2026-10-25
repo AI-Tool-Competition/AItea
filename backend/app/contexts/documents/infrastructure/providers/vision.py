@@ -22,10 +22,10 @@ import httpx
 
 from app.configuration.paths import InstancePaths
 
-PROMPT_VERSION = "legal-page-transcription-v3"
+PROMPT_VERSION = "legal-page-transcription-v4"
 PAGE_REQUEST_RECIPE = (
     "page-png-high-physical-page-scope-v1-masked-unverified-native-hint-v1-"
-    "or-native-hint-20000-json-temperature0-max16384-conditional-nonthinking-v3"
+    "or-native-hint-20000-json-temperature0-max16384-conditional-nonthinking-table-grid-v4"
 )
 MAX_PAGE_TEXT = 100_000
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -39,7 +39,11 @@ Copy ALL visible text in reading order, including headers, article/paragraph
 numbers, dates, footnotes, signatures, stamps and appendix titles. Do not summarize,
 translate, correct the law, supply missing words, or infer legal status. Preserve
 paragraph breaks. Write tables as Markdown tables with every visible row and cell;
-do not flatten columns into prose. Keep handwritten/illegible regions as [illegible]
+do not flatten columns into prose. Give each distinct table its own block. Before
+returning, count the columns in each table's header and verify that its separator
+and every data row have exactly the same number of cells. Never drop a cell to make
+the row fit; when the image does not show a boundary clearly, preserve the visible
+text and report table_layout_not_preserved in uncertain_spans. Keep handwritten/illegible regions as [illegible]
 and list each uncertainty. Completeness refers ONLY to the visible printed
 content on this physical page. A sentence, article, numbered list, table row,
 or hyphenated word may legitimately continue on the next page. Preserve its

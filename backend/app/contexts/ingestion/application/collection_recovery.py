@@ -311,6 +311,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         fallback_attempts,
         is_mineru_table_review,
         is_visual_fallback_page,
+        markdown_table_is_consistent,
         missing_visual_provider_pages,
     )
     from app.contexts.documents.infrastructure.providers.vision import vision_ocr_configured
@@ -363,6 +364,16 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                     or _saved_visual_provider_retry(page) is not None
                 )
             )
+            visual_table_quality_retry = (
+                vision_ready
+                and visual_fallback
+                and visual_attempts < MAX_MINERU_VISUAL_RETRIES
+                and status == "ocr_complete"
+                and metadata.get("complete") is True
+                and not metadata.get("uncertain_spans")
+                and isinstance(page.get("text"), str)
+                and not markdown_table_is_consistent(page["text"])
+            )
             mineru_table_retry = is_mineru_table_review(page) and not visual_fallback
             # MinerU's page-level chart/table warning is not a failed vision
             # request. Ambiguous tables have a separate, page-bounded visual
@@ -383,26 +394,25 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             )
             eligible = (
                 status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
-                and (
-                    mineru_table_retry
-                    or unknown
-                    or pending_visual_retry
-                    or (
-                        vision_page
-                        and (
-                            metadata.get("complete") is False
-                            or status == "ocr_uncertain"
-                            or (
-                                status == "ocr_failed"
-                                and isinstance(metadata.get("error_response"), dict)
-                                and isinstance(metadata["error_response"].get("blob"), dict)
-                            )
+                or visual_table_quality_retry
+            ) and (
+                mineru_table_retry
+                or unknown
+                or pending_visual_retry
+                or visual_table_quality_retry
+                or (
+                    vision_page
+                    and (
+                        metadata.get("complete") is False
+                        or status == "ocr_uncertain"
+                        or (
+                            status == "ocr_failed"
+                            and isinstance(metadata.get("error_response"), dict)
+                            and isinstance(metadata["error_response"].get("blob"), dict)
                         )
                     )
                 )
-                and type(page.get("page")) is int
-                and page["page"] > 0
-            )
+            ) and type(page.get("page")) is int and page["page"] > 0
             if not eligible:
                 continue
             cycles = page.get("ocr_retry_cycles", [])

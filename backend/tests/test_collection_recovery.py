@@ -22,6 +22,7 @@ from app.contexts.documents.infrastructure.parsers.native_parser import (
     parse_file,
 )
 from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
+from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import MAX_RETRY_CYCLES
 from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
     preserve_previous_asset_attempt,
     persist_response_evidence,
@@ -489,7 +490,7 @@ def test_incomplete_vision_page_and_mineru_table_review_are_retried_visually():
     assert decision.pages == (4,)
 
 
-def test_mineru_visual_fallback_retries_incomplete_output_only_three_quality_cycles():
+def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_cycles():
     page = {
         "page": 4,
         "status": "ocr_uncertain",
@@ -505,9 +506,122 @@ def test_mineru_visual_fallback_retries_incomplete_output_only_three_quality_cyc
     decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.reason == "ocr_quality_retry" and decision.pages == (4,)
 
-    page["ocr_fallback"]["attempts"] = 3
+    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES - 1
+    decision = classify_processing({"pages": [page]}, phase="parse")
+    assert decision.retryable and decision.pages == (4,)
+
+    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES
     decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.reason == "quality_review" and not decision.retryable
+
+
+def test_complete_visual_fallback_with_malformed_markdown_table_is_retryable(monkeypatch):
+    from app.contexts.documents.infrastructure.providers import vision
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+        MAX_RETRY_CYCLES,
+        PROTOCOL,
+    )
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    page = {
+        "page": 213,
+        "status": "ocr_complete",
+        "text": "| Code | Rate |\n| --- | --- |\n| 0101 | 2% | Extra |",
+        "ocr_fallback": {"protocol": PROTOCOL, "attempts": 3},
+        "ocr": {
+            "provider": "vision",
+            "prompt_version": "legal-page-transcription-v3",
+            "request_id": "completed-request",
+            "complete": True,
+            "uncertain_spans": [],
+        },
+    }
+
+    decision = classify_processing({"pages": [page]}, phase="parse")
+
+    assert decision.reason == "ocr_quality_retry"
+    assert decision.retryable and decision.pages == (213,)
+    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES
+    assert not classify_processing({"pages": [page]}, phase="parse").retryable
+
+
+def test_blocked_complete_visual_table_failure_is_automatically_requeued(service, monkeypatch):
+    from app.contexts.documents.infrastructure.providers import vision
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import PROTOCOL
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    content = make_pdf([("Original tariff table", False)])
+    original = service.archive.blobs.put_bytes("owner", content)
+    manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_complete",
+        source_hash=original.digest,
+        text="| Code | Rate |\n| --- | --- |\n| 0101 | 2% | Extra |",
+        ocr={
+            "provider": "vision",
+            "prompt_version": "legal-page-transcription-v3",
+            "request_id": "completed-request",
+            "complete": True,
+            "uncertain_spans": [],
+        },
+        ocr_fallback={"protocol": PROTOCOL, "attempts": 3},
+    )
+    page["ocr"]["text_sha256"] = hashlib.sha256(page["text"].encode()).hexdigest()
+    manifest["parser"] = "mineru"
+    manifest["parser_version"] = "api-v4"
+    manifest["pipeline_version"] = "mineru-precise-v1+layout-token-hierarchical-v2"
+
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.pdf",
+            "application/pdf",
+            "https://official.invalid/law.pdf",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="malformed-visual-table-auto-retry",
+            kind_hint="law",
+        )
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=1,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 1},
+            processing=True,
+            decision=Decision("processing_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    result = service.collection.recovery.run_due(limit=32)
+
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+
+    assert tuple(job) == ("parse", "queued")
+    assert recovery["status"] == "queued"
+    assert saved["pages"][0]["status"] == "pending_ocr"
+    assert saved["pages"][0]["ocr_fallback"]["attempts"] == 4
+    assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["text"] == page["text"]
 
 
 def test_pending_mineru_visual_fallback_retries_after_interrupted_parse(monkeypatch):
@@ -562,7 +676,7 @@ def test_pending_mineru_visual_fallback_retries_saved_provider_error_past_qualit
         "page": 4,
         "source_hash": source_hash,
         "status": "pending_ocr",
-        "ocr_fallback": {"protocol": PROTOCOL, "attempts": 3},
+        "ocr_fallback": {"protocol": PROTOCOL, "attempts": MAX_RETRY_CYCLES},
         "ocr": {"attempts": 0},
         "ocr_retry_cycles": [
             {
@@ -629,7 +743,8 @@ def test_pending_mineru_visual_fallback_retries_archived_unknown_request(monkeyp
 
 
 @pytest.mark.parametrize(
-    ("validator_accepts", "attempts", "expected"), [(True, 2, True), (False, 2, False), (True, 3, False)]
+    ("validator_accepts", "attempts", "expected"),
+    [(True, 2, True), (False, 2, False), (True, MAX_RETRY_CYCLES, False)],
 )
 def test_mineru_visual_page_with_missing_provider_tag_is_retried_only_when_receipt_valid(
     monkeypatch, validator_accepts, attempts, expected
@@ -939,7 +1054,7 @@ def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(ser
         source_hash=document["content_hash"],
         reasons=["table_structure_ambiguous"],
         text="Original MinerU tariff row",
-        ocr_fallback={"protocol": PROTOCOL, "attempts": 3, "source_page": page["page"]},
+        ocr_fallback={"protocol": PROTOCOL, "attempts": MAX_RETRY_CYCLES, "source_page": page["page"]},
         ocr={"attempts": 0},
     )
     previous = bound_failed_vision_page(service, deepcopy(page))
@@ -987,7 +1102,7 @@ def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(ser
         ).fetchone()
     assert tuple(recovery) == ("queued", "mineru_visual_table_retry")
     assert saved["pages"][0]["status"] == "pending_ocr"
-    assert saved["pages"][0]["ocr_fallback"]["attempts"] == 3
+    assert saved["pages"][0]["ocr_fallback"]["attempts"] == MAX_RETRY_CYCLES
 
 
 def test_blocked_mineru_download_resumes_existing_batch_without_resubmitting(service):

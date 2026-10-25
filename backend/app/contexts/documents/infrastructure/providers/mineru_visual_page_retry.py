@@ -6,7 +6,7 @@ import re
 from copy import deepcopy
 
 PROTOCOL = "mineru-table-visual-page-v1"
-MAX_RETRY_CYCLES = 3
+MAX_RETRY_CYCLES = 8
 
 
 def is_mineru_table_review(page: dict) -> bool:

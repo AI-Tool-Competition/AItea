@@ -23,6 +23,9 @@ MAX_ELEMENTS = 20_000
 
 
 MAX_PAGES = 300
+_ACCESS_DATABASE_MIMES = frozenset(
+    {"application/msaccess", "application/x-msaccess", "application/vnd.ms-access"}
+)
 
 
 def _parse_html(content: bytes) -> ParsedDocument:
@@ -397,12 +400,17 @@ def parse_file(
         raise ValueError("secondary 文档仅保存原件，禁止解析或建立索引。")
     if not content or len(content) > MAX_BYTES:
         raise ValueError("文档不能为空且不能超过 20 MB。")
-    from app.contexts.documents.infrastructure.providers.mineru import pending_manifest, supports
-
     extension = Path(filename).suffix.lower()
-    if extension in {".html", ".htm"} or mime_type.split(";", 1)[0].strip().lower() == "text/html":
+    normalized_mime = mime_type.split(";", 1)[0].strip().lower()
+    if extension in {".html", ".htm"} or normalized_mime == "text/html":
         document = _parse_html(content)
         return _parsed_result(document, hashlib.sha256(content).hexdigest(), Path(filename).stem)
+    if extension in {".mdb", ".accdb"} or normalized_mime in _ACCESS_DATABASE_MIMES:
+        raise ValueError(
+            "当前 MinerU API 处理链不支持 Microsoft Access 数据库（MDB/ACCDB），不会将其作为已解析正文加入检索。"
+        )
+    from app.contexts.documents.infrastructure.providers.mineru import pending_manifest, supports
+
     if supports(filename, mime_type):
         return pending_manifest(filename, hashlib.sha256(content).hexdigest())
     if extension not in {".txt", ".md", ".markdown"}:

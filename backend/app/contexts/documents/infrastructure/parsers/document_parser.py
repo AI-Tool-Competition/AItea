@@ -719,6 +719,56 @@ def rebuild_pdf_bounded(manifest: dict) -> dict:
     return _run_bounded(_auxiliary_worker, ("assemble", manifest), 45)
 
 
+def _mineru_page_index_state(manifest: dict) -> tuple:
+    """Capture page fields that can change MinerU-derived searchable content."""
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+        is_visual_fallback_page,
+    )
+
+    return tuple(
+        (
+            page.get("page"),
+            page.get("source_hash"),
+            page.get("text"),
+            page.get("printed_page"),
+            page.get("status"),
+            pdf_page_status(page),
+            tuple(page.get("reasons", [])),
+            is_visual_fallback_page(page),
+            (page.get("ocr_fallback") or {}).get("accepted") is True,
+        )
+        for page in manifest.get("pages", [])
+    )
+
+
+def _mineru_index_rebuild_needed(previous: dict, updated: dict) -> bool:
+    """Avoid rebuilding thousands of chunks for retry-metadata-only checkpoints."""
+    if not isinstance(previous.get("elements"), list) or not isinstance(previous.get("chunks"), list):
+        return True
+    if _mineru_page_index_state(previous) != _mineru_page_index_state(updated):
+        return True
+
+    # A page checkpoint is persisted before the derived manifest. If a worker
+    # was interrupted after a successful visual transcription, the next batch
+    # must still accept that page and replace its old MinerU table element.
+    from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
+        is_visual_fallback_page,
+    )
+
+    return any(
+        is_visual_fallback_page(page)
+        and page.get("status") == "ocr_complete"
+        and pdf_page_status(page) == "ocr_complete"
+        and (page.get("ocr") or {}).get("provider") == "vision"
+        and (page.get("ocr") or {}).get("complete") is True
+        and not (page.get("ocr") or {}).get("uncertain_spans")
+        and (page.get("ocr_fallback") or {}).get("accepted") is not True
+        for page in updated.get("pages", [])
+    )
+
+
 def ocr_bounded(
     filename: str,
     content: bytes | None,
@@ -822,9 +872,24 @@ def ocr_bounded(
                 pages[page["page"] - 1] = page
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
-    # Also rebuild when resuming after the very last page checkpoint, or when
-    # no pages are pending. Cached chunks may precede the checkpointed text.
-    rebuilt = rebuild_pdf_bounded(result)
+    # Retry attempts and provider errors are checkpointed even when the page's
+    # accepted text is unchanged. Rechunking a large MinerU manifest for those
+    # metadata-only updates can exceed the bounded worker's CPU limit. Keep the
+    # quality summary current while avoiding that unnecessary full rebuild.
+    if result.get("parser") == "mineru" and not _mineru_index_rebuild_needed(manifest, result):
+        from app.contexts.documents.infrastructure.parsers.native_parser import pdf_quality
+
+        existing_quality = result.get("quality")
+        result["quality"] = {
+            **(existing_quality if isinstance(existing_quality, dict) else {}),
+            **pdf_quality(result["pages"]),
+        }
+        rebuilt = result
+    else:
+        # Also rebuild when resuming after a successful page checkpoint: the
+        # current batch may contain no pending pages, but the cached chunks can
+        # still predate that checkpoint.
+        rebuilt = rebuild_pdf_bounded(result)
     retry_at = [
         page.get("ocr", {}).get("retry_not_before", 0)
         for page in rebuilt.get("pages", [])

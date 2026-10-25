@@ -71,6 +71,16 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(result["chunks"], [])
         self.assertEqual(result["remote_parse"]["state"], "planned")
 
+    def test_access_databases_are_explicitly_excluded_from_the_mineru_pipeline(self):
+        for filename, mime_type in (
+            ("tariff.mdb", "application/msaccess"),
+            ("archive.accdb", "application/octet-stream"),
+            ("archive.bin", "application/vnd.ms-access; charset=binary"),
+        ):
+            with self.subTest(filename=filename, mime_type=mime_type):
+                with self.assertRaisesRegex(ValueError, "MinerU API.*不支持 Microsoft Access"):
+                    native.parse_file(filename, b"stored database bytes", mime_type)
+
     def test_docx_compressed_xml_bomb_is_never_expanded_locally(self):
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:

@@ -1,6 +1,8 @@
 import hashlib
 import json
+import time
 from contextlib import closing
+from copy import deepcopy
 
 from app.bootstrap import Service
 from app.contexts.documents.infrastructure.parsers import document_parser
@@ -245,6 +247,53 @@ def test_bounded_ocr_accepts_large_mineru_manifest_with_small_batch(monkeypatch,
         archive_size=len(content),
     )
     assert len(rebuilt["pages"]) == 380
+
+
+def test_bounded_ocr_skips_rechunking_when_only_retry_metadata_changes(monkeypatch):
+    content = b"source-bound MinerU fixture"
+    source_hash = hashlib.sha256(content).hexdigest()
+    manifest = _manifest("| Code | Rate |\n| --- | --- |\n| 0101 | 0% |")
+    manifest["source_hash"] = source_hash
+    manifest["remote_parse"]["source_hash"] = source_hash
+    for page in manifest["pages"]:
+        page["source_hash"] = source_hash
+    for element in manifest["elements"]:
+        element["locator"]["source_hash"] = source_hash
+    manifest["pages"][0].update(
+        status="pending_ocr",
+        ocr_fallback={"protocol": PROTOCOL, "attempts": 1},
+        ocr={"provider": "vision", "attempts": 1},
+    )
+
+    def retry_checkpoint(_content, page, *_args, **_kwargs):
+        updated = deepcopy(page)
+        updated["ocr"].update(attempts=2, retry_not_before=time.time() + 30)
+        updated.update(status="pending_ocr", deferred_reason="provider_retry")
+        return updated
+
+    monkeypatch.setattr(
+        "app.contexts.documents.infrastructure.providers.vision.vision_ocr_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(document_parser, "_ocr_one_page", retry_checkpoint)
+    monkeypatch.setattr(
+        document_parser,
+        "rebuild_pdf_bounded",
+        lambda _manifest: (_ for _ in ()).throw(AssertionError("unnecessary full rebuild")),
+    )
+
+    rebuilt = document_parser.ocr_bounded(
+        "rcep.pdf",
+        content,
+        "application/pdf",
+        manifest,
+        max_pages=1,
+    )
+
+    assert rebuilt["pages"][0]["ocr"]["attempts"] == 2
+    assert rebuilt["chunks"] == manifest["chunks"]
+    assert rebuilt["quality"]["pending_pages"] == [1]
+    assert rebuilt["quality"]["retry_after_seconds"] > 0
 
 
 def test_collection_worker_runs_visual_fallback_and_indexes_rebuilt_table(monkeypatch, tmp_path):

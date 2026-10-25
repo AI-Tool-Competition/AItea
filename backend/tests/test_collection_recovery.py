@@ -25,6 +25,7 @@ from app.contexts.documents.infrastructure.providers import native_asset_ocr, vi
 from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import MAX_RETRY_CYCLES
 from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
     preserve_previous_asset_attempt,
+    preserve_previous_page_attempt,
     persist_response_evidence,
 )
 from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import bind_linked_image_bounded
@@ -445,6 +446,70 @@ def test_page_recovery_preserves_history_without_recursively_copying_old_cycles(
     assert cycles[-1]["previous_page"]["text"] == "Previous OCR output"
     assert "ocr_retry_cycles" not in cycles[-1]["previous_page"]
     assert stored_manifest["pages"][0]["status"] == "pending_ocr"
+
+
+def test_page_attempt_history_does_not_duplicate_automatic_retry_cycles():
+    page = {
+        "page": 4,
+        "source_hash": "a" * 64,
+        "status": "ocr_failed",
+        "text": "last accepted text",
+        "ocr": {"attempts": 1, "request_id": "attempt-1"},
+        "ocr_retry_cycles": [{"previous_page": {"text": "older output"}} for _ in range(24)],
+    }
+
+    preserve_previous_page_attempt(page)
+
+    history = page["ocr_attempt_history"]
+    assert len(history) == 1
+    assert history[0]["previous_page"]["text"] == "last accepted text"
+    assert "ocr_retry_cycles" not in history[0]["previous_page"]
+    assert len(page["ocr_retry_cycles"]) == 24
+
+
+def test_page_recovery_accepts_bounded_recent_history_after_many_retry_cycles(service):
+    content = make_pdf([("Official text", False)])
+    original = service.archive.blobs.put_bytes("owner", content)
+    manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
+    page = manifest["pages"][0]
+    page.update(
+        status="ocr_failed",
+        text="Previous OCR output",
+        ocr={"attempts": 1, "request_outcome": "unknown_transport_result", "prompt_version": "vision-v1"},
+        ocr_retry_cycles=[{"protocol": "old", "previous_page": {"text": "older output"}} for _ in range(24)],
+        ocr_attempt_history=[{"previous_page": {"text": "x" * 800_000}} for _ in range(3)],
+    )
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.pdf",
+            "application/pdf",
+            "https://official.invalid/law.pdf",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="retry-large-attempt-history",
+            kind_hint="law",
+        )
+        conn.execute("UPDATE documents SET manifest=? WHERE id=?", (dump(manifest), document["id"]))
+        service.collection.recovery._retry_pages(
+            conn,
+            {"owner_id": "owner", "id": "recovery", "recovery_count": 24},
+            {"id": document["id"], "version": 1, "content_hash": original.digest},
+            manifest,
+            Decision("paid_ocr_retry", True, pages=(1,)),
+        )
+
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0])
+    page = saved["pages"][0]
+    cycle = page["ocr_retry_cycles"][-1]
+    assert len(cycle["previous_page"]["ocr_attempt_history"]) == 3
+    assert "ocr_retry_cycles" not in cycle["previous_page"]
+    assert page["status"] == "pending_ocr"
+    assert page["ocr"] == {"attempts": 0}
 
 
 def test_incomplete_vision_page_and_mineru_table_review_are_retried_visually():

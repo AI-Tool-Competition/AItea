@@ -28,6 +28,7 @@ MAX_RECOVERY_SECONDS = 24 * 60 * 60
 OCR_AUTOMATIC_RETRY_REASONS = frozenset({"ocr_quality_retry", "paid_ocr_retry", "mineru_visual_table_retry"})
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
+MAX_AUTOMATIC_OCR_CHECKPOINT_BYTES = 8 * 1024 * 1024
 MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 3
 MAX_HTML_PARSER_REFRESH_ATTEMPTS = 3
 PROCESSING_QUEUE_LIMIT = 200
@@ -1219,7 +1220,7 @@ class CollectionRecovery:
                 "previous_page_sha256": _digest(previous),
             }
             encoded = _encoded(payload)
-            if len(encoded) > 2 * 1024 * 1024:
+            if len(encoded) > MAX_AUTOMATIC_OCR_CHECKPOINT_BYTES:
                 raise ValueError("retry_page_checkpoint_too_large")
             blob = self.service.archive.blobs.put_bytes(row["owner_id"], encoded)
             reference = {

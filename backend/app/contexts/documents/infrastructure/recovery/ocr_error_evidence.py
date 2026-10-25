@@ -68,7 +68,14 @@ def preserve_previous_page_attempt(page):
     history = page.get("ocr_attempt_history", [])
     if not isinstance(history, list) or len(history) > 3:
         raise ValueError("识别尝试历史格式无效")
-    previous = {key: deepcopy(value) for key, value in page.items() if key != "ocr_attempt_history"}
+    # Retry cycles are already preserved on the current page and in the
+    # recovery checkpoint chain. Copying that growing list into each individual
+    # provider-attempt snapshot makes page history grow quadratically.
+    previous = {
+        key: deepcopy(value)
+        for key, value in page.items()
+        if key not in {"ocr_attempt_history", "ocr_retry_cycles"}
+    }
     raw = json.dumps(
         previous, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode()

@@ -897,8 +897,31 @@
       ],
       "verification": {
         "official_evidence_url": "https://jdih.setneg.go.id/",
-        "checked_at": "2026-10-20T07:34:18.470485+00:00",
-        "server_status": "http_404_pending_spaced_recheck",
+        "checked_at": "2026-10-25T13:34:17.717167+00:00",
+        "official_identity": "Kementerian Sekretariat Negara JDIH publishes the official Indonesian national law catalogue through its read-only instrument API.",
+        "business_use": "Capture PERPU national law records and official-file references for checklist item ID-1.4; legal status remains unreviewed.",
+        "checklist_items": [
+          "ID-1.4"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-setneg-20261025/perpu-receipt.json",
+        "server_receipt_sha256": "8834bf56e83b5fb690d8898315472c66edca4d9f8a8f8e0c888c4782219498fd",
+        "body_sha256": "a9c6c79baea3fb97848919e2f0106cf4731ab0ae2621128c9ea7420861be3bcd",
+        "limitations": [
+          "代理核验目录首页 200，共发现 33 条；本次只解析起始页 33 条并抽样一条详情及原件入口，不等于全目录已抓取或法律效力已审核。",
+          "按固定 50 条分页持续轮询；官方字段、详情和原件保留来源证据，适用性及版本关系仍须单独复核。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-25T13:34:17.717167+00:00",
+          "status": "success",
+          "http_status": 200,
+          "response_bytes": 15679,
+          "catalogue_total": 33,
+          "catalogue_rows": 33,
+          "detail_probe_matched": true,
+          "official_original_candidates": 1,
+          "request_method": "POST"
+        },
         "historical_success": {
           "catalogue_record_count": 33,
           "acquired_records": 23,
@@ -906,29 +929,43 @@
           "catalogue_raw_sha256": "ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774",
           "catalogue_path": "/data/wenbo/Projects/AItea/.dev/ingestion-continuation-20261020/periodic-official-validation-20261020/id-perpu/cycles/cycle-000001-dc1edd77b69b/source/files/blobs/923b237dba3b279b3c1c158b6817cc58fdd8acf8487b83889b858c8bacf27349/ca/0d/ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774"
         },
-        "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/setneg-catalogue-check/verification.json",
-        "server_receipt_sha256": "0b2762de9a018cf1d7b6be1c3160380ee372c112803fdc13edacdd8bc1a155f8",
-        "limitations": [
-          "2026-10-20本次length20与原length50目录均HTTP404；不是当前可达来源或已经过期网站的结论。",
-          "需要精确源recipe的setneg_type=PERPU与固定jns，并只在此源允许受限JSON压缩。",
-          "历史原件和15来源账本应保留；本条只新增来源，不重置模型尝试或旧HTTP请求计数。"
-        ],
-        "collector_scope_note": "Retains exact prior PERPU catalogue endpoint; 50 rows plus next page bounded to 51 links; historical originals retained, current 404 pending recheck."
+        "prior_probe_and_retirement": {
+          "verification": {
+            "official_evidence_url": "https://jdih.setneg.go.id/",
+            "checked_at": "2026-10-20T07:34:18.470485+00:00",
+            "server_status": "http_404_pending_spaced_recheck",
+            "historical_success": {
+              "catalogue_record_count": 33,
+              "acquired_records": 23,
+              "assets": 24,
+              "catalogue_raw_sha256": "ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774",
+              "catalogue_path": "/data/wenbo/Projects/AItea/.dev/ingestion-continuation-20261020/periodic-official-validation-20261020/id-perpu/cycles/cycle-000001-dc1edd77b69b/source/files/blobs/923b237dba3b279b3c1c158b6817cc58fdd8acf8487b83889b858c8bacf27349/ca/0d/ca0de2e78b1c3d03c8c9ca9d8b5b9b02a5638257e796a9ea4c2d8e3355e46774"
+            },
+            "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/setneg-catalogue-check/verification.json",
+            "server_receipt_sha256": "0b2762de9a018cf1d7b6be1c3160380ee372c112803fdc13edacdd8bc1a155f8",
+            "limitations": [
+              "2026-10-20本次length20与原length50目录均HTTP404；不是当前可达来源或已经过期网站的结论。",
+              "需要精确源recipe的setneg_type=PERPU与固定jns，并只在此源允许受限JSON压缩。",
+              "历史原件和15来源账本应保留；本条只新增来源，不重置模型尝试或旧HTTP请求计数。"
+            ],
+            "collector_scope_note": "Retains exact prior PERPU catalogue endpoint; 50 rows plus next page bounded to 51 links; historical originals retained, current 404 pending recheck."
+          },
+          "retirement": {
+            "reason": "repeated_http_404",
+            "reviewed_at": "2026-10-24",
+            "evidence": {
+              "http_status": 404,
+              "consecutive_failures": 8,
+              "last_checked_at": "2026-10-24T02:05:05Z",
+              "state_source": "data/official-updates/ID/state.json"
+            },
+            "note": "经现有采集回执反复返回 404，移出活动轮询；保留稳定来源编号、清单关联和历史证据。恢复时须校正官方入口并重新启用。"
+          }
+        }
       },
-      "status": "archived",
+      "status": "active",
       "transport": "proxy",
-      "group_id": "id-general-law",
-      "retirement": {
-        "reason": "repeated_http_404",
-        "reviewed_at": "2026-10-24",
-        "evidence": {
-          "http_status": 404,
-          "consecutive_failures": 8,
-          "last_checked_at": "2026-10-24T02:05:05Z",
-          "state_source": "data/official-updates/ID/state.json"
-        },
-        "note": "经现有采集回执反复返回 404，移出活动轮询；保留稳定来源编号、清单关联和历史证据。恢复时须校正官方入口并重新启用。"
-      }
+      "group_id": "id-general-law"
     },
     {
       "id": "id-bpk-regulations",
@@ -1076,6 +1113,168 @@
         "page_size": 500,
         "cache_limit": 10000
       }
+    },
+    {
+      "id": "id-setneg-uu",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚国家秘书处 UU 正式法规目录",
+      "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0",
+      "priority": 90,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.setneg.go.id"
+      ],
+      "discovery_keywords": [
+        "UU",
+        "Undang-Undang",
+        "undang undang"
+      ],
+      "setneg_type": "UU",
+      "verification": {
+        "official_evidence_url": "https://jdih.setneg.go.id/",
+        "checked_at": "2026-10-25T13:34:15.716894+00:00",
+        "official_identity": "Kementerian Sekretariat Negara JDIH publishes the official Indonesian national law catalogue through its read-only instrument API.",
+        "business_use": "Capture UU national law records and official-file references for checklist item ID-1.3; legal status remains unreviewed.",
+        "checklist_items": [
+          "ID-1.3"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-setneg-20261025/uu-receipt.json",
+        "server_receipt_sha256": "113cf44cfba4f84b311a3b9d14fa8ab9d9356b8ed0091e649644357118fe0908",
+        "body_sha256": "fe516bbf4c02cfb7b150b82604a4726361396d09dfbf2f59a41614449f9ff1bf",
+        "limitations": [
+          "代理核验目录首页 200，共发现 901 条；本次只解析起始页 50 条并抽样一条详情及原件入口，不等于全目录已抓取或法律效力已审核。",
+          "按固定 50 条分页持续轮询；官方字段、详情和原件保留来源证据，适用性及版本关系仍须单独复核。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-25T13:34:15.716894+00:00",
+          "status": "success",
+          "http_status": 200,
+          "response_bytes": 20388,
+          "catalogue_total": 901,
+          "catalogue_rows": 50,
+          "detail_probe_matched": true,
+          "official_original_candidates": 1,
+          "request_method": "POST"
+        }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-general-law"
+    },
+    {
+      "id": "id-setneg-pp",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚国家秘书处 PP 正式法规目录",
+      "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PP&length=50&start=0",
+      "priority": 89,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.setneg.go.id"
+      ],
+      "discovery_keywords": [
+        "PP",
+        "Peraturan Pemerintah",
+        "peraturan pemerintah"
+      ],
+      "setneg_type": "PP",
+      "verification": {
+        "official_evidence_url": "https://jdih.setneg.go.id/",
+        "checked_at": "2026-10-25T13:34:20.278227+00:00",
+        "official_identity": "Kementerian Sekretariat Negara JDIH publishes the official Indonesian national law catalogue through its read-only instrument API.",
+        "business_use": "Capture PP national law records and official-file references for checklist item ID-1.5; legal status remains unreviewed.",
+        "checklist_items": [
+          "ID-1.5"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-setneg-20261025/pp-receipt.json",
+        "server_receipt_sha256": "8abbcc501c5bcee1ac7d27d72fbc43e684039f37f2455cb30bfcd8ebfe03b359",
+        "body_sha256": "467a08880dabc4395d663e90003c841f8178df395f9b6a564b89641cccaa9262",
+        "limitations": [
+          "代理核验目录首页 200，共发现 2610 条；本次只解析起始页 50 条并抽样一条详情及原件入口，不等于全目录已抓取或法律效力已审核。",
+          "按固定 50 条分页持续轮询；官方字段、详情和原件保留来源证据，适用性及版本关系仍须单独复核。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-25T13:34:20.278227+00:00",
+          "status": "success",
+          "http_status": 200,
+          "response_bytes": 23943,
+          "catalogue_total": 2610,
+          "catalogue_rows": 50,
+          "detail_probe_matched": true,
+          "official_original_candidates": 1,
+          "request_method": "POST"
+        }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-general-law"
+    },
+    {
+      "id": "id-setneg-perpres",
+      "country": "ID",
+      "topics": [
+        "legislation",
+        "business",
+        "trade"
+      ],
+      "title": "印度尼西亚国家秘书处 Perpres 正式法规目录",
+      "url": "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPRES&length=50&start=0",
+      "priority": 87,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.setneg.go.id"
+      ],
+      "discovery_keywords": [
+        "PERPRES",
+        "Peraturan Presiden",
+        "peraturan presiden"
+      ],
+      "setneg_type": "PERPRES",
+      "verification": {
+        "official_evidence_url": "https://jdih.setneg.go.id/",
+        "checked_at": "2026-10-25T13:34:22.755828+00:00",
+        "official_identity": "Kementerian Sekretariat Negara JDIH publishes the official Indonesian national law catalogue through its read-only instrument API.",
+        "business_use": "Capture PERPRES national law records and official-file references for checklist item ID-1.6; legal status remains unreviewed.",
+        "checklist_items": [
+          "ID-1.6"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-setneg-20261025/perpres-receipt.json",
+        "server_receipt_sha256": "2861355016c1bc96192c04aa2838ac11d8158532212986a7b844ca66f5b46db3",
+        "body_sha256": "064e0b7e9d2a4a23602a9d95942d71a98c7f4cbcbab437eed88f66202a0bf5bd",
+        "limitations": [
+          "代理核验目录首页 200，共发现 2453 条；本次只解析起始页 50 条并抽样一条详情及原件入口，不等于全目录已抓取或法律效力已审核。",
+          "按固定 50 条分页持续轮询；官方字段、详情和原件保留来源证据，适用性及版本关系仍须单独复核。"
+        ],
+        "latest_probe": {
+          "at": "2026-10-25T13:34:22.755828+00:00",
+          "status": "success",
+          "http_status": 200,
+          "response_bytes": 23071,
+          "catalogue_total": 2453,
+          "catalogue_rows": 50,
+          "detail_probe_matched": true,
+          "official_original_candidates": 1,
+          "request_method": "POST"
+        }
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-general-law"
     }
   ],
   "schema_version": 2,
@@ -1148,9 +1347,17 @@
           "country": "ID",
           "title": "国家法规目录",
           "parent_id": "id",
-          "checklist_items": [],
+          "checklist_items": [
+            "ID-1.3",
+            "ID-1.4",
+            "ID-1.5",
+            "ID-1.6"
+          ],
           "source_ids": [
-            "id-setneg-perpu"
+            "id-setneg-uu",
+            "id-setneg-perpu",
+            "id-setneg-pp",
+            "id-setneg-perpres"
           ],
           "children": []
         },
@@ -1425,6 +1632,36 @@
         "SG-3.1"
       ],
       "reason": "进口和海关实施指引需与适用附属法例并列核对，行政操作说明不替代正式法例。"
+    },
+    {
+      "source_id": "id-setneg-uu",
+      "related_source_id": "id-setneg-perpu",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.3",
+        "ID-1.4"
+      ],
+      "reason": "Setneg publishes the UU and PERPU instruments in separate catalogues; these scopes complement one another for checklist items ID-1.3 and ID-1.4, without asserting legal hierarchy."
+    },
+    {
+      "source_id": "id-setneg-pp",
+      "related_source_id": "id-setneg-perpu",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.5",
+        "ID-1.4"
+      ],
+      "reason": "Setneg publishes the PP and PERPU instruments in separate catalogues; these scopes complement one another for checklist items ID-1.5 and ID-1.4, without asserting legal hierarchy."
+    },
+    {
+      "source_id": "id-setneg-perpres",
+      "related_source_id": "id-setneg-perpu",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.6",
+        "ID-1.4"
+      ],
+      "reason": "Setneg publishes the PERPRES and PERPU instruments in separate catalogues; these scopes complement one another for checklist items ID-1.6 and ID-1.4, without asserting legal hierarchy."
     }
   ]
 }

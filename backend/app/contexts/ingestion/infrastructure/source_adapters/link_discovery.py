@@ -331,6 +331,16 @@ def request_parameters(url: str, definition: dict) -> dict:
         or host not in recipe_for(item)["allowed_hosts"]
     ):
         raise ValueError("Setneg 请求没有对应的可信印尼清单配置。")
+    return setneg_request_parameters(current, instrument)
+
+
+def setneg_request_parameters(url: str, instrument: str) -> dict:
+    """Build a bounded Setneg read-only API request for one approved instrument."""
+    if not isinstance(instrument, str) or instrument not in _SETNEG_TYPES.values():
+        raise ValueError("Setneg 请求没有对应的可信印尼法规类型。")
+    current, host = _canonical(url)
+    if host != _SETNEG_HOST:
+        raise ValueError("Setneg 请求超出官方主机范围。")
     purpose, query = _setneg_query(current, instrument)
     if purpose == "document":
         return {}

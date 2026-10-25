@@ -1,6 +1,6 @@
 # 无人值守官方来源池
 
-配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 22 个稳定来源节点：印度尼西亚 12 个（6 个活动、6 个归档），新加坡 10 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时；明确为空的 BPJPH 新目录以 `empty_catalogue=true` 标记并归档，不作为业务采集成功。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
+配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 25 个稳定来源节点：印度尼西亚 15 个（10 个活动、5 个归档），新加坡 10 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时；明确为空的 BPJPH 新目录以 `empty_catalogue=true` 标记并归档，不作为业务采集成功。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
 
 配置采用 `aitea-official-source-pool-v2`：`groups` 是国家根节点及主题子节点，子节点列出来源 ID 和对应核验清单项；来源自身保留正式入口、访问证据、主题、发现策略、优先级、轮询间隔和 `active` 状态。活动源须留有官方身份、业务用途、清单范围、近期开页回执与正文 SHA-256；空目录单独标记并低频复查。`source_relations` 是有方向的关系边，区分 `complements`（互补）、`cross_checks`（交叉核验）、`implements`（实施规则）与 `publishes_original`（正式原件发布），并说明适用清单项和关系理由。所有活动源都明确使用 `transport: proxy`；watchdog 将其精确允许主机并入代理白名单。归档用 `status: archived` 移出运行队列，原节点、关系和所有历史账本均保留；新增来源必须经有界代理抓取取得有效正文后才能登记。
 
@@ -36,7 +36,10 @@
 | `id-bpk-regulations`（归档） | [印尼审计委员会法规数据库](https://peraturan.bpk.go.id/) | ID | 受限入口返回 HTTP 403；保留全国目录覆盖缺口和旧回执，不绕过访问限制。 |
 | `id-bpjph-regulations`（归档） | [BPJPH 新版法律资料库](https://jdih.halal.go.id/)，[发布机关官方转介](https://bpjph.halal.go.id/berita/) | ID | 首页可达但明确显示尚无法规、无分类；空目录仅保留低频复查历史，不计入正文采集。 |
 | `id-bpjph-jdih-cari` | [BPJPH 法规检索目录](https://jdih.halal.go.id/cari) | ID | 经有界请求取得可解析目录和文书候选；只收清真及食品标签相关规则，不代替正式原件和适用性审核。 |
-| `id-setneg-perpu` | [国家秘书处 PERPU 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0) | ID | 保留旧任务的国家立法来源；历史取得 33 条目录、23 份记录的 24 份原件。本轮原入口和20条分页入口均404，记为待复查，不能认定域名过期。仅此固定范围启用既有Setneg适配器及受限JSON解压。 |
+| `id-setneg-uu` | [国家秘书处 UU 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 901，首批 50 条通过类型、总数和唯一 ID 校验，抽样详情发现 1 个官方原件入口；对应 ID-1.3。 |
+| `id-setneg-perpu` | [国家秘书处 PERPU 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200，目录总数 33，33 条全部通过校验，抽样详情发现官方原件入口；恢复原稳定 ID 并保留此前 404、历史成功和原件账本；对应 ID-1.4。 |
+| `id-setneg-pp` | [国家秘书处 PP 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PP&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 2,610，首批 50 条通过校验，抽样详情发现 1 个官方原件入口；对应 ID-1.5。 |
+| `id-setneg-perpres` | [国家秘书处 Perpres 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPRES&length=50&start=0) | ID | 2026-10-25 经项目代理 POST 返回 HTTP 200；目录总数 2,453，首批 50 条通过校验，抽样详情发现 1 个官方原件入口；对应 ID-1.6。 |
 | `sg-sfa-labelling` | [Singapore Food Agency](https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food) | SG | 可达，食品标签和相应法规/官方指南转介。 |
 | `sg-sso-acts-current` | [Singapore Statutes Online：Current Acts](https://sso.agc.gov.sg/Browse/Act/Current/All) | SG | 2026-10-25 经项目代理返回 HTTP 200；按页500条发现现行主法，并承载 1.1 的 Constitutional 子类过滤。目录行不等于正文入库或有效性审核。 |
 | `sg-sso-statutes` | [Singapore Statutes Online：Current Subsidiary Legislation](https://sso.agc.gov.sg/Browse/SL/Current/All) | SG | 2026-10-25 经项目代理返回 HTTP 200；按页500条发现现行附属法例。目录行不等于正文入库或有效性审核。 |
@@ -135,3 +138,11 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 经有界目录解析、稳定法规身份、来源行定位和来源池迁移后，两项已加入活动来源池；清单 v7 恢复 1.2 与 1.3，并将 1.1 宪制文件作为 Current Acts 下的 Constitutional 子类过滤。三项任务分别覆盖宪制文件、现行主法与现行附属法例，置于“现行主法与附属法例”层级；其中主法与附属法例来源和清单关联互补，食品标签、海关进口来源用于业务交叉核验。代理白名单没有放宽，浏览器请求头仅对该精确官方主机启用。目录页按页面完整校验，超过 128 条活动候选容量的行会从保留的目录快照分批补入；单来源每日额度与主机冷却仍生效。
 
 本次证明的是官方目录入口和目录响应可达，不是 526 或 5,872 份法规正文均已下载、解析或建向量。目录记录 `Current` 也不是适用性或法律效力结论。两份隔离 `source_observation` 回执与原始页面保存在 `.dev/aitea-sso-registration-97f2eb8161d8/SG/`；正式运行后的分页、原件下载和索引进度以 `data/official-updates/SG/` 事件账本及 `make collection-catalog` 为准。
+
+### 2026-10-25 Setneg 四类目录恢复
+
+2026-10-20 的 Setneg PERPU HTTP 404 作为历史观测保留。2026-10-25 通过同一项目代理按官网当前 JSON POST 结构重新核验 UU、PERPU、PP、Perpres 四个固定目录；每类首批目录均由现有解析器校验类型、稳定 ID、总数与分页，且各抽样一条详情通过匹配并发现官方原件入口。首页观测总数分别为 901、33、2,610、2,453；这只是目录快照，不代表所有原件均已取得或进入索引。
+
+常驻采集器现按来源的 `setneg_type` 生成只读目录/详情 POST 请求体，原件仍通过原有受限 GET 下载。Perppu 继续使用原稳定 source ID，保留旧失败计数、缓存与历史原件；UU、PP、Perpres 分别新增独立来源节点。四类分别对应 ID-1.3 至 ID-1.6，并在层级清单中互相标为不同文种的互补目录，不据此推断法规范位阶。探测正文和 `source_observation` 回执位于 `.dev/aitea-setneg-20261025/`。
+
+`scripts/migrate_unattended_source_pool.py` 为印尼与新加坡保留了原账本并迁移清单摘要，随后恢复 `aitea-collection.service`。采集器按每日来源额度、每轮请求上限、主机并发和代理白名单继续轮询；4 个类型的首屏发现不等于完整收齐，目录后续分页、详情、原件、解析和索引状态分别记录。法律效力、修订关联和适用期间仍须人工/业务复核。

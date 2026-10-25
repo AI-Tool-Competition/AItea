@@ -380,6 +380,88 @@ def test_migration_accepts_receipt_verified_additions_and_archives(tmp_path, mon
         migration.migrate(old_path, bad_path, bad_root, "ID")
 
 
+def test_migration_reactivates_archived_source_with_verified_checklist_mapping(tmp_path, monkeypatch):
+    new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    old_pool = copy.deepcopy(new_pool)
+    added_ids = {"id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
+    for candidate in (old_pool, new_pool):
+        for row in candidate["sources"]:
+            if row["id"] in added_ids:
+                row["status"] = "archived"
+    old_pool["source_relations"] = [
+        row
+        for row in old_pool["source_relations"]
+        if row["source_id"] not in added_ids and row["related_source_id"] not in added_ids
+    ]
+    source = next(row for row in new_pool["sources"] if row["id"] == "id-setneg-perpu")
+    old_source = next(row for row in old_pool["sources"] if row["id"] == "id-setneg-perpu")
+    prior = copy.deepcopy(source["verification"]["prior_probe_and_retirement"])
+    old_source["status"] = "archived"
+    old_source["verification"] = prior["verification"]
+    old_source["retirement"] = prior["retirement"]
+    verification = source["verification"]
+    verification.update(
+        {
+            "checked_at": datetime.now(UTC).isoformat(),
+            "official_identity": "The Indonesian State Secretariat publishes the official Perppu register.",
+            "business_use": "Capture official Perppu records for checklist item ID-1.4.",
+            "checklist_items": ["ID-1.4"],
+            "server_status": "reachable_content",
+            "body_sha256": hashlib.sha256(b"verified Setneg catalogue").hexdigest(),
+        }
+    )
+    group = next(row for row in new_pool["groups"] if row["id"] == "id")
+    general_law = next(row for row in group["children"] if row["id"] == "id-general-law")
+    general_law["checklist_items"] = ["ID-1.3", "ID-1.4", "ID-1.5", "ID-1.6"]
+    body_hash = verification["body_sha256"]
+    receipt = {
+        "kind": "source_observation",
+        "source_id": source["id"],
+        "last_observation": {
+            "status": "success",
+            "http_status": 200,
+            "url": source["url"],
+            "content_hash": body_hash,
+        },
+    }
+    receipt_path = tmp_path / ".dev" / "setneg-receipt.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps(receipt))
+    verification["server_receipt_path"] = ".dev/setneg-receipt.json"
+    verification["server_receipt_sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    from app.contexts.ingestion.application.source_catalog import SourceCatalog
+    from app.contexts.ingestion.infrastructure.source_registry_json import JsonSourceRegistry
+    from app.shared.infrastructure.http.download import _validated_url
+
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_text(json.dumps(old_pool))
+    catalog = SourceCatalog(JsonSourceRegistry(runtime_path, tmp_path / "registry-history"), _validated_url)
+    runtime_path.write_text(json.dumps(new_pool))
+    candidate = catalog.candidate({})
+    assert candidate is not None and candidate.digest != catalog.current.digest
+    old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    root = tmp_path / "collector"
+    root.mkdir()
+    original = {
+        "binding": {"pool_sha256": old_hash, "country": "ID", "root": str(root.resolve())},
+        "active_sources": [],
+        "sources": {source["id"]: {"attempts": 8, "consecutive_failures": 8}},
+    }
+    (root / "state.json").write_text(json.dumps(original))
+    monkeypatch.setattr(migration, "ROOT", tmp_path)
+
+    result = migration.migrate(old_path, new_path, root, "ID")
+
+    assert result["reactivated_source_ids"] == ["id-setneg-perpu"]
+    state = json.loads((root / "state.json").read_text())
+    assert state["sources"]["id-setneg-perpu"] == original["sources"]["id-setneg-perpu"]
+    assert state["pool_migrations"][0]["reactivated_source_ids"] == ["id-setneg-perpu"]
+
+
 def test_migration_allows_only_receipt_linked_official_host_expansion(tmp_path, monkeypatch):
     old_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     new_pool = copy.deepcopy(old_pool)

@@ -2,6 +2,8 @@
 
 `scripts/collect_indonesia_official.py` 按当前印尼清单的 1.3–1.6 项遍历 [Setneg 官方法规库](https://jdih.setneg.go.id/produk-hukum/instrumen/peraturan)。该机关的目录是这四项的一份官方来源，不能替代 BPK、地方与其他机关的范围，也不能据目录记录或原件到手推断法律有效、正文完整或已进入 RAG。
 
+常驻来源轮询由 `scripts/unattended_collection.py` 执行，来源节点在 `config/collection-sources/id-sg-unattended.json`。Setneg 的 UU、PERPU、PP、PERPRES 使用各自固定的只读 JSON POST 目录和详情请求，按 50 条分页；原件仍通过校验过的官方 URL 下载。各类型的页面、详情、原件与正文索引分别计数，不能把目录总数当成已完成入库数。
+
 2026-10-19 的实网遍历取得 UU 901、PERPU 33、PP 2,610、PERPRES 2,453 条，共 5,997 条。123 页的起始偏移、返回数、总数和唯一标识均已对账。原站不提供原子快照；完整标记仅对应这次观察到的同源目录。PERPU 的 33 条登记中，32 条提供共 34 份 PDF，79,828,724 字节，已逐份保存并核对哈希；两条 2005 年文件各另有一份附件。PERPU 2/2009（P14900）详情的文件数组为空，仍有原文缺口，不能用 34 份文件推断 33 项齐全。2/2022 原件首轮超时、一次有界重试后成功。正文解析、版本适用及法规审核仍单独验收。
 
 P14900 后续通过 [BPK 官方公开 PDF](https://peraturan.bpk.go.id/Download/42613/Perpu%202%20Tahun%202009.pdf) 补得，保存于独立恢复源库，未改写 Setneg 的缺文件证据。45,854 字节的原件经受限原生解析核对文号、标题、LN 110 和 TLN 5036；6 页中第 4 页尚需图像识别。跨两份来源的原件覆盖 33 个已枚举 PERPU 项、共 35 份文件，正文完整性仍有独立门禁。

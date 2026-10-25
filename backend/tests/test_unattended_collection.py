@@ -51,6 +51,29 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert "id-bpk-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
+            setneg = {
+                row["id"]: row
+                for row in registry["sources"]
+                if "jdih.setneg.go.id" in row["allowed_hosts"]
+            }
+            assert set(setneg) == {
+                "id-setneg-uu",
+                "id-setneg-perpu",
+                "id-setneg-pp",
+                "id-setneg-perpres",
+            }
+            assert {row["verification"]["checklist_items"][0] for row in setneg.values()} == {
+                "ID-1.3",
+                "ID-1.4",
+                "ID-1.5",
+                "ID-1.6",
+            }
+            assert setneg["id-setneg-perpu"]["verification"]["prior_probe_and_retirement"][
+                "retirement"
+            ]["reason"] == "repeated_http_404"
+            assert len(
+                [row for row in registry["source_relations"] if row["source_id"] in setneg]
+            ) >= 3
         if country == "SG":
             assert "sg-ccs-fair-trading" in {source["id"] for source in active}
             assert {source["id"] for source in active} >= {"sg-sso-acts-current", "sg-sso-statutes"}
@@ -298,6 +321,7 @@ def environment(tmp_path, monkeypatch):
                         "url": url,
                         "validators": dict(options.get("validators", {})),
                         "accept_compressed_json": options.get("accept_compressed_json", False),
+                        "json_body": options.get("json_body"),
                         "at": clock[0],
                     }
                 )
@@ -1009,16 +1033,16 @@ SETNEG = "https://jdih.setneg.go.id/api/hukumproduk/"
 SETNEG_ROOT = SETNEG + "produkhukum?jns=PERPU&length=50&start=0"
 
 
-def setneg_source(**changes):
+def setneg_source(*, instrument="PERPU", identifier="id-setneg-perpu", **changes):
     return source(
-        "id-setneg-perpu",
+        identifier,
         host="jdih.setneg.go.id",
-        path="/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0",
+        path=f"/api/hukumproduk/produkhukum?jns={instrument}&length=50&start=0",
         **{"country": "ID", "kind": "catalogue", **changes},
     )
 
 
-def setneg_responses(count=51):
+def setneg_responses(count=51, instrument="PERPU"):
     """Generate bounded rows using the already captured Setneg fixture schema."""
     template = json.loads((ROOT / "backend/tests/fixtures/discovery/setneg-detail.json").read_text())
     rows, responses = [], {}
@@ -1026,14 +1050,14 @@ def setneg_responses(count=51):
         row = {
             **template["row"][0],
             "idperaturan": f"P{50000 + index}",
-            "jns": "PERPU",
+            "jns": instrument,
             "no_peraturan": str(index + 1),
             "tahun": "2026",
             "tentang": f"Synthetic food scope fixture {index + 1}",
         }
         rows.append(row)
-        name = f"PERPU {index + 1} Tahun 2026.pdf"
-        detail = SETNEG + "detaildata?" + urlencode({"jns": "PERPU", "no": str(index + 1), "thn": "2026"})
+        name = f"{instrument} {index + 1} Tahun 2026.pdf"
+        detail = SETNEG + "detaildata?" + urlencode({"jns": instrument, "no": str(index + 1), "thn": "2026"})
         original = SETNEG + "pdf?" + urlencode({"f": name, "fl": row["idperaturan"], "l": "uploads"})
         responses[detail] = {
             "content": json.dumps({**template, "row": [row], "file": [{"realName": name}]}).encode(),
@@ -1041,9 +1065,9 @@ def setneg_responses(count=51):
         }
         responses[original] = pdf(str(index + 1))
     for start in range(0, count, 50):
-        url = SETNEG + "produkhukum?" + urlencode({"jns": "PERPU", "length": 50, "start": start})
+        url = SETNEG + "produkhukum?" + urlencode({"jns": instrument, "length": 50, "start": start})
         responses[url] = {
-            "content": json.dumps({"jml": count, "jn": ["PERPU"], "data": rows[start : start + 50]}).encode(),
+            "content": json.dumps({"jml": count, "jn": [instrument], "data": rows[start : start + 50]}).encode(),
             "mime_type": "application/json",
         }
     return responses
@@ -1060,6 +1084,7 @@ def setneg_responses(count=51):
         {"allowed_hosts": ["jdih.setneg.go.id", "other.go.id"]},
         {"country": "SG"},
         {"setneg_type": "PP"},
+        {"setneg_type": []},
         {"kind": "guidance"},
         {"id": "id-setneg-other"},
     ],
@@ -1100,8 +1125,42 @@ def test_setneg_full_fifty_row_page_keeps_next_catalog_detail_and_original_mappi
     assert all(collection.valid_cached(collector.root, asset) for asset in originals)
     mapped = [row for row in env.events(collector, "mapped_resource") if "/pdf?" in row["target_url"]]
     assert mapped and all("/detaildata?" in row["parent_url"] for row in mapped)
-    assert all(row["accept_compressed_json"] for row in env.calls)
+    assert all(row["accept_compressed_json"] for row in env.calls if row["json_body"])
+    catalogue_request = next(row for row in env.calls if row["url"] == SETNEG_ROOT)
+    assert catalogue_request["json_body"] == {
+        "tentang": "",
+        "p_lihan": "semua",
+        "jns": ["PERPU"],
+        "thn": [],
+        "status": "",
+        "terx": "All",
+        "sortOrder": "desc",
+        "length": 50,
+        "start": 0,
+    }
+    detail_request = next(row for row in env.calls if "/detaildata?" in row["url"])
+    assert detail_request["json_body"]["jns"] == "PERPU"
     assert len(env.calls) <= collector.limits["requests_per_source_cycle"] + 1
+
+
+@pytest.mark.parametrize("instrument", ["UU", "PP", "PERPRES"])
+def test_setneg_additional_instrument_sources_use_exact_post_scope(environment, instrument):
+    env = environment
+    configured = setneg_source(
+        instrument=instrument,
+        identifier=f"id-setneg-{instrument.lower()}",
+        setneg_type=instrument,
+    )
+    collector = env.make([configured], country="ID")
+    env.responses.update(setneg_responses(count=1, instrument=instrument))
+
+    collector.tick()
+
+    catalogue_url = configured["url"]
+    request = next(row for row in env.calls if row["url"] == catalogue_url)
+    assert request["json_body"]["jns"] == [instrument]
+    assert request["accept_compressed_json"] is True
+    assert collector.state["sources"][configured["id"]]["health"] == "healthy"
 
 
 @pytest.mark.parametrize("country", ["ID", "SG"])
@@ -1111,11 +1170,12 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 22
+    assert len(configured) == 25
+    setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row
         for row in configured
-        if row["id"] != "id-setneg-perpu" and row.get("discovery") is None
+        if row["id"] not in setneg_ids and row.get("discovery") is None
     ]
     assert len(originals) == 19
     for item in originals:
@@ -1124,12 +1184,18 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
         assert "required_query_by_host" not in recipe
         assert recipe["max_links"] == (200 if item["id"] == "id-beacukai-regulations" else 32)
     collector = env.make(configured, country=country)
-    probe_sources = [item for item in collector.sources if item.get("discovery") is None]
+    probe_sources = [
+        item for item in collector.sources if item["id"] not in setneg_ids and item.get("discovery") is None
+    ]
     env.responses.update({item["url"]: html() for item in probe_sources})
-    env.responses.update(setneg_responses(count=1))
     for item in probe_sources:
         collector.fetch(item, item["url"])
-    special = {item["url"] for item in collector.sources if item["id"] == "id-setneg-perpu"}
+    setneg_sources = [item for item in collector.sources if item["id"] in setneg_ids]
+    for item in setneg_sources:
+        instrument = item.get("setneg_type", "PERPU")
+        env.responses.update(setneg_responses(count=1, instrument=instrument))
+        collector.fetch(item, item["url"])
+    special = {item["url"] for item in setneg_sources}
     assert all(row["accept_compressed_json"] == (row["url"] in special) for row in env.calls)
 
 

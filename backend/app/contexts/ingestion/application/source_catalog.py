@@ -73,9 +73,19 @@ class SourceCatalog:
             )
             for source_id, before in previous.items():
                 after = updated[source_id]
-                if any(before.get(key) != after.get(key) for key in protected) or before.get(
-                    "verification", {}
-                ).get("checklist_items", []) != after.get("verification", {}).get("checklist_items", []):
+                prior_checklists = set(before.get("verification", {}).get("checklist_items", []))
+                updated_checklists = set(after.get("verification", {}).get("checklist_items", []))
+                reactivated_mapping = (
+                    before.get("status") == "archived"
+                    and after.get("status") == "active"
+                    and prior_checklists <= updated_checklists
+                )
+                checklist_scope_changed = before.get("verification", {}).get(
+                    "checklist_items", []
+                ) != after.get("verification", {}).get("checklist_items", [])
+                if any(before.get(key) != after.get(key) for key in protected) or (
+                    checklist_scope_changed and not reactivated_mapping
+                ):
                     raise ValueError("A source's reviewed network or document scope cannot change in place")
         for source in revision.payload["sources"]:
             if source["id"] in identities and identities[source["id"]] != source["country"]:

@@ -443,6 +443,11 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
         for source_id, prior in old_sources.items()
         if prior.get("status") == "active" and new_sources[source_id].get("status") == "archived"
     )
+    reactivated_source_ids = sorted(
+        source_id
+        for source_id, prior in old_sources.items()
+        if prior.get("status") == "archived" and new_sources[source_id].get("status") == "active"
+    )
     expanded_source_hosts = {}
     expanded_html_document_paths = {}
     expanded_html_asset_hosts = {}
@@ -459,6 +464,11 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             "http_410_resource_removed",
         }:
             raise ValueError("New archived sources must record why they are unavailable")
+    for source_id in reactivated_source_ids:
+        source = new_sources[source_id]
+        if source.get("verification", {}).get("server_status") != "reachable_content":
+            raise ValueError("Reactivated sources require a current successful content probe")
+        _verified_addition(source)
     protected = (
         "country",
         "url",
@@ -469,9 +479,14 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
     )
     for source_id, prior in old_sources.items():
         updated = new_sources[source_id]
-        if any(prior.get(key) != updated.get(key) for key in protected) or prior.get("verification", {}).get(
-            "checklist_items", []
-        ) != updated.get("verification", {}).get("checklist_items", []):
+        prior_checklists = set(prior.get("verification", {}).get("checklist_items", []))
+        updated_checklists = set(updated.get("verification", {}).get("checklist_items", []))
+        checklist_expansion = (
+            source_id in reactivated_source_ids and prior_checklists <= updated_checklists
+        )
+        if any(prior.get(key) != updated.get(key) for key in protected) or (
+            prior_checklists != updated_checklists and not checklist_expansion
+        ):
             raise ValueError("Pool migration cannot change a source's reviewed network/document scope")
         prior_paths = set(prior.get("html_document_paths", []))
         updated_paths = set(updated.get("html_document_paths", []))
@@ -536,6 +551,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             "source_ids": sorted(new_sources),
             "added_source_ids": added_source_ids,
             "archived_source_ids": archived_source_ids,
+            "reactivated_source_ids": reactivated_source_ids,
             "expanded_source_hosts": expanded_source_hosts,
             "expanded_html_document_paths": expanded_html_document_paths,
             "expanded_html_asset_hosts": expanded_html_asset_hosts,
@@ -571,6 +587,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
         "new_pool_sha256": new_hash,
         "added_source_ids": added_source_ids,
         "archived_source_ids": archived_source_ids,
+        "reactivated_source_ids": reactivated_source_ids,
         "expanded_source_hosts": expanded_source_hosts,
         "expanded_html_document_paths": expanded_html_document_paths,
         "expanded_html_asset_hosts": expanded_html_asset_hosts,

@@ -8,7 +8,8 @@ from datetime import datetime
 from urllib.parse import unquote, urlsplit
 
 SETNEG_ID = "id-setneg-perpu"
-SETNEG_URL = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0"
+SETNEG_TYPES = {"UU", "PERPU", "PP", "PERPRES"}
+SETNEG_API = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns={instrument}&length=50&start=0"
 SOURCE_ID = re.compile(r"[a-z0-9][a-z0-9-]{1,79}\Z")
 CHECKLIST_ITEM = re.compile(r"(?:ID|SG)-[0-9]+(?:\.[0-9]+)*\Z")
 RELATION_TYPES = {"complements", "cross_checks", "implements", "publishes_original"}
@@ -225,15 +226,17 @@ def validate_source_registry(
             and source["discovery"].get("adapter") == "sso_catalog_2026"
         )
         normalized, host = validate_url(source["url"])
-        if (identifier == SETNEG_ID or host == "jdih.setneg.go.id") and (
-            identifier != SETNEG_ID
-            or scope != "ID"
-            or hosts != ["jdih.setneg.go.id"]
-            or normalized != SETNEG_URL
-            or source["kind"] != "catalogue"
-            or source.get("setneg_type", "PERPU") != "PERPU"
-        ):
-            raise ValueError("Setneg collection must retain the reviewed PERPU scope")
+        if identifier == SETNEG_ID or host == "jdih.setneg.go.id" or "setneg_type" in source:
+            instrument = source.get("setneg_type", "PERPU" if identifier == SETNEG_ID else None)
+            if (
+                scope != "ID"
+                or hosts != ["jdih.setneg.go.id"]
+                or not isinstance(instrument, str)
+                or instrument not in SETNEG_TYPES
+                or normalized != SETNEG_API.format(instrument=instrument)
+                or source["kind"] != "catalogue"
+            ):
+                raise ValueError("Setneg collection must use one exact, reviewed instrument catalogue")
         if (
             scope not in {"ID", "SG"}
             or not isinstance(hosts, list)

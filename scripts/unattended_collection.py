@@ -38,6 +38,7 @@ from app.contexts.ingestion.application.source_catalog import (  # noqa: E402
 from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     discover_page,
+    setneg_request_parameters,
 )
 from app.contexts.ingestion.infrastructure.source_registry_json import (  # noqa: E402
     JsonSourceRegistry,
@@ -247,10 +248,11 @@ def recipe(source):
         )
     if rcep_policy(source):
         result["exclude_patterns"] = [RCEP_OUTSIDE_SCOPE]
-    if source["id"] == SETNEG_ID:
+    instrument = source.get("setneg_type", "PERPU" if source["id"] == SETNEG_ID else None)
+    if instrument:
         result.update(
-            setneg_type="PERPU",
-            required_query_by_host={"jdih.setneg.go.id": {"jns": "PERPU"}},
+            setneg_type=instrument,
+            required_query_by_host={"jdih.setneg.go.id": {"jns": instrument}},
             max_links=51,
         )
     return result
@@ -624,6 +626,10 @@ class Collector:
             cached_request_url = (cached or {}).get("requested_url", (cached or {}).get("url"))
             if valid_cached(self.root, cached) and cached_request_url == network_url:
                 validators = {k: cached.get(k) for k in ("etag", "last_modified")}
+            instrument = source.get("setneg_type", "PERPU" if source["id"] == SETNEG_ID else None)
+            request_options = setneg_request_parameters(network_url, instrument) if instrument else {}
+            if request_options.get("json_body"):
+                validators = {}
             fetched = _download(
                 network_url,
                 deadline=time.monotonic() + self.limits["timeout_seconds"],
@@ -633,8 +639,8 @@ class Collector:
                 validators=validators,
                 connection_slot=lambda host: self.slot(host, source),
                 accept_compressed_html=True,
-                accept_compressed_json=source["id"] == SETNEG_ID,
                 max_bytes=self.limits["max_response_bytes"],
+                **request_options,
             )
             if fetched.get("not_modified"):
                 if fetched["url"] != network_url or not valid_cached(self.root, cached):

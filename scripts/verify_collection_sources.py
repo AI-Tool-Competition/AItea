@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.configuration.paths import InstancePaths  # noqa: E402
+from app.configuration.environment import load_environment  # noqa: E402
 
 from app.contexts.ingestion.application.checklists import load_blueprints
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
@@ -408,6 +409,7 @@ def main() -> int:
         help="Probe conditional access without asserting a business trigger",
     )
     args = parser.parse_args()
+    load_environment(ROOT)
     plans = load_blueprints()
     if args.plan_id:
         unknown = set(args.plan_id) - plans.keys()

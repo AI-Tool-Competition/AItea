@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,28 @@ def test_all_checklist_requirements_and_hashes_survive_matrix_generation():
         source_item = next(item for item in plans[row["plan_id"]]["items"] if item["id"] == row["item_id"])
         assert row["requirements"]["acceptance"] == source_item["acceptance"]
         assert row["coverage"]["full_required_content_verified"] is False
+
+
+def test_cli_loads_project_proxy_environment_before_starting_source_probes(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(verification, "load_environment", lambda root: calls.append(("environment", root)))
+    monkeypatch.setattr(verification, "load_blueprints", lambda: {"fixture": {"id": "fixture"}})
+    monkeypatch.setattr(verification, "new_output", lambda _path: tmp_path)
+
+    def run_probes(plans, output, **_options):
+        calls.append(("verify", plans, output))
+        return {"summary": {"active_items": 0}}
+
+    monkeypatch.setattr(verification, "verify", run_probes)
+    monkeypatch.setattr(sys, "argv", ["verify_collection_sources.py", "--output", str(tmp_path / "report")])
+
+    assert verification.main() == 0
+    assert calls[0] == ("environment", ROOT)
+    assert calls[1][0] == "verify"
+    assert json.loads(capsys.readouterr().out) == {
+        "report": str(tmp_path / "report.json"),
+        "active_items": 0,
+    }
 
 
 def test_historical_verification_uses_its_own_frozen_plan_hash():

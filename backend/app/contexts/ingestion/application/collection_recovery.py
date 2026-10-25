@@ -28,6 +28,7 @@ MAX_RECOVERY_SECONDS = 24 * 60 * 60
 OCR_AUTOMATIC_RETRY_REASONS = frozenset({"ocr_quality_retry", "paid_ocr_retry"})
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
+MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 3
 PROCESSING_QUEUE_LIMIT = 200
 # Keep one bounded admission slot so recovery work cannot starve behind new imports.
 RECOVERY_QUEUE_RESERVE = 1
@@ -125,6 +126,93 @@ def _legacy_mineru_chart_refresh(manifest):
         if not isinstance(text, str) or proof.get("text_sha256") != hashlib.sha256(text.encode()).hexdigest():
             return False
     return chart_pages > 0
+
+
+def _is_decode_replacement_page(page, source_hash):
+    if not isinstance(page, dict) or page.get("source_hash") != source_hash:
+        return False
+    proof = page.get("ocr")
+    reasons = page.get("reasons")
+    spans = proof.get("uncertain_spans") if isinstance(proof, dict) else None
+    return (
+        page.get("status") == "ocr_uncertain"
+        and isinstance(reasons, list)
+        and reasons == ["decode_replacement"]
+        and isinstance(spans, list)
+        and spans == ["decode_replacement"]
+        and proof.get("provider") == "mineru"
+        and proof.get("complete") is False
+    )
+
+
+def _mineru_decode_quality_targets(manifest, source_hash):
+    """Select complete MinerU source parts containing only decode-replacement pages."""
+    if not isinstance(manifest, dict):
+        return None
+    remote = manifest.get("remote_parse")
+    pages = manifest.get("pages")
+    if (
+        manifest.get("parser") != "mineru"
+        or manifest.get("source_hash") != source_hash
+        or not isinstance(remote, dict)
+        or remote.get("provider") != "mineru"
+        or remote.get("state") != "done"
+        or remote.get("source_hash") != source_hash
+        or type(remote.get("page_count")) is not int
+        or not 1 <= remote["page_count"] <= 3000
+        or not isinstance(pages, list)
+        or len(pages) != remote["page_count"]
+    ):
+        return None
+    try:
+        from app.contexts.documents.infrastructure.providers.mineru import manifest_valid
+
+        if not manifest_valid(manifest):
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    retry_pages = []
+    for number, page in enumerate(pages, 1):
+        if not isinstance(page, dict) or page.get("page") != number or page.get("source_hash") != source_hash:
+            return None
+        proof = page.get("ocr")
+        reasons = page.get("reasons")
+        if not isinstance(proof, dict) or not isinstance(reasons, list):
+            return None
+        if page.get("status") == "ocr_uncertain":
+            if not _is_decode_replacement_page(page, source_hash):
+                return None
+            retry_pages.append(number)
+        elif page.get("status") != "ocr_complete" or reasons or proof.get("complete") is not True:
+            return None
+    if not retry_pages:
+        return None
+
+    parts = remote.get("parts")
+    if not isinstance(parts, list) or not parts:
+        return None
+    target_parts = []
+    expected_page = 1
+    for index, part in enumerate(parts):
+        if (
+            not isinstance(part, dict)
+            or part.get("source_hash") != source_hash
+            or type(part.get("first_page")) is not int
+            or type(part.get("last_page")) is not int
+            or part["first_page"] != expected_page
+            or part["last_page"] < part["first_page"]
+            or not isinstance(part.get("task_id"), str)
+            or not part["task_id"]
+            or not isinstance(part.get("result_blob"), dict)
+        ):
+            return None
+        if any(part["first_page"] <= page <= part["last_page"] for page in retry_pages):
+            target_parts.append(index)
+        expected_page = part["last_page"] + 1
+    if expected_page != remote["page_count"] + 1 or not target_parts:
+        return None
+    return tuple(retry_pages), tuple(target_parts)
 
 
 def classify_processing(manifest, *, phase, error=None, retryable=False, interrupted=False):
@@ -556,6 +644,250 @@ class CollectionRecovery:
                 return False
         return True
 
+    @classmethod
+    def _quality_mineru_retry_valid(cls, conn, owner, document, manifest, plan):
+        """Verify a fresh MinerU generation targets only the saved quality pages."""
+        from app.contexts.documents.infrastructure.providers.mineru import (
+            MinerUParser,
+            parse_profile_hash,
+        )
+
+        if not isinstance(plan, dict) or plan.get("retry_kind") != "decode_quality":
+            return False
+        remote = manifest.get("remote_parse") if isinstance(manifest, dict) else None
+        old_hash, retry_hash, generation = (
+            plan.get("source_profile_hash"),
+            plan.get("retry_profile_hash"),
+            plan.get("retry_generation"),
+        )
+        if (
+            not isinstance(remote, dict)
+            or remote.get("provider") != "mineru"
+            or remote.get("state") != "pending"
+            or remote.get("source_hash") != document["content_hash"]
+            or plan.get("source_hash") != document["content_hash"]
+            or remote.get("retry_source_profile_hash") != old_hash
+            or remote.get("retry_generation") != generation
+            or remote.get("profile_hash") != retry_hash
+            or not isinstance(remote.get("profile"), dict)
+            or not isinstance(old_hash, str)
+            or not isinstance(retry_hash, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", old_hash)
+            or not re.fullmatch(r"[a-f0-9]{64}", retry_hash)
+            or not isinstance(generation, str)
+            or not isinstance(plan.get("tasks"), list)
+        ):
+            return False
+        try:
+            if (
+                parse_profile_hash(remote["profile"], generation) != retry_hash
+                or parse_profile_hash(MinerUParser.profile(), generation) != retry_hash
+            ):
+                return False
+        except ValueError:
+            return False
+
+        retry_pages = plan.get("retry_pages")
+        retry_parts = plan.get("retry_part_indexes")
+        pages = manifest.get("pages")
+        if (
+            not isinstance(retry_pages, list)
+            or not retry_pages
+            or any(type(page) is not int or page < 1 for page in retry_pages)
+            or len(set(retry_pages)) != len(retry_pages)
+            or not isinstance(retry_parts, list)
+            or not retry_parts
+            or any(type(index) is not int or index < 0 for index in retry_parts)
+            or len(set(retry_parts)) != len(retry_parts)
+            or not isinstance(pages, list)
+            or any(
+                page > len(pages)
+                or not _is_decode_replacement_page(pages[page - 1], document["content_hash"])
+                for page in retry_pages
+            )
+        ):
+            return False
+
+        old_tasks = cls._mineru_parse_tasks(conn, owner, document["id"], document["content_hash"], old_hash)
+        if not old_tasks or len(old_tasks) != len(plan["tasks"]):
+            return False
+        if [task["part_index"] for task in old_tasks] != list(range(len(old_tasks))):
+            return False
+        expected = {item.get("task_id"): item for item in plan["tasks"] if isinstance(item, dict)}
+        if len(expected) != len(plan["tasks"]) or any(
+            task["id"] not in expected
+            or task["state"] != "done"
+            or cls._mineru_retry_descriptor(task) != expected[task["id"]]
+            for task in old_tasks
+        ):
+            return False
+        if any(index >= len(old_tasks) for index in retry_parts):
+            return False
+        new_tasks = cls._mineru_parse_tasks(
+            conn, owner, document["id"], document["content_hash"], retry_hash
+        )
+        if len(new_tasks) != len(old_tasks):
+            return False
+        retry_set = set(retry_parts)
+        for task in new_tasks:
+            original = old_tasks[task["part_index"]]
+            should_retry = task["part_index"] in retry_set
+            if (
+                task["source_hash"] != document["content_hash"]
+                or task["profile_hash"] != retry_hash
+                or hashlib.sha256(task["part_blob"].encode()).hexdigest()
+                != hashlib.sha256(original["part_blob"].encode()).hexdigest()
+                or task["state"] != ("planned" if should_retry else "done")
+                or task["batch_id"] != (None if should_retry else original["batch_id"])
+                or (should_retry and (task["private_data"] != "{}" or task["result_blob"] is not None))
+                or (not should_retry and task["result_blob"] != original["result_blob"])
+            ):
+                return False
+        return True
+
+    def _schedule_mineru_retry_generation(
+        self,
+        conn,
+        *,
+        recovery,
+        document,
+        job,
+        manifest,
+        old_hash,
+        old_tasks,
+        retry_parts,
+        reason,
+        event,
+        retry_pages=(),
+    ):
+        """Create a source-bound MinerU generation and preserve reusable part receipts."""
+        from app.contexts.documents.infrastructure.providers.mineru import (
+            ACTIVE,
+            MinerUParser,
+            parse_profile_hash,
+        )
+        from app.contexts.documents.infrastructure.providers.mineru_results import (
+            MAX_SOURCE_BYTES,
+            reference,
+        )
+        from app.shared.infrastructure.persistence.blob_store import BlobStore
+
+        retry_generation = "auto-" + uid()
+        retry_hash = parse_profile_hash(MinerUParser.profile(), retry_generation)
+        if self._mineru_parse_tasks(
+            conn, document["owner_id"], document["id"], document["content_hash"], retry_hash
+        ):
+            return False
+        prior_blob = BlobStore(self.db.files_dir, max_bytes=MAX_SOURCE_BYTES).put_bytes(
+            document["owner_id"], dump(manifest).encode()
+        )
+        previous_manifest = reference(prior_blob)
+        descriptors = [self._mineru_retry_descriptor(task) for task in old_tasks]
+        retry_set = set(retry_parts)
+        new_ids = {}
+        for task in old_tasks:
+            retry_part = task["part_index"] in retry_set
+            task_id = uid()
+            new_ids[task["part_index"]] = task_id
+            state = "planned" if retry_part else task["state"]
+            conn.execute(
+                """INSERT INTO document_parse_tasks(
+                id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,
+                part_blob,state,batch_id,private_data,result_blob,progress,attempts,next_at,error_code,
+                created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    task_id,
+                    document["id"],
+                    document["owner_id"],
+                    document["content_hash"],
+                    retry_hash,
+                    task["part_index"],
+                    task["first_page"],
+                    task["last_page"],
+                    task["part_blob"],
+                    state,
+                    None if retry_part else task["batch_id"],
+                    "{}" if retry_part else task["private_data"],
+                    None if retry_part else task["result_blob"],
+                    "{}" if retry_part else task["progress"],
+                    0 if retry_part else task["attempts"],
+                    0 if retry_part else task["next_at"],
+                    None if retry_part else task["error_code"],
+                    now(),
+                    now(),
+                ),
+            )
+        active_states = tuple(ACTIVE)
+        conn.execute(
+            "UPDATE document_parse_tasks SET state='superseded' WHERE document_id=? AND owner_id=? AND source_hash=? AND profile_hash=? AND state IN ("
+            + ",".join("?" for _ in active_states)
+            + ")",
+            (document["id"], document["owner_id"], document["content_hash"], old_hash, *active_states),
+        )
+        updated_remote = {
+            **manifest["remote_parse"],
+            "retry_source_profile_hash": old_hash,
+            "retry_generation": retry_generation,
+            "profile_hash": retry_hash,
+            "previous_manifest": previous_manifest,
+            "state": "pending",
+            "tasks": [
+                {
+                    "task_id": new_ids[task["part_index"]],
+                    "first_page": task["first_page"],
+                    "last_page": task["last_page"],
+                    "state": "planned" if task["part_index"] in retry_set else task["state"],
+                    "progress": {} if task["part_index"] in retry_set else json.loads(task["progress"]),
+                    "error_code": None if task["part_index"] in retry_set else task["error_code"],
+                }
+                for task in old_tasks
+            ],
+        }
+        manifest["remote_parse"] = updated_remote
+        conn.execute(
+            "UPDATE documents SET manifest=? WHERE id=? AND owner_id=?",
+            (dump(manifest), document["id"], document["owner_id"]),
+        )
+        timestamp = time.time()
+        delay = min(
+            MAX_RECOVERY_SECONDS,
+            BASE_RECOVERY_SECONDS * 2 ** min(max(recovery["failure_count"] - 1, 0), 7),
+        )
+        available = max(timestamp + delay, _timestamp(job["available_at"]))
+        retry_plan = {
+            "source_hash": document["content_hash"],
+            "source_profile_hash": old_hash,
+            "retry_profile_hash": retry_hash,
+            "retry_generation": retry_generation,
+            "tasks": descriptors,
+        }
+        if reason == "mineru_quality_retry":
+            retry_plan.update(
+                retry_kind="decode_quality",
+                retry_part_indexes=sorted(retry_set),
+                retry_pages=list(retry_pages),
+            )
+        conn.execute(
+            """UPDATE collection_recovery_jobs SET status='waiting',reason=?,available_at=?,retry_plan=?,
+            revision=revision+1,updated_at=? WHERE id=?""",
+            (reason, available, dump(retry_plan), now(), recovery["id"]),
+        )
+        self._event(
+            conn,
+            recovery["id"],
+            event,
+            {
+                "source_hash": document["content_hash"],
+                "retry_parts": len(retry_set),
+                "reused_parts": len(old_tasks) - len(retry_set),
+                "retry_pages": list(retry_pages),
+                "retry_generation": retry_generation,
+                "retry_after_seconds": int(available - timestamp),
+                "duplicate_provider_charge_possible": True,
+            },
+        )
+        return True
+
     def record_failure(self, conn, claim, *, processing, decision, exhausted, ready_at=0, error_type=None):
         kind, phase = ("processing", claim["phase"]) if processing else ("fetch", "fetch")
         item_id = claim["document_id"] if processing else claim["id"]
@@ -885,6 +1217,18 @@ class CollectionRecovery:
                     self._block(conn, row, "mineru_retry_checkpoint_changed")
                     return "blocked"
                 decision = Decision("mineru_terminal_failure_retry", True)
+            elif row["reason"] == "mineru_quality_retry":
+                try:
+                    retry_plan = json.loads(row["retry_plan"])
+                except (TypeError, ValueError):
+                    self._block(conn, row, "mineru_retry_plan_invalid")
+                    return "blocked"
+                if not self._quality_mineru_retry_valid(
+                    conn, row["owner_id"], document, manifest, retry_plan
+                ):
+                    self._block(conn, row, "mineru_retry_checkpoint_changed")
+                    return "blocked"
+                decision = Decision("mineru_quality_retry", True)
             else:
                 decision = classify_processing(manifest, phase=row["phase"], retryable=True)
             if not decision.retryable:
@@ -1292,109 +1636,133 @@ class CollectionRecovery:
                 ):
                     continue
 
-                retry_generation = "auto-" + uid()
-                retry_hash = parse_profile_hash(MinerUParser.profile(), retry_generation)
-                if self._mineru_parse_tasks(
-                    conn, owner, document_id, document["content_hash"], retry_hash
+                scheduled += self._schedule_mineru_retry_generation(
+                    conn,
+                    recovery=recovery,
+                    document=document,
+                    job=job,
+                    manifest=manifest,
+                    old_hash=old_hash,
+                    old_tasks=old_tasks,
+                    retry_parts=[
+                        task["part_index"]
+                        for task in old_tasks
+                        if self._mineru_remote_terminal_failure(task)
+                    ],
+                    reason="mineru_terminal_retry",
+                    event="terminal_mineru_failure_retry_scheduled",
+                )
+        return scheduled
+
+    def _queue_mineru_quality_retries(self, *, limit, worker_scope):
+        """Reparse only complete MinerU parts containing replacement-decoded text."""
+        from app.contexts.documents.infrastructure.providers.mineru import (
+            MinerUParser,
+            parse_profile_hash,
+        )
+
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
+                    AND r.reason='quality_review' AND j.phase='parse' AND j.status='failed'"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (*arguments, limit),
+                )
+            ]
+
+        scheduled = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                recovery = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='quality_review'",
+                    (identifier,),
+                ).fetchone()
+                if (
+                    recovery is None
+                    or not worker_scope.allows(recovery["owner_id"])
+                    or recovery["recovery_count"] >= MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS
                 ):
                     continue
-                descriptors = [self._mineru_retry_descriptor(task) for task in old_tasks]
-                new_ids = {}
-                for task in old_tasks:
-                    failed = self._mineru_remote_terminal_failure(task)
-                    task_id = uid()
-                    new_ids[task["part_index"]] = task_id
-                    state = "planned" if failed else task["state"]
-                    conn.execute(
-                        """INSERT INTO document_parse_tasks(
-                        id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,
-                        part_blob,state,batch_id,private_data,result_blob,progress,attempts,next_at,error_code,
-                        created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            task_id,
-                            document_id,
-                            owner,
-                            document["content_hash"],
-                            retry_hash,
-                            task["part_index"],
-                            task["first_page"],
-                            task["last_page"],
-                            task["part_blob"],
-                            state,
-                            None if failed else task["batch_id"],
-                            "{}" if failed else task["private_data"],
-                            None if failed else task["result_blob"],
-                            "{}" if failed else task["progress"],
-                            0 if failed else task["attempts"],
-                            0 if failed else task["next_at"],
-                            None if failed else task["error_code"],
-                            now(),
-                            now(),
-                        ),
-                    )
-                active_states = tuple(ACTIVE)
-                conn.execute(
-                    "UPDATE document_parse_tasks SET state='superseded' WHERE document_id=? AND owner_id=? AND source_hash=? AND profile_hash=? AND state IN ("
-                    + ",".join("?" for _ in active_states)
-                    + ")",
-                    (document_id, owner, document["content_hash"], old_hash, *active_states),
-                )
-                updated_remote = {
-                    **remote,
-                    "retry_source_profile_hash": old_hash,
-                    "retry_generation": retry_generation,
-                    "profile_hash": retry_hash,
-                    "state": "pending",
-                    "tasks": [
-                        {
-                            "task_id": new_ids[task["part_index"]],
-                            "first_page": task["first_page"],
-                            "last_page": task["last_page"],
-                            "state": "planned" if self._mineru_remote_terminal_failure(task) else task["state"],
-                            "progress": json.loads(task["progress"]),
-                            "error_code": None
-                            if self._mineru_remote_terminal_failure(task)
-                            else task["error_code"],
-                        }
-                        for task in old_tasks
-                    ],
-                }
-                manifest["remote_parse"] = updated_remote
-                conn.execute(
-                    "UPDATE documents SET manifest=? WHERE id=? AND owner_id=?",
-                    (dump(manifest), document_id, owner),
-                )
-                timestamp = time.time()
-                delay = min(
-                    MAX_RECOVERY_SECONDS,
-                    BASE_RECOVERY_SECONDS * 2 ** min(max(recovery["failure_count"] - 1, 0), 7),
-                )
-                available = max(timestamp + delay, _timestamp(job["available_at"]))
-                retry_plan = {
-                    "source_hash": document["content_hash"],
-                    "source_profile_hash": old_hash,
-                    "retry_profile_hash": retry_hash,
-                    "retry_generation": retry_generation,
-                    "tasks": descriptors,
-                }
-                conn.execute(
-                    """UPDATE collection_recovery_jobs SET status='waiting',reason='mineru_terminal_retry',
-                    available_at=?,retry_plan=?,revision=revision+1,updated_at=? WHERE id=?""",
-                    (available, dump(retry_plan), now(), identifier),
-                )
-                self._event(
+                owner, document_id = recovery["owner_id"], recovery["item_id"]
+                binding = self._binding(conn, owner, "processing", document_id, "parse")
+                if binding is None or _digest(binding) != recovery["binding_sha256"]:
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                document = conn.execute(
+                    "SELECT id,owner_id,filename,mime_type,content_hash,manifest FROM documents WHERE id=? AND owner_id=?",
+                    (document_id, owner),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT phase,status,available_at FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (document_id, owner),
+                ).fetchone()
+                if document is None or job is None or job["phase"] != "parse" or job["status"] != "failed":
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    continue
+                targets = _mineru_decode_quality_targets(manifest, document["content_hash"])
+                remote = manifest.get("remote_parse") if isinstance(manifest, dict) else None
+                if targets is None or not isinstance(remote, dict):
+                    continue
+                old_hash = remote.get("profile_hash")
+                profile = remote.get("profile")
+                if not isinstance(old_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", old_hash):
+                    continue
+                try:
+                    if (
+                        not isinstance(profile, dict)
+                        or parse_profile_hash(profile, remote.get("retry_generation")) != old_hash
+                        or parse_profile_hash(MinerUParser.profile(), remote.get("retry_generation")) != old_hash
+                    ):
+                        continue
+                except ValueError:
+                    continue
+                old_tasks = self._mineru_parse_tasks(conn, owner, document_id, document["content_hash"], old_hash)
+                parts = remote.get("parts")
+                if not isinstance(parts, list) or len(old_tasks) != len(parts) or not old_tasks:
+                    continue
+                consistent = True
+                for index, (task, part) in enumerate(zip(old_tasks, parts, strict=True)):
+                    try:
+                        task_result = json.loads(task["result_blob"]) if task["result_blob"] else None
+                    except (TypeError, ValueError):
+                        task_result = None
+                    if (
+                        task["part_index"] != index
+                        or task["state"] != "done"
+                        or task["id"] != part.get("task_id")
+                        or task["first_page"] != part.get("first_page")
+                        or task["last_page"] != part.get("last_page")
+                        or task["source_hash"] != document["content_hash"]
+                        or not isinstance(task_result, dict)
+                        or task_result.get("content_hash") != part.get("result_blob", {}).get("content_hash")
+                    ):
+                        consistent = False
+                        break
+                retry_pages, retry_parts = targets
+                if not consistent or any(index >= len(old_tasks) for index in retry_parts):
+                    continue
+                scheduled += self._schedule_mineru_retry_generation(
                     conn,
-                    identifier,
-                    "terminal_mineru_failure_retry_scheduled",
-                    {
-                        "source_hash": document["content_hash"],
-                        "failed_parts": sum(self._mineru_remote_terminal_failure(task) for task in old_tasks),
-                        "reused_parts": sum(not self._mineru_remote_terminal_failure(task) for task in old_tasks),
-                        "retry_generation": retry_generation,
-                        "retry_after_seconds": int(available - timestamp),
-                    },
+                    recovery=recovery,
+                    document=document,
+                    job=job,
+                    manifest=manifest,
+                    old_hash=old_hash,
+                    old_tasks=old_tasks,
+                    retry_parts=retry_parts,
+                    reason="mineru_quality_retry",
+                    event="mineru_quality_retry_scheduled",
+                    retry_pages=retry_pages,
                 )
-                scheduled += 1
         return scheduled
 
     def _queue_automatic_ocr_retries(self, *, limit, worker_scope):
@@ -2026,6 +2394,7 @@ class CollectionRecovery:
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(limit=limit, worker_scope=worker_scope)
         self._queue_pending_mineru_resumes(limit=limit, worker_scope=worker_scope)
         self._queue_terminal_mineru_retries(limit=limit, worker_scope=worker_scope)
+        self._queue_mineru_quality_retries(limit=limit, worker_scope=worker_scope)
         self._queue_automatic_ocr_retries(limit=limit, worker_scope=worker_scope)
         for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
             result["requeued" if key in {"unmatched_requeued", "unstarted_requeued"} else key] += value

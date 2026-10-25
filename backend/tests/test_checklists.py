@@ -250,7 +250,7 @@ def test_configuration_schedules_only_unconditional_automated_sources(client):
     assert not enabled[(singapore_plan, "4.2")]
 
 
-def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
+def test_new_plan_version_waits_for_old_downloads_not_document_processing(client):
     service = client.app.state.service
     plan = service.checklists.plans[PLAN]
     current_version = plan["version"]
@@ -282,6 +282,14 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
         revision = conn.execute(
             "SELECT revision FROM collection_runs WHERE id=?", (old_run["id"],)
         ).fetchone()[0]
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE collection_items SET status='discovered' WHERE run_id=?", (old_run["id"],)
+        )
+        conn.execute("UPDATE collection_runs SET status='running' WHERE id=?", (old_run["id"],))
+        assert service.collection.source_due(conn, owner, new_source)
+    assert any(row["id"] == new_source for row in service.due_sources())
+
     cancelled = client.post(
         f"/api/tea/collection-runs/{old_run['id']}/cancel",
         json={"expected_revision": revision},

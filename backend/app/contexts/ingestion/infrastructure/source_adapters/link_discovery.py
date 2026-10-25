@@ -1727,13 +1727,14 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
         )
 
         if is_catalog_shell(current):
-            return _result(
-                matched=True,
-                purpose=purpose,
-                warnings=[
-                    "Treaty Room HTML 入口仅返回前端框架；目录数据由同一清单中的官方 JSON 接口提供，此页不作为正文或目录完整性证据。"
-                ],
-            )
+            result = _result(matched=True, purpose=purpose)
+            result["scope"] = {
+                "provider": "treaty-room-public",
+                "entry_role": "client_rendered_shell",
+                "catalog_data_source": "https://api-treaty-room.kemlu.go.id/publik/perjanjian",
+                "directory_complete_verified": False,
+            }
+            return result
     if not visible:
         return _result(reason="页面没有可见内容，可能需要脚本或人工复核。")
     if rules.sso_catalog_2026 and rules.adapter == "sso" and purpose == "catalog":

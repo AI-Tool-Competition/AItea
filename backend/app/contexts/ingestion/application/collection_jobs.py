@@ -196,6 +196,8 @@ class CollectionService:
                     AND old_binding.version<new_binding.version
                 JOIN collection_runs old_run ON old_run.source_id=old_binding.source_id
                     AND old_run.status IN ('queued','running')
+                JOIN collection_items old_item ON old_item.run_id=old_run.id
+                    AND old_item.status IN ('queued','fetching')
                 WHERE new_binding.source_id=s.id AND new_binding.owner_id=s.owner_id
             )""",
                 (source_id, owner),
@@ -593,8 +595,9 @@ class CollectionService:
                     self.queue_processing(conn, job["document_id"], owner)
                 status = "queued"
             conn.execute(
-                "UPDATE collection_runs SET status=?,revision=revision+1,updated_at=? WHERE id=?",
-                (status, now(), run_id),
+                """UPDATE collection_runs SET status=?,error=CASE WHEN ?='retry' THEN NULL ELSE error END,
+                revision=revision+1,updated_at=? WHERE id=?""",
+                (status, action, now(), run_id),
             )
             self._update_source(conn, run_id)
             return self.run_dict(conn, self.own_run(conn, owner, run_id))

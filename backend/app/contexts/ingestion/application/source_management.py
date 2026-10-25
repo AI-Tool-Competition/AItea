@@ -166,6 +166,8 @@ class SourceService:
                         AND old_binding.version<new_binding.version
                     JOIN collection_runs old_run ON old_run.source_id=old_binding.source_id
                         AND old_run.status IN ('queued','running')
+                    JOIN collection_items old_item ON old_item.run_id=old_run.id
+                        AND old_item.status IN ('queued','fetching')
                     WHERE new_binding.source_id=s.id AND new_binding.owner_id=s.owner_id
                 )
                 AND (last_attempt_at IS NULL OR julianday(last_attempt_at)+interval_hours/24.0<=julianday('now')

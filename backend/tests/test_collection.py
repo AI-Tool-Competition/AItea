@@ -280,6 +280,32 @@ def test_empty_retry_keeps_partial_terminal_state(client, monkeypatch):
     assert client.get(f"/api/tea/collection-runs/{job['id']}").json()["run"]["status"] == "partial"
 
 
+def test_retry_clears_stale_run_error_before_restarting_failed_items(client, monkeypatch):
+    src = source(client)
+    job = run(client, src["id"])
+    collection = client.app.state.service.collection
+
+    def unavailable(*_args, **_kwargs):
+        raise ingestion_download.DownloadError("temporary source failure")
+
+    monkeypatch.setattr(ingestion_download, "_download", unavailable)
+    collection.fetch_item(collection.claim_fetch())
+    summary = client.get(f"/api/tea/collection-runs/{job['id']}").json()["run"]
+    assert summary["status"] == "partial"
+
+    with collection.db.transaction() as conn:
+        conn.execute("UPDATE collection_runs SET error='previous attempt warning' WHERE id=?", (job["id"],))
+
+    summary = client.get(f"/api/tea/collection-runs/{job['id']}").json()["run"]
+    retried = client.post(
+        f"/api/tea/collection-runs/{job['id']}/retry", json={"expected_revision": summary["revision"]}
+    )
+
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "queued"
+    assert retried.json()["error"] is None
+
+
 def test_coordinator_recovers_after_transient_database_error(client, monkeypatch):
     import sqlite3
 

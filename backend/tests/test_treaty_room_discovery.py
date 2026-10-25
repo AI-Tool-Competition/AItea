@@ -44,7 +44,13 @@ def test_client_rendered_entry_is_audited_as_a_shell_when_json_catalog_is_config
     assert result["matched"] is True
     assert result["purpose"] == "catalog"
     assert result["links"] == []
-    assert "官方 JSON 接口" in result["warnings"][0]
+    assert result["warnings"] == []
+    assert result["scope"] == {
+        "provider": "treaty-room-public",
+        "entry_role": "client_rendered_shell",
+        "catalog_data_source": BASE + "/publik/perjanjian",
+        "directory_complete_verified": False,
+    }
 
 
 def test_unconfigured_blank_treaty_room_paths_remain_a_failure():

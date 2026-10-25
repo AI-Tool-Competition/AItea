@@ -475,6 +475,70 @@ def test_queue_recovers_lost_embedding_response_without_repeating_the_write(work
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
 
 
+def test_local_index_completion_keeps_multibatch_ragflow_work_queued(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch, count=9)
+    monkeypatch.setenv("RAGFLOW_CHUNK_CONCURRENCY", "8")
+    monkeypatch.setattr(workspace.index, "pending", lambda *_args, **_kwargs: [])
+
+    workspace.collection.process_item(claim)
+    for _ in range(3):
+        with closing(workspace.db.connect()) as conn:
+            state = conn.execute(
+                "SELECT phase,status FROM processing_jobs WHERE document_id='target'"
+            ).fetchone()
+        if state["status"] == "completed":
+            break
+        assert state["phase"] == "embed" and state["status"] == "queued"
+        claim = workspace.collection.claim_processing(owner_id="owner", document_ids=[document["id"]])
+        assert claim
+        workspace.collection.process_item(claim)
+
+    with closing(workspace.db.connect()) as conn:
+        assert conn.execute(
+            "SELECT status FROM processing_jobs WHERE document_id='target'"
+        ).fetchone()[0] == "completed"
+        assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
+    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 9
+
+
+def test_recovery_requeues_completed_job_with_incomplete_ragflow_generation(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch)
+    workspace.collection.process_item(claim)
+    with workspace.db.transaction() as conn:
+        conn.execute(
+            "UPDATE processing_jobs SET status='completed',lease_token=NULL,lease_until=NULL WHERE document_id='target'"
+        )
+        conn.execute("UPDATE documents SET status='ready' WHERE id='target'")
+
+    result = workspace.collection.recovery.run_due()
+
+    assert result["requeued"] == 1
+    with closing(workspace.db.connect()) as conn:
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id='target'"
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id='target'"
+        ).fetchone()
+        event = conn.execute(
+            "SELECT event,detail FROM collection_recovery_events ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    assert tuple(job) == ("embed", "queued")
+    assert tuple(recovery) == ("queued", "ragflow_index_resume")
+    assert event["event"] == "incomplete_ragflow_index_auto_requeued"
+    assert json.loads(event["detail"])["duplicate_provider_charge_possible"] is True
+
+    claim = workspace.collection.claim_processing(owner_id="owner", document_ids=[document["id"]])
+    assert claim
+    workspace.collection.process_item(claim)
+    with closing(workspace.db.connect()) as conn:
+        assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
+        assert conn.execute(
+            "SELECT status FROM processing_jobs WHERE document_id='target'"
+        ).fetchone()[0] == "completed"
+    assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
+
+
 def test_expired_unconfirmed_embedding_is_retried_after_exact_absence_check(workspace, monkeypatch):
     import time
 

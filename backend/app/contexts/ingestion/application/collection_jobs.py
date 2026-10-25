@@ -2039,7 +2039,12 @@ class CollectionService:
                     indexable
                     and current_fingerprint
                     and text_complete(manifest)
-                    and self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
+                    and (
+                        self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
+                        or self.service.ragflow.pending(
+                            conn, doc["id"], current_fingerprint, limit=1
+                        )
+                    )
                 )
                 needs_parse = manifest.get("remote_parse", {}).get("state") in {"planned", "pending"}
                 if claim["phase"] == "parse":

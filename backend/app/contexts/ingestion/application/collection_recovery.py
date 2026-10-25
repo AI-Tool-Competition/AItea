@@ -2928,6 +2928,142 @@ class CollectionRecovery:
                 result["requeued"] += 1
         return result
 
+    def _queue_completed_incomplete_ragflow(self, *, limit, worker_scope, fingerprint):
+        """Resume current RAGFlow generations abandoned after local processing completed."""
+        scope, arguments = worker_scope.sql("j.owner_id")
+        queue_scope, queue_arguments = worker_scope.sql()
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row["id"]
+                for row in conn.execute(
+                    """SELECT d.id FROM documents d
+                    JOIN processing_jobs j ON j.document_id=d.id AND j.owner_id=d.owner_id
+                    JOIN retrieval_documents x ON x.document_id=d.id
+                    WHERE d.role='primary' AND x.complete=1 AND x.chunk_count>0
+                    AND j.phase='embed' AND j.status='completed'
+                    AND (
+                        NOT EXISTS(SELECT 1 FROM legal_classifications c WHERE c.document_id=d.id)
+                        OR EXISTS(
+                            SELECT 1 FROM legal_classifications c
+                            WHERE c.document_id=d.id AND c.level='primary'
+                        )
+                    )
+                    AND NOT EXISTS(
+                        SELECT 1 FROM ragflow_documents r WHERE r.document_id=d.id
+                        AND r.owner_id=d.owner_id AND r.profile=? AND r.source_hash=d.content_hash
+                        AND r.source_version=d.version AND r.index_revision=x.revision AND r.state='ready'
+                    )"""
+                    + scope
+                    + " ORDER BY j.updated_at,d.id LIMIT ?",
+                    (fingerprint, *arguments, min(128, limit)),
+                )
+            ]
+        resumed = 0
+        for document_id in identifiers:
+            with self.db.transaction() as conn:
+                job = conn.execute(
+                    "SELECT owner_id,phase,status FROM processing_jobs WHERE document_id=?",
+                    (document_id,),
+                ).fetchone()
+                if (
+                    job is None
+                    or job["phase"] != "embed"
+                    or job["status"] != "completed"
+                    or not worker_scope.allows(job["owner_id"])
+                ):
+                    continue
+                document = conn.execute(
+                    "SELECT manifest FROM documents WHERE id=? AND owner_id=?",
+                    (document_id, job["owner_id"]),
+                ).fetchone()
+                if document is None:
+                    continue
+                try:
+                    manifest = json.loads(document["manifest"])
+                except (TypeError, ValueError):
+                    continue
+                from app.contexts.documents.infrastructure.parsers.ingestion_quality import text_complete
+
+                if (
+                    not text_complete(manifest)
+                    or not self.service.archive.can_index(conn, document_id)
+                    or not self.service.ragflow.pending(conn, document_id, fingerprint, limit=1)
+                ):
+                    continue
+                binding = self._binding(conn, job["owner_id"], "processing", document_id, "embed")
+                if binding is None:
+                    continue
+                if (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')"
+                        + queue_scope,
+                        queue_arguments,
+                    ).fetchone()[0]
+                    >= PROCESSING_QUEUE_LIMIT
+                ):
+                    break
+                available = time.time() + self.service.ragflow.retry_delay(
+                    conn, document_id, fingerprint
+                )
+                conn.execute(
+                    """UPDATE processing_jobs SET status='queued',attempts=0,available_at=?,
+                    lease_token=NULL,lease_until=NULL,error=NULL,updated_at=?
+                    WHERE document_id=? AND owner_id=? AND phase='embed' AND status='completed'""",
+                    (available, now(), document_id, job["owner_id"]),
+                )
+                conn.execute(
+                    "UPDATE documents SET status='processing',error=NULL WHERE id=? AND owner_id=?",
+                    (document_id, job["owner_id"]),
+                )
+                recovery = conn.execute(
+                    """SELECT * FROM collection_recovery_jobs WHERE owner_id=? AND queue_kind='processing'
+                    AND item_id=? AND phase='embed'""",
+                    (job["owner_id"], document_id),
+                ).fetchone()
+                timestamp = now()
+                binding_json = dump(binding)
+                binding_hash = _digest(binding)
+                if recovery is None:
+                    recovery_id = uid()
+                    conn.execute(
+                        """INSERT INTO collection_recovery_jobs(
+                        id,owner_id,queue_kind,item_id,phase,status,reason,available_at,binding,
+                        binding_sha256,created_at,updated_at
+                        ) VALUES(?,?,'processing',?,'embed','queued','ragflow_index_resume',?,?,?,?,?)""",
+                        (
+                            recovery_id,
+                            job["owner_id"],
+                            document_id,
+                            available,
+                            binding_json,
+                            binding_hash,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                else:
+                    recovery_id = recovery["id"]
+                    conn.execute(
+                        """UPDATE collection_recovery_jobs SET status='queued',reason='ragflow_index_resume',
+                        available_at=?,binding=?,binding_sha256=?,retry_plan='[]',revision=revision+1,updated_at=?
+                        WHERE id=?""",
+                        (available, binding_json, binding_hash, timestamp, recovery_id),
+                    )
+                self._event(
+                    conn,
+                    recovery_id,
+                    "incomplete_ragflow_index_auto_requeued",
+                    {
+                        "profile": fingerprint,
+                        "retry_after_seconds": max(0, int(available - time.time())),
+                        "duplicate_provider_charge_possible": True,
+                        "source_binding_verified": True,
+                    },
+                )
+                self.collection._refresh_document(conn, document_id)
+                resumed += 1
+        return resumed
+
     def run_due(self, *, limit=10, worker_scope=BackgroundWorkerScope()):
         if type(limit) is not int or not 1 <= limit <= MAX_BATCH:
             raise ValueError("recovery batch must be between 1 and 32")
@@ -2961,6 +3097,14 @@ class CollectionRecovery:
         )
         for key, value in self._reconcile_unknown_ragflow(limit=limit, worker_scope=worker_scope).items():
             result["requeued" if key in {"unmatched_requeued", "unstarted_requeued"} else key] += value
+        from app.contexts.documents.infrastructure.providers.ragflow import configured, profile
+
+        if configured():
+            fingerprint = profile()
+            if fingerprint:
+                result["requeued"] += self._queue_completed_incomplete_ragflow(
+                    limit=limit, worker_scope=worker_scope, fingerprint=fingerprint
+                )
         with closing(self.db.connect()) as conn:
             identifiers = [
                 row[0]

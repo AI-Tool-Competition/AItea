@@ -33,7 +33,7 @@ OCR_AUTOMATIC_RETRY_REASONS = frozenset(
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 MAX_AUTOMATIC_OCR_CHECKPOINT_BYTES = 8 * 1024 * 1024
-MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 3
+MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 8
 MAX_HTML_PARSER_REFRESH_ATTEMPTS = 3
 PROCESSING_QUEUE_LIMIT = 200
 # Keep one bounded admission slot so recovery work cannot starve behind new imports.
@@ -1131,9 +1131,13 @@ class CollectionRecovery:
             (dump(manifest), document["id"], document["owner_id"]),
         )
         timestamp = time.time()
-        delay = min(
-            MAX_RECOVERY_SECONDS,
-            BASE_RECOVERY_SECONDS * 2 ** min(max(recovery["failure_count"] - 1, 0), 7),
+        delay = (
+            BASE_RECOVERY_SECONDS
+            if reason == "mineru_quality_retry"
+            else min(
+                MAX_RECOVERY_SECONDS,
+                BASE_RECOVERY_SECONDS * 2 ** min(max(recovery["failure_count"] - 1, 0), 7),
+            )
         )
         available = max(timestamp + delay, _timestamp(job["available_at"]))
         retry_plan = {

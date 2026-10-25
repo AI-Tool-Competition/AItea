@@ -14,6 +14,7 @@ from app.contexts.ingestion.application.collection_recovery import (
     BASE_RECOVERY_SECONDS,
     CollectionRecovery,
     Decision,
+    MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS,
     classify_processing,
 )
 from app.contexts.documents.infrastructure.parsers.native_parser import (
@@ -1991,12 +1992,27 @@ def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_prev
             exhausted=True,
             error_type="incomplete_checkpoint",
         )
+        conn.execute(
+            "UPDATE collection_recovery_jobs SET recovery_count=? WHERE item_id=?",
+            (MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS, document["id"]),
+        )
 
+    capped = service.collection.recovery.run_due(limit=32)
+    assert capped["requeued"] == 0
+    assert rows(service, "collection_recovery_jobs")[0]["status"] == "blocked"
+
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE collection_recovery_jobs SET recovery_count=3,failure_count=7 WHERE item_id=?",
+            (document["id"],),
+        )
+
+    scheduled_at = time.time()
     scheduled = service.collection.recovery.run_due(limit=32)
     assert scheduled["requeued"] == 0
     with closing(service.db.connect()) as conn:
         recovery = conn.execute(
-            "SELECT status,reason,retry_plan FROM collection_recovery_jobs WHERE item_id=?",
+            "SELECT status,reason,retry_plan,available_at FROM collection_recovery_jobs WHERE item_id=?",
             (document["id"],),
         ).fetchone()
         saved = json.loads(
@@ -2012,6 +2028,7 @@ def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_prev
             (document["id"], retry_hash),
         ).fetchall()
     assert recovery["status"] == "waiting" and recovery["reason"] == "mineru_quality_retry"
+    assert BASE_RECOVERY_SECONDS <= recovery["available_at"] - scheduled_at <= BASE_RECOVERY_SECONDS + 5
     retry_plan = json.loads(recovery["retry_plan"])
     assert retry_plan["retry_kind"] == "decode_quality"
     assert retry_plan["retry_pages"] == [2]
@@ -2038,7 +2055,7 @@ def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_prev
             (document["id"],),
         ).fetchone()
     assert tuple(job) == ("parse", "queued")
-    assert tuple(recovery) == ("queued", "mineru_quality_retry", 1)
+    assert tuple(recovery) == ("queued", "mineru_quality_retry", 4)
 
 
 def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeypatch, service):

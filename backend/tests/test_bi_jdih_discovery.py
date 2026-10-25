@@ -9,7 +9,9 @@ from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PLAN = json.loads((PROJECT_ROOT / "config/collection-plans/indonesia-20261003.json").read_text())
+PLAN = json.loads(
+    (PROJECT_ROOT / "config/collection-plans/versions/indonesia-20261003.v14.json").read_text()
+)
 ITEM = next(row for row in PLAN["items"] if row["id"] == "4.6")
 ROOT_URL = "https://jdih.bi.go.id/Web/DaftarPeraturan"
 

@@ -14,6 +14,7 @@ from app.configuration.paths import PROJECT_ROOT
 from app.shared.infrastructure.http import download as ingestion_download
 
 PLAN = "indonesia-20261003"
+HISTORICAL_PLAN_VERSION = 14
 
 
 def options(*items, originals=1):
@@ -29,7 +30,13 @@ def options(*items, originals=1):
 def test_restart_after_transaction_before_checkpoint_reuses_the_same_run(tmp_path, monkeypatch):
     service = Service(tmp_path)
     saved = []
-    campaign = ResourceCampaign(service, PLAN, options("1.1"), checkpoint=lambda s: saved.append(deepcopy(s)))
+    campaign = ResourceCampaign(
+        service,
+        PLAN,
+        options("1.1"),
+        version=HISTORICAL_PLAN_VERSION,
+        checkpoint=lambda s: saved.append(deepcopy(s)),
+    )
     start = service.checklists.start
 
     def interrupted(*args, **kwargs):
@@ -92,16 +99,16 @@ def test_fast_category_starts_original_while_slow_category_is_still_discovering(
 def test_conditional_categories_are_skipped_without_confirmation(tmp_path):
     service = Service(tmp_path)
     service.checklists.plans[PLAN]["items"][0]["conditional"] = True
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.3"))
     assert not campaign.step()
-    assert campaign.state["items"]["1.1"]["phase"] == "skipped"
+    assert campaign.state["items"]["1.3"]["phase"] == "skipped"
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0] == 0
 
 
 def test_original_hash_verification_detects_tampering_and_keeps_drafts(tmp_path):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1"), version=HISTORICAL_PLAN_VERSION)
     owner = campaign.state["owner_id"]
     blob = service.archive.blobs.put_bytes(owner, b"original legal text")
     with service.db.transaction() as conn:
@@ -128,17 +135,17 @@ def test_original_hash_verification_detects_tampering_and_keeps_drafts(tmp_path)
 
 def test_resume_rejects_changed_scope_or_frozen_definition(tmp_path):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.3"))
     with pytest.raises(ValueError, match="same frozen"):
-        ResourceCampaign(service, PLAN, options("1.1", originals=2), state=deepcopy(campaign.state))
+        ResourceCampaign(service, PLAN, options("1.3", originals=2), state=deepcopy(campaign.state))
     service.checklists.plans[PLAN]["title"] += " changed without a version"
     with pytest.raises(ValueError, match="same frozen"):
-        ResourceCampaign(service, PLAN, options("1.1"), state=deepcopy(campaign.state))
+        ResourceCampaign(service, PLAN, options("1.3"), state=deepcopy(campaign.state))
 
 
 def test_campaign_resume_keeps_frozen_definition_bindings_and_report(tmp_path):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1"), version=HISTORICAL_PLAN_VERSION)
     frozen = deepcopy(campaign.plan)
     assert campaign.step()
     newer = deepcopy(frozen)
@@ -166,7 +173,7 @@ def test_campaign_resume_keeps_frozen_definition_bindings_and_report(tmp_path):
 
 def test_resume_rejects_another_plan_before_creating_account_or_binding(tmp_path):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1"), version=HISTORICAL_PLAN_VERSION)
     with pytest.raises(ValueError, match="same frozen"):
         ResourceCampaign(service, "singapore-demo-20261009", options("1.1"), state=deepcopy(campaign.state))
     with closing(service.db.connect()) as conn:
@@ -176,13 +183,18 @@ def test_resume_rejects_another_plan_before_creating_account_or_binding(tmp_path
 
 def test_explicit_extension_preserves_account_progress_and_submission_identity(tmp_path):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1"), version=HISTORICAL_PLAN_VERSION)
     campaign.step()
     record = campaign.state["items"]["1.1"]
     previous_run = record["discovery_runs"][0]
     record["phase"] = "bounded"
     extended = ResourceCampaign(
-        service, PLAN, options("1.1", originals=2), state=deepcopy(campaign.state), extend=True
+        service,
+        PLAN,
+        options("1.1", originals=2),
+        version=HISTORICAL_PLAN_VERSION,
+        state=deepcopy(campaign.state),
+        extend=True,
     )
     assert extended.state["owner_id"] == campaign.state["owner_id"]
     assert extended.state["items"]["1.1"]["discovery_runs"] == [previous_run]
@@ -193,12 +205,19 @@ def test_explicit_extension_preserves_account_progress_and_submission_identity(t
         assert conn.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
     with pytest.raises(ValueError, match="only increase"):
-        ResourceCampaign(service, PLAN, options("1.1"), state=deepcopy(extended.state), extend=True)
+        ResourceCampaign(
+            service,
+            PLAN,
+            options("1.1"),
+            version=HISTORICAL_PLAN_VERSION,
+            state=deepcopy(extended.state),
+            extend=True,
+        )
 
 
 def test_claims_rotate_runs_on_a_shared_host_and_keep_connection_limits(tmp_path, monkeypatch):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1"), version=HISTORICAL_PLAN_VERSION)
     owner = campaign.state["owner_id"]
     monkeypatch.setattr(service.collection, "host_workers", 1)
     runs = []
@@ -262,6 +281,7 @@ def test_cli_preserves_nonempty_output_and_resumes_an_owned_campaign(tmp_path):
         Service(isolated),
         PLAN,
         options("1.1", originals=0),
+        version=HISTORICAL_PLAN_VERSION,
         checkpoint=lambda state: (isolated / "campaign.json").write_text(json.dumps(state)),
     )
     campaign.state["items"]["1.1"].update(phase="blocked", error="Source needs an adapter")
@@ -294,7 +314,7 @@ def test_cli_preserves_nonempty_output_and_resumes_an_owned_campaign(tmp_path):
 
 def test_frozen_report_excludes_errors_from_newer_bindings_for_same_account(tmp_path):
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1"), version=HISTORICAL_PLAN_VERSION)
     assert campaign.step()
     old_run = campaign.state["items"]["1.1"]["discovery_runs"][0]
     newer = deepcopy(campaign.plan)

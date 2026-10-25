@@ -337,7 +337,7 @@ def test_oversized_xml_cannot_accept_a_complete_prefix_with_a_different_blob_has
 
 
 def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
-    for member, old_version, current_version in [("ID", 5, 14), ("SG", 2, 5)]:
+    for member, old_version, current_version in [("ID", 5, 15), ("SG", 2, 6)]:
         current = item(member)
         old = item(member, old_version)
         assert current["verbatim_requirements"] == old["verbatim_requirements"]
@@ -359,11 +359,10 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
 def test_generic_office_originals_stay_inside_the_frozen_public_legal_directory(
     member, item, version, extension, signature
 ):
-    from app.contexts.ingestion.application.checklists import load_blueprints
     from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
 
     name = "indonesia-20261003" if member == "ID" else "singapore-demo-20261009"
-    plan = load_blueprints()[name]
+    plan = load_blueprint_version(name, version)
     assert plan["version"] == version
     definition = next(value for value in plan["items"] if value["id"] == item)
     recipe = recipe_for(definition)

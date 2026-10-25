@@ -17,7 +17,9 @@ FIXTURE = Path(__file__).parent / "fixtures/discovery/sso-sl-current-20261019.ht
 
 
 def plan():
-    return json.loads((ROOT / "config/collection-plans/singapore-demo-20261009.json").read_text())
+    return json.loads(
+        (ROOT / "config/collection-plans/versions/singapore-demo-20261009.v5.json").read_text()
+    )
 
 
 def two_pages():

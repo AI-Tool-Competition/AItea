@@ -415,6 +415,51 @@ def test_catalog_post_never_replays_body_on_redirect(transport):
     assert len(requests) == 1
 
 
+def test_same_origin_catalog_form_post_is_host_bound_and_records_only_body_hash(transport):
+    from urllib.parse import parse_qs
+
+    responses, requests, connections = transport
+    responses.append(Response([b"<html>page 2</html>"], headers={"Content-Type": "text/html"}))
+    result = download(
+        required_host="example.com",
+        form_fields=[("__VIEWSTATE", "opaque-state"), ("__EVENTTARGET", "pager$next")],
+    )
+    assert connections[0].method == "POST"
+    assert requests[0][2]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert parse_qs(connections[0].body.decode()) == {
+        "__VIEWSTATE": ["opaque-state"],
+        "__EVENTTARGET": ["pager$next"],
+    }
+    assert result["request_method"] == "POST"
+    assert len(result["request_body_sha256"]) == 64
+    assert "opaque-state" not in result
+
+
+def test_catalog_form_post_requires_host_binding_and_rejects_redirects(transport):
+    responses, _, _ = transport
+    with pytest.raises(ingestion_download.DownloadError):
+        download(form_fields=[("__VIEWSTATE", "opaque-state")])
+    assert not transport[2]
+
+    responses.append(Response(status=307, headers={"Location": "https://another.example/list"}))
+    with pytest.raises(ingestion_download.DownloadError):
+        download(required_host="example.com", form_fields=[("__VIEWSTATE", "opaque-state")])
+    assert len(transport[1]) == 1
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        [("unsafe&name", "x")],
+        [("__VIEWSTATE", "x" * (1024 * 1024 + 1))],
+    ],
+)
+def test_catalog_form_post_rejects_unbounded_fields_before_connecting(transport, fields):
+    with pytest.raises(ingestion_download.DownloadError):
+        download(required_host="example.com", form_fields=fields)
+    assert not transport[2]
+
+
 def test_oversized_catalog_request_is_rejected_before_connecting(transport):
     with pytest.raises(ingestion_download.DownloadError):
         download(json_body={"filter": "x" * 16385})

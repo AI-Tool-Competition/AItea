@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import sqlite3
+import stat
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -1288,6 +1289,57 @@ class CollectionService:
                 **request_options,
             }
             checklist_item = plan.get("checklist", {}).get("definition", {}).get("item", {})
+            bi_form_evidence = None
+            request_url = None
+            inspection_url = None
+            bi_official = checklist_item.get("adapter") == "bi_official"
+            if bi_official:
+                from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
+                    MAX_HTML_BYTES as MAX_BI_OFFICIAL_HTML_BYTES,
+                    catalog_form_request,
+                    network_catalog_url,
+                    page_number,
+                    previous_catalog_url,
+                    purpose as bi_purpose,
+                )
+
+                download_options["max_compressed_html_bytes"] = MAX_BI_OFFICIAL_HTML_BYTES
+                if claim.get("purpose") == "catalog" and bi_purpose(claim["url"]) == "catalog":
+                    request_url = network_catalog_url(claim["url"])
+                    inspection_url = claim["url"]
+                    current_page = page_number(claim["url"])
+                    if current_page is None:
+                        raise ValueError("央行官网目录页码无效。")
+                    if current_page > 1:
+                        parent_url = previous_catalog_url(claim["url"])
+                        binding_id = plan.get("checklist", {}).get("binding_id")
+                        with closing(self.db.connect()) as conn:
+                            parent = conn.execute(
+                                """SELECT content_hash,storage_path,size FROM checklist_pages
+                                WHERE binding_id=? AND url=? ORDER BY created_at DESC LIMIT 1""",
+                                (binding_id, parent_url),
+                            ).fetchone()
+                        if parent is None or type(parent["size"]) is not int or not 1 <= parent["size"] <= MAX_BI_OFFICIAL_HTML_BYTES:
+                            raise ValueError("央行官网下一页请求缺少已保存的前一页证据。")
+                        parent_path = Path(parent["storage_path"])
+                        if not parent_path.resolve().is_relative_to(Path(self.db.data_dir).resolve()):
+                            raise ValueError("央行官网前一页文件路径超出资料存储目录。")
+                        fd = os.open(parent_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                        with os.fdopen(fd, "rb") as saved_page:
+                            info = os.fstat(saved_page.fileno())
+                            if not stat.S_ISREG(info.st_mode) or info.st_size != parent["size"]:
+                                raise ValueError("央行官网前一页文件大小校验失败。")
+                            parent_content = saved_page.read(MAX_BI_OFFICIAL_HTML_BYTES + 1)
+                        if (
+                            len(parent_content) != parent["size"]
+                            or hashlib.sha256(parent_content).hexdigest() != parent["content_hash"]
+                        ):
+                            raise ValueError("央行官网前一页原件哈希校验失败。")
+                        form_fields, bi_form_evidence = catalog_form_request(
+                            parent_url, parent_content, current_page
+                        )
+                        download_options["form_fields"] = form_fields
+                        validators = None
             if (
                 claim.get("purpose") == "catalog"
                 and checklist_item.get("adapter") == "bi_jdih"
@@ -1300,18 +1352,42 @@ class CollectionService:
                 download_options["max_compressed_html_bytes"] = MAX_BI_JDIH_HTML_BYTES
             fetched = self.transfers.download(
                 claim,
-                required_host=claim["host"] if claim["level"] == "attachment" else None,
+                required_host=(
+                    "www.bi.go.id"
+                    if bi_official
+                    else claim["host"]
+                    if claim["level"] == "attachment"
+                    else None
+                ),
                 validators=validators,
                 discovery=discovery,
                 timeout_seconds=timeout_seconds,
+                request_url=request_url,
                 options=download_options,
             )
+            if inspection_url is not None:
+                fetched["inspection_url"] = inspection_url
             fetched["request_evidence"] = {
                 "method": fetched.get("request_method", "GET"),
                 "url": fetched["url"],
             }
+            if inspection_url is not None:
+                fetched["request_evidence"]["queued_page_url"] = inspection_url
             if "json_body" in request_options:
                 fetched["request_evidence"]["json_body"] = request_options["json_body"]
+            if bi_form_evidence is not None:
+                fetched["request_evidence"].update(
+                    {
+                        "method": "POST",
+                        "parent_page_url": bi_form_evidence["parent_url"],
+                        "parent_page_sha256": bi_form_evidence["parent_page_sha256"],
+                        "parent_page": bi_form_evidence["parent_page"],
+                        "target_page": bi_form_evidence["target_page"],
+                        "event_target": bi_form_evidence["event_target"],
+                        "image_submit": bi_form_evidence["image_submit"],
+                        "request_body_sha256": fetched.get("request_body_sha256"),
+                    }
+                )
             if fetched.get("not_modified"):
                 if not cache:
                     raise ValueError("来源返回 304，但本地没有可复用原件")

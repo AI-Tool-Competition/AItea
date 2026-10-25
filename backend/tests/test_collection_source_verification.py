@@ -53,9 +53,14 @@ def transport(monkeypatch, bodies):
 def test_all_checklist_requirements_and_hashes_survive_matrix_generation():
     plans = load_blueprints()
     rows = verification.source_rows(plans, False)
-    assert len(rows) == 33
+    assert len(rows) == 28
     assert sum(row["state"] == "conditional_not_triggered" for row in rows) == 2
-    assert sum(row["execution"] == "dataset_review" for row in rows) == 1
+    assert sum(row["execution"] == "dataset_review" for row in rows) == 0
+    wto = next(row for row in rows if row["plan_id"] == "indonesia-20261003" and row["item_id"] == "5.4")
+    assert not any("itip-services-worldbank.wto.org" in seed["url"] for seed in wto["configured_seeds"])
+    assert any(
+        "itip-services-worldbank.wto.org" in entry["url"] for entry in wto["reference_only_entries"]
+    )
     for row in rows:
         path = ROOT / "config/collection-plans" / f"{row['plan_id']}.json"
         assert row["plan_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
@@ -112,7 +117,7 @@ def test_successful_directory_response_cannot_become_coverage_or_original(tmp_pa
 def test_full_original_bytes_have_immutable_hash_and_do_not_claim_parser_validation(tmp_path, monkeypatch):
     body = b"%PDF-1.7\nactual immutable source original\n%%EOF"
     requests = transport(monkeypatch, lambda url: (body, "application/pdf"))
-    report = verification.verify(selected("1.1"), tmp_path, follow_limit=0, time_budget=10)
+    report = verification.verify(selected("1.1", version=14), tmp_path, follow_limit=0, time_budget=10)
     row = report["items"][0]
     assert row["state"] == "original_sample_acquired"
     original = row["originals"][0]
@@ -194,6 +199,64 @@ def test_scoped_json_adapter_retains_replayable_public_request(tmp_path, monkeyp
     request = next(options for url, options in requests if "setneg" in url)
     assert request["accept_compressed_json"] is True
     assert request["max_bytes"] <= 4 * 1024 * 1024
+
+
+def test_bi_official_source_verifier_replays_pager_from_saved_parent_without_exporting_tokens(tmp_path, monkeypatch):
+    from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import catalog_url
+
+    def page(number):
+        start = (number - 1) * 10 + 1
+        end = start + 9
+        records = "".join(
+            f'<a href="/id/publikasi/peraturan/Pages/PBI_{value:02d}2026.aspx">PBI {value}</a>'
+            for value in range(start, end + 1)
+        )
+        pager = (
+            '<a href="javascript:__doPostBack(\'ctl00$DataPagerPeraturan$ctl01$ctl01\',\'\')">2</a>'
+            if number == 1
+            else ""
+        )
+        return (
+            '<html><title>Peraturan</title><body><form>'
+            f"<p>Menampilkan {start}–{end} data dari total 20</p>{records}"
+            f'<input type="hidden" name="__VIEWSTATE" value="private-viewstate-{number}">'
+            f'<input type="hidden" name="__EVENTVALIDATION" value="private-validation-{number}">'
+            f'<div id="ctl00_DataPagerPeraturan">{pager}</div></form></body></html>'
+        ).encode()
+
+    bodies = iter([(page(1), "text/html"), (page(2), "text/html")])
+    requests = []
+
+    def download(url, *, consume, **options):
+        requests.append((url, options))
+        content, mime = next(bodies)
+        return {
+            "url": url,
+            "filename": "source.html",
+            "mime_type": mime,
+            "response_status": 200,
+            "request_method": "POST" if "form_fields" in options else "GET",
+            "blob": consume(iter([content])),
+        }
+
+    monkeypatch.setattr(verification, "_download", download)
+    plan = selected("4.6")["indonesia-20261003"]
+    definition = plan["items"][0]
+    row = verification.source_rows({plan["id"]: plan}, False)[0]
+    runner = verification.SourceVerifier(tmp_path, timeout=10, time_budget=20)
+    root = runner.probe(row, {"url": catalog_url(1), "purpose": "catalog"}, definition)
+    continuation = next(link for link in root["discovery"]["links"] if link["purpose"] == "catalog")
+    child = runner.probe(row, continuation, definition, parent=root)
+
+    assert child["status"] == "downloaded"
+    assert child["discovery"]["scope"]["page"] == 2
+    assert child["request_method"] == "POST"
+    assert requests[1][0] == catalog_url(1)
+    assert requests[1][1]["required_host"] == "www.bi.go.id"
+    assert len(requests[1][1]["form_fields"]) >= 2
+    assert child["request_evidence"]["parent_page_sha256"] == root["content_hash"]
+    assert "private-viewstate" not in json.dumps(child)
+    assert "private-validation" not in json.dumps(child)
 
 
 def test_unexpected_exception_messages_are_not_exported(tmp_path, monkeypatch):

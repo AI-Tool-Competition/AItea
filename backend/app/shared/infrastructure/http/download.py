@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import ipaddress
 import json
 import mimetypes
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 from app.contexts.documents.infrastructure.parsers.html_parsing import HTMLDocument as _HTMLDocument
 from app.shared.domain.content import MAX_TEXT, _decode
@@ -243,6 +244,7 @@ def _download(
     accept_compressed_json: bool = False,
     max_compressed_html_bytes: int | None = None,
     json_body: dict | None = None,
+    form_fields: list[tuple[str, str]] | None = None,
     public_search: EGazetteSearchRequest | None = None,
     max_bytes: int | None = None,
     byte_range: tuple[int, int] | None = None,
@@ -263,7 +265,13 @@ def _download(
     validators = validators or {}
     search_headers = {}
     if public_search is not None:
-        if type(public_search) is not EGazetteSearchRequest or json_body is None or validators or byte_range:
+        if (
+            type(public_search) is not EGazetteSearchRequest
+            or json_body is None
+            or form_fields is not None
+            or validators
+            or byte_range
+        ):
             raise DownloadError("公开检索只允许显式受限的只读 JSON 请求。")
         try:
             search_headers = public_search.headers_for(url, method="POST")
@@ -294,6 +302,7 @@ def _download(
             or (range_total_bytes is not None and byte_range[1] - byte_range[0] + 1 > max_bytes)
             or validators
             or json_body is not None
+            or form_fields is not None
             or accept_compressed_html
             or accept_compressed_json
         ):
@@ -303,8 +312,10 @@ def _download(
     elif range_validator is not None:
         raise DownloadError("原件分段校验参数缺少范围。")
     request_body = None
+    request_content_type = None
+    request_body_sha256 = None
     if json_body is not None:
-        if not isinstance(json_body, dict) or validators:
+        if not isinstance(json_body, dict) or validators or form_fields is not None:
             raise DownloadError("目录 JSON 请求参数无效。")
         try:
             request_body = json.dumps(json_body, ensure_ascii=False, allow_nan=False).encode()
@@ -312,6 +323,35 @@ def _download(
             raise DownloadError("目录 JSON 请求参数无效。") from exc
         if len(request_body) > 16384:
             raise DownloadError("目录 JSON 请求超过 16 KB。")
+        request_content_type = "application/json"
+    if form_fields is not None:
+        if json_body is not None or validators or byte_range or public_search is not None:
+            raise DownloadError("目录表单请求不能混用 JSON、缓存条件或分段参数。")
+        try:
+            initial_host = _validated_url(url)[1]
+        except DownloadError:
+            raise
+        if required_host != initial_host:
+            raise DownloadError("目录表单请求必须绑定到同一可信主机。")
+        if not isinstance(form_fields, (list, tuple)) or not 1 <= len(form_fields) <= 512:
+            raise DownloadError("目录表单字段数量无效。")
+        checked_fields = []
+        for field in form_fields:
+            if (
+                not isinstance(field, (list, tuple))
+                or len(field) != 2
+                or not isinstance(field[0], str)
+                or not re.fullmatch(r"[A-Za-z0-9_$:.()\[\]-]{1,200}", field[0])
+                or not isinstance(field[1], str)
+                or len(field[1]) > 2 * 1024 * 1024
+            ):
+                raise DownloadError("目录表单字段无效。")
+            checked_fields.append((field[0], field[1]))
+        request_body = urlencode(checked_fields).encode("ascii")
+        if len(request_body) > 1024 * 1024:
+            raise DownloadError("目录表单请求超过 1 MiB。")
+        request_content_type = "application/x-www-form-urlencoded"
+        request_body_sha256 = hashlib.sha256(request_body).hexdigest()
     conditionals = {
         "If-None-Match": _bounded_header(validators.get("etag") or validators.get("ETag")),
         "If-Modified-Since": _bounded_header(
@@ -402,7 +442,7 @@ def _download(
                 if request_body is None:
                     connection.request("GET", request_path, headers=headers)
                 else:
-                    headers["Content-Type"] = "application/json"
+                    headers["Content-Type"] = request_content_type
                     connection.request("POST", request_path, headers=headers, body=request_body)
                 remaining = deadline - time.monotonic()
                 if expired.is_set() or remaining <= 0:
@@ -414,7 +454,7 @@ def _download(
                     raise DownloadError("抓取超过总时间限制。", retryable=True)
                 if response.status in {301, 302, 303, 307, 308}:
                     if request_body is not None:
-                        raise DownloadError("目录 JSON 请求不允许重定向。")
+                        raise DownloadError("目录 POST 请求不允许重定向。")
                     location = response.getheader("Location")
                     if not location or redirect == 3:
                         raise DownloadError("抓取来源重定向过多或地址缺失。")
@@ -516,6 +556,11 @@ def _download(
                     "mime_type": mime,
                     "content_encoding": encoding or "identity",
                     "request_method": "POST" if request_body is not None else "GET",
+                    **(
+                        {"request_body_sha256": request_body_sha256}
+                        if request_body_sha256 is not None
+                        else {}
+                    ),
                     "response_status": response.status,
                     "total_size": total_size,
                     "range_start": range_start,

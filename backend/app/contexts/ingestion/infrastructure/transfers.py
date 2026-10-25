@@ -172,7 +172,17 @@ class CollectionTransfers:
             "transfer_bytes": transfer["total_size"],
         }
 
-    def download(self, claim, *, validators, options, required_host, discovery=False, timeout_seconds=90):
+    def download(
+        self,
+        claim,
+        *,
+        validators,
+        options,
+        required_host,
+        discovery=False,
+        timeout_seconds=90,
+        request_url=None,
+    ):
         from app.shared.infrastructure.http.download import _download
 
         def live_chunks(chunks):
@@ -189,6 +199,8 @@ class CollectionTransfers:
             self._valid(conn, claim)
             row = self._current(conn, claim)
             transfer = dict(row) if row else None
+        if request_url is not None and (not discovery or transfer is not None):
+            raise ValueError("内部采集请求地址只允许无分段的目录发现任务。")
         if transfer and transfer["status"] == "complete":
             blob = Blob(
                 self._path(claim["owner_id"], transfer["content_hash"]),
@@ -231,7 +243,7 @@ class CollectionTransfers:
                 return self.blobs.put(claim["owner_id"], observed())
 
             result = _download(
-                claim["url"],
+                request_url or claim["url"],
                 deadline=deadline,
                 required_host=required_host,
                 consume=consume,

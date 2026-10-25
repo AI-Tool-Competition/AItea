@@ -43,10 +43,10 @@ def discover(client, code="1.3", request="first"):
 def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(client):
     catalog = client.get("/api/tea/collection-plans")
     assert catalog.status_code == 200
-    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 17), ("SG", 16)]
+    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 16), ("SG", 12)]
     detail = client.get(BASE).json()
     assert len(detail["plan"]["chapters"]) == 5
-    assert len(detail["items"]) == 17
+    assert len(detail["items"]) == 16
     assert all(i["source_id"] is None and i["coverage"] == "not_started" for i in detail["items"])
     central_regulations = next(item for item in detail["plan"]["items"] if item["id"] == "1.8")
     assert central_regulations["trusted_hosts"] == ["jdih.dephub.go.id"]
@@ -65,14 +65,22 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
     )
     assert len(singapore["plan"]["channels"]) == 6
     assert [item["id"] for item in singapore["plan"]["items"] if item["conditional"]] == ["4.1", "4.2"]
-    assert singapore["plan"]["items"][3]["execution"] == "dataset_review"
+    assert len(singapore["plan"]["items"]) == 12
+    assert all(item["id"] != "2.1" for item in singapore["plan"]["items"])
     assert all(item["source_id"] is None for item in singapore["items"])
+
+    from app.contexts.ingestion.application.checklists import load_blueprint_version
+
+    singapore_v5 = load_blueprint_version(SG_PLAN, 5)
+    assert len(singapore_v5["items"]) == 16
+    old_case_item = next(item for item in singapore_v5["items"] if item["id"] == "2.1")
+    assert old_case_item["execution"] == "dataset_review"
 
 
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 14
+    assert plan["version"] == 15
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
@@ -81,22 +89,27 @@ def test_oversized_official_law_items_have_explicit_bounded_caps(client):
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
 
 
-def test_indonesia_v14_uses_reachable_sources_and_keeps_version_history(client):
+def test_indonesia_v15_uses_reachable_sources_and_keeps_version_history(client):
     from app.contexts.ingestion.application.checklists import load_blueprint_version
 
     current = client.app.state.service.checklists.plans[PLAN]
+    previous_v14 = load_blueprint_version(PLAN, 14)
     previous_v13 = load_blueprint_version(PLAN, 13)
     previous = load_blueprint_version(PLAN, 12)
     previous_v11 = load_blueprint_version(PLAN, 11)
     current_ids = {item["id"] for item in current["items"]}
+    previous_v14_ids = {item["id"] for item in previous_v14["items"]}
     previous_v13_ids = {item["id"] for item in previous_v13["items"]}
     previous_ids = {item["id"] for item in previous["items"]}
     previous_v11_ids = {item["id"] for item in previous_v11["items"]}
+    removed_v15 = {"1.1"}
     removed_v14 = {"4.7", "5.3"}
     removed_v13 = {"5.2"}
     v11_removed = {"1.2", "1.9", "2.1", "2.2", "2.3", "3.2", "3.3", "3.4", "4.5"}
-    assert current["version"] == 14 and len(current_ids) == 17
+    assert current["version"] == 15 and len(current_ids) == 16
     assert current["limits"]["exhaustive_scope"] is False
+    assert removed_v15.isdisjoint(current_ids) and removed_v15 <= previous_v14_ids
+    assert len(previous_v14_ids) == 17 and previous_v14["version"] == 14
     assert removed_v14.isdisjoint(current_ids) and removed_v14 <= previous_v13_ids
     assert removed_v13.isdisjoint(previous_v13_ids) and removed_v13 <= previous_ids
     assert len(previous_v13_ids) == 19 and previous_v13["version"] == 13
@@ -123,10 +136,12 @@ def test_indonesia_v14_uses_reachable_sources_and_keeps_version_history(client):
     assert current_items["1.3"]["entries"][0]["url"].startswith("https://jdih.setneg.go.id/")
     assert current_items["1.7"]["entries"][0]["url"].startswith("https://jdih.bandung.go.id/")
     assert current_items["1.8"]["entries"][0]["url"].startswith("https://jdih.dephub.go.id/")
-    assert current_items["4.6"]["adapter"] == "bi_jdih"
-    assert current_items["4.6"]["trusted_hosts"] == ["jdih.bi.go.id"]
-    assert current_items["4.6"]["entries"][0]["url"] == "https://jdih.bi.go.id/Web/DaftarPeraturan"
-    assert "www.bi.go.id" not in {urlsplit(url).hostname for url in active_urls}
+    assert current_items["4.6"]["adapter"] == "bi_official"
+    assert current_items["4.6"]["trusted_hosts"] == ["www.bi.go.id"]
+    assert current_items["4.6"]["entries"][0]["url"] == (
+        "https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia"
+    )
+    assert "jdih.bi.go.id" not in {urlsplit(url).hostname for url in active_urls}
 
 
 def test_indonesia_v14_preserves_official_kemenkeu_tax_catalog_and_historical_versions(client):
@@ -137,7 +152,7 @@ def test_indonesia_v14_preserves_official_kemenkeu_tax_catalog_and_historical_ve
     previous = load_blueprint_version(PLAN, 12)
     previous_v13 = load_blueprint_version(PLAN, 13)
     old_tax = next(item for item in previous["items"] if item["id"] == "4.3")
-    assert current["version"] == 14
+    assert current["version"] == 15
     assert tax["adapter"] == "kemenkeu_tax"
     assert tax["entries"][0]["url"] == (
         "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak"
@@ -154,8 +169,8 @@ def test_indonesia_v14_preserves_official_kemenkeu_tax_catalog_and_historical_ve
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
-    assert configure(client) == {"created": 17, "existing": 0}
-    assert configure(client) == {"created": 0, "existing": 17}
+    assert configure(client) == {"created": 16, "existing": 0}
+    assert configure(client) == {"created": 0, "existing": 16}
     assert (
         client.post(
             BASE + "/configure", json={"expected_version": client.get(BASE).json()["plan"]["version"] + 1}
@@ -166,7 +181,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     source_id = detail["items"][0]["source_id"]
     service = Service(tmp_path)
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 17
+        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 16
         assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=7").fetchone()[0] == 1
         row = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
         assert row["enabled"]
@@ -188,7 +203,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     grant_admin(client, other["id"])
     assert all(i["source_id"] is None for i in client.get(BASE).json()["items"])
     assert client.get(f"/api/tea/sources/{source_id}/runs").status_code == 404
-    assert configure(client)["created"] == 17
+    assert configure(client)["created"] == 16
 
 
 def test_configuration_schedules_only_unconditional_automated_sources(client):
@@ -209,9 +224,10 @@ def test_configuration_schedules_only_unconditional_automated_sources(client):
             JOIN sources s ON s.id=b.source_id"""
         ).fetchall()
     enabled = {(row["plan_id"], row["item_id"]): bool(row["enabled"]) for row in rows}
-    assert all(enabled[(PLAN, item_id)] for item_id in ("1.1", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.10"))
+    assert all(enabled[(PLAN, item_id)] for item_id in ("1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.10"))
+    assert enabled[(PLAN, "4.6")]
     assert enabled[(singapore_plan, "3.1")]
-    assert not enabled[(singapore_plan, "2.1")]
+    assert (singapore_plan, "2.1") not in enabled
     assert not enabled[(singapore_plan, "4.1")]
     assert not enabled[(singapore_plan, "4.2")]
 
@@ -221,12 +237,12 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
     plan = service.checklists.plans[PLAN]
     current_version = plan["version"]
     plan["version"] = current_version - 1
-    assert configure(client) == {"created": 17, "existing": 0}
+    assert configure(client) == {"created": 16, "existing": 0}
     old_source = client.get(BASE).json()["items"][0]["source_id"]
-    old_run = discover(client, code="1.1", request="old-version-active")
+    old_run = discover(client, code="1.3", request="old-version-active")
 
     plan["version"] = current_version
-    assert configure(client) == {"created": 17, "existing": 0}
+    assert configure(client) == {"created": 16, "existing": 0}
     new_source = client.get(BASE).json()["items"][0]["source_id"]
     assert new_source != old_source
 
@@ -239,7 +255,7 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
                 "SELECT COUNT(*) FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
                 (owner, PLAN, current_version - 1),
             ).fetchone()[0]
-            == 17
+            == 16
         )
         assert not service.collection.source_due(conn, owner, new_source)
     assert not any(row["id"] == new_source for row in service.due_sources())
@@ -348,56 +364,67 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
     assert item["coverage"] != "completed"
 
 
-def test_bi_jdih_large_catalog_uses_bounded_json_metadata_and_pdf(client, monkeypatch):
-    root_url = "https://jdih.bi.go.id/Web/DaftarPeraturan"
+def test_bi_official_catalog_uses_bounded_html_and_preserves_visible_metadata(client, monkeypatch):
+    root_url = "https://www.bi.go.id/id/publikasi/peraturan/default.aspx?Kategori=peraturan+bank+indonesia"
+    main_url = "https://www.bi.go.id/id/publikasi/peraturan/Documents/PBI_082026.pdf"
+    faq_url = "https://www.bi.go.id/id/publikasi/peraturan/Documents/FAQ-PBI_092026.pdf"
+    attachment_url = "https://www.bi.go.id/id/publikasi/peraturan/Documents/Lampiran-PBI_092026.pdf"
+    rows = []
+    for number in range(1, 11):
+        path = "PBI_092026" if number == 1 else f"PBI_{number + 10:02d}2026"
+        label = (
+            "Peraturan Bank Indonesia Nomor 9 Tahun 2026"
+            if number == 1
+            else f"Peraturan Bank Indonesia Nomor {number} Tahun 2026"
+        )
+        rows.append(f'<tr><td><a href="/id/publikasi/peraturan/Pages/{path}.aspx">{label}</a></td></tr>')
     catalog = (
-        '<html><head><title>Peraturan - JDIH Bank Indonesia</title></head><body>'
-        '<h1>Peraturan Bank Indonesia</h1>'
-        '<a href="/Web/Beranda/DetailPeraturan/77">PBI Nomor 9 Tahun 2026</a>'
+        '<html><head><title>Peraturan Bank Indonesia</title></head><body><h1>Peraturan</h1>'
+        '<p>Menampilkan 1–10 data dari total 10</p><table>'
+        + "".join(rows)
+        + "</table>"
         + "x" * (4 * 1024 * 1024 + 1024)
         + "</body></html>"
     ).encode()
-    metadata = {
-        "StatusCode": 200,
-        "Data": {
-            "PeraturanID": 77,
-            "NomorPeraturan": "9/2026",
-            "Judul": "PBI Nomor 9 Tahun 2026 tentang Pengaturan",
-            "JenisPeraturanDesc": "Peraturan Bank Indonesia",
-            "TanggalPenetapan": "2026-05-12",
-            "TanggalPengundangan": "2026-05-14",
-            "TanggalBerlaku": "2026-05-14",
-            "StatusText": "Berlaku",
-            "Mengubah": ["PBI 1/2020"],
-        },
-    }
+    detail = f"""<html><head><title>Peraturan Bank Indonesia Nomor 9 Tahun 2026 tentang Pengaturan</title></head>
+    <body><h1>Peraturan Bank Indonesia Nomor 9 Tahun 2026 tentang Pengaturan</h1>
+      <table><tr><td>Peraturan : Peraturan Bank Indonesia Nomor 9 Tahun 2026 tentang Pengaturan</td></tr>
+      <tr><td>Berlaku : sejak tanggal diundangkan</td></tr>
+      <tr><td><a href="{main_url}">Peraturan Bank Indonesia Nomor 09 Tahun 2026.pdf</a></td></tr>
+      <tr><td><a href="{faq_url}">Tanya Jawab Peraturan Bank Indonesia Nomor 09 Tahun 2026.pdf</a></td></tr>
+      <tr><td><a href="{attachment_url}">Lampiran PBI 09 Tahun 2026.pdf</a></td></tr></table>
+    </body></html>""".encode()
     downloads = []
 
     def download(url, *, consume, **options):
         downloads.append((url, options))
         if url == root_url:
             body, mime, filename = catalog, "text/html", "catalog.html"
-        elif url == "https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?PeraturanID=77":
-            body, mime, filename = json.dumps(metadata).encode(), "application/json", "detail.json"
-        elif url == "https://jdih.bi.go.id/api/WebJDIH/GetFilePeraturan/77":
-            body, mime, filename = b"%PDF-1.7\nBI source PDF\n", "application/pdf", "peraturan.pdf"
+        elif url.startswith("https://www.bi.go.id/id/publikasi/peraturan/Pages/"):
+            body, mime, filename = detail, "text/html", url.rsplit("/", 1)[-1]
+        elif url in {main_url, faq_url, attachment_url}:
+            body, mime, filename = b"%PDF-1.7\nBI source PDF\n", "application/pdf", url.rsplit("/", 1)[-1]
         else:
             raise AssertionError(url)
         return {"url": url, "filename": filename, "mime_type": mime, "blob": consume(iter([body]))}
 
     monkeypatch.setattr(ingestion_download, "_download", download)
-    discover(client, code="4.6", request="bi-jdih-large-catalog")
+    discover(client, code="4.6", request="bi-official-catalog")
     drain_downloads(client)
 
     catalog_call = next(options for url, options in downloads if url == root_url)
     assert catalog_call["max_compressed_html_bytes"] == 6 * 1024 * 1024
+    assert catalog_call["required_host"] == "www.bi.go.id"
     candidates = client.get(BASE + "/items/4.6/candidates").json()
-    assert candidates["total"] == 1
-    candidate = candidates["items"][0]
-    assert candidate["url"] == "https://jdih.bi.go.id/api/WebJDIH/GetFilePeraturan/77"
-    assert candidate["source_record"]["provider"] == "bi_jdih"
-    assert candidate["source_record"]["fields"]["effective_date"] == "2026-05-14"
-    assert candidate["source_record"]["fields"]["amends"] == ["PBI 1/2020"]
+    assert candidates["total"] == 3
+    candidate = next(
+        item for item in candidates["items"]
+        if item["source_record"]["fields"]["attachment_role"] == "document_candidate"
+    )
+    assert candidate["url"] == main_url
+    assert candidate["source_record"]["provider"] == "bi_official"
+    assert candidate["source_record"]["fields"]["filename_identity_verified"] is False
+    assert candidate["source_record"]["fields"]["page_metadata"]["Berlaku"] == "sejak tanggal diundangkan"
 
 
 def test_setneg_source_fields_keep_page_hash_and_are_exposed_as_unreviewed(client):
@@ -1037,7 +1064,7 @@ def test_plan_snapshot_changes_require_a_new_definition_version(client):
     assert response.status_code == 409
     with closing(service.db.connect()) as conn:
         snapshot = json.loads(
-            conn.execute("SELECT snapshot FROM checklist_bindings WHERE item_id='1.1'").fetchone()[0]
+            conn.execute("SELECT snapshot FROM checklist_bindings WHERE item_id='1.3'").fetchone()[0]
         )
         assert snapshot["item"]["title"] != "Changed after configuration"
 
@@ -1115,7 +1142,7 @@ def test_country_batch_discovery_is_idempotent_and_starts_independent_jobs(clien
     response = client.post(BASE + "/discover", json={"client_request_id": "country-batch"})
     assert response.status_code == 202, response.text
     batch = response.json()
-    assert batch["started"] == 17 and len(batch["runs"]) == 17
+    assert batch["started"] == 16 and len(batch["runs"]) == 16
     repeated = client.post(BASE + "/discover", json={"client_request_id": "country-batch"}).json()
     assert {run["id"] for run in repeated["runs"]} == {run["id"] for run in batch["runs"]}
     assert client.post(BASE + "/discover", json={"client_request_id": "other-batch"}).json()["started"] == 0

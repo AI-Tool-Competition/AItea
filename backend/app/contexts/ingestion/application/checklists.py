@@ -64,7 +64,9 @@ class ChecklistItem(Definition):
     acceptance: list[str]
     verbatim_requirements: str
     execution: Literal["discovery", "dataset_review"]
-    adapter: Literal["bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "bi_jdih", "manual"]
+    adapter: Literal[
+        "bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "bi_jdih", "bi_official", "manual"
+    ]
     limits: dict
 
 
@@ -244,7 +246,18 @@ class ChecklistService:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("backfill limit must be between 1 and 1000")
         providers = (
-            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html", "mkri", "jdih_kemenkeu"}
+            {
+                "setneg",
+                "bkpm",
+                "rcepsec",
+                "ipos",
+                "acra",
+                "wto",
+                "sg_official_html",
+                "mkri",
+                "jdih_kemenkeu",
+                "bi_official",
+            }
             if providers is None
             else set(providers)
         )
@@ -259,6 +272,7 @@ class ChecklistService:
             "mkri",
             "jdih_kemenkeu",
             "bi_jdih",
+            "bi_official",
         }
         if not providers or not providers <= allowed_providers:
             raise ValueError("unsupported candidate source provider")
@@ -319,6 +333,12 @@ class ChecklistService:
                 "AND p.purpose='detail' AND p.final_url LIKE "
                 "'https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?%')"
             )
+        if "bi_official" in providers:
+            source_filters.append(
+                "(b.country='ID' AND b.plan_id='indonesia-20261003' AND b.item_id='4.6' "
+                "AND p.purpose='detail' AND p.final_url LIKE "
+                "'https://www.bi.go.id/id/publikasi/peraturan/Pages/%')"
+            )
         candidates = []
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
@@ -364,12 +384,16 @@ class ChecklistService:
                     if row["final_url"].startswith(
                         "https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?"
                     )
+                    else "bi_official"
+                    if row["final_url"].startswith(
+                        "https://www.bi.go.id/id/publikasi/peraturan/Pages/"
+                    )
                     else "wto"
                     if row["final_url"].startswith("https://docs.wto.org/")
                     or row["final_url"].startswith("https://www.wto.org/")
                     else "sg_official_html"
                 )
-                expected_purpose = "detail" if provider in {"setneg", "bi_jdih"} else "catalog"
+                expected_purpose = "detail" if provider in {"setneg", "bi_jdih", "bi_official"} else "catalog"
                 if (
                     plan["id"] != row["plan_id"]
                     or plan["version"] != row["version"]
@@ -384,6 +408,7 @@ class ChecklistService:
                             or (provider == "rcepsec" and item["id"] != "5.3")
                             or (provider == "jdih_kemenkeu" and item["id"] != "4.3")
                             or (provider == "bi_jdih" and item["id"] != "4.6")
+                            or (provider == "bi_official" and item["id"] != "4.6")
                         )
                     )
                     or (
@@ -987,7 +1012,8 @@ class ChecklistService:
         blob = fetched["blob"]
         mime = fetched["mime_type"].split(";", 1)[0].strip().lower()
         recipe = plan["checklist"]["recipe"]
-        body_limit = page_body_limit(fetched["url"], fetched["mime_type"], recipe)
+        inspection_url = fetched.get("inspection_url", fetched["url"])
+        body_limit = page_body_limit(inspection_url, fetched["mime_type"], recipe)
         if (
             mime in {"text/html", "application/xhtml+xml", "application/json", "text/xml", "application/xml"}
             and blob.size > body_limit
@@ -995,12 +1021,12 @@ class ChecklistService:
             raise ValueError(f"目录或详情页超过 {body_limit // (1024 * 1024)} MiB 解析上限")
         with blob.path.open("rb") as stream:
             body = stream.read(body_limit + 1)
-        result = discover_page(fetched["url"], body, fetched["mime_type"], recipe)
+        result = discover_page(inspection_url, body, fetched["mime_type"], recipe)
         if not result["matched"]:
             # BKPM has returned a small set of official PDF URLs as complete
             # multipart entities mislabeled application/pdf. Recover only when
             # the immutable recipe independently admits this URL as a PDF.
-            allowed = discover_page(fetched["url"], b"%PDF-", "application/pdf", recipe)
+            allowed = discover_page(inspection_url, b"%PDF-", "application/pdf", recipe)
             if (
                 plan["checklist"]["kind"] == "collection"
                 and allowed["matched"]
@@ -1030,7 +1056,7 @@ class ChecklistService:
                     fetched["etag"] = None
                     fetched["last_modified"] = None
                     blob = fetched["blob"]
-                    result = discover_page(fetched["url"], pdf[:8], "application/pdf", recipe)
+                    result = discover_page(inspection_url, pdf[:8], "application/pdf", recipe)
         if not result["matched"]:
             raise ValueError(result.get("reason") or "页面不符合当前清单范围")
         if plan["checklist"]["kind"] == "collection" and result["purpose"] != "document":
@@ -1127,6 +1153,7 @@ class ChecklistService:
                             "mkri",
                             "jdih_kemenkeu",
                             "bi_jdih",
+                            "bi_official",
                         }
                         or source_record.get("interpretation") != "unreviewed_source_values"
                         or not isinstance(source_record.get("fields"), dict)

@@ -27,9 +27,9 @@ from app.configuration.environment import load_environment  # noqa: E402
 
 from app.contexts.ingestion.application.checklists import load_blueprints
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
-    MAX_HTML_BYTES,
     discover_page,
     normalized_seeds_for,
+    page_body_limit,
     recipe_for,
     request_parameters,
 )
@@ -177,32 +177,85 @@ class SourceVerifier:
             return {**result, "status": "budget_exhausted", "elapsed_seconds": 0}
         try:
             request = request_parameters(seed["url"], definition)
+            request_url = seed["url"]
+            inspection_url = seed["url"]
+            bi_form_evidence = None
+            bi_official_catalog = row.get("adapter") == "bi_official" and seed["purpose"] == "catalog"
+            if bi_official_catalog:
+                from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
+                    MAX_HTML_BYTES as MAX_BI_OFFICIAL_HTML_BYTES,
+                    catalog_form_request,
+                    network_catalog_url,
+                    page_number,
+                    purpose as bi_purpose,
+                )
+
+                if bi_purpose(seed["url"]) != "catalog":
+                    raise ValueError("央行官网验证请求不在许可目录内。")
+                current_page = page_number(seed["url"])
+                if current_page is None:
+                    raise ValueError("央行官网验证页码无效。")
+                request_url = network_catalog_url(seed["url"])
+                if current_page > 1:
+                    if parent is None or not isinstance(parent.get("requested_url"), str):
+                        raise ValueError("央行官网下一页验证缺少前一页原件证据。")
+                    evidence_path = (self.output / parent["evidence_path"]).resolve()
+                    if not evidence_path.is_relative_to(self.output.resolve()):
+                        raise ValueError("央行官网前一页证据路径超出验证目录。")
+                    parent_size = parent.get("size")
+                    if type(parent_size) is not int or not 1 <= parent_size <= MAX_BI_OFFICIAL_HTML_BYTES:
+                        raise ValueError("央行官网前一页验证原件超过大小上限。")
+                    parent_content = evidence_path.read_bytes()
+                    if len(parent_content) != parent_size or hashlib.sha256(parent_content).hexdigest() != parent.get(
+                        "content_hash"
+                    ):
+                        raise ValueError("央行官网前一页验证原件哈希不匹配。")
+                    form_fields, bi_form_evidence = catalog_form_request(
+                        parent["requested_url"], parent_content, current_page
+                    )
+                    request.update(
+                        form_fields=form_fields,
+                        required_host="www.bi.go.id",
+                        max_compressed_html_bytes=MAX_BI_OFFICIAL_HTML_BYTES,
+                    )
+                inspection_url = seed["url"]
             owner = f"source-verification:{row['country']}:{row['item_id']}"
             original = seed["purpose"] == "document"
+            max_bytes = self.max_original_bytes if original else min(
+                page_body_limit(inspection_url, "text/html", row["recipe"]), self.max_original_bytes
+            )
+            download_options = {
+                **request,
+                "max_bytes": max_bytes,
+                "accept_compressed_html": not original,
+            }
+            if bi_official_catalog:
+                from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
+                    MAX_HTML_BYTES as MAX_BI_OFFICIAL_HTML_BYTES,
+                )
+
+                download_options["max_compressed_html_bytes"] = MAX_BI_OFFICIAL_HTML_BYTES
             fetched = _download(
-                seed["url"],
+                request_url,
                 deadline=min(self.deadline, started + self.timeout),
                 consume=lambda chunks: self.blobs.put(owner, chunks),
                 connection_slot=self.slot,
-                accept_compressed_html=not original,
-                max_bytes=self.max_original_bytes
-                if original
-                else min(MAX_HTML_BYTES, self.max_original_bytes),
-                **request,
+                **download_options,
             )
             blob = fetched["blob"]
+            body_limit = page_body_limit(inspection_url, fetched["mime_type"], row["recipe"])
             # Full bytes are stored and hashed by the streaming downloader. PDF
             # discovery only needs the signature; HTML/JSON must fit its bound.
             with blob.path.open("rb") as handle:
                 prefix = handle.read(8)
                 if prefix.startswith(b"%PDF-"):
                     content = prefix
-                elif blob.size <= MAX_HTML_BYTES:
+                elif blob.size <= body_limit:
                     handle.seek(0)
-                    content = handle.read(MAX_HTML_BYTES + 1)
+                    content = handle.read(body_limit + 1)
                 else:
                     content = b""
-            discovery = discover_page(fetched["url"], content, fetched["mime_type"], row["recipe"])
+            discovery = discover_page(inspection_url, content, fetched["mime_type"], row["recipe"])
             if original and not discovery.get("matched"):
                 # A few BKPM files are complete multipart/form-data entities
                 # mislabeled application/pdf. Preserve the raw response and
@@ -235,13 +288,24 @@ class SourceVerifier:
                 size=blob.size,
                 content_hash=blob.digest,
                 evidence_path=str(blob.path.relative_to(self.output)),
-                request_method=fetched.get("request_method", "POST" if "json_body" in request else "GET"),
+                request_method=fetched.get(
+                    "request_method", "POST" if {"json_body", "form_fields"} & request.keys() else "GET"
+                ),
                 discovery=discovery,
                 original_acquired=bool(discovery.get("matched") and discovery.get("purpose") == "document"),
                 parser_verification="not_executed_by_source_access_probe",
             )
             if "json_body" in request:
                 result["request_body"] = request["json_body"]
+            if bi_form_evidence is not None:
+                result["request_evidence"] = {
+                    "parent_page_url": bi_form_evidence["parent_url"],
+                    "parent_page_sha256": bi_form_evidence["parent_page_sha256"],
+                    "target_page": bi_form_evidence["target_page"],
+                    "event_target": bi_form_evidence["event_target"],
+                    "image_submit": bi_form_evidence["image_submit"],
+                    "request_body_sha256": fetched.get("request_body_sha256"),
+                }
         except DownloadError as exc:
             result.update(status="failed", error=str(exc), retryable=exc.retryable)
             if exc.retry_after is not None:

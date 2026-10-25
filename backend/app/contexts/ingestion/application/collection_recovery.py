@@ -126,6 +126,75 @@ def _unreceipted_vision_failure(page, source_hash):
     )
 
 
+def _legacy_mineru_render_source_proof_mismatch(manifest, page):
+    """Recognize the old renderer overwriting a Word page's source hash/page."""
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("parser") != "mineru"
+        or not isinstance(page, dict)
+        or page.get("status") not in {"ocr_complete", "ocr_uncertain"}
+        or page.get("source_hash") != manifest.get("source_hash")
+        or type(page.get("page")) is not int
+    ):
+        return False
+    proof = page.get("ocr")
+    render_source = proof.get("render_source") if isinstance(proof, dict) else None
+    remote = manifest.get("remote_parse")
+    if (
+        not isinstance(proof, dict)
+        or proof.get("provider") != "vision"
+        or proof.get("complete") is not True
+        or not isinstance(render_source, dict)
+        or not isinstance(remote, dict)
+        or remote.get("provider") != "mineru"
+        or remote.get("state") != "done"
+        or remote.get("source_hash") != manifest.get("source_hash")
+    ):
+        return False
+    parts = remote.get("parts")
+    if not isinstance(parts, list):
+        return False
+    matches = [
+        part
+        for part in parts
+        if isinstance(part, dict)
+        and type(part.get("first_page")) is int
+        and type(part.get("last_page")) is int
+        and part["first_page"] <= page["page"] <= part["last_page"]
+    ]
+    if len(matches) != 1:
+        return False
+    part = matches[0]
+    receipt = part.get("render_pdf")
+    blob = receipt.get("blob") if isinstance(receipt, dict) else None
+    if not isinstance(blob, dict):
+        return False
+    try:
+        from app.contexts.documents.infrastructure.providers.mineru_results import _valid_blob_reference
+
+        valid_blob = _valid_blob_reference(blob)
+    except (TypeError, ValueError):
+        return False
+    local_page = page["page"] - part["first_page"] + 1
+    return bool(
+        valid_blob
+        and receipt.get("source_hash") == manifest["source_hash"]
+        and receipt.get("task_id") == part.get("task_id")
+        and receipt.get("result_hash") == (part.get("result_blob") or {}).get("content_hash")
+        and receipt.get("page_count") == part["last_page"] - part["first_page"] + 1
+        and render_source.get("provider") == "mineru"
+        and render_source.get("source_hash") == manifest["source_hash"]
+        and render_source.get("page") == page["page"]
+        and render_source.get("task_id") == part.get("task_id")
+        and render_source.get("result_hash") == receipt.get("result_hash")
+        and render_source.get("rendered_pdf_page") == local_page
+        and render_source.get("blob") == blob
+        and proof.get("source_hash") == blob.get("content_hash")
+        and proof.get("source_hash") != manifest["source_hash"]
+        and proof.get("page") == local_page
+    )
+
+
 def _saved_visual_provider_retry(page):
     """Find the latest intact failed or uncertain vision request archived by a page retry."""
     cycles = page.get("ocr_retry_cycles", [])
@@ -400,6 +469,15 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 mineru_visual_pages.append(page_number)
         for page in pages:
             if page.get("page") in retry_pages:
+                continue
+            legacy_render_mismatch = vision_ready and _legacy_mineru_render_source_proof_mismatch(
+                manifest, page
+            )
+            if legacy_render_mismatch:
+                if len(retry_pages) < MAX_AUTOMATIC_OCR_TARGETS:
+                    retry_pages.append(page["page"])
+                    mineru_visual_pages.append(page["page"])
+                    unknown_outcome = True
                 continue
             metadata = page.get("ocr") or {}
             status = page.get("status")
@@ -1232,6 +1310,9 @@ class CollectionRecovery:
             unreceipted_vision_failure = _unreceipted_vision_failure(
                 page, document["content_hash"]
             )
+            legacy_render_mismatch = _legacy_mineru_render_source_proof_mismatch(
+                manifest, page
+            )
             previous_failure = (
                 _saved_visual_provider_retry(page) if page.get("status") == "pending_ocr" else None
             )
@@ -1252,16 +1333,19 @@ class CollectionRecovery:
                 and isinstance(envelope, dict)
                 and isinstance(envelope.get("blob"), dict)
             )
-            retryable_page = page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"} and (
-                _unknown(page)
-                or unreceipted_vision_failure
-                or previous_failure is not None
-                or (
-                    vision_page
-                    and (
-                        metadata.get("complete") is False
-                        or page.get("status") == "ocr_uncertain"
-                        or bound_failed_vision
+            retryable_page = legacy_render_mismatch or (
+                page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
+                and (
+                    _unknown(page)
+                    or unreceipted_vision_failure
+                    or previous_failure is not None
+                    or (
+                        vision_page
+                        and (
+                            metadata.get("complete") is False
+                            or page.get("status") == "ocr_uncertain"
+                            or bound_failed_vision
+                        )
                     )
                 )
             )

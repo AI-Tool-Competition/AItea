@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 import resource
 import stat
 import tempfile
@@ -34,6 +35,30 @@ def reference(blob):
         "content_hash": blob.digest,
         "size": blob.size,
     }
+
+
+def _valid_blob_reference(ref, *, maximum=MAX_SOURCE_BYTES):
+    if not isinstance(ref, dict):
+        return False
+    digest, size, storage_path = ref.get("content_hash"), ref.get("size"), ref.get("storage_path")
+    if (
+        not isinstance(digest, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", digest)
+        or type(size) is not int
+        or not 0 < size <= maximum
+        or not isinstance(storage_path, str)
+    ):
+        return False
+    path = PurePosixPath(storage_path)
+    if path.is_absolute() or len(path.parts) != 6 or path.parts[:2] != ("files", "blobs"):
+        return False
+    account, first, second, filename = path.parts[2:]
+    return (
+        re.fullmatch(r"[a-f0-9]{64}", account) is not None
+        and first == digest[:2]
+        and second == digest[2:4]
+        and filename == digest
+    )
 
 
 def resolve_reference(ref, files_dir, owner=None):
@@ -219,11 +244,18 @@ def _is_origin_pdf(filename):
         return False
 
 
-def _read_archive(task, store, owner):
+def _read_archive(task, store, owner, *, preserve_render_pdf=False):
     ref = task["result_blob"]
     archive_path = resolve_reference(ref, store.files_dir, owner)
     _verify_existing(archive_path, ref["content_hash"], ref["size"])
+    part_ref = task.get("part_blob")
+    part_path = resolve_reference(part_ref, store.files_dir, owner)
+    _verify_existing(part_path, part_ref["content_hash"], part_ref["size"])
+    with part_path.open("rb") as part_file:
+        submitted_pdf = part_file.read(5) == b"%PDF-"
     artifacts, payloads = {}, {}
+    origin_pdf_member = None
+    origin_pdf_page_count = None
     with zipfile.ZipFile(archive_path) as archive:
         members = archive.infolist()
         if len(members) > 10000 or sum(x.file_size for x in members) > MAX_EXPANDED_BYTES:
@@ -250,8 +282,8 @@ def _read_archive(task, store, owner):
                 # MinerU includes an auxiliary PDF derived from the submitted
                 # split. It can be re-serialized by the provider, so verify
                 # its ZIP checksum, PDF structure and physical page count
-                # before skipping it; do not treat it as source evidence.
-                part_ref = task.get("part_blob")
+                # before skipping it as source evidence. Office conversions
+                # can be materialized separately for page-level OCR when needed.
                 try:
                     part_path = resolve_reference(part_ref, store.files_dir, owner)
                     _verify_existing(part_path, part_ref["content_hash"], part_ref["size"])
@@ -300,6 +332,8 @@ def _read_archive(task, store, owner):
                         )
                         if not 0 < page_count <= 3000 or (expected is not None and page_count != expected):
                             raise ValueError("MinerU 结果包原件输出页数与提交分片不匹配。")
+                        origin_pdf_page_count = page_count
+                origin_pdf_member = item
                 continue
             data = archive.read(item)
             if len(data) != item.file_size:
@@ -333,6 +367,15 @@ def _read_archive(task, store, owner):
     expected = task["last_page"] - task["first_page"] + 1 if task["last_page"] else len(info)
     if indexes != list(range(expected)) or not 0 < expected <= 200:
         raise ValueError("MinerU 结果页码缺失、重复或与提交分段不匹配。")
+    render_pdf = None
+    if origin_pdf_member is not None and not submitted_pdf:
+        if origin_pdf_page_count != len(info):
+            raise ValueError("MinerU 转换 PDF 页数与结构化结果不匹配。")
+        if preserve_render_pdf:
+            with zipfile.ZipFile(archive_path) as archive:
+                with archive.open(origin_pdf_member) as member:
+                    blob = store.put(owner, iter(lambda: member.read(65536), b""))
+            render_pdf = reference(blob)
     # Hosted hybrid output merges tables across pages in the content list,
     # sometimes dropping every table_body. Model output retains the original
     # HTML on each physical page, before those merges. Match geometrically;
@@ -394,7 +437,32 @@ def _read_archive(task, store, owner):
                     "page_idx": page,
                     "block_index": index,
                 }
-    return blocks, info, artifacts, artifacts[lists[0]]
+    return blocks, info, artifacts, artifacts[lists[0]], render_pdf
+
+
+def _extract_render_pdf(part, files_dir, owner):
+    """Materialize MinerU's verified Office conversion PDF for visual OCR only."""
+    store = BlobStore(Path(files_dir), max_bytes=MAX_SOURCE_BYTES)
+    task = {
+        "id": part.get("task_id"),
+        "batch_id": part.get("batch_id"),
+        "state": "done",
+        "source_hash": part.get("source_hash"),
+        "first_page": part.get("first_page"),
+        "last_page": part.get("last_page"),
+        "part_blob": part.get("part_blob"),
+        "result_blob": part.get("result_blob"),
+    }
+    _, layout, _, _, blob = _read_archive(task, store, owner, preserve_render_pdf=True)
+    if blob is None:
+        raise ValueError("MinerU 结果没有可用于页面识别的转换 PDF。")
+    return {
+        "blob": blob,
+        "page_count": len(layout),
+        "source_hash": task["source_hash"],
+        "task_id": task["id"],
+        "result_hash": task["result_blob"]["content_hash"],
+    }
 
 
 def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest):
@@ -407,7 +475,7 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
     for task in tasks:
         if task["source_hash"] != source_hash or task["state"] != "done":
             raise ValueError("MinerU 任务尚未完成或原件绑定不一致。")
-        blocks, layout, artifacts, content_ref = _read_archive(task, store, owner)
+        blocks, layout, artifacts, content_ref, render_pdf_blob = _read_archive(task, store, owner)
         first = task["first_page"]
         if first != len(pages) + 1:
             raise ValueError("MinerU 分段页码不是连续完整的原件范围。")
@@ -604,18 +672,25 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
                 },
             }
             pages.append(page)
-        part_receipts.append(
-            {
-                "task_id": task["id"],
-                "batch_id": task["batch_id"],
+        part_receipt = {
+            "task_id": task["id"],
+            "batch_id": task["batch_id"],
+            "source_hash": source_hash,
+            "first_page": first,
+            "last_page": first + len(layout) - 1,
+            "part_blob": task["part_blob"],
+            "result_blob": task["result_blob"],
+            "artifacts": artifacts,
+        }
+        if render_pdf_blob is not None:
+            part_receipt["render_pdf"] = {
+                "blob": render_pdf_blob,
+                "page_count": len(layout),
                 "source_hash": source_hash,
-                "first_page": first,
-                "last_page": first + len(layout) - 1,
-                "part_blob": task["part_blob"],
-                "result_blob": task["result_blob"],
-                "artifacts": artifacts,
+                "task_id": task["id"],
+                "result_hash": task["result_blob"]["content_hash"],
             }
-        )
+        part_receipts.append(part_receipt)
     document = ParsedDocument("mineru", "api-v4", VERSION, elements, [], warnings, pages)
     result = _parsed_result(document, source_hash, Path(filename).stem)
     review = [page["page"] for page in pages if page["status"] != "ocr_complete"]
@@ -655,7 +730,12 @@ def worker(connection, operation, arguments):
         resource.setrlimit(resource.RLIMIT_AS, (1536 * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_CPU, (90,) * 2)
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        result = (_prepare if operation == "prepare" else _assemble)(*arguments)
+        if operation == "prepare":
+            result = _prepare(*arguments)
+        elif operation == "extract_render_pdf":
+            result = _extract_render_pdf(*arguments)
+        else:
+            result = _assemble(*arguments)
         encoded = json.dumps({"result": result}, ensure_ascii=False, allow_nan=False).encode()
         if len(encoded) > MAX_ASSEMBLED_RESULT_BYTES:
             raise ValueError("MinerU 结构化结果超过存储限额。")

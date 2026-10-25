@@ -1,5 +1,8 @@
 import hashlib
 import json
+import base64
+import io
+import zipfile
 from contextlib import closing
 from copy import deepcopy
 
@@ -502,6 +505,119 @@ def test_bounded_ocr_skips_rechunking_when_ocr_fails_without_new_text(monkeypatc
     assert rebuilt["pages"][0]["ocr"]["attempts"] == 2
     assert rebuilt["chunks"] == manifest["chunks"]
     assert rebuilt["quality"]["failed_pages"] == [1]
+
+
+def test_office_visual_retry_renders_the_mineru_conversion_pdf(monkeypatch, tmp_path):
+    from pypdf import PdfWriter
+    from app.contexts.documents.infrastructure.providers.mineru_results import _assemble, reference, resolve_reference
+    from app.shared.infrastructure.persistence.blob_store import BlobStore
+
+    store = BlobStore(tmp_path / "files", max_bytes=128 * 1024 * 1024)
+    source = store.put_bytes("owner", b"submitted Office source")
+    pdf_output = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=300)
+    writer.write(pdf_output)
+    converted_pdf = pdf_output.getvalue()
+    result_output = io.BytesIO()
+    with zipfile.ZipFile(result_output, "w") as archive:
+        archive.writestr("layout.json", json.dumps({"pdf_info": [{"page_idx": 0, "page_size": [200, 300]}]}))
+        archive.writestr("task_content_list.json", json.dumps([{"type": "text", "text": "", "page_idx": 0}]))
+        archive.writestr("full.md", "")
+        archive.writestr("839d0d23-bf92-4c24-9b57-c8a79ff44512_origin.pdf", converted_pdf)
+    result = store.put_bytes("owner", result_output.getvalue())
+    task = {
+        "id": "office-task",
+        "batch_id": "office-batch",
+        "state": "done",
+        "source_hash": source.digest,
+        "first_page": 1,
+        "last_page": 1,
+        "part_blob": reference(source),
+        "result_blob": reference(result),
+    }
+    manifest = _assemble([task], source.digest, "source.doc", str(store.files_dir), "owner", None)
+    page = manifest["pages"][0]
+    page.update(
+        status="pending_ocr",
+        reasons=["empty_text_unverified"],
+        ocr_fallback={
+            "protocol": EMPTY_PAGE_PROTOCOL,
+            "attempts": 1,
+            "source_result_hash": result.digest,
+            "source_page": 1,
+        },
+        ocr={"attempts": 0},
+    )
+    part = manifest["remote_parse"]["parts"][0]
+    from app.contexts.documents.infrastructure.providers.mineru_results import _extract_render_pdf
+
+    receipt = _extract_render_pdf(part, str(store.files_dir), "owner")
+    part["render_pdf"] = receipt
+    converted_path = resolve_reference(receipt["blob"], store.files_dir, "owner")
+    render_source = document_parser._validated_mineru_render_source(
+        manifest,
+        1,
+        {"path": str(converted_path), "receipt": receipt, "page_number": 1},
+    )
+    rendered_call = {}
+
+    def render(path, **kwargs):
+        rendered_call.update(path=str(path), **kwargs)
+        return {
+            "image_base64": base64.b64encode(b"rendered-page").decode("ascii"),
+            "image_sha256": hashlib.sha256(b"rendered-page").hexdigest(),
+            "source_hash": render_source["source_hash"],
+            "page": render_source["page_number"],
+            "width": 1200,
+            "height": 1800,
+            "mime_type": "image/png",
+        }
+
+    monkeypatch.setattr(
+        "app.contexts.documents.infrastructure.parsers.archive_parsing.render_archive_page_bounded",
+        render,
+    )
+    monkeypatch.setattr(document_parser._OCR_SLOTS, "acquire", lambda timeout: True)
+    monkeypatch.setattr(document_parser._OCR_SLOTS, "release", lambda: None)
+    monkeypatch.setattr(
+        "app.contexts.documents.infrastructure.recovery.pdf_ocr_reuse.current_profile",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "app.contexts.documents.infrastructure.recovery.pdf_ocr_reuse.native_hint",
+        lambda _page: ("", "empty"),
+    )
+    monkeypatch.setattr(
+        "app.contexts.documents.infrastructure.providers.vision.transcribe_page",
+        lambda _image: {
+            "text": "",
+            "printed_page": None,
+            "is_blank": True,
+            "complete": True,
+            "uncertain_spans": [],
+        },
+    )
+
+    updated = document_parser._ocr_one_page(
+        None,
+        page,
+        archive_path=resolve_reference(reference(source), store.files_dir, "owner"),
+        archive_size=source.size,
+        render_source=render_source,
+    )
+
+    assert rendered_call == {
+        "path": str(converted_path),
+        "source_hash": receipt["blob"]["content_hash"],
+        "size": receipt["blob"]["size"],
+        "page_number": 1,
+    }
+    assert updated["status"] == "ocr_complete"
+    assert updated["ocr"]["source_hash"] == source.digest
+    assert updated["ocr"]["page"] == 1
+    assert updated["ocr"]["render_source"]["result_hash"] == result.digest
+    assert updated["ocr"]["render_source"]["source_hash"] == source.digest
 
 
 def test_collection_worker_runs_visual_fallback_and_indexes_rebuilt_table(monkeypatch, tmp_path):

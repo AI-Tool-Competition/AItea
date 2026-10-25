@@ -24,6 +24,7 @@ from app.contexts.documents.infrastructure.providers.mineru_results import (
     MAX_RESULT_BYTES,
     MAX_SOURCE_BYTES,
     VERSION,
+    _valid_blob_reference,
     reference,
     resolve_reference,
     worker,
@@ -852,6 +853,17 @@ def manifest_valid(manifest):
                 return False
             if not re.fullmatch(r"[a-f0-9]{64}", part["result_blob"]["content_hash"]):
                 return False
+            render_pdf = part.get("render_pdf")
+            if render_pdf is not None and (
+                not isinstance(render_pdf, dict)
+                or not _valid_blob_reference(render_pdf.get("blob"))
+                or type(render_pdf.get("page_count")) is not int
+                or render_pdf.get("page_count") != part["last_page"] - part["first_page"] + 1
+                or render_pdf.get("source_hash") != source
+                or render_pdf.get("task_id") != part.get("task_id")
+                or render_pdf.get("result_hash") != part["result_blob"]["content_hash"]
+            ):
+                return False
             for number in range(expected, part["last_page"] + 1):
                 by_page[number] = part
             expected = part["last_page"] + 1
@@ -862,6 +874,21 @@ def manifest_valid(manifest):
             result_hash = part["result_blob"]["content_hash"]
             if page["page"] != number or page["source_hash"] != source or not isinstance(proof, dict):
                 return False
+            render_source = proof.get("render_source")
+            if render_source is not None:
+                receipt = part.get("render_pdf")
+                if (
+                    not isinstance(render_source, dict)
+                    or not isinstance(receipt, dict)
+                    or render_source.get("provider") != "mineru"
+                    or render_source.get("source_hash") != source
+                    or render_source.get("page") != number
+                    or render_source.get("task_id") != part.get("task_id")
+                    or render_source.get("result_hash") != result_hash
+                    or render_source.get("rendered_pdf_page") != number - part["first_page"] + 1
+                    or render_source.get("blob") != receipt.get("blob")
+                ):
+                    return False
             fallback = page.get("ocr_fallback")
             if fallback is not None:
                 if not isinstance(fallback, dict) or fallback.get("protocol") not in {

@@ -635,7 +635,7 @@ def blank_pdf(page_count):
     return output.getvalue()
 
 
-def test_mineru_skips_verified_origin_copy_above_member_limit(tmp_path, monkeypatch):
+def test_mineru_skips_verified_source_pdf_origin_copy_above_member_limit(tmp_path, monkeypatch):
     from app.contexts.documents.infrastructure.providers import mineru_results
 
     source = blank_pdf(1)
@@ -643,13 +643,14 @@ def test_mineru_skips_verified_origin_copy_above_member_limit(tmp_path, monkeypa
     monkeypatch.setattr(mineru_results, "MAX_MEMBER_BYTES", 200)
     store, task = result_archive(tmp_path, source=source, origin=source)
 
-    blocks, layout, artifacts, _ = _read_archive(task, store, "owner")
+    blocks, layout, artifacts, _, render_pdf = _read_archive(task, store, "owner")
 
     assert len(blocks) == 1 and len(layout) == 1
+    assert render_pdf is None
     assert "839d0d23-bf92-4c24-9b57-c8a79ff44512_origin.pdf" not in artifacts
 
 
-def test_mineru_skips_valid_provider_origin_pdf_with_matching_page_count(tmp_path, monkeypatch):
+def test_mineru_validates_office_conversion_pdf_without_materializing_it(tmp_path, monkeypatch):
     from app.contexts.documents.infrastructure.providers import mineru_results
 
     source = b"submitted" * 100
@@ -658,9 +659,60 @@ def test_mineru_skips_valid_provider_origin_pdf_with_matching_page_count(tmp_pat
     monkeypatch.setattr(mineru_results, "MAX_MEMBER_BYTES", 200)
     store, task = result_archive(tmp_path, source=source, origin=derivative)
 
-    _, _, artifacts, _ = _read_archive(task, store, "owner")
+    _, layout, artifacts, _, render_pdf = _read_archive(task, store, "owner")
 
     assert "839d0d23-bf92-4c24-9b57-c8a79ff44512_origin.pdf" not in artifacts
+    assert len(layout) == 1
+    assert render_pdf is None
+
+
+def test_mineru_office_conversion_pdf_is_bound_to_the_remote_result_receipt(tmp_path):
+    from app.contexts.documents.infrastructure.providers.mineru import manifest_valid
+
+    store, task = result_archive(tmp_path, source=b"submitted Office file", origin=blank_pdf(1))
+    manifest = _assemble([task], task["source_hash"], "source.doc", str(store.files_dir), "owner", None)
+    part = manifest["remote_parse"]["parts"][0]
+    from app.contexts.documents.infrastructure.providers.mineru_results import _extract_render_pdf
+
+    render_pdf = _extract_render_pdf(part, str(store.files_dir), "owner")
+    part["render_pdf"] = render_pdf
+
+    assert manifest_valid(manifest)
+    assert render_pdf["source_hash"] == task["source_hash"]
+    assert render_pdf["task_id"] == task["id"]
+    assert render_pdf["result_hash"] == task["result_blob"]["content_hash"]
+    invalid = json.loads(json.dumps(manifest))
+    invalid["remote_parse"]["parts"][0]["render_pdf"]["page_count"] = 2
+    assert not manifest_valid(invalid)
+
+
+def test_mineru_legacy_office_result_materializes_conversion_pdf_on_demand(tmp_path):
+    from pypdf import PdfReader
+    from app.contexts.documents.infrastructure.parsers.document_parser import _run_bounded
+    from app.contexts.documents.infrastructure.providers.mineru_results import worker
+
+    store, task = result_archive(tmp_path, source=b"legacy Office source", origin=blank_pdf(1))
+    part = {
+        "task_id": task["id"],
+        "batch_id": task["batch_id"],
+        "source_hash": task["source_hash"],
+        "first_page": task["first_page"],
+        "last_page": task["last_page"],
+        "part_blob": task["part_blob"],
+        "result_blob": task["result_blob"],
+    }
+
+    receipt = _run_bounded(
+        worker,
+        ("extract_render_pdf", (part, str(store.files_dir), "owner")),
+        120,
+    )
+
+    assert receipt["task_id"] == task["id"]
+    assert receipt["source_hash"] == task["source_hash"]
+    assert receipt["result_hash"] == task["result_blob"]["content_hash"]
+    assert receipt["page_count"] == 1
+    assert PdfReader(resolve_reference(receipt["blob"], store.files_dir, "owner")).pages
 
 
 def test_mineru_rejects_provider_origin_pdf_with_wrong_page_count(tmp_path, monkeypatch):

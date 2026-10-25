@@ -482,6 +482,63 @@ def plan_pdf_ocr_recovery_bounded(
     return _run_bounded(_auxiliary_worker, ("plan_recovery", (content, page)), 45)
 
 
+def _validated_mineru_render_source(manifest, page_number, source):
+    """Bind a remote Office-to-PDF artifact to its exact MinerU page receipt."""
+    if not isinstance(manifest, dict):
+        raise ValueError("MinerU 页面渲染来源缺少解析回执。")
+    remote = manifest.get("remote_parse") if isinstance(manifest, dict) else None
+    parts = remote.get("parts") if isinstance(remote, dict) else None
+    if (
+        manifest.get("parser") != "mineru"
+        or not isinstance(remote, dict)
+        or remote.get("provider") != "mineru"
+        or remote.get("state") != "done"
+        or remote.get("source_hash") != manifest.get("source_hash")
+        or type(page_number) is not int
+        or not isinstance(parts, list)
+        or not isinstance(source, dict)
+    ):
+        raise ValueError("MinerU 页面渲染来源缺少解析回执。")
+    matches = [
+        part
+        for part in parts
+        if isinstance(part, dict)
+        and type(part.get("first_page")) is int
+        and type(part.get("last_page")) is int
+        and part["first_page"] <= page_number <= part["last_page"]
+    ]
+    if len(matches) != 1:
+        raise ValueError("MinerU 页面渲染来源页码不唯一。")
+    part = matches[0]
+    receipt = part.get("render_pdf")
+    blob = receipt.get("blob") if isinstance(receipt, dict) else None
+    from app.contexts.documents.infrastructure.providers.mineru_results import _valid_blob_reference
+
+    if (
+        not isinstance(receipt, dict)
+        or source.get("receipt") != receipt
+        or receipt.get("source_hash") != manifest["source_hash"]
+        or receipt.get("task_id") != part.get("task_id")
+        or receipt.get("result_hash") != (part.get("result_blob") or {}).get("content_hash")
+        or receipt.get("page_count") != part["last_page"] - part["first_page"] + 1
+        or not isinstance(blob, dict)
+        or not _valid_blob_reference(blob)
+        or not isinstance(source.get("path"), str)
+        or not source["path"]
+        or source.get("page_number") != page_number - part["first_page"] + 1
+    ):
+        raise ValueError("MinerU 页面渲染文件与原解析回执不匹配。")
+    return {
+        "path": source["path"],
+        "source_hash": blob["content_hash"],
+        "size": blob["size"],
+        "page_number": source["page_number"],
+        "task_id": part["task_id"],
+        "result_hash": receipt["result_hash"],
+        "receipt": receipt,
+    }
+
+
 def _ocr_one_page(
     content: bytes | None,
     page: dict,
@@ -492,6 +549,7 @@ def _ocr_one_page(
     archive_size: int | None = None,
     on_reuse: Callable[[dict, dict], dict | None] | None = None,
     on_response_error: Callable[[dict], dict] | None = None,
+    render_source: dict | None = None,
 ) -> dict:
     from app.contexts.documents.infrastructure.providers.vision import (
         PROMPT_VERSION,
@@ -627,9 +685,29 @@ def _ocr_one_page(
                     render_archive_page_bounded,
                 )
 
-                rendered = render_archive_page_bounded(
-                    archive_path, source_hash=page["source_hash"], size=archive_size, page_number=page["page"]
-                )
+                if render_source is None:
+                    rendered = render_archive_page_bounded(
+                        archive_path,
+                        source_hash=page["source_hash"],
+                        size=archive_size,
+                        page_number=page["page"],
+                    )
+                else:
+                    rendered = render_archive_page_bounded(
+                        render_source["path"],
+                        source_hash=render_source["source_hash"],
+                        size=render_source["size"],
+                        page_number=render_source["page_number"],
+                    )
+                    metadata["render_source"] = {
+                        "provider": "mineru",
+                        "source_hash": page["source_hash"],
+                        "page": page["page"],
+                        "task_id": render_source["task_id"],
+                        "result_hash": render_source["result_hash"],
+                        "rendered_pdf_page": render_source["page_number"],
+                        "blob": render_source["receipt"]["blob"],
+                    }
             else:
                 rendered = render_pdf_page_bounded(content, page["page"])
         except ProcessingDeferred:
@@ -637,7 +715,13 @@ def _ocr_one_page(
         except (ValueError, OSError) as exc:
             preserve_previous_page_attempt(updated)
             return failure(exc)
-        metadata.update({key: value for key, value in rendered.items() if key != "image_base64"})
+        metadata.update(
+            {
+                key: value
+                for key, value in rendered.items()
+                if key not in {"image_base64", "source_hash", "page"}
+            }
+        )
         if on_reuse is not None:
             reused = on_reuse(deepcopy(page), deepcopy(rendered))
             if reused is not None:
@@ -816,6 +900,7 @@ def ocr_bounded(
     max_pages: int = 4,
     archive_path=None,
     archive_size: int | None = None,
+    render_sources: dict[int, dict] | None = None,
 ) -> dict:
     """One bounded batch. Checkpoint each terminal page; completed pages are reused.
 
@@ -864,6 +949,19 @@ def ocr_bounded(
             )
         )
     ][:max_pages]
+    validated_render_sources = {}
+    if render_sources is not None:
+        if not isinstance(render_sources, dict) or any(
+            type(number) is not int or number < 1 for number in render_sources
+        ):
+            raise ValueError("页面渲染来源清单无效。")
+        pending_by_number = {page["page"]: page for page in pending}
+        if set(render_sources) - set(pending_by_number):
+            raise ValueError("页面渲染来源包含当前批次以外的页码。")
+        for number, source in render_sources.items():
+            validated_render_sources[number] = _validated_mineru_render_source(
+                result, number, source
+            )
     if pending and vision_ocr_configured():
 
         def process_page(page):
@@ -882,6 +980,7 @@ def ocr_bounded(
                     archive_size,
                     on_reuse,
                     on_response_error,
+                    validated_render_sources.get(page["page"]),
                 )
             except PageAttemptHistoryLimit as exc:
                 # A page whose bounded history is full cannot be safely retried.

@@ -305,6 +305,78 @@ def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
     assert decision.retryable and decision.pages == (1,)
 
 
+def test_legacy_mineru_office_render_proof_is_automatically_retried(monkeypatch):
+    from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import PROTOCOL
+
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    source_hash = "a" * 64
+    rendered_hash = "b" * 64
+    result_hash = "c" * 64
+    blob = {
+        "content_hash": rendered_hash,
+        "size": 128,
+        "storage_path": f"files/blobs/{'d' * 64}/bb/bb/{rendered_hash}",
+    }
+    receipt = {
+        "blob": blob,
+        "source_hash": source_hash,
+        "task_id": "mineru-task-1",
+        "result_hash": result_hash,
+        "page_count": 1,
+    }
+    page = {
+        "page": 1,
+        "source_hash": source_hash,
+        "status": "ocr_complete",
+        "text": "old transcript",
+        "ocr_fallback": {
+            "protocol": PROTOCOL,
+            "attempts": MAX_RETRY_CYCLES,
+            "source_result_hash": result_hash,
+            "source_page": 1,
+        },
+        "ocr": {
+            "provider": "vision",
+            "complete": True,
+            "source_hash": rendered_hash,
+            "page": 1,
+            "render_source": {
+                "provider": "mineru",
+                "source_hash": source_hash,
+                "page": 1,
+                "task_id": "mineru-task-1",
+                "result_hash": result_hash,
+                "rendered_pdf_page": 1,
+                "blob": blob,
+            },
+        },
+    }
+    manifest = {
+        "parser": "mineru",
+        "source_hash": source_hash,
+        "pages": [page],
+        "remote_parse": {
+            "provider": "mineru",
+            "state": "done",
+            "source_hash": source_hash,
+            "parts": [
+                {
+                    "first_page": 1,
+                    "last_page": 1,
+                    "task_id": "mineru-task-1",
+                    "result_blob": {"content_hash": result_hash},
+                    "render_pdf": receipt,
+                }
+            ],
+        },
+    }
+
+    decision = classify_processing(manifest, phase="parse")
+
+    assert decision.reason == "paid_ocr_retry"
+    assert decision.retryable and decision.pages == (1,)
+
+
 @pytest.mark.parametrize("fallback_attempts", [None, MAX_RETRY_CYCLES])
 def test_unreceipted_source_bound_vision_failure_is_automatically_retried(service, fallback_attempts):
     content = make_pdf([("source page", False)])

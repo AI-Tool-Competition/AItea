@@ -835,6 +835,114 @@ class CollectionService:
             "mime_type": "image/png",
         }
 
+    def _mineru_visual_render_sources(self, doc, claim, manifest, pages):
+        """Resolve only MinerU's source-bound conversion PDFs for non-PDF inputs."""
+        from app.contexts.documents.infrastructure.parsers.document_parser import _run_bounded
+        from app.contexts.documents.infrastructure.providers.mineru_results import (
+            resolve_reference,
+            worker,
+        )
+        from app.shared.infrastructure.persistence.blob_store import _verify_existing
+
+        is_pdf = (
+            doc["mime_type"].split(";", 1)[0].strip().lower() == "application/pdf"
+            or Path(doc["filename"]).suffix.lower() == ".pdf"
+        )
+        if is_pdf:
+            return {}
+        remote = manifest.get("remote_parse") or {}
+        if (
+            manifest.get("parser") != "mineru"
+            or remote.get("provider") != "mineru"
+            or remote.get("state") != "done"
+            or remote.get("source_hash") != doc["content_hash"]
+            or not isinstance(remote.get("parts"), list)
+        ):
+            raise ValueError("MinerU 页面渲染缺少已完成的来源解析回执。")
+
+        changed = {}
+        sources = {}
+        for number in pages:
+            matches = [
+                part
+                for part in remote["parts"]
+                if isinstance(part, dict)
+                and type(part.get("first_page")) is int
+                and type(part.get("last_page")) is int
+                and part["first_page"] <= number <= part["last_page"]
+            ]
+            if len(matches) != 1:
+                raise ValueError("MinerU 页面渲染来源页码不唯一。")
+            part = matches[0]
+            receipt = part.get("render_pdf")
+            if receipt is None:
+                task = {
+                    key: part.get(key)
+                    for key in (
+                        "task_id",
+                        "batch_id",
+                        "source_hash",
+                        "first_page",
+                        "last_page",
+                        "part_blob",
+                        "result_blob",
+                    )
+                }
+                receipt = _run_bounded(
+                    worker,
+                    ("extract_render_pdf", (task, str(self.db.files_dir), claim["owner_id"])),
+                    120,
+                )
+                part["render_pdf"] = receipt
+                changed[part["task_id"]] = receipt
+            blob = receipt.get("blob") if isinstance(receipt, dict) else None
+            if (
+                not isinstance(blob, dict)
+                or receipt.get("source_hash") != doc["content_hash"]
+                or receipt.get("task_id") != part.get("task_id")
+                or receipt.get("result_hash") != (part.get("result_blob") or {}).get("content_hash")
+                or receipt.get("page_count") != part["last_page"] - part["first_page"] + 1
+            ):
+                raise ValueError("MinerU 转换 PDF 与页面解析回执不匹配。")
+            path = resolve_reference(blob, self.db.files_dir, claim["owner_id"])
+            _verify_existing(path, blob.get("content_hash"), blob.get("size"))
+            sources[number] = {
+                "path": str(path),
+                "receipt": receipt,
+                "page_number": number - part["first_page"] + 1,
+            }
+
+        if changed:
+            with self.db.transaction() as conn:
+                if not self._valid_claim(conn, claim, True):
+                    raise RuntimeError("MinerU 页面渲染租约已失效，停止保存转换文件。")
+                row = conn.execute(
+                    "SELECT manifest FROM documents WHERE id=? AND owner_id=?",
+                    (doc["id"], claim["owner_id"]),
+                ).fetchone()
+                current = json.loads(row["manifest"]) if row else None
+                current_remote = current.get("remote_parse") if isinstance(current, dict) else None
+                if (
+                    not isinstance(current_remote, dict)
+                    or current.get("source_hash") != doc["content_hash"]
+                    or current_remote.get("state") != "done"
+                    or current_remote.get("source_hash") != doc["content_hash"]
+                ):
+                    raise ValueError("MinerU 页面渲染原件版本已变化。")
+                for part in current_remote.get("parts", []):
+                    receipt = changed.get(part.get("task_id"))
+                    if receipt is None:
+                        continue
+                    if part.get("render_pdf") not in (None, receipt):
+                        raise ValueError("MinerU 页面渲染回执已被其他任务替换。")
+                    part["render_pdf"] = receipt
+                conn.execute(
+                    "UPDATE documents SET manifest=? WHERE id=? AND owner_id=?",
+                    (dump(current), doc["id"], claim["owner_id"]),
+                )
+            manifest["remote_parse"]["parts"] = remote["parts"]
+        return sources
+
     def _retry_mineru_visual_pages(self, doc, claim, manifest):
         """Transcribe only the source-bound pages explicitly reset for visual fallback."""
         from app.contexts.documents.infrastructure.parsers.document_parser import ocr_bounded
@@ -863,6 +971,9 @@ class CollectionService:
             for page in selected
         ):
             raise ValueError("MinerU 视觉回退页码或来源绑定无效。")
+        render_sources = self._mineru_visual_render_sources(
+            doc, claim, manifest, [page["page"] for page in selected]
+        )
 
         def checkpoint_page(value):
             number = value.get("page")
@@ -928,6 +1039,7 @@ class CollectionService:
             max_pages=min(20, vision_ocr_request_worker_limit()),
             archive_path=doc["storage_path"],
             archive_size=doc["size"],
+            render_sources=render_sources,
         )
 
     def _official_html_source(self, document):

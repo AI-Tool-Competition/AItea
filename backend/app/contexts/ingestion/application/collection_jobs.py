@@ -16,13 +16,14 @@ from threading import Event, Thread
 from urllib.parse import urlsplit
 
 from app.contexts.ingestion.application.contracts import CollectionPlan
-from app.contexts.documents.application.system_library import BackgroundWorkerScope
+from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, BackgroundWorkerScope
 from app.contexts.documents.infrastructure.parsers.document_parser import parse_worker_limit
 from app.shared.domain.values import dump, now, uid
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 MAX_ATTEMPTS = 3
+SHARED_EMBED_QUEUE_RESERVE = 1
 _PROCESSING_SOURCE_FIELDS = (
     "owner_id",
     "role",
@@ -934,23 +935,46 @@ class CollectionService:
             ) THEN 0 ELSE 1 END,"""
             if preferred:
                 order += "CASE WHEN phase=? THEN 0 ELSE 1 END,"
-            # Keep embed admission durable and bounded independently of parser
-            # capacity. Explicit transport tuning must also opt into more live
-            # document leases; the default remains two.
-            embedding_available = (
-                conn.execute(
-                    "SELECT COUNT(*) FROM processing_jobs WHERE status='processing' AND phase='embed' AND lease_until>?"
-                    + background_scope,
-                    (timestamp, *background_arguments),
-                ).fetchone()[0]
-                < self.embedding_workers
+            # Bound embedding separately from parser work. When the shared
+            # legal library has due work, retain one global slot for it so a
+            # private backlog cannot starve shared indexing. Private work can
+            # use the full capacity whenever no shared embedding is due.
+            active_embeddings = conn.execute(
+                "SELECT owner_id,COUNT(*) count FROM processing_jobs "
+                "WHERE status='processing' AND phase='embed' AND lease_until>?"
+                + background_scope
+                + " GROUP BY owner_id",
+                (timestamp, *background_arguments),
+            ).fetchall()
+            active_shared_embeddings = sum(
+                row["count"] for row in active_embeddings if row["owner_id"] == SYSTEM_OWNER_ID
             )
+            active_embedding_count = sum(row["count"] for row in active_embeddings)
+            shared_embedding_pending = bool(
+                worker_scope.allows(SYSTEM_OWNER_ID)
+                and conn.execute(
+                    """SELECT 1 FROM processing_jobs pending
+                    JOIN documents source ON source.id=pending.document_id AND source.owner_id=pending.owner_id
+                    WHERE pending.owner_id=? AND pending.phase='embed' AND pending.status='queued'
+                        AND pending.available_at<=? AND source.role='primary' LIMIT 1""",
+                    (SYSTEM_OWNER_ID, timestamp),
+                ).fetchone()
+            )
+            embedding_available = active_embedding_count < self.embedding_workers
+            private_embedding_available = (
+                not shared_embedding_pending
+                or active_embedding_count - active_shared_embeddings
+                < max(self.embedding_workers - SHARED_EMBED_QUEUE_RESERVE, 0)
+            )
+            if shared_embedding_pending and worker_scope.allows(SYSTEM_OWNER_ID):
+                order += "CASE WHEN phase='embed' AND owner_id=? THEN 0 ELSE 1 END,"
             row = conn.execute(
                 "SELECT * FROM processing_jobs WHERE status='queued' AND available_at<=?"
                 + scope
                 + background_scope
                 + policy
                 + " AND (phase!='embed' OR ?)"
+                + " AND (phase!='embed' OR owner_id=? OR ?)"
                 + """ AND EXISTS(SELECT 1 FROM documents owned_source
                     WHERE owned_source.id=processing_jobs.document_id
                         AND owned_source.owner_id=processing_jobs.owner_id AND owned_source.role='primary')"""
@@ -977,8 +1001,11 @@ class CollectionService:
                     *arguments,
                     *background_arguments,
                     embedding_available,
+                    SYSTEM_OWNER_ID,
+                    private_embedding_available,
                     timestamp,
                     *((preferred,) if preferred else ()),
+                    *((SYSTEM_OWNER_ID,) if shared_embedding_pending and worker_scope.allows(SYSTEM_OWNER_ID) else ()),
                 ),
             ).fetchone()
             if not row:

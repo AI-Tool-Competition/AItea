@@ -132,6 +132,61 @@ def test_external_claim_ignores_system_candidates_and_private_capacity_is_indepe
     assert system_state(service) == before
 
 
+def test_internal_embedding_claim_reserves_one_slot_for_due_shared_library_work(service):
+    service.collection.processing_workers = 8
+    service.collection.embedding_workers = 4
+    for number in range(3):
+        job(
+            service,
+            f"private-active-{number}",
+            owner="alice",
+            phase="embed",
+            status="processing",
+            lease=time.time() + 600,
+        )
+    shared = job(service, "shared-embed", phase="embed")
+    private = job(service, "private-embed", owner="alice", phase="embed")
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE processing_jobs SET updated_at='9999' WHERE document_id=?", (shared["id"],))
+        conn.execute("UPDATE processing_jobs SET updated_at='0000' WHERE document_id=?", (private["id"],))
+
+    claim = service.collection.claim_processing()
+
+    assert claim["owner_id"] == SYSTEM_OWNER_ID and claim["document_id"] == shared["id"]
+    assert service.collection.claim_processing() is None
+
+
+@pytest.mark.parametrize("worker_scope,shared_due", [(BackgroundWorkerScope(), False), (EXTERNAL, True)])
+def test_embedding_reserve_does_not_block_private_work_without_due_shared_scope(
+    service, worker_scope, shared_due
+):
+    service.collection.processing_workers = 8
+    service.collection.embedding_workers = 4
+    for number in range(3):
+        job(
+            service,
+            f"private-active-{number}",
+            owner="alice",
+            phase="embed",
+            status="processing",
+            lease=time.time() + 600,
+        )
+    shared = job(service, "shared-embed", phase="embed")
+    private = job(service, "private-embed", owner="alice", phase="embed")
+    with service.db.transaction() as conn:
+        if not shared_due:
+            conn.execute(
+                "UPDATE processing_jobs SET available_at=? WHERE document_id=?",
+                (time.time() + 600, shared["id"]),
+            )
+        conn.execute("UPDATE processing_jobs SET updated_at='9999' WHERE document_id=?", (shared["id"],))
+        conn.execute("UPDATE processing_jobs SET updated_at='0000' WHERE document_id=?", (private["id"],))
+
+    claim = service.collection.claim_processing(worker_scope=worker_scope)
+
+    assert claim["owner_id"] == "alice" and claim["document_id"] == private["id"]
+
+
 def test_environment_does_not_disable_explicit_system_runner_and_same_job_leases_exclude_peers(
     service, monkeypatch
 ):

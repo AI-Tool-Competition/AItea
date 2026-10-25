@@ -130,6 +130,7 @@ def download_failure_code(error):
 
 RCEP_SOURCE_ID = "sg-enterprisesg-rcep"
 RCEP_POLICY_VERSION = "china-singapore-tariff-scope-v1"
+DISCOVERY_EXCLUSION_POLICY_VERSION = "source-discovery-exclusions-v1"
 # SG-5.1 scopes tariff schedules to China/Singapore actual trade. General treaty
 # text, PSR/origin annexes and China/Singapore schedules remain discoverable.
 RCEP_OUTSIDE_SCOPE = (
@@ -148,13 +149,39 @@ def rcep_policy(source):
     )
 
 
-def scope_excluded(source, url):
+def scope_exclusion(source, url, title=""):
     parsed = urlsplit(url)
-    return bool(
+    if (
         rcep_policy(source)
         and parsed.hostname == "www.enterprisesg.gov.sg"
         and re.search(RCEP_OUTSIDE_SCOPE, unquote(parsed.path), re.I)
-    )
+    ):
+        return {"version": RCEP_POLICY_VERSION, "reason": "third_country_tariff_schedule"}
+    context = re.sub(r"[^\w]+", " ", f"{unquote(parsed.path)} {title}".casefold()).strip()
+    for term in source.get("discovery_exclude_keywords", []):
+        normalized = re.sub(r"[^\w]+", " ", term.casefold()).strip()
+        if normalized and normalized in context:
+            return {
+                "version": DISCOVERY_EXCLUSION_POLICY_VERSION,
+                "reason": "configured_source_exclusion",
+                "term": term,
+            }
+    return None
+
+
+def scope_excluded(source, url, title=""):
+    return scope_exclusion(source, url, title) is not None
+
+
+def candidate_policy_version(source):
+    if rcep_policy(source):
+        return RCEP_POLICY_VERSION
+    terms = source.get("discovery_exclude_keywords", [])
+    if not terms:
+        return None
+    canonical = json.dumps(terms, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    return f"{DISCOVERY_EXCLUSION_POLICY_VERSION}:{digest}"
 
 
 class Deferred(Exception):
@@ -226,6 +253,7 @@ def recipe(source):
             "careers",
             "login",
         ],
+        "discovery_exclude_keywords": source.get("discovery_exclude_keywords", []),
         "max_links": 32,
     }
     if source["id"] == "id-beacukai-regulations":
@@ -825,22 +853,26 @@ class Collector:
     def apply_candidate_policy(self):
         """Replay verified cached discovery once, without GETs, receipts or quota changes."""
         for source in self.sources:
-            if not rcep_policy(source):
-                continue
+            policy_version = candidate_policy_version(source)
+            current = self.state["sources"].get(source["id"], {})
+            previous_version = current.get("candidate_policy", {}).get("version")
+            if policy_version is None:
+                if not (
+                    isinstance(previous_version, str)
+                    and previous_version.startswith(DISCOVERY_EXCLUSION_POLICY_VERSION + ":")
+                ):
+                    continue
+                policy_version = f"{DISCOVERY_EXCLUSION_POLICY_VERSION}:none"
             current = self.state["sources"].setdefault(source["id"], {})
-            if current.get("candidate_policy", {}).get("version") == RCEP_POLICY_VERSION:
+            if current.get("candidate_policy", {}).get("version") == policy_version:
                 continue
             cache = current.get("cache", {})
             frontier = current.setdefault("frontier", {})
             excluded = 0
             for url, item in frontier.items():
-                if not scope_excluded(source, url):
-                    continue
-                marker = {
-                    "version": RCEP_POLICY_VERSION,
-                    "reason": "third_country_tariff_schedule",
-                }
-                if item.get("scope_excluded") != marker:
+                marker = scope_exclusion(source, url, item.get("title", ""))
+                previous_marker = item.get("scope_excluded")
+                if marker and previous_marker != marker:
                     self.event(
                         "candidate_scope_excluded",
                         source_id=source["id"],
@@ -851,7 +883,19 @@ class Collector:
                         retained_cached_hash=cache.get(url, {}).get("content_hash"),
                     )
                     item["scope_excluded"] = marker
-                excluded += 1
+                elif not marker and previous_marker:
+                    self.event(
+                        "candidate_scope_restored",
+                        source_id=source["id"],
+                        target_url=url,
+                        parent_url=item["parent_url"],
+                        parent_hash=item["parent_hash"],
+                        previous_policy=previous_marker,
+                        retained_cached_hash=cache.get(url, {}).get("content_hash"),
+                    )
+                    item.pop("scope_excluded", None)
+                if marker:
+                    excluded += 1
             cached = cache.get(source["url"])
             before = set(frontier)
             replay_status, root_hash = "no_cached_root", None
@@ -880,7 +924,7 @@ class Collector:
                 replay_status = "cached_integrity_failed"
             added = len(set(frontier) - before)
             current["candidate_policy"] = {
-                "version": RCEP_POLICY_VERSION,
+                "version": policy_version,
                 "applied_at": time.time(),
                 "replay_status": replay_status,
                 "root_hash": root_hash,
@@ -899,7 +943,7 @@ class Collector:
             self.event(
                 "candidate_policy_applied",
                 source_id=source["id"],
-                policy_version=RCEP_POLICY_VERSION,
+                policy_version=policy_version,
                 replay_status=replay_status,
                 root_hash=root_hash,
                 excluded_frontier=excluded,
@@ -920,7 +964,7 @@ class Collector:
             if (
                 host not in source["allowed_hosts"]
                 or candidate == source["url"]
-                or scope_excluded(source, candidate)
+                or scope_excluded(source, candidate, link.get("title", ""))
             ):
                 continue
             cached_target = cache.get(candidate)
@@ -1083,7 +1127,7 @@ class Collector:
                     ),
                 )
                 if url != source["url"]
-                and not scope_excluded(source, url)
+                and not scope_excluded(source, url, item.get("title", ""))
                 and urlsplit(url).hostname in source["allowed_hosts"]
                 and due(item.get("health"), time.time())
             ]
@@ -1096,7 +1140,7 @@ class Collector:
             url = urls.popleft()
             if (
                 url in visited
-                or scope_excluded(source, url)
+                or scope_excluded(source, url, frontier.get(url, {}).get("title", ""))
                 or (url != source["url"] and url not in frontier)
             ):
                 continue
@@ -1228,7 +1272,7 @@ class Collector:
         candidates.extend(
             item.get("health", {}).get("next_at", time.time())
             for url, item in frontier.items()
-            if not scope_excluded(source, url)
+            if not scope_excluded(source, url, frontier.get(url, {}).get("title", ""))
         )
         next_at = max(time.time() + self.limits["tick_seconds"], min(candidates))
         if deferred is not None and deferred.status != "stopping":

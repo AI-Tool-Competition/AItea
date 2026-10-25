@@ -4,7 +4,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.contexts.ingestion.domain.source_registry import validate_source_registry
+from app.contexts.ingestion.domain.source_registry import (
+    reviewed_discovery_scope_change,
+    validate_source_registry,
+)
 
 
 def active_sources(pool: dict, country: str, validate_url: Callable[[str], tuple[str, str]]) -> list[dict]:
@@ -83,7 +86,13 @@ class SourceCatalog:
                 checklist_scope_changed = before.get("verification", {}).get(
                     "checklist_items", []
                 ) != after.get("verification", {}).get("checklist_items", [])
+                exclusion_change = reviewed_discovery_scope_change(before, after)
+                exclusions_changed = before.get("discovery_exclude_keywords", []) != after.get(
+                    "discovery_exclude_keywords", []
+                )
                 if any(before.get(key) != after.get(key) for key in protected) or (
+                    exclusions_changed and exclusion_change is None
+                ) or (
                     checklist_scope_changed and not reactivated_mapping
                 ):
                     raise ValueError("A source's reviewed network or document scope cannot change in place")

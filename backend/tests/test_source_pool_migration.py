@@ -77,6 +77,23 @@ def test_migration_refuses_scope_changes_and_active_requests(tmp_path):
         migration.migrate(old_path, new_path, root, "ID")
 
     new_pool["sources"][0]["allowed_hosts"] = old_pool["sources"][0]["allowed_hosts"]
+    bpom = next(row for row in new_pool["sources"] if row["id"] == "id-bpom-regulations")
+    bpom["discovery_exclude_keywords"].append("unreviewed subject")
+    bpom["verification"]["discovery_scope_change"] = {
+        "previous_exclude_keywords": [],
+        "current_exclude_keywords": bpom["discovery_exclude_keywords"],
+        "reason": "A changed exclusion list without the exact previous mapping.",
+    }
+    new_path.write_text(json.dumps(new_pool))
+    with pytest.raises(ValueError, match="exact scope record"):
+        migration.migrate(old_path, new_path, root, "ID")
+
+    bpom["discovery_exclude_keywords"].pop()
+    bpom["verification"]["discovery_scope_change"] = copy.deepcopy(
+        next(row for row in old_pool["sources"] if row["id"] == "id-bpom-regulations")["verification"][
+            "discovery_scope_change"
+        ]
+    )
     new_pool["groups"][0]["title"] += "（更新）"
     new_path.write_text(json.dumps(new_pool))
     old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
@@ -90,6 +107,67 @@ def test_migration_refuses_scope_changes_and_active_requests(tmp_path):
     )
     with pytest.raises(ValueError, match="active requests"):
         migration.migrate(old_path, new_path, root, "ID")
+
+
+def test_catalog_accepts_only_reviewed_discovery_exclusion_update(tmp_path):
+    from app.contexts.ingestion.application.source_catalog import SourceCatalog
+    from app.contexts.ingestion.infrastructure.source_registry_json import JsonSourceRegistry
+    from app.shared.infrastructure.http.download import _validated_url
+
+    original = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    updated = copy.deepcopy(original)
+    bpom = next(row for row in updated["sources"] if row["id"] == "id-bpom-regulations")
+    previous_terms = list(bpom["discovery_exclude_keywords"])
+    bpom["discovery_exclude_keywords"].append("unreviewed subject")
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_text(json.dumps(original))
+    catalog = SourceCatalog(JsonSourceRegistry(runtime_path, tmp_path / "registry-history"), _validated_url)
+    runtime_path.write_text(json.dumps(updated))
+
+    with pytest.raises(ValueError, match="Discovery scope changes"):
+        catalog.candidate({})
+
+    bpom["verification"]["discovery_scope_change"] = {
+        "previous_exclude_keywords": previous_terms,
+        "current_exclude_keywords": bpom["discovery_exclude_keywords"],
+        "reason": "A verified source policy update with an exact prior and current scope.",
+    }
+    runtime_path.write_text(json.dumps(updated))
+    assert catalog.candidate({}) is not None
+
+
+def test_migration_records_exact_discovery_exclusion_change(tmp_path):
+    new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    old_pool = copy.deepcopy(new_pool)
+    for source_id in ("id-bpom-regulations", "sg-customs-import"):
+        source = next(row for row in old_pool["sources"] if row["id"] == source_id)
+        source.pop("discovery_exclude_keywords")
+        source["verification"].pop("discovery_scope_change")
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(json.dumps(old_pool))
+    new_path.write_text(json.dumps(new_pool))
+    root = tmp_path / "collector"
+    root.mkdir()
+    old_hash = hashlib.sha256(old_path.read_bytes()).hexdigest()
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "binding": {"pool_sha256": old_hash, "country": "ID", "root": str(root.resolve())},
+                "active_sources": [],
+            }
+        )
+    )
+
+    result = migration.migrate(old_path, new_path, root, "ID")
+
+    changes = result["discovery_scope_changes"]
+    assert list(changes) == ["id-bpom-regulations"]
+    assert changes["id-bpom-regulations"]["previous_exclude_keywords"] == []
+    assert changes["id-bpom-regulations"]["current_exclude_keywords"] == next(
+        row for row in new_pool["sources"] if row["id"] == "id-bpom-regulations"
+    )["discovery_exclude_keywords"]
+    state = json.loads((root / "state.json").read_text())
+    assert state["pool_migrations"][-1]["discovery_scope_changes"] == changes
 
 
 def test_migration_records_explicit_checklist_reclassification(tmp_path):

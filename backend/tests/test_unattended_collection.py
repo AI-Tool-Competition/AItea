@@ -56,6 +56,8 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert bpom["verification"]["checklist_items"] == []
             assert bpom["group_id"] == "id-food-validation"
             assert bpom["status"] == "active" and bpom["transport"] == "proxy"
+            assert "obat tradisional" in bpom["discovery_exclude_keywords"]
+            assert "kosmetik" in collection.recipe(bpom)["discovery_exclude_keywords"]
             assert bpjph["verification"]["checklist_items"] == ["ID-4.8"]
             assert bpjph["group_id"] == "id-food-regulatory"
             kemnaker = next(row for row in registry["sources"] if row["id"] == "id-kemnaker-regulations")
@@ -196,6 +198,84 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     migrated.write_text(json.dumps(registry))
     with pytest.raises(ValueError, match="source relationship"):
         collection.source_pool(migrated, "ID")
+
+
+def test_source_discovery_exclusion_keywords_are_bounded_and_filter_bpom_nonfood_documents(tmp_path):
+    registry_path = ROOT / "config/collection-sources/id-sg-unattended.json"
+    registry = json.loads(registry_path.read_text())
+    bpom = next(row for row in registry["sources"] if row["id"] == "id-bpom-regulations")
+    medicine_url = (
+        "https://jdih.pom.go.id/download/rule/1773/12/2026/"
+        "Peraturan-BPOM-tentang-Penarikan-dan-Pemusnahan-Obat-dan-atau-Bahan-Obat.pdf"
+    )
+    food_url = "https://jdih.pom.go.id/download/rule/1762/11/2026/Kemasan-Pangan.pdf"
+    page = (
+        "<html><body><h1>Official food regulation directory</h1>"
+        f'<a href="{medicine_url}">Peraturan tentang Penarikan dan Pemusnahan Obat dan/atau Bahan Obat</a>'
+        f'<a href="{food_url}">Peraturan tentang Kemasan Pangan</a>'
+        "</body></html>"
+    ).encode()
+    result = collection.discover_page(bpom["url"], page, "text/html", collection.recipe(bpom))
+    discovered = {link["url"] for link in result["links"]}
+    assert result["matched"]
+    assert food_url in discovered
+    assert medicine_url not in discovered
+    assert collection.scope_excluded(bpom, medicine_url)
+    assert not collection.scope_excluded(bpom, food_url)
+
+    invalid = deepcopy(registry)
+    next(row for row in invalid["sources"] if row["id"] == "id-bpom-regulations")[
+        "discovery_exclude_keywords"
+    ] = ["x" * 101]
+    path = tmp_path / "invalid-exclusion-terms.json"
+    path.write_text(json.dumps(invalid))
+    with pytest.raises(ValueError, match="Invalid official source scope or bounds"):
+        collection.source_pool(path, "ID")
+
+
+def test_changed_source_exclusions_replay_verified_cache_without_network(environment):
+    env = environment
+    configured = source()
+    root_url = configured["url"]
+    excluded_url = "https://one.gov.sg/notices/food-medicine.pdf"
+    retained_url = "https://one.gov.sg/notices/food-label.pdf"
+    env.responses[root_url] = (
+        "<html><head><title>Food laws</title></head><body>"
+        f'<a href="{excluded_url}">Food medicine regulation</a>'
+        f'<a href="{retained_url}">Food label regulation</a>'
+        "</body></html>"
+    ).encode()
+    collector = env.make([configured], limits={"requests_per_source_cycle": 1})
+    collector.tick()
+    assert set(collector.state["sources"]["sg-main"]["frontier"]) == {excluded_url, retained_url}
+
+    pool = json.loads(collector.pool_path.read_text())
+    pool["sources"][0]["discovery_exclude_keywords"] = ["medicine"]
+    collector.pool_path.write_text(json.dumps(pool))
+    calls_before_replay = list(env.calls)
+    resumed = env.restart(collector)
+
+    assert env.calls == calls_before_replay
+    frontier = resumed.state["sources"]["sg-main"]["frontier"]
+    assert frontier[excluded_url]["scope_excluded"] == {
+        "version": collection.DISCOVERY_EXCLUSION_POLICY_VERSION,
+        "reason": "configured_source_exclusion",
+        "term": "medicine",
+    }
+    assert "scope_excluded" not in frontier[retained_url]
+    policy_event = env.events(resumed, "candidate_policy_applied")[-1]
+    assert policy_event["replay_status"] == "verified_cached_discovery"
+    assert policy_event["excluded_frontier"] == 1
+    assert policy_event["network_requests"] == 0
+    assert len(env.events(resumed, "candidate_scope_excluded")) == 1
+
+    pool["sources"][0].pop("discovery_exclude_keywords")
+    resumed.pool_path.write_text(json.dumps(pool))
+    calls_before_restore = list(env.calls)
+    restored = env.restart(resumed)
+    assert env.calls == calls_before_restore
+    assert "scope_excluded" not in restored.state["sources"]["sg-main"]["frontier"][excluded_url]
+    assert len(env.events(restored, "candidate_scope_restored")) == 1
 
 
 def test_kemnaker_catalogue_scope_and_large_original_limits(environment, monkeypatch):

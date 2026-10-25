@@ -119,6 +119,14 @@
         "impor",
         "registrasi pangan"
       ],
+      "discovery_exclude_keywords": [
+        "penarikan dan pemusnahan obat",
+        "obat dan/atau bahan obat",
+        "obat tradisional",
+        "kosmetik",
+        "suplemen kesehatan",
+        "alat kesehatan"
+      ],
       "verification": {
         "official_evidence_url": "https://jdih.pom.go.id/rule",
         "checked_at": "2026-10-20T06:43:50.289935+00:00",
@@ -129,8 +137,20 @@
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-bpom-regulations.json",
         "server_receipt_sha256": "c3ec41c2124a4d11609fa4c27c4f2aa127d9f002cd7ee384cd37cf89687a58d0",
         "body_sha256": "0b6125a34b321dc790b545ab5055b0f2799ad64b7abcb7556d68abb0bb535668",
+        "discovery_scope_change": {
+          "previous_exclude_keywords": [],
+          "current_exclude_keywords": [
+            "penarikan dan pemusnahan obat",
+            "obat dan/atau bahan obat",
+            "obat tradisional",
+            "kosmetik",
+            "suplemen kesehatan",
+            "alat kesehatan"
+          ],
+          "reason": "缓存目录命中药品撤回规则，虽带食品标签词仍非食品法源；仅按非食品标题排除并保留原始回执。"
+        },
         "limitations": [
-          "BPOM 同时监管药品、化妆品；只收与茶叶食品相关材料，不扩采无关药品栏目。",
+          "BPOM 同时监管药品、化妆品；发现词只用于食品候选，发现排除词过滤药品、传统药物、化妆品、保健品与医疗器械标题，不扩采无关栏目。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。",
           "目录根页可达且继续经代理轮询；正式法规详情分页与原件路径尚未形成已核验的结构化解析链，当前不绑定正式清单任务。"
         ],
@@ -170,6 +190,15 @@
         "customs value",
         "rules of origin"
       ],
+      "discovery_exclude_keywords": [
+        "arriving-in-singapore",
+        "precious-metals",
+        "duty-free-concession",
+        "hand-carried",
+        "export-operations",
+        "export-procedures",
+        "re-importing-goods-sent-overseas"
+      ],
       "verification": {
         "official_evidence_url": "https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/",
         "checked_at": "2026-10-20T06:43:50.286710+00:00",
@@ -182,6 +211,19 @@
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/sg-customs-import.json",
         "server_receipt_sha256": "e689b3140716def34a9d68f8e82f7c4ee170694c37d34a3f3d7e52564556533d",
         "body_sha256": "d6ddd8d823fca294f867ed10454bf62feca34fd9f0394f298c51d5f63be3fab4",
+      "discovery_scope_change": {
+        "previous_exclude_keywords": [],
+        "current_exclude_keywords": [
+          "arriving-in-singapore",
+          "precious-metals",
+          "duty-free-concession",
+          "hand-carried",
+          "export-operations",
+          "export-procedures",
+          "re-importing-goods-sent-overseas"
+        ],
+        "reason": "缓存页发现个人随身物品、贵金属和出口手续，偏离商业茶叶进口；保留允许主机与原始采集历史。"
+      },
         "limitations": [
           "本页为官方指引，不能代替 Customs Act、GST Act 和 RIEA 的特定适用条文。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"

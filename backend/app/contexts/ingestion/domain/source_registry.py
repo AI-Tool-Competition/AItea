@@ -89,6 +89,34 @@ def _validate_html_asset_hosts(source: dict, country: str, validate_url) -> None
         seen.add(host)
 
 
+def reviewed_discovery_scope_change(previous: dict, updated: dict) -> dict | None:
+    """Return the audited source-level exclusion change when it matches both revisions."""
+    previous_terms = previous.get("discovery_exclude_keywords", [])
+    updated_terms = updated.get("discovery_exclude_keywords", [])
+    if previous_terms == updated_terms:
+        return {}
+    verification = updated.get("verification")
+    change = verification.get("discovery_scope_change") if isinstance(verification, dict) else None
+    if not isinstance(change, dict) or set(change) != {
+        "previous_exclude_keywords",
+        "current_exclude_keywords",
+        "reason",
+    }:
+        return None
+    if (
+        change.get("previous_exclude_keywords") != previous_terms
+        or change.get("current_exclude_keywords") != updated_terms
+        or not isinstance(change.get("reason"), str)
+        or not 10 <= len(change["reason"]) <= 500
+    ):
+        return None
+    return {
+        "previous_exclude_keywords": list(previous_terms),
+        "current_exclude_keywords": list(updated_terms),
+        "reason": change["reason"],
+    }
+
+
 def _validate_verification(source: dict, country: str, hosts: list[str], validate_url) -> None:
     verification = source.get("verification")
     if not isinstance(verification, dict):
@@ -100,6 +128,7 @@ def _validate_verification(source: dict, country: str, hosts: list[str], validat
     checklist_items = verification.get("checklist_items")
     server_status = verification.get("server_status")
     checklist_scope_change = verification.get("checklist_scope_change")
+    discovery_scope_change = verification.get("discovery_scope_change")
     active = source["status"] == "active"
     if (
         not isinstance(evidence_url, str)
@@ -137,6 +166,33 @@ def _validate_verification(source: dict, country: str, hosts: list[str], validat
             or not 10 <= len(reason) <= 500
         ):
             raise ValueError("Checklist scope changes need a bounded previous mapping and reason")
+    if discovery_scope_change is not None:
+        previous_terms = (
+            discovery_scope_change.get("previous_exclude_keywords")
+            if isinstance(discovery_scope_change, dict)
+            else None
+        )
+        current_terms = (
+            discovery_scope_change.get("current_exclude_keywords")
+            if isinstance(discovery_scope_change, dict)
+            else None
+        )
+        reason = discovery_scope_change.get("reason") if isinstance(discovery_scope_change, dict) else None
+        if (
+            not isinstance(discovery_scope_change, dict)
+            or set(discovery_scope_change)
+            != {"previous_exclude_keywords", "current_exclude_keywords", "reason"}
+            or not isinstance(previous_terms, list)
+            or len(previous_terms) > 40
+            or any(not isinstance(term, str) or not 1 <= len(term) <= 100 for term in previous_terms)
+            or not isinstance(current_terms, list)
+            or len(current_terms) > 40
+            or any(not isinstance(term, str) or not 1 <= len(term) <= 100 for term in current_terms)
+            or current_terms != source.get("discovery_exclude_keywords", [])
+            or not isinstance(reason, str)
+            or not 10 <= len(reason) <= 500
+        ):
+            raise ValueError("Discovery scope changes need bounded prior/current exclusions and a reason")
     try:
         checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
     except ValueError as error:
@@ -260,6 +316,7 @@ def validate_source_registry(
         scope = source["country"]
         hosts = source["allowed_hosts"]
         discovery_keywords = source.get("discovery_keywords")
+        discovery_exclude_keywords = source.get("discovery_exclude_keywords", [])
         specialized_discovery = (
             isinstance(source.get("discovery"), dict)
             and source["discovery"].get("adapter") == "sso_catalog_2026"
@@ -296,6 +353,12 @@ def validate_source_registry(
             or any(
                 not isinstance(word, str) or not 1 <= len(word) <= 100
                 for word in discovery_keywords
+            )
+            or not isinstance(discovery_exclude_keywords, list)
+            or len(discovery_exclude_keywords) > 40
+            or any(
+                not isinstance(word, str) or not 1 <= len(word) <= 100
+                for word in discovery_exclude_keywords
             )
         ):
             raise ValueError("Invalid official source scope or bounds")

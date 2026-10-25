@@ -1292,6 +1292,18 @@ class _Recipe:
             ):
                 raise ValueError("目录关键词配置无效。")
             setattr(self, key, [x.casefold() for x in values if x])
+        exclusion_keywords = recipe.get("discovery_exclude_keywords", [])
+        if (
+            not isinstance(exclusion_keywords, list)
+            or len(exclusion_keywords) > 40
+            or any(not isinstance(x, str) or len(x) > 100 for x in exclusion_keywords)
+        ):
+            raise ValueError("来源排除关键词配置无效。")
+        self.discovery_exclude_keywords = [
+            re.sub(r"[^\w]+", " ", term.casefold()).strip()
+            for term in exclusion_keywords
+            if term.strip()
+        ]
         self.required_query = recipe.get("required_query", {})
         if not isinstance(self.required_query, dict) or any(
             not isinstance(k, str) or not isinstance(v, str) for k, v in self.required_query.items()
@@ -1874,7 +1886,10 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
                 # The mixed issuer list can mention a cited Perda inside a
                 # Perwali title. Only its leading instrument type selects it.
                 continue
-            if any(term in context for term in rules.exclude_terms):
+            normalized_context = re.sub(r"[^\w]+", " ", context).strip()
+            if any(term in context for term in rules.exclude_terms) or any(
+                term in normalized_context for term in rules.discovery_exclude_keywords
+            ):
                 continue
             if rules.include_terms and not any(term in context for term in rules.include_terms):
                 # A generic PDF label on an already relevant detail page inherits

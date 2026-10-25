@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from official_source_supervisor_recovery import load, lock, write  # noqa: E402
 from unattended_collection import source_pool  # noqa: E402
+from app.contexts.ingestion.domain.source_registry import reviewed_discovery_scope_change  # noqa: E402
 
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
 _MAX_RECEIPT_BYTES = 64 * 1024
@@ -452,6 +453,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
     expanded_html_document_paths = {}
     expanded_html_asset_hosts = {}
     checklist_scope_changes = {}
+    discovery_scope_changes = {}
     for source_id in added_source_ids:
         source = new_sources[source_id]
         verification_status = source.get("verification", {}).get("server_status")
@@ -480,6 +482,14 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
     )
     for source_id, prior in old_sources.items():
         updated = new_sources[source_id]
+        exclusion_change = reviewed_discovery_scope_change(prior, updated)
+        exclusions_changed = prior.get("discovery_exclude_keywords", []) != updated.get(
+            "discovery_exclude_keywords", []
+        )
+        if exclusions_changed and exclusion_change is None:
+            raise ValueError("Pool migration cannot change discovery exclusions without an exact scope record")
+        if exclusions_changed:
+            discovery_scope_changes[source_id] = exclusion_change
         prior_checklists = set(prior.get("verification", {}).get("checklist_items", []))
         updated_checklists = set(updated.get("verification", {}).get("checklist_items", []))
         checklist_expansion = (
@@ -571,6 +581,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
             "expanded_html_document_paths": expanded_html_document_paths,
             "expanded_html_asset_hosts": expanded_html_asset_hosts,
             "checklist_scope_changes": checklist_scope_changes,
+            "discovery_scope_changes": discovery_scope_changes,
             "binding_reconciled": already_reloaded,
             "prior_state_sha256": hashlib.sha256(
                 json.dumps(original, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
@@ -608,6 +619,7 @@ def migrate(old_pool: Path, new_pool: Path, root: Path, country: str) -> dict:
         "expanded_html_document_paths": expanded_html_document_paths,
         "expanded_html_asset_hosts": expanded_html_asset_hosts,
         "checklist_scope_changes": checklist_scope_changes,
+        "discovery_scope_changes": discovery_scope_changes,
         "binding_reconciled": already_reloaded,
     }
 

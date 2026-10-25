@@ -16,12 +16,31 @@ from app.contexts.ingestion.infrastructure.source_adapters.official_source_recov
 from app.configuration.paths import PROJECT_ROOT
 
 PLAN = PROJECT_ROOT / "config/collection-plans/indonesia-20261003.json"
+PLAN_V11 = PROJECT_ROOT / "config/collection-plans/versions/indonesia-20261003.v11.json"
 
 
 def item_recipe(item_id):
     plan = json.loads(PLAN.read_text())
-    item = next(item for item in plan["items"] if item["id"] == item_id)
+    item = next((item for item in plan["items"] if item["id"] == item_id), None)
+    if item is None:
+        # Existing immutable runs retain their versioned adapter behavior after
+        # inaccessible source categories are removed from the active plan.
+        plan = json.loads(PLAN_V11.read_text())
+        item = next(item for item in plan["items"] if item["id"] == item_id)
     return recipe_for(item), item
+
+
+def test_active_mk_puu_seeds_are_only_the_two_verified_official_originals():
+    recipe, item = item_recipe("3.1")
+    expected = {
+        "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf",
+        "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14258_1778572852.pdf",
+    }
+    assert {entry["url"] for entry in item["entries"]} == expected
+    assert all(entry["purpose"] == "document" for entry in item["entries"])
+    rules = _Recipe(recipe)
+    assert all(rules.purpose(url) == "document" for url in expected)
+    assert rules.purpose("https://jdih.mkri.id/produk-hukum/putusan?jenis=PUU") is None
 
 
 @pytest.mark.parametrize(

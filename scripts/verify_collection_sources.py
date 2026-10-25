@@ -71,8 +71,13 @@ def new_output(path: Path) -> Path:
 
 def source_rows(plans: dict, include_conditional: bool) -> list[dict]:
     rows = []
+    current_plans = load_blueprints()
     for plan in plans.values():
-        definition_path = InstancePaths.resolve(ROOT).catalogs / "collection-plans" / f"{plan['id']}.json"
+        directory = InstancePaths.resolve(ROOT).catalogs / "collection-plans"
+        if plan["version"] == current_plans[plan["id"]]["version"]:
+            definition_path = directory / f"{plan['id']}.json"
+        else:
+            definition_path = directory / "versions" / f"{plan['id']}.v{plan['version']}.json"
         definition_hash = hashlib.sha256(definition_path.read_bytes()).hexdigest()
         for item in plan["items"]:
             conditional = item["conditional"] and not include_conditional

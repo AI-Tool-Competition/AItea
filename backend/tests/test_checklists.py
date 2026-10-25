@@ -43,10 +43,10 @@ def discover(client, code="1.3", request="first"):
 def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(client):
     catalog = client.get("/api/tea/collection-plans")
     assert catalog.status_code == 200
-    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 29), ("SG", 16)]
+    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 20), ("SG", 16)]
     detail = client.get(BASE).json()
     assert len(detail["plan"]["chapters"]) == 5
-    assert len(detail["items"]) == 29
+    assert len(detail["items"]) == 20
     assert all(i["source_id"] is None and i["coverage"] == "not_started" for i in detail["items"])
     central_regulations = next(item for item in detail["plan"]["items"] if item["id"] == "1.8")
     assert central_regulations["trusted_hosts"] == ["jdih.dephub.go.id"]
@@ -72,31 +72,64 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 11
+    assert plan["version"] == 12
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
 
 
-def test_indonesia_v11_uses_official_kemenkeu_tax_catalog_and_preserves_v10(client):
+def test_indonesia_v12_uses_reachable_sources_and_keeps_the_v11_history(client):
+    from app.contexts.ingestion.application.checklists import load_blueprint_version
+
+    current = client.app.state.service.checklists.plans[PLAN]
+    previous = load_blueprint_version(PLAN, 11)
+    current_ids = {item["id"] for item in current["items"]}
+    previous_ids = {item["id"] for item in previous["items"]}
+    removed = {"1.2", "1.9", "2.1", "2.2", "2.3", "3.2", "3.3", "3.4", "4.5"}
+    assert current["version"] == 12 and len(current_ids) == 20
+    assert current["limits"]["exhaustive_scope"] is False
+    assert removed.isdisjoint(current_ids) and removed <= previous_ids
+    assert len(previous_ids) == 29
+
+    active_urls = [entry["url"] for item in current["items"] for entry in item["entries"]]
+    blocked_hosts = (
+        "peraturan.bpk.go.id",
+        "jdih.mahkamahagung.go.id",
+        "kepaniteraan.mahkamahagung.go.id",
+        "putusan3.mahkamahagung.go.id",
+        "jdih.mkri.id",
+        "www.mkri.id",
+        "jdih.kppu.go.id",
+    )
+    assert not any(host in url for host in blocked_hosts for url in active_urls)
+    current_items = {item["id"]: item for item in current["items"]}
+    assert current_items["1.3"]["entries"][0]["url"].startswith("https://jdih.setneg.go.id/")
+    assert current_items["1.7"]["entries"][0]["url"].startswith("https://jdih.bandung.go.id/")
+    assert current_items["1.8"]["entries"][0]["url"].startswith("https://jdih.dephub.go.id/")
+
+
+def test_indonesia_v12_uses_official_kemenkeu_tax_catalog_and_preserves_v11(client):
     from app.contexts.ingestion.application.checklists import load_blueprint_version
 
     current = client.app.state.service.checklists.plans[PLAN]
     tax = next(item for item in current["items"] if item["id"] == "4.3")
-    previous = load_blueprint_version(PLAN, 10)
+    previous = load_blueprint_version(PLAN, 11)
     old_tax = next(item for item in previous["items"] if item["id"] == "4.3")
-    assert current["version"] == 11
+    assert current["version"] == 12
     assert tax["adapter"] == "kemenkeu_tax"
     assert tax["entries"][0]["url"] == (
         "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak"
     )
-    assert previous["version"] == 10
+    assert previous["version"] == 11
+    assert old_tax["entries"][0]["url"] == tax["entries"][0]["url"]
+    older = load_blueprint_version(PLAN, 10)
+    old_tax = next(item for item in older["items"] if item["id"] == "4.3")
     assert old_tax["entries"][0]["url"] == "https://www.pajak.go.id/id/peraturan"
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
-    assert configure(client) == {"created": 29, "existing": 0}
-    assert configure(client) == {"created": 0, "existing": 29}
+    assert configure(client) == {"created": 20, "existing": 0}
+    assert configure(client) == {"created": 0, "existing": 20}
     assert (
         client.post(
             BASE + "/configure", json={"expected_version": client.get(BASE).json()["plan"]["version"] + 1}
@@ -107,7 +140,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     source_id = detail["items"][0]["source_id"]
     service = Service(tmp_path)
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 29
+        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 20
         assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=7").fetchone()[0] == 1
         row = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
         assert row["enabled"]
@@ -129,7 +162,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     grant_admin(client, other["id"])
     assert all(i["source_id"] is None for i in client.get(BASE).json()["items"])
     assert client.get(f"/api/tea/sources/{source_id}/runs").status_code == 404
-    assert configure(client)["created"] == 29
+    assert configure(client)["created"] == 20
 
 
 def test_configuration_schedules_only_unconditional_automated_sources(client):
@@ -150,7 +183,7 @@ def test_configuration_schedules_only_unconditional_automated_sources(client):
             JOIN sources s ON s.id=b.source_id"""
         ).fetchall()
     enabled = {(row["plan_id"], row["item_id"]): bool(row["enabled"]) for row in rows}
-    assert all(enabled[(PLAN, f"1.{index}")] for index in range(1, 11))
+    assert all(enabled[(PLAN, item_id)] for item_id in ("1.1", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.10"))
     assert enabled[(singapore_plan, "3.1")]
     assert not enabled[(singapore_plan, "2.1")]
     assert not enabled[(singapore_plan, "4.1")]
@@ -162,12 +195,12 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
     plan = service.checklists.plans[PLAN]
     current_version = plan["version"]
     plan["version"] = current_version - 1
-    assert configure(client) == {"created": 29, "existing": 0}
+    assert configure(client) == {"created": 20, "existing": 0}
     old_source = client.get(BASE).json()["items"][0]["source_id"]
     old_run = discover(client, code="1.1", request="old-version-active")
 
     plan["version"] = current_version
-    assert configure(client) == {"created": 29, "existing": 0}
+    assert configure(client) == {"created": 20, "existing": 0}
     new_source = client.get(BASE).json()["items"][0]["source_id"]
     assert new_source != old_source
 
@@ -180,7 +213,7 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
                 "SELECT COUNT(*) FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
                 (owner, PLAN, current_version - 1),
             ).fetchone()[0]
-            == 29
+            == 20
         )
         assert not service.collection.source_due(conn, owner, new_source)
     assert not any(row["id"] == new_source for row in service.due_sources())
@@ -200,21 +233,48 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
 
 
 def fake_web(monkeypatch):
+    catalog_url = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0"
+    fixtures = Path(__file__).parent / "fixtures/discovery"
+    catalog = json.loads((fixtures / "setneg-catalog.json").read_text())
+    catalog["data"] = catalog["data"][:2]
+    catalog["jml"] = 2
+    pages = {catalog_url: json.dumps(catalog).encode()}
 
-    pages = {
-        "https://peraturan.bpk.go.id/Search?jenis=8": b'<html><title>Undang-Undang</title><a href="/Details/10/uu-1">UU No 1</a><a href="/Search?jenis=8&p=2">Next</a></html>',
-        "https://peraturan.bpk.go.id/Search?jenis=8&p=2": b'<html><title>Undang-Undang</title><a href="/Details/20/uu-2">UU No 2</a></html>',
-        "https://peraturan.bpk.go.id/Details/10/uu-1": b'<html><title>UU 1</title><a href="/Download/10/uu-1.pdf">Original</a></html>',
-        "https://peraturan.bpk.go.id/Details/20/uu-2": b'<html><title>UU 2</title><a href="/Download/20/uu-2.pdf">Original</a></html>',
-    }
+    def detail_for(number):
+        current_catalog = json.loads(pages[catalog_url])
+        entry = next(row for row in current_catalog["data"] if row["no_peraturan"] == number)
+        detail = json.loads((fixtures / "setneg-detail.json").read_text())
+        detail["row"][0].update(
+            {
+                "idperaturan": entry["idperaturan"],
+                "no": number,
+                "no_peraturan": number,
+                "tahun": entry["tahun"],
+                "tentang": entry["tentang"],
+            }
+        )
+        filename = f"Salinan UU Nomor {number} Tahun {entry['tahun']}.pdf"
+        detail["file"] = [{"name": filename, "size": 1024, "ext": ".pdf", "realName": filename}]
+        detail["v"] = []
+        return json.dumps(detail).encode()
 
-    def download(url, *, consume, **kwargs):
+    def download(url, *, consume, json_body=None, **kwargs):
         if "jdih.setneg.go.id/api/hukumproduk/produkhukum" in url:
-            body = b'{"data":[],"jml":0,"jn":["UU"]}'
+            body = pages.get(url, pages[catalog_url])
             return {
                 "url": url,
-                "filename": "produkhukum",
-                "mime_type": "application/json",
+                "filename": "produkhukum.json",
+                "mime_type": "application/json" if body.lstrip().startswith(b"{") else "text/html",
+                "request_method": "POST",
+                "blob": consume(iter([body])),
+            }
+        if "jdih.setneg.go.id/api/hukumproduk/detaildata" in url:
+            number = parse_qs(urlsplit(url).query)["no"][0]
+            body = pages.get(url, detail_for(number))
+            return {
+                "url": url,
+                "filename": "detaildata.json",
+                "mime_type": "application/json" if body.lstrip().startswith(b"{") else "text/html",
                 "request_method": "POST",
                 "blob": consume(iter([body])),
             }
@@ -247,15 +307,18 @@ def test_discovery_commits_pages_and_candidates_without_legal_documents(client, 
     assert discover(client)["id"] == run["id"]
     drain_downloads(client)
     run = client.get(f"/api/tea/collection-runs/{run['id']}").json()["run"]
-    assert run["pages"] == 5 and run["stored"] == 0, run
+    assert run["pages"] == 3 and run["stored"] == 0, run
     with closing(client.app.state.service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM processing_jobs").fetchone()[0] == 0
     candidates = client.get(BASE + "/items/1.3/candidates").json()
     assert candidates["total"] == 2
-    assert all(c["url"].endswith(".pdf") and c["status"] == "pending" for c in candidates["items"])
+    assert all(
+        "/api/hukumproduk/pdf?" in c["url"] and c["title"].endswith(".pdf") and c["status"] == "pending"
+        for c in candidates["items"]
+    )
     item = next(i for i in client.get(BASE).json()["items"] if i["item_id"] == "1.3")
-    assert item["counts"]["pages"] == 5 and item["counts"]["stored"] == 0
+    assert item["counts"]["pages"] == 3 and item["counts"]["stored"] == 0
     assert item["coverage"] != "completed"
 
 
@@ -281,7 +344,7 @@ def test_setneg_source_fields_keep_page_hash_and_are_exposed_as_unreviewed(clien
         detail_url,
         body,
         "application/json",
-        recipe_for(service.checklists.plans[PLAN]["items"][2]),
+            recipe_for(next(item for item in service.checklists.plans[PLAN]["items"] if item["id"] == "1.3")),
     )
     blob = service.archive.blobs.put_bytes(owner, body)
     fetched = {
@@ -356,7 +419,7 @@ def test_saved_setneg_detail_backfill_requires_matching_candidate_and_page_hash(
         detail_url,
         body,
         "application/json",
-        recipe_for(service.checklists.plans[PLAN]["items"][2]),
+            recipe_for(next(item for item in service.checklists.plans[PLAN]["items"] if item["id"] == "1.3")),
     )
     for link in result["links"]:
         link.pop("source_record", None)
@@ -657,7 +720,7 @@ def test_candidates_are_private_and_require_revision_and_country_anchors(client,
 
 def test_block_pages_do_not_create_candidates_or_documents(client, monkeypatch):
     pages = fake_web(monkeypatch)
-    pages["https://peraturan.bpk.go.id/Search?jenis=8"] = (
+    pages["https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0"] = (
         b"<html><title>Access Denied</title><h1>403 Forbidden</h1></html>"
     )
     run = discover(client)
@@ -672,12 +735,12 @@ def test_block_pages_do_not_create_candidates_or_documents(client, monkeypatch):
 def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_path):
     from app.contexts.ingestion.application import checklists as checklists
 
-    monkeypatch.setattr(checklists, "PAGE_BATCH", 3)
+    monkeypatch.setattr(checklists, "PAGE_BATCH", 1)
     fake_web(monkeypatch)
     first = discover(client)
     drain_downloads(client)
     progress = client.get(f"/api/tea/collection-runs/{first['id']}").json()["run"]
-    assert progress["pages"] == 3 and progress["total"] == 3
+    assert progress["pages"] == 1 and progress["total"] == 1
     state = next(x for x in client.get(BASE).json()["items"] if x["item_id"] == "1.3")
     assert state["counts"]["remaining_pages"] > 0
     service = Service(tmp_path)
@@ -687,9 +750,14 @@ def test_bounded_pages_resume_from_durable_frontier(client, monkeypatch, tmp_pat
     )
     drain_downloads(client)
     assert second["id"] != first["id"]
+    third = service.checklists.start(
+        owner, PLAN, "1.3", {"client_request_id": "resume-final", "confirm_condition": False}, kind="discovery"
+    )
+    drain_downloads(client)
+    assert third["id"] != second["id"]
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM checklist_pages").fetchone()[0] == 5
-        assert conn.execute("SELECT COUNT(DISTINCT url) FROM checklist_pages").fetchone()[0] == 5
+        assert conn.execute("SELECT COUNT(*) FROM checklist_pages").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(DISTINCT url) FROM checklist_pages").fetchone()[0] == 3
     assert client.get(BASE + "/items/1.3/candidates").json()["total"] == 2
 
 
@@ -969,7 +1037,7 @@ def test_country_batch_discovery_is_idempotent_and_starts_independent_jobs(clien
     response = client.post(BASE + "/discover", json={"client_request_id": "country-batch"})
     assert response.status_code == 202, response.text
     batch = response.json()
-    assert batch["started"] == 29 and len(batch["runs"]) == 29
+    assert batch["started"] == 20 and len(batch["runs"]) == 20
     repeated = client.post(BASE + "/discover", json={"client_request_id": "country-batch"}).json()
     assert {run["id"] for run in repeated["runs"]} == {run["id"] for run in batch["runs"]}
     assert client.post(BASE + "/discover", json={"client_request_id": "other-batch"}).json()["started"] == 0
@@ -980,10 +1048,12 @@ def test_fresh_discovery_revisits_completed_catalog_pages_for_new_laws(client, m
     discover(client)
     drain_downloads(client)
     assert client.get(BASE + "/items/1.3/candidates").json()["total"] == 2
-    pages["https://peraturan.bpk.go.id/Search?jenis=8&p=2"] += b'<a href="/Details/30/uu-3">UU No 3</a>'
-    pages["https://peraturan.bpk.go.id/Details/30/uu-3"] = (
-        b'<html><title>UU 3</title><a href="/Download/30/uu-3.pdf">Original</a></html>'
-    )
+    catalog_url = "https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=UU&length=50&start=0"
+    catalog = json.loads(pages[catalog_url])
+    latest = json.loads((Path(__file__).parent / "fixtures/discovery/setneg-catalog.json").read_text())
+    catalog["data"].append(latest["data"][2])
+    catalog["jml"] = 3
+    pages[catalog_url] = json.dumps(catalog).encode()
     discover(client, request="refresh")
     drain_downloads(client)
     assert client.get(BASE + "/items/1.3/candidates").json()["total"] == 3
@@ -1024,7 +1094,11 @@ def test_business_search_reports_unavailable_without_ragflow_and_rejects_overrid
 @pytest.mark.parametrize(
     "code,kind,url",
     [
-        ("3.3", "case", "https://putusan3.mahkamahagung.go.id/direktori/download_file/abc/123"),
+        (
+            "3.1",
+            "case",
+            "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf",
+        ),
         ("4.1", "guidance", "https://jdih.bkpm.go.id/uploads/guide.pdf"),
         ("5.3", "law", "https://www.dfat.gov.au/sites/default/files/rcep.pdf"),
     ],

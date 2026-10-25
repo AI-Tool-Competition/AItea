@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from app.contexts.ingestion.application.checklists import load_blueprints
+from app.contexts.ingestion.application.checklists import load_blueprint_version, load_blueprints
 from app.configuration.paths import PROJECT_ROOT
 from app.shared.infrastructure.http.download import DownloadError
 
@@ -18,9 +18,13 @@ verification = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verification)
 
 
-def selected(*items):
+def selected(*items, version=None):
     plans = load_blueprints()
-    plan = plans["indonesia-20261003"]
+    plan = (
+        load_blueprint_version("indonesia-20261003", version)
+        if version is not None
+        else plans["indonesia-20261003"]
+    )
     plan["items"] = [item for item in plan["items"] if item["id"] in items]
     return {plan["id"]: plan}
 
@@ -48,7 +52,7 @@ def transport(monkeypatch, bodies):
 def test_all_checklist_requirements_and_hashes_survive_matrix_generation():
     plans = load_blueprints()
     rows = verification.source_rows(plans, False)
-    assert len(rows) == 45
+    assert len(rows) == 36
     assert sum(row["state"] == "conditional_not_triggered" for row in rows) == 2
     assert sum(row["execution"] == "dataset_review" for row in rows) == 1
     for row in rows:
@@ -60,10 +64,19 @@ def test_all_checklist_requirements_and_hashes_survive_matrix_generation():
         assert row["coverage"]["full_required_content_verified"] is False
 
 
+def test_historical_verification_uses_its_own_frozen_plan_hash():
+    historical = load_blueprint_version("indonesia-20261003", 11)
+    rows = verification.source_rows({historical["id"]: historical}, False)
+    expected = hashlib.sha256(
+        (ROOT / "config/collection-plans/versions/indonesia-20261003.v11.json").read_bytes()
+    ).hexdigest()
+    assert rows and all(row["plan_version"] == 11 and row["plan_sha256"] == expected for row in rows)
+
+
 def test_successful_directory_response_cannot_become_coverage_or_original(tmp_path, monkeypatch):
     body = b"<html><title>Access denied</title><h1>Access denied</h1></html>"
     transport(monkeypatch, lambda url: (body, "text/html"))
-    report = verification.verify(selected("1.2"), tmp_path, follow_limit=0, time_budget=10)
+    report = verification.verify(selected("1.2", version=11), tmp_path, follow_limit=0, time_budget=10)
     row = report["items"][0]
     assert row["coverage"]["root_reachable"] is True
     assert row["coverage"]["scope_discovery_supported"] is False
@@ -132,7 +145,7 @@ def test_bkpm_representation_retains_http_entity_and_exact_pdf_mapping(tmp_path,
 def test_followed_original_keeps_exact_archived_source_proof(tmp_path, monkeypatch):
     html = b'<html><title>Constitution</title><a href="https://s.mkri.id/public/content/infoumum/regulation/pdf/UUD%20NRI%2045%20.pdf">UUD 1945</a></html>'
     pdf = b"%PDF-1.7\nimmutable original\n%%EOF"
-    plans = selected("1.1")
+    plans = selected("1.1", version=11)
     plans["indonesia-20261003"]["items"][0]["entries"] = plans["indonesia-20261003"]["items"][0]["entries"][
         :1
     ]
@@ -162,7 +175,7 @@ def test_scoped_json_adapter_retains_replayable_public_request(tmp_path, monkeyp
 
 def test_unexpected_exception_messages_are_not_exported(tmp_path, monkeypatch):
     transport(monkeypatch, lambda url: (RuntimeError("PRIVATE_CREDENTIAL_VALUE"), "text/html"))
-    report = verification.verify(selected("1.2"), tmp_path, follow_limit=0, time_budget=10)
+    report = verification.verify(selected("1.2", version=11), tmp_path, follow_limit=0, time_budget=10)
     assert report["items"][0]["state"] == "source_access_failed"
     assert "PRIVATE_CREDENTIAL_VALUE" not in json.dumps(report)
     assert all(probe["error_type"] == "RuntimeError" for probe in report["items"][0]["root_probes"])
@@ -170,7 +183,7 @@ def test_unexpected_exception_messages_are_not_exported(tmp_path, monkeypatch):
 
 def test_public_downloader_rejection_is_preserved_not_bypassed(tmp_path, monkeypatch):
     transport(monkeypatch, lambda url: (DownloadError("抓取地址必须是 public 公网地址。"), "text/html"))
-    report = verification.verify(selected("1.2"), tmp_path, follow_limit=0, time_budget=10)
+    report = verification.verify(selected("1.2", version=11), tmp_path, follow_limit=0, time_budget=10)
     assert all("公网" in probe["error"] for probe in report["items"][0]["root_probes"])
     assert report["summary"]["original_sample_items"] == 0
 

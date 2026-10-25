@@ -309,10 +309,13 @@ def test_frozen_report_excludes_errors_from_newer_bindings_for_same_account(tmp_
         version=newer["version"],
     )
     with service.db.transaction() as conn:
+        frozen_item_count = conn.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE run_id=?", (old_run,)
+        ).fetchone()[0]
         conn.execute(
             "UPDATE collection_items SET error='new blueprint only' WHERE run_id=?", (new_run["id"],)
         )
         conn.execute("UPDATE collection_items SET error='frozen blueprint only' WHERE run_id=?", (old_run,))
     errors = campaign.report()["items"][0]["errors"]
-    assert len(errors) == 2
+    assert len(errors) == frozen_item_count
     assert all(error["error"] == "frozen blueprint only" for error in errors)

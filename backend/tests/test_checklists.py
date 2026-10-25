@@ -43,10 +43,10 @@ def discover(client, code="1.3", request="first"):
 def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(client):
     catalog = client.get("/api/tea/collection-plans")
     assert catalog.status_code == 200
-    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 19), ("SG", 16)]
+    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 17), ("SG", 16)]
     detail = client.get(BASE).json()
     assert len(detail["plan"]["chapters"]) == 5
-    assert len(detail["items"]) == 19
+    assert len(detail["items"]) == 17
     assert all(i["source_id"] is None and i["coverage"] == "not_started" for i in detail["items"])
     central_regulations = next(item for item in detail["plan"]["items"] if item["id"] == "1.8")
     assert central_regulations["trusted_hosts"] == ["jdih.dephub.go.id"]
@@ -72,26 +72,34 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 13
+    assert plan["version"] == 14
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
+    for item_id in ("1.10", "2.4"):
+        assert items[item_id]["limits"]["max_original_bytes"] == 128 * 1024 * 1024
+        assert items[item_id]["limits"]["download_timeout_seconds"] == 900
 
 
-def test_indonesia_v13_uses_reachable_sources_and_keeps_version_history(client):
+def test_indonesia_v14_uses_reachable_sources_and_keeps_version_history(client):
     from app.contexts.ingestion.application.checklists import load_blueprint_version
 
     current = client.app.state.service.checklists.plans[PLAN]
+    previous_v13 = load_blueprint_version(PLAN, 13)
     previous = load_blueprint_version(PLAN, 12)
     previous_v11 = load_blueprint_version(PLAN, 11)
     current_ids = {item["id"] for item in current["items"]}
+    previous_v13_ids = {item["id"] for item in previous_v13["items"]}
     previous_ids = {item["id"] for item in previous["items"]}
     previous_v11_ids = {item["id"] for item in previous_v11["items"]}
-    removed = {"5.2"}
+    removed_v14 = {"4.7", "5.3"}
+    removed_v13 = {"5.2"}
     v11_removed = {"1.2", "1.9", "2.1", "2.2", "2.3", "3.2", "3.3", "3.4", "4.5"}
-    assert current["version"] == 13 and len(current_ids) == 19
+    assert current["version"] == 14 and len(current_ids) == 17
     assert current["limits"]["exhaustive_scope"] is False
-    assert removed.isdisjoint(current_ids) and removed <= previous_ids
+    assert removed_v14.isdisjoint(current_ids) and removed_v14 <= previous_v13_ids
+    assert removed_v13.isdisjoint(previous_v13_ids) and removed_v13 <= previous_ids
+    assert len(previous_v13_ids) == 19 and previous_v13["version"] == 13
     assert len(previous_ids) == 20 and previous["version"] == 12
     assert v11_removed.isdisjoint(previous_ids) and v11_removed <= previous_v11_ids
     assert len(previous_v11_ids) == 29
@@ -105,6 +113,10 @@ def test_indonesia_v13_uses_reachable_sources_and_keeps_version_history(client):
         "jdih.mkri.id",
         "www.mkri.id",
         "jdih.kppu.go.id",
+        "jdih.lkpp.go.id",
+        "rcepsec.org",
+        "fta.mofcom.gov.cn",
+        "www.dfat.gov.au",
     )
     assert not any(host in url for host in blocked_hosts for url in active_urls)
     current_items = {item["id"]: item for item in current["items"]}
@@ -117,19 +129,24 @@ def test_indonesia_v13_uses_reachable_sources_and_keeps_version_history(client):
     assert "www.bi.go.id" not in {urlsplit(url).hostname for url in active_urls}
 
 
-def test_indonesia_v13_preserves_official_kemenkeu_tax_catalog_and_v12_history(client):
+def test_indonesia_v14_preserves_official_kemenkeu_tax_catalog_and_historical_versions(client):
     from app.contexts.ingestion.application.checklists import load_blueprint_version
 
     current = client.app.state.service.checklists.plans[PLAN]
     tax = next(item for item in current["items"] if item["id"] == "4.3")
     previous = load_blueprint_version(PLAN, 12)
+    previous_v13 = load_blueprint_version(PLAN, 13)
     old_tax = next(item for item in previous["items"] if item["id"] == "4.3")
-    assert current["version"] == 13
+    assert current["version"] == 14
     assert tax["adapter"] == "kemenkeu_tax"
     assert tax["entries"][0]["url"] == (
         "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak"
     )
     assert previous["version"] == 12
+    assert {item["id"] for item in previous_v13["items"]} - {item["id"] for item in current["items"]} >= {
+        "4.7",
+        "5.3",
+    }
     assert old_tax["entries"][0]["url"] == tax["entries"][0]["url"]
     older = load_blueprint_version(PLAN, 10)
     old_tax = next(item for item in older["items"] if item["id"] == "4.3")
@@ -137,8 +154,8 @@ def test_indonesia_v13_preserves_official_kemenkeu_tax_catalog_and_v12_history(c
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
-    assert configure(client) == {"created": 19, "existing": 0}
-    assert configure(client) == {"created": 0, "existing": 19}
+    assert configure(client) == {"created": 17, "existing": 0}
+    assert configure(client) == {"created": 0, "existing": 17}
     assert (
         client.post(
             BASE + "/configure", json={"expected_version": client.get(BASE).json()["plan"]["version"] + 1}
@@ -149,7 +166,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     source_id = detail["items"][0]["source_id"]
     service = Service(tmp_path)
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 19
+        assert conn.execute("SELECT COUNT(*) FROM checklist_bindings").fetchone()[0] == 17
         assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=7").fetchone()[0] == 1
         row = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
         assert row["enabled"]
@@ -171,7 +188,7 @@ def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_pa
     grant_admin(client, other["id"])
     assert all(i["source_id"] is None for i in client.get(BASE).json()["items"])
     assert client.get(f"/api/tea/sources/{source_id}/runs").status_code == 404
-    assert configure(client)["created"] == 19
+    assert configure(client)["created"] == 17
 
 
 def test_configuration_schedules_only_unconditional_automated_sources(client):
@@ -204,12 +221,12 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
     plan = service.checklists.plans[PLAN]
     current_version = plan["version"]
     plan["version"] = current_version - 1
-    assert configure(client) == {"created": 19, "existing": 0}
+    assert configure(client) == {"created": 17, "existing": 0}
     old_source = client.get(BASE).json()["items"][0]["source_id"]
     old_run = discover(client, code="1.1", request="old-version-active")
 
     plan["version"] = current_version
-    assert configure(client) == {"created": 19, "existing": 0}
+    assert configure(client) == {"created": 17, "existing": 0}
     new_source = client.get(BASE).json()["items"][0]["source_id"]
     assert new_source != old_source
 
@@ -222,7 +239,7 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
                 "SELECT COUNT(*) FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
                 (owner, PLAN, current_version - 1),
             ).fetchone()[0]
-            == 19
+            == 17
         )
         assert not service.collection.source_due(conn, owner, new_source)
     assert not any(row["id"] == new_source for row in service.due_sources())
@@ -1098,7 +1115,7 @@ def test_country_batch_discovery_is_idempotent_and_starts_independent_jobs(clien
     response = client.post(BASE + "/discover", json={"client_request_id": "country-batch"})
     assert response.status_code == 202, response.text
     batch = response.json()
-    assert batch["started"] == 19 and len(batch["runs"]) == 19
+    assert batch["started"] == 17 and len(batch["runs"]) == 17
     repeated = client.post(BASE + "/discover", json={"client_request_id": "country-batch"}).json()
     assert {run["id"] for run in repeated["runs"]} == {run["id"] for run in batch["runs"]}
     assert client.post(BASE + "/discover", json={"client_request_id": "other-batch"}).json()["started"] == 0
@@ -1161,7 +1178,7 @@ def test_business_search_reports_unavailable_without_ragflow_and_rejects_overrid
             "https://s.mkri.id/public/content/persidangan/putusan/putusan_mkri_14426_1781684026.pdf",
         ),
         ("4.1", "guidance", "https://jdih.bkpm.go.id/uploads/guide.pdf"),
-        ("5.3", "law", "https://www.dfat.gov.au/sites/default/files/rcep.pdf"),
+        ("5.4", "law", "https://www.wto.org/english/docs_e/legal_e/wtoagreement.pdf"),
     ],
 )
 def test_checklist_document_type_is_only_a_draft_hint(client, monkeypatch, code, kind, url):

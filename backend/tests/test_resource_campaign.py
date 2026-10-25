@@ -53,7 +53,7 @@ def test_restart_after_transaction_before_checkpoint_reuses_the_same_run(tmp_pat
 def test_fast_category_starts_original_while_slow_category_is_still_discovering(tmp_path, monkeypatch):
 
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, options("1.1", "5.3"))
+    campaign = ResourceCampaign(service, PLAN, options("1.1", "5.3"), version=13)
     campaign.step()
     fast_run = campaign.state["items"]["1.1"]["discovery_runs"][0]
     slow_run = campaign.state["items"]["5.3"]["discovery_runs"][0]

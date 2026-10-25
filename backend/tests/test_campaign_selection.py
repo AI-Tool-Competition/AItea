@@ -76,7 +76,9 @@ def test_additive_selection_extension_keeps_originals_and_request_history(tmp_pa
             tuple(row) for row in conn.execute("SELECT id,version,content_hash FROM documents ORDER BY id")
         ]
         owner_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    extended = ResourceCampaign(service, PLAN, extended_options(), state=deepcopy(previous), extend=True)
+    extended = ResourceCampaign(
+        service, PLAN, extended_options(), state=deepcopy(previous), version=13, extend=True
+    )
     assert extended.state["owner_id"] == previous["owner_id"]
     assert (
         extended.state["items"]["5.3"]["selected_candidates"]
@@ -181,7 +183,7 @@ def run_selected(tmp_path, monkeypatch, *, shared=True, assert_pipeline=False, p
 
     monkeypatch.setattr(ingestion_download, "_download", download)
     service = Service(tmp_path)
-    campaign = ResourceCampaign(service, PLAN, selected_options())
+    campaign = ResourceCampaign(service, PLAN, selected_options(), version=13)
     for _ in range(15):
         active = campaign.step()
         while claim := service.collection.claim_fetch():
@@ -229,7 +231,7 @@ def test_selection_validation_rejects_scope_and_mapping_errors_before_account_cr
     else:
         materials[1]["key"] = materials[0]["key"]
     with pytest.raises(ValueError):
-        ResourceCampaign(service, PLAN, options)
+        ResourceCampaign(service, PLAN, options, version=13)
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
 

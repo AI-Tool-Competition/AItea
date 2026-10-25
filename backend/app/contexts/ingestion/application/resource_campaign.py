@@ -49,7 +49,17 @@ def validate_extension(previous, current):
 
 
 class ResourceCampaign:
-    def __init__(self, service, plan_id, options, *, state=None, extend=False, checkpoint=lambda _: None):
+    def __init__(
+        self,
+        service,
+        plan_id,
+        options,
+        *,
+        state=None,
+        version=None,
+        extend=False,
+        checkpoint=lambda _: None,
+    ):
         self.service = service
         if state is not None and (
             not isinstance(state, dict)
@@ -58,9 +68,11 @@ class ResourceCampaign:
             or state["plan_version"] < 1
         ):
             raise ValueError("Resume requires the same frozen plan and campaign options")
-        self.plan = service.checklists.definition(
-            plan_id, version=state.get("plan_version") if state is not None else None
-        )
+        if state is not None:
+            if version is not None and version != state["plan_version"]:
+                raise ValueError("Resume requires the same frozen plan and campaign options")
+            version = state["plan_version"]
+        self.plan = service.checklists.definition(plan_id, version=version)
         self.checkpoint = checkpoint
         self.fingerprint = hashlib.sha256(dump(self.plan).encode()).hexdigest()
         definitions = {item["id"]: item for item in self.plan["items"]}

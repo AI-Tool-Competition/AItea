@@ -34,6 +34,8 @@ _OFFSETS = {
     "char_end",
     "decoded_record_start_byte",
     "decoded_record_end_byte",
+    "class_attribute_length",
+    "source_title_length",
 }
 
 
@@ -97,6 +99,33 @@ def _hash(value):
     return value
 
 
+def _string_list(value, *, limit):
+    if not isinstance(value, list) or len(value) > limit:
+        raise ValueError("invalid native mapping string list")
+    if any(not isinstance(item, str) or len(item) > MAX_STRING for item in value):
+        raise ValueError("invalid native mapping string list item")
+    return list(value)
+
+
+def _html_path(value):
+    """Keep ordinary DOM paths and the parser's explicit ordered-list path."""
+    if isinstance(value, str):
+        return _scalar(value)
+    if not isinstance(value, list) or len(value) > 128:
+        raise ValueError("invalid HTML DOM path")
+    result = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"type", "index"}:
+            raise ValueError("invalid HTML list path entry")
+        tag, index = item["type"], item["index"]
+        if not isinstance(tag, str) or tag not in {"ol", "ul"} or (
+            index is not None and (type(index) is not int or abs(index) > 2**31 - 1)
+        ):
+            raise ValueError("invalid HTML list path entry")
+        result.append({"type": tag, "index": index})
+    return result
+
+
 def storage(value):
     result = _select(
         value,
@@ -122,9 +151,19 @@ def locator(value, depth=0):
         "database_page row_slot start length sha256 file_offset row_ordinal column_ordinal "
         "source_type stream stream_offset cp_start cp_end encoding page char_start char_end "
         "asset_key asset_mapping_path original_image_sha256 image_sha256 source_kind physical_pages_known "
-        "dom_path dom_basis line_start column_start offset_basis end_tag_observed anchor "
-        "boundary_kind source_boundary_complete",
+        "dom_basis line_start column_start offset_basis end_tag_observed anchor "
+        "boundary_kind source_boundary_complete semantic_tag class_attribute_sha256 "
+        "class_attribute_length class_tokens_truncated source_title source_title_sha256 "
+        "source_title_length source_title_truncated",
     )
+    if "dom_path" in value:
+        result["dom_path"] = _html_path(value["dom_path"])
+    if "heading_path" in value:
+        result["heading_path"] = _string_list(value["heading_path"], limit=128)
+    if "class_tokens" in value:
+        result["class_tokens"] = _string_list(value["class_tokens"], limit=32)
+    if "list_path" in value:
+        result["list_path"] = _html_path(value["list_path"])
     for key in ("source_record", "field_storage"):
         if key in value:
             result[key] = storage(value[key])

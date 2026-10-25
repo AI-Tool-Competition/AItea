@@ -46,3 +46,47 @@ def test_script_video_uri_preserves_amp_entity_literal_after_json_decoding():
         r[2] for r in rows if r[0] == "html_visual_reference" and r[2]["attribute"] == "rsc-video-src"
     )
     assert exported["target_sha256"] == hashlib.sha256(uri.encode()).hexdigest()
+
+
+def test_html_list_element_mapping_preserves_structured_dom_and_heading_paths():
+    raw = (
+        "<main><h2>Tariffs</h2><ol start='-2'><li>First<ul><li>Nested</li></ul>"
+        "</li><li value='7'>Seventh</li></ol></main>"
+    )
+    manifest = parse_file("list.html", raw.encode(), "text/html")
+    digest = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
+    rows = list(mappings(manifest, digest))
+    anchors = {
+        int(pointer.rsplit("/", 1)[1]): record
+        for kind, pointer, record in rows
+        if kind == "text_anchor" and pointer.startswith("/elements/")
+    }
+    list_elements = [
+        (index, element)
+        for index, element in enumerate(manifest["elements"])
+        if element["kind"] == "list"
+    ]
+
+    assert list_elements
+    for index, element in list_elements:
+        exported = anchors[index]["locator"]
+        assert exported["dom_path"] == element["locator"]["dom_path"]
+        assert exported["list_path"] == element["locator"]["list_path"]
+        assert exported["heading_path"] == ["Tariffs"]
+    assert anchors[list_elements[0][0]]["locator"]["dom_path"] == [{"type": "ol", "index": -2}]
+    assert anchors[list_elements[1][0]]["locator"]["dom_path"] == [
+        {"type": "ol", "index": -2},
+        {"type": "ul", "index": None},
+    ]
+    for _kind, _pointer, record in rows:
+        validate_mapping(record, manifest["source_hash"])
+
+
+def test_html_list_path_projection_rejects_unknown_structured_entries():
+    manifest = parse_file("list.html", b"<main><ol><li>item</li></ol></main>", "text/html")
+    broken = deepcopy(manifest)
+    item = next(element for element in broken["elements"] if element["kind"] == "list")
+    item["locator"]["dom_path"] = [{"type": "script", "index": 1}]
+
+    with pytest.raises(ValueError, match="HTML list path"):
+        list(mappings(broken, hashlib.sha256(json.dumps(broken).encode()).hexdigest()))

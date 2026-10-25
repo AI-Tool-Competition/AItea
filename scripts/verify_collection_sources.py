@@ -22,9 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from app.configuration.paths import InstancePaths  # noqa: E402
-from app.configuration.environment import load_environment  # noqa: E402
-
+from app.configuration.environment import load_environment
+from app.configuration.paths import InstancePaths
 from app.contexts.ingestion.application.checklists import load_blueprints
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
     discover_page,
@@ -37,8 +36,8 @@ from app.contexts.ingestion.infrastructure.source_adapters.source_envelopes impo
     extract_bkpm_multipart_pdf,
 )
 from app.shared.domain.values import now
-from app.shared.infrastructure.persistence.blob_store import BlobStore
 from app.shared.infrastructure.http.download import DownloadError, _download
+from app.shared.infrastructure.persistence.blob_store import BlobStore
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -184,9 +183,13 @@ class SourceVerifier:
             if bi_official_catalog:
                 from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
                     MAX_HTML_BYTES as MAX_BI_OFFICIAL_HTML_BYTES,
+                )
+                from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
                     catalog_form_request,
                     network_catalog_url,
                     page_number,
+                )
+                from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import (
                     purpose as bi_purpose,
                 )
 
@@ -221,9 +224,18 @@ class SourceVerifier:
                 inspection_url = seed["url"]
             owner = f"source-verification:{row['country']}:{row['item_id']}"
             original = seed["purpose"] == "document"
-            max_bytes = self.max_original_bytes if original else min(
-                page_body_limit(inspection_url, "text/html", row["recipe"]), self.max_original_bytes
-            )
+            if original:
+                source_limit = row.get("requirements", {}).get("limits", {}).get(
+                    "max_original_bytes", self.max_original_bytes
+                )
+                if type(source_limit) is not int or source_limit < 1:
+                    raise ValueError("清单原件大小上限无效。")
+                max_bytes = min(self.max_original_bytes, source_limit)
+            else:
+                max_bytes = min(
+                    page_body_limit(inspection_url, "text/html", row["recipe"]), self.max_original_bytes
+                )
+            result["response_limit_bytes"] = max_bytes
             download_options = {
                 **request,
                 "max_bytes": max_bytes,

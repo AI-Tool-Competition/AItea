@@ -201,6 +201,35 @@ def test_scoped_json_adapter_retains_replayable_public_request(tmp_path, monkeyp
     assert request["max_bytes"] <= 4 * 1024 * 1024
 
 
+@pytest.mark.parametrize(
+    ("source_limit", "audit_limit", "expected_limit"),
+    [
+        (300 * 1024 * 1024, 128 * 1024 * 1024, 128 * 1024 * 1024),
+        (16 * 1024 * 1024, 128 * 1024 * 1024, 16 * 1024 * 1024),
+    ],
+)
+def test_original_probe_uses_checklist_limit_capped_by_audit_limit(
+    tmp_path, monkeypatch, source_limit, audit_limit, expected_limit
+):
+    plans = selected("1.4")
+    definition = plans["indonesia-20261003"]["items"][0]
+    row = verification.source_rows(plans, False)[0]
+    row["requirements"]["limits"]["max_original_bytes"] = source_limit
+    requests = transport(monkeypatch, lambda _url: (DownloadError("bounded test stop"), "application/pdf"))
+    probe = verification.SourceVerifier(tmp_path, max_original_bytes=audit_limit).probe(
+        row,
+        {
+            "url": "https://jdih.setneg.go.id/api/hukumproduk/pdf?f=test.pdf&fl=P1&l=uploads",
+            "purpose": "document",
+        },
+        definition,
+    )
+
+    assert probe["status"] == "failed"
+    assert probe["response_limit_bytes"] == expected_limit
+    assert requests[0][1]["max_bytes"] == expected_limit
+
+
 def test_bi_official_source_verifier_replays_pager_from_saved_parent_without_exporting_tokens(tmp_path, monkeypatch):
     from app.contexts.ingestion.infrastructure.source_adapters.bi_official_discovery import catalog_url
 

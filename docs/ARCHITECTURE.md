@@ -117,11 +117,11 @@ GEO-System/原 Admin-System 文档解析器抽取到独立 vendor 包，保留�
 
 `app/contexts/documents/application/archive.py` 管理不可变版本家族、分类历史及固定版本的多对多关系；`app/contexts/ingestion/application/collection_jobs.py` 管理持久下载和处理队列。`app/shared/infrastructure/persistence/blob_store.py` 以账号隔离的内容寻址对象保存字节，下载流写入后先原子发布，再事务提交引用。结构版本 4–6 显式升级旧库。网络、解析和模型调用在事务外执行，提交验证租约，重启从数据库恢复。每域真实连接限流覆盖重定向和取消，向量按 64 段保存进度。运行参数和容量边界见 [INGESTION.md](INGESTION.md)。
 
-`app/contexts/ingestion/application/checklists.py` 加载 `config/collection-plans/*.json`。印尼当前 v12 有 5 章、20 个代理实测可访问的任务；原 29 项范围作为 v11 历史快照保留，不把局部来源当作全国完整。后续国家沿用同一格式，保留各自国别、版本和来源文档指纹。结构版本 7 增加账号内计划绑定、发现队列、目录证据、正文候选与不可变国别。`app/contexts/ingestion/infrastructure/source_adapters/link_discovery.py` 负责受限链接发现，复用现有下载队列；每批最多 40 页，未处理入口持久保存，下批继续。目录字节保存在内容存储中供追溯，不进入正文解析或 RAG。选择候选后另建原件采集任务，明确分级并保持默认待审核。
+`app/contexts/ingestion/application/checklists.py` 加载 `config/collection-plans/*.json`。印尼当前 v13 有 5 章、19 个代理实测可访问的任务；v12 与原 29 项 v11 范围作为历史快照保留，不把局部来源当作全国完整。后续国家沿用同一格式，保留各自国别、版本和来源文档指纹。结构版本 7 增加账号内计划绑定、发现队列、目录证据、正文候选与不可变国别。`app/contexts/ingestion/infrastructure/source_adapters/link_discovery.py` 及央行专用 `bi_jdih_discovery.py` 负责受限链接发现，复用现有下载队列；每批最多 40 页，未处理入口持久保存，下批继续。目录字节保存在内容存储中供追溯，不进入正文解析或 RAG。选择候选后另建原件采集任务，明确分级并保持默认待审核。
 
 结构版本 16 在独立 `user_access` 表保存账号的登录许可、管理员角色及修订号，升级时保留已有账号的登录权限，新注册账号默认待开放。管理员后台路由与账号权限 API 在服务端校验角色；权限更新采用修订号与事务，停用账号会删除其会话，最后一位可登录管理员不能被停用或降级。正式部署在保留账号缺失时幂等创建 `admin` / `admin123` 初始账号，不会重置已有账号；管理台直接从 `/tea/admin` 进入，茶业务页不提供管理台入口。
 
-后台按章节显示进度，原始要求在详情折叠展开。链接适配不替代法律语义筛选：v11 历史范围中的普通案例涉企语义、裁判日期及法规效力仍需核验，当前未自动判断这些条件。20 项活动清单配置齐全与全部网站正文取得分别验收；403、动态内容、缺附件及适配不足均保留可见缺口。
+后台按章节显示进度，原始要求在详情折叠展开。链接适配不替代法律语义筛选：v11 历史范围中的普通案例涉企语义、裁判日期及法规效力仍需核验，当前未自动判断这些条件。19 项活动清单配置齐全与全部网站正文取得分别验收；403、动态内容、缺附件及适配不足均保留可见缺口。
 
 ## 故障语义
 

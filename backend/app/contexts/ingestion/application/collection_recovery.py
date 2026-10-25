@@ -1444,6 +1444,90 @@ class CollectionRecovery:
                 scheduled += 1
         return scheduled
 
+    def _retry_unknown_ragflow_after_audit_error(
+        self, conn, recovery, *, owner, document_id, fingerprint, wait, queue_scope, queue_arguments
+    ):
+        """Retry an uncertain paid write after backoff when receipt reads stay unavailable.
+
+        The user has opted into automatic recovery even when the provider cannot
+        confirm whether an earlier request was billed. Keep the retry bound to
+        the same source generation and preserve the provider's Retry-After.
+        """
+        binding = self._binding(conn, owner, "processing", document_id, "embed")
+        if binding is None or _digest(binding) != recovery["binding_sha256"]:
+            self._block(conn, recovery, "source_changed")
+            return "held"
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+            (document_id, owner),
+        ).fetchone()
+        bound = self.service.ragflow.binding(conn, document_id, fingerprint, include_chunks=False)
+        if job is None or job["phase"] != "embed" or job["status"] != "failed" or bound is None:
+            return "held"
+        generation = bound[2]
+        remote = conn.execute(
+            """SELECT 1 FROM ragflow_documents WHERE generation=? AND document_id=? AND owner_id=?
+            AND profile=? AND dataset_id IS NOT NULL AND remote_id IS NOT NULL""",
+            (generation, document_id, owner, fingerprint),
+        ).fetchone()
+        intents = conn.execute(
+            "SELECT count(*) FROM ragflow_chunks WHERE generation=? AND state='intent'",
+            (generation,),
+        ).fetchone()[0]
+        if remote is None or not intents:
+            return "held"
+        queued = conn.execute(
+            "SELECT COUNT(*) FROM processing_jobs WHERE status IN ('queued','processing')" + queue_scope,
+            queue_arguments,
+        ).fetchone()[0]
+        timestamp = time.time()
+        if queued >= PROCESSING_QUEUE_LIMIT:
+            conn.execute(
+                "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                (timestamp + 60, now(), recovery["id"]),
+            )
+            self._event(
+                conn,
+                recovery["id"],
+                "remote_receipt_audit_deferred",
+                {"reason": "processing_queue_backpressure", "retry_after_seconds": 60},
+            )
+            return "deferred"
+        available = timestamp + wait
+        conn.execute(
+            "UPDATE ragflow_chunks SET next_at=MAX(next_at,?) WHERE generation=? AND state='intent'",
+            (available, generation),
+        )
+        conn.execute(
+            """UPDATE processing_jobs SET status='queued',attempts=0,available_at=?,lease_token=NULL,
+            lease_until=NULL,error=NULL,updated_at=? WHERE document_id=? AND owner_id=?
+            AND phase='embed' AND status='failed'""",
+            (available, now(), document_id, owner),
+        )
+        conn.execute(
+            "UPDATE documents SET status='processing',error=NULL WHERE id=? AND owner_id=?",
+            (document_id, owner),
+        )
+        conn.execute(
+            """UPDATE collection_recovery_jobs SET status='queued',reason='unknown_result_auto_retry',
+            available_at=?,recovery_count=recovery_count+1,revision=revision+1,updated_at=? WHERE id=?""",
+            (available, now(), recovery["id"]),
+        )
+        self._event(
+            conn,
+            recovery["id"],
+            "unknown_remote_result_auto_requeued",
+            {
+                "generation": generation,
+                "intent_count": intents,
+                "retry_after_seconds": wait,
+                "duplicate_provider_charge_possible": True,
+                "source_binding_verified": True,
+            },
+        )
+        self.collection._refresh_document(conn, document_id)
+        return "queued"
+
     def _reconcile_unknown_ragflow(self, *, limit, worker_scope):
         """Reconcile unknown writes and retry unmatched intents after provider backoff."""
         from app.contexts.documents.infrastructure.providers.ragflow import configured, profile
@@ -1478,9 +1562,7 @@ class CollectionRecovery:
                         JOIN ragflow_chunks c ON c.generation=d.generation
                         WHERE d.document_id=r.item_id AND d.owner_id=r.owner_id AND d.profile=?
                         AND d.dataset_id IS NOT NULL AND d.remote_id IS NOT NULL
-                        AND (r.available_at<=? OR (
-                            c.state='intent' AND c.intent_at<=? AND c.next_at<=?
-                        ))
+                    AND r.available_at<=? AND c.state='intent' AND c.intent_at<=? AND c.next_at<=?
                     )"""
                     + scope
                     + " ORDER BY r.available_at,r.updated_at,r.id LIMIT ?",
@@ -1507,6 +1589,7 @@ class CollectionRecovery:
                         getattr(error, "retry_after", None) or 0,
                     ),
                 )
+                recovery_result = "held"
                 with self.db.transaction() as conn:
                     current = conn.execute(
                         """SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked'
@@ -1515,17 +1598,32 @@ class CollectionRecovery:
                     ).fetchone()
                     if current is not None:
                         available = time.time() + wait
-                        conn.execute(
-                            "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
-                            (available, now(), identifier),
-                        )
-                        self._event(
+                        recovery_result = self._retry_unknown_ragflow_after_audit_error(
                             conn,
-                            identifier,
-                            "remote_receipt_audit_deferred",
-                            {"error_code": str(code)[:80], "retry_after_seconds": wait},
+                            current,
+                            owner=owner,
+                            document_id=document_id,
+                            fingerprint=fingerprint,
+                            wait=wait,
+                            queue_scope=queue_scope,
+                            queue_arguments=queue_arguments,
                         )
+                        if recovery_result == "held":
+                            conn.execute(
+                                "UPDATE collection_recovery_jobs SET available_at=?,revision=revision+1,updated_at=? WHERE id=?",
+                                (available, now(), identifier),
+                            )
+                            self._event(
+                                conn,
+                                identifier,
+                                "remote_receipt_audit_deferred",
+                                {"error_code": str(code)[:80], "retry_after_seconds": wait},
+                            )
                 result["receipt_audit_errors"] += 1
+                if recovery_result == "queued":
+                    result["unmatched_requeued"] += 1
+                elif recovery_result == "deferred":
+                    result["deferred"] += 1
                 continue
             if audit is None:
                 with self.db.transaction() as conn:

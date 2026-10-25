@@ -212,7 +212,7 @@ def test_recovery_reconciles_exact_remote_receipt_without_resubmitting(workspace
         conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
     workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
-        conn.execute("UPDATE collection_recovery_jobs SET available_at=?", (time.time() + 3600,))
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
     result = workspace.collection.recovery.run_due()
     assert result["reconciled"] == 1, json.dumps(result)
     with closing(workspace.db.connect()) as conn:
@@ -248,7 +248,7 @@ def test_recovery_retries_unmatched_paid_intent_after_remote_absence_is_confirme
         conn.execute("UPDATE ragflow_chunks SET intent_at=?,next_at=0", (time.time() - 1000,))
     workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
     with workspace.db.transaction() as conn:
-        conn.execute("UPDATE collection_recovery_jobs SET available_at=?", (time.time() + 3600,))
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
 
     result = workspace.collection.recovery.run_due()
 
@@ -282,6 +282,43 @@ def test_recovery_retries_unmatched_paid_intent_after_remote_absence_is_confirme
         assert conn.execute("SELECT state FROM ragflow_chunks").fetchone()[0] == "done"
     posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
     assert posts_after == posts_before + 1
+
+
+def test_unknown_paid_index_auto_retries_after_receipt_audit_error_with_backoff(workspace, monkeypatch):
+    remote, document, claim = prepared(workspace, monkeypatch)
+    assert workspace.ragflow.step(document, claim) == 1
+    remote.lose_response = True
+    with pytest.raises(RAGFlowError):
+        workspace.ragflow.step(document, claim)
+    workspace.collection._failure(claim, RAGFlowError("embedding_outcome_unknown"), processing=True)
+    with workspace.db.transaction() as conn:
+        conn.execute("UPDATE collection_recovery_jobs SET available_at=0")
+        conn.execute("UPDATE ragflow_chunks SET intent_at=0,next_at=0")
+
+    def unavailable(*_args, **_kwargs):
+        raise RAGFlowError("receipt_audit_unavailable", retry_after=10)
+
+    monkeypatch.setattr(workspace.ragflow, "reconcile_pending_intents", unavailable)
+    result = workspace.collection.recovery.run_due()
+
+    assert result["receipt_audit_errors"] == 1 and result["requeued"] == 1
+    with closing(workspace.db.connect()) as conn:
+        recovery = conn.execute("SELECT status,reason,available_at FROM collection_recovery_jobs").fetchone()
+        job = conn.execute("SELECT status,available_at FROM processing_jobs WHERE document_id='target'").fetchone()
+        chunk = conn.execute("SELECT state,next_at FROM ragflow_chunks").fetchone()
+        event = conn.execute(
+            "SELECT event,detail FROM collection_recovery_events ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    assert tuple(recovery[:2]) == ("queued", "unknown_result_auto_retry")
+    assert tuple(job[:1]) == ("queued",) and job["available_at"] >= recovery["available_at"]
+    assert chunk["state"] == "intent" and chunk["next_at"] >= recovery["available_at"]
+    assert event["event"] == "unknown_remote_result_auto_requeued"
+    assert json.loads(event["detail"])["duplicate_provider_charge_possible"] is True
+
+    # The retry waits until its durable backoff expires instead of querying the
+    # provider once per scheduler tick.
+    later = workspace.collection.recovery.run_due()
+    assert later["receipt_audit_errors"] == 0 and later["requeued"] == 0
 
 
 def test_recovery_requeues_legacy_unknown_embedding_without_remote_write_ledger(workspace, monkeypatch):

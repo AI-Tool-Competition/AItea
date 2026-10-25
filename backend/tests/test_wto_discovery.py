@@ -337,7 +337,7 @@ def test_oversized_xml_cannot_accept_a_complete_prefix_with_a_different_blob_has
 
 
 def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
-    for member, old_version, current_version in [("ID", 5, 12), ("SG", 2, 5)]:
+    for member, old_version, current_version in [("ID", 5, 13), ("SG", 2, 5)]:
         current = item(member)
         old = item(member, old_version)
         assert current["verbatim_requirements"] == old["verbatim_requirements"]
@@ -352,7 +352,7 @@ def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
         assert source.exists()
 
 
-@pytest.mark.parametrize("member,item,version", [("ID", "5.4", 12), ("SG", "5.2", 5)])
+@pytest.mark.parametrize("member,item,version", [("ID", "5.4", 13), ("SG", "5.2", 5)])
 @pytest.mark.parametrize(
     "extension,signature", [("doc", bytes.fromhex("d0cf11e0a1b11ae1")), ("docx", b"PK\x03\x04")]
 )

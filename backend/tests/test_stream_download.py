@@ -331,6 +331,29 @@ def test_explicit_catalog_gzip_is_streamed_and_binds_uncompressed_original(trans
     assert result["content_encoding"] == "gzip"
 
 
+def test_six_mib_compressed_html_cap_requires_an_explicit_adapter_opt_in(transport):
+    import gzip
+
+    responses, _, _ = transport
+    raw = b"<html>" + b"A" * (4 * 1024 * 1024 + 1) + b"</html>"
+    compressed = gzip.compress(raw)
+    headers = {
+        "Content-Length": str(len(compressed)),
+        "Content-Encoding": "gzip",
+        "Content-Type": "text/html",
+    }
+    responses.append(Response([compressed], headers=headers))
+    with pytest.raises(ingestion_download.DownloadError, match="4 MB"):
+        download(accept_compressed_html=True)
+
+    responses.append(Response([compressed], headers=headers))
+    result = download(
+        accept_compressed_html=True,
+        max_compressed_html_bytes=6 * 1024 * 1024,
+    )
+    assert result["content"] == raw
+
+
 @pytest.mark.parametrize("variant", ["truncated", "checksum", "trailing", "bomb", "pdf", "not_opted_in"])
 def test_compressed_responses_cannot_publish_invalid_or_unbounded_content(transport, monkeypatch, variant):
     import gzip

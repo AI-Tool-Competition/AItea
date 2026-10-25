@@ -598,20 +598,6 @@ class CollectionService:
             return self.run_dict(conn, self.own_run(conn, owner, run_id))
 
     def queue_processing(self, conn, document_id, owner):
-        if conn.execute(
-            """SELECT 1 FROM processing_jobs p JOIN collection_recovery_jobs r
-            ON r.item_id=p.document_id AND r.owner_id=p.owner_id AND r.queue_kind='processing'
-            AND r.phase=p.phase WHERE p.document_id=? AND p.owner_id=? AND p.status='failed'
-            AND p.phase='embed' AND r.status='blocked' AND r.reason='paid_result_unknown'""",
-            (document_id, owner),
-        ).fetchone():
-            from app.shared.domain.errors import fail
-
-            fail(
-                409,
-                "embedding_outcome_review_required",
-                "向量请求结果尚未确认，请先核验已保存回执并指定补齐范围",
-            )
         conn.execute(
             """INSERT INTO processing_jobs(document_id,owner_id,phase,status,updated_at) VALUES(?,?,'parse','queued',?)
             ON CONFLICT(document_id) DO UPDATE SET status='queued',attempts=0,available_at=0,error=NULL,updated_at=excluded.updated_at
@@ -1269,17 +1255,29 @@ class CollectionService:
                         "UPDATE collection_items SET lease_until=? WHERE id=? AND lease_token=?",
                         (time.time() + timeout_seconds + 30, claim["id"], claim["lease_token"]),
                     )
+            download_options = {
+                "accept_compressed_html": claim.get("purpose") in {"catalog", "detail"},
+                "max_bytes": plan.get("max_original_bytes", 20 * 1024 * 1024),
+                **request_options,
+            }
+            checklist_item = plan.get("checklist", {}).get("definition", {}).get("item", {})
+            if (
+                claim.get("purpose") == "catalog"
+                and checklist_item.get("adapter") == "bi_jdih"
+                and urlsplit(claim["url"]).hostname == "jdih.bi.go.id"
+            ):
+                from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (
+                    MAX_BI_JDIH_HTML_BYTES,
+                )
+
+                download_options["max_compressed_html_bytes"] = MAX_BI_JDIH_HTML_BYTES
             fetched = self.transfers.download(
                 claim,
                 required_host=claim["host"] if claim["level"] == "attachment" else None,
                 validators=validators,
                 discovery=discovery,
                 timeout_seconds=timeout_seconds,
-                options={
-                    "accept_compressed_html": claim.get("purpose") in {"catalog", "detail"},
-                    "max_bytes": plan.get("max_original_bytes", 20 * 1024 * 1024),
-                    **request_options,
-                },
+                options=download_options,
             )
             fetched["request_evidence"] = {
                 "method": fetched.get("request_method", "GET"),

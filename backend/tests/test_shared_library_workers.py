@@ -16,7 +16,6 @@ from app.contexts.documents.application.system_library import (
     ensure_principal,
 )
 from app.interfaces.http.factory import create_app
-from app.shared.domain.errors import AppError
 from app.shared.domain.values import now
 from app.shared.infrastructure.operations.scheduler import ScheduledCollector
 from fastapi.testclient import TestClient
@@ -216,7 +215,7 @@ def record_failed(service, doc, *, decision=Decision("transient_processing", Tru
         conn.execute("UPDATE collection_recovery_jobs SET available_at=0 WHERE item_id=?", (doc["id"],))
 
 
-def test_external_recovery_preserves_system_waiting_blocked_and_legacy_evidence(service):
+def test_external_recovery_preserves_scope_and_allows_retry_of_uncertain_paid_embedding(service):
     for number in range(12):
         shared = job(service, f"waiting-{number}")
         record_failed(service, shared)
@@ -240,10 +239,13 @@ def test_external_recovery_preserves_system_waiting_blocked_and_legacy_evidence(
         "receipt_audit_errors": 0,
     }
     assert system_state(service) == before
-    # Manual retry retains the existing unknown-outcome block even for an explicit operator.
-    with pytest.raises(AppError) as error, service.db.transaction() as conn:
+    # An explicit retry is allowed even if the remote result may have been billed.
+    with service.db.transaction() as conn:
         service.collection.queue_processing(conn, unknown["id"], SYSTEM_OWNER_ID)
-    assert error.value.code == "embedding_outcome_review_required"
+    with closing(service.db.connect()) as conn:
+        assert conn.execute(
+            "SELECT status FROM processing_jobs WHERE document_id=?", (unknown["id"],)
+        ).fetchone()[0] == "queued"
 
 
 def test_external_fetch_recovery_ignores_2000_system_backlog_and_preserves_unknown_ledger(service):

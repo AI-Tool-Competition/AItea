@@ -19,6 +19,7 @@ from app.contexts.documents.infrastructure.parsers.native_parser import _decode
 from app.shared.infrastructure.http.download import _validated_url
 
 MAX_HTML_BYTES = 4 * 1024 * 1024
+MAX_BI_JDIH_HTML_BYTES = 6 * 1024 * 1024
 MAX_PAGE_LINKS = 10_000
 _PATTERN_FIELDS = (
     "catalog_patterns",
@@ -27,7 +28,7 @@ _PATTERN_FIELDS = (
     "html_document_patterns",
     "exclude_patterns",
 )
-_ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "manual"}
+_ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "bi_jdih", "manual"}
 _SETNEG_HOST = "jdih.setneg.go.id"
 _SETNEG_API = "https://jdih.setneg.go.id/api/hukumproduk/"
 _SETNEG_TYPES = {"1.3": "UU", "1.4": "PERPU", "1.5": "PP", "1.6": "PERPRES"}
@@ -1286,6 +1287,10 @@ class _Recipe:
         parsed = urlsplit(url)
         if parsed.hostname not in self.hosts or self.matches(url, self.exclude_patterns):
             return None
+        if self.adapter == "bi_jdih":
+            from app.contexts.ingestion.infrastructure.source_adapters.bi_jdih_discovery import purpose
+
+            return purpose(url)
         if self.sg_official_2026 and parsed.hostname == "isomer-user-content.by.gov.sg":
             # File hosts never inherit the origin's article/catalog patterns.
             return (
@@ -1375,6 +1380,20 @@ def _result(*, matched=False, purpose=None, links=None, warnings=None, reason=No
         "purpose": purpose,
         "reason": reason,
     }
+
+
+def page_body_limit(url: str, mime_type: str, recipe: dict) -> int:
+    """Return the smallest body cap for this trusted adapter and page role."""
+    mime = mime_type.split(";", 1)[0].strip().casefold()
+    if mime in {"text/html", "application/xhtml+xml"}:
+        rules = _Recipe(recipe)
+        try:
+            current, _ = _canonical(url)
+        except ValueError:
+            return MAX_HTML_BYTES
+        if rules.adapter == "bi_jdih" and rules.purpose(current) == "catalog":
+            return MAX_BI_JDIH_HTML_BYTES
+    return MAX_HTML_BYTES
 
 
 def _identity(url: str) -> str | None:
@@ -1569,6 +1588,10 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
     if not content:
         return _result(reason="页面为空，不能确认原文。")
     mime = mime_type.split(";", 1)[0].strip().casefold()
+    if rules.adapter == "bi_jdih":
+        from app.contexts.ingestion.infrastructure.source_adapters.bi_jdih_discovery import inspect
+
+        return inspect(current, content, mime, rules)
     if rules.kemenkeu_tax:
         from app.contexts.ingestion.infrastructure.source_adapters.kemenkeu_discovery import inspect
 
@@ -1948,6 +1971,17 @@ def recipe_for(item: dict) -> dict:
             }
         result["kemenkeu_tax"] = True
         return result
+    if adapter == "bi_jdih":
+        if (
+            _country(item) != "ID"
+            or item.get("id") != "4.6"
+            or hosts != ["jdih.bi.go.id"]
+            or len(seeds) != 1
+            or seeds[0].get("url") != "https://jdih.bi.go.id/Web/DaftarPeraturan"
+            or seeds[0].get("purpose") != "catalog"
+        ):
+            return {"adapter": "manual", "reason": "央行 JDIH 适配仅允许印尼 4.6 项的官方法规目录入口。"}
+        return result | {"max_links": 200}
     wto_member = _country(item)
     if (wto_member, item.get("id")) in {("ID", "5.4"), ("SG", "5.2")} and item.get("limits", {}).get(
         "wto_public_catalog"

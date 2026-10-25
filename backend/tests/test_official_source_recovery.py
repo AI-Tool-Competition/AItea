@@ -17,9 +17,14 @@ from app.configuration.paths import PROJECT_ROOT
 
 PLAN = PROJECT_ROOT / "config/collection-plans/indonesia-20261003.json"
 PLAN_V11 = PROJECT_ROOT / "config/collection-plans/versions/indonesia-20261003.v11.json"
+PLAN_V12 = PROJECT_ROOT / "config/collection-plans/versions/indonesia-20261003.v12.json"
 
 
-def item_recipe(item_id):
+def item_recipe(item_id, *, version=None):
+    if version == 12:
+        plan = json.loads(PLAN_V12.read_text())
+        item = next(item for item in plan["items"] if item["id"] == item_id)
+        return recipe_for(item), item
     plan = json.loads(PLAN.read_text())
     item = next((item for item in plan["items"] if item["id"] == item_id), None)
     if item is None:
@@ -44,32 +49,36 @@ def test_active_mk_puu_seeds_are_only_the_two_verified_official_originals():
 
 
 @pytest.mark.parametrize(
-    ("item_id", "source", "original"),
+    ("item_id", "version", "source", "original"),
     [
         (
             "4.4",
+            None,
             "https://jdih.kemnaker.go.id/peraturan/detail/2983/surat-edaran-menteri-nomor-3-tahun-2026",
             "https://jdih.kemnaker.go.id/asset/data_puu/2026senaker003.pdf",
         ),
         (
             "4.6",
+            12,
             "https://www.bi.go.id/id/publikasi/peraturan/Pages/PADG_032026.aspx",
             "https://www.bi.go.id/id/publikasi/peraturan/Documents/PADG_032026.pdf",
         ),
         (
             "2.2",
+            None,
             "https://putusan3.mahkamahagung.go.id/rumusan_rakernas/detail/11eb5a277c763046aede313432353230.html",
             "https://putusan3.mahkamahagung.go.id/rumusan_rakernas/download_file/11eb5a277c7632629062313432353230/pdf/11eb5a277c763046aede313432353230.html",
         ),
         (
             "3.2",
+            None,
             "https://putusan3.mahkamahagung.go.id/yurisprudensi/detail/11e93a313416280ab9c0303834343231.html",
             "https://putusan3.mahkamahagung.go.id/direktori/download_file/11eff43e5c1541069bbf313933363534/pdf/11eff43e5c12b2c4ac0c313933363534",
         ),
     ],
 )
-def test_documented_original_routes_are_discovered(item_id, source, original):
-    recipe, _ = item_recipe(item_id)
+def test_documented_original_routes_are_discovered(item_id, version, source, original):
+    recipe, _ = item_recipe(item_id, version=version)
     recovered = recover_official_recipe(recipe, country="ID", item_id=item_id)
     body = f'<html><title>Official regulation</title><a href="{original}">Dokumen</a></html>'.encode()
     result = discover_page(source, body, "text/html", recovered)
@@ -104,7 +113,8 @@ def test_original_address_returning_html_still_fails_original_gate():
 
 
 def test_bi_faq_remains_locating_evidence_and_other_sources_remain_excluded():
-    recipe, _ = item_recipe("4.6")
+    # Existing immutable v12 runs retain the legacy Bank Indonesia source scope.
+    recipe, _ = item_recipe("4.6", version=12)
     rules = _Recipe(recover_official_recipe(recipe, country="ID", item_id="4.6"))
     for address in (
         "https://www.bi.go.id/id/publikasi/peraturan/Documents/FAQ_PADG_032026.pdf",

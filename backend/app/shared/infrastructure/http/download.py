@@ -32,7 +32,8 @@ MAX_BYTES = 20 * 1024 * 1024
 MAX_ORIGINAL_BYTES = 300 * 1024 * 1024
 
 
-MAX_COMPRESSED_HTML_BYTES = 4 * 1024 * 1024
+DEFAULT_COMPRESSED_HTML_BYTES = 4 * 1024 * 1024
+MAX_COMPRESSED_HTML_BYTES = 6 * 1024 * 1024
 
 
 _DNS_SLOTS = threading.BoundedSemaphore(8)
@@ -240,6 +241,7 @@ def _download(
     connection_slot: Callable[[str], AbstractContextManager] | None = None,
     accept_compressed_html: bool = False,
     accept_compressed_json: bool = False,
+    max_compressed_html_bytes: int | None = None,
     json_body: dict | None = None,
     public_search: EGazetteSearchRequest | None = None,
     max_bytes: int | None = None,
@@ -270,6 +272,13 @@ def _download(
     max_bytes = MAX_BYTES if max_bytes is None else max_bytes
     if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ORIGINAL_BYTES:
         raise DownloadError("原件传输额度无效，最多 300 MiB。")
+    max_compressed_html_bytes = (
+        min(DEFAULT_COMPRESSED_HTML_BYTES, MAX_COMPRESSED_HTML_BYTES)
+        if max_compressed_html_bytes is None
+        else max_compressed_html_bytes
+    )
+    if type(max_compressed_html_bytes) is not int or not 1 <= max_compressed_html_bytes <= MAX_COMPRESSED_HTML_BYTES:
+        raise DownloadError("压缩目录传输额度无效，最多 6 MiB。")
     if range_total_bytes is not None and (
         byte_range is None
         or type(range_total_bytes) is not int
@@ -439,7 +448,7 @@ def _download(
                 compressed = (accept_compressed_html or accept_compressed_json) and encoding == "gzip"
                 if encoding not in {"identity", ""} and not compressed:
                     raise DownloadError("抓取来源返回压缩传输，无法安全校验大小。")
-                transfer_limit = min(max_bytes, MAX_COMPRESSED_HTML_BYTES) if compressed else max_bytes
+                transfer_limit = min(max_bytes, max_compressed_html_bytes) if compressed else max_bytes
                 length = response.getheader("Content-Length")
                 if length is not None and (
                     not re.fullmatch(r"[0-9]{1,12}", length.strip()) or int(length) > transfer_limit

@@ -19,6 +19,7 @@ from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import
     MAX_HTML_BYTES,
     discover_page,
     normalized_seeds_for,
+    page_body_limit,
     recipe_for,
 )
 from app.contexts.ingestion.infrastructure.source_adapters.source_envelopes import (
@@ -63,7 +64,7 @@ class ChecklistItem(Definition):
     acceptance: list[str]
     verbatim_requirements: str
     execution: Literal["discovery", "dataset_review"]
-    adapter: Literal["bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "manual"]
+    adapter: Literal["bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "bi_jdih", "manual"]
     limits: dict
 
 
@@ -257,6 +258,7 @@ class ChecklistService:
             "sg_official_html",
             "mkri",
             "jdih_kemenkeu",
+            "bi_jdih",
         }
         if not providers or not providers <= allowed_providers:
             raise ValueError("unsupported candidate source provider")
@@ -311,6 +313,12 @@ class ChecklistService:
                 "(p.final_url LIKE 'https://jdih.kemenkeu.go.id/search?%' OR "
                 "p.final_url LIKE 'https://jdih.kemenkeu.go.id/dok/%'))"
             )
+        if "bi_jdih" in providers:
+            source_filters.append(
+                "(b.country='ID' AND b.plan_id='indonesia-20261003' AND b.item_id='4.6' "
+                "AND p.purpose='detail' AND p.final_url LIKE "
+                "'https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?%')"
+            )
         candidates = []
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
@@ -352,12 +360,16 @@ class ChecklistService:
                     )
                     else "jdih_kemenkeu"
                     if row["final_url"].startswith("https://jdih.kemenkeu.go.id/")
+                    else "bi_jdih"
+                    if row["final_url"].startswith(
+                        "https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?"
+                    )
                     else "wto"
                     if row["final_url"].startswith("https://docs.wto.org/")
                     or row["final_url"].startswith("https://www.wto.org/")
                     else "sg_official_html"
                 )
-                expected_purpose = "detail" if provider == "setneg" else "catalog"
+                expected_purpose = "detail" if provider in {"setneg", "bi_jdih"} else "catalog"
                 if (
                     plan["id"] != row["plan_id"]
                     or plan["version"] != row["version"]
@@ -371,6 +383,7 @@ class ChecklistService:
                             or (provider == "bkpm" and item["id"] != "4.1")
                             or (provider == "rcepsec" and item["id"] != "5.3")
                             or (provider == "jdih_kemenkeu" and item["id"] != "4.3")
+                            or (provider == "bi_jdih" and item["id"] != "4.6")
                         )
                     )
                     or (
@@ -973,14 +986,15 @@ class ChecklistService:
         # Catalog JSON/HTML have their own bound; neither becomes legal text.
         blob = fetched["blob"]
         mime = fetched["mime_type"].split(";", 1)[0].strip().lower()
+        recipe = plan["checklist"]["recipe"]
+        body_limit = page_body_limit(fetched["url"], fetched["mime_type"], recipe)
         if (
             mime in {"text/html", "application/xhtml+xml", "application/json", "text/xml", "application/xml"}
-            and blob.size > MAX_HTML_BYTES
+            and blob.size > body_limit
         ):
-            raise ValueError("目录或详情页超过 4 MiB 解析上限")
+            raise ValueError(f"目录或详情页超过 {body_limit // (1024 * 1024)} MiB 解析上限")
         with blob.path.open("rb") as stream:
-            body = stream.read(MAX_HTML_BYTES)
-        recipe = plan["checklist"]["recipe"]
+            body = stream.read(body_limit + 1)
         result = discover_page(fetched["url"], body, fetched["mime_type"], recipe)
         if not result["matched"]:
             # BKPM has returned a small set of official PDF URLs as complete
@@ -1112,6 +1126,7 @@ class ChecklistService:
                             "sg_official_html",
                             "mkri",
                             "jdih_kemenkeu",
+                            "bi_jdih",
                         }
                         or source_record.get("interpretation") != "unreviewed_source_values"
                         or not isinstance(source_record.get("fields"), dict)

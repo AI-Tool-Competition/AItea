@@ -1,10 +1,10 @@
 # 无人值守官方来源池
 
-配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 20 个稳定来源节点：印度尼西亚 12 个（6 个活动、6 个归档），新加坡 8 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时；明确为空的 BPJPH 新目录以 `empty_catalogue=true` 标记并归档，不作为业务采集成功。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
+配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 22 个稳定来源节点：印度尼西亚 12 个（6 个活动、6 个归档），新加坡 10 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时；明确为空的 BPJPH 新目录以 `empty_catalogue=true` 标记并归档，不作为业务采集成功。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
 
 配置采用 `aitea-official-source-pool-v2`：`groups` 是国家根节点及主题子节点，子节点列出来源 ID 和对应核验清单项；来源自身保留正式入口、访问证据、主题、发现策略、优先级、轮询间隔和 `active` 状态。活动源须留有官方身份、业务用途、清单范围、近期开页回执与正文 SHA-256；空目录单独标记并低频复查。`source_relations` 是有方向的关系边，区分 `complements`（互补）、`cross_checks`（交叉核验）、`implements`（实施规则）与 `publishes_original`（正式原件发布），并说明适用清单项和关系理由。所有活动源都明确使用 `transport: proxy`；watchdog 将其精确允许主机并入代理白名单。归档用 `status: archived` 移出运行队列，原节点、关系和所有历史账本均保留；新增来源必须经有界代理抓取取得有效正文后才能登记。
 
-本池服务于两份既有法律清单：印度尼西亚当前 v15 的 16 项活动任务（v14 的 17 项、v13 的 19 项、v12 与原 29 项 v11 范围分别保留历史快照），以及新加坡六堡茶进口经营、食品、税务、公司、个人资料、知识产权及贸易协定事项。新加坡当前 v6 有 12 项活动任务，原 16 项要求保存在 v5 快照；SSO 入口返回 403，SG-LegalCite 页面与 API 经代理复核仍超时，相关法规和案例材料均保留为覆盖缺口。政府采购 JDIH 与 RCEP 官方入口连续超时或无法解析，已从活动清单移除并保留历史配置。食品和清真来源用于补足茶叶食品经营的监管法源，不表示扩采全部药品、化妆品、政务操作或所有行业材料。全部原件、状态和版本关系仍须通过既有采集、解析、审核和入库规则。
+本池服务于两份既有法律清单：印度尼西亚当前 v15 的 16 项活动任务（v14 的 17 项、v13 的 19 项、v12 与原 29 项 v11 范围分别保留历史快照），以及新加坡六堡茶进口经营、食品、税务、公司、个人资料、知识产权及贸易协定事项。新加坡当前 v7 有 15 项活动任务；v6 的 12 项状态和 v5 的 16 项定义均保留不可变快照。项目代理于 2026-10-25 重新取得 SSO Current Acts 与 Current Subsidiary Legislation 目录，现行主法、附属法例和宪制文件任务 1.1–1.3 已恢复；SG-LegalCite 页面与 API 仍超时，案例数据 2.1 保留为覆盖缺口。政府采购 JDIH 与 RCEP 官方入口连续超时或无法解析，已从活动清单移除并保留历史配置。食品和清真来源用于补足茶叶食品经营的监管法源，不表示扩采全部药品、化妆品、政务操作或所有行业材料。全部原件、状态和版本关系仍须通过既有采集、解析、审核和入库规则。
 
 ## 优先启动的互补来源
 
@@ -38,6 +38,8 @@
 | `id-bpjph-jdih-cari` | [BPJPH 法规检索目录](https://jdih.halal.go.id/cari) | ID | 经有界请求取得可解析目录和文书候选；只收清真及食品标签相关规则，不代替正式原件和适用性审核。 |
 | `id-setneg-perpu` | [国家秘书处 PERPU 目录](https://jdih.setneg.go.id/api/hukumproduk/produkhukum?jns=PERPU&length=50&start=0) | ID | 保留旧任务的国家立法来源；历史取得 33 条目录、23 份记录的 24 份原件。本轮原入口和20条分页入口均404，记为待复查，不能认定域名过期。仅此固定范围启用既有Setneg适配器及受限JSON解压。 |
 | `sg-sfa-labelling` | [Singapore Food Agency](https://www.sfa.gov.sg/regulatory-standards-frameworks-guidelines/food-labelling-packaging-guidelines/labelling-requirements-for-food) | SG | 可达，食品标签和相应法规/官方指南转介。 |
+| `sg-sso-acts-current` | [Singapore Statutes Online：Current Acts](https://sso.agc.gov.sg/Browse/Act/Current/All) | SG | 2026-10-25 经项目代理返回 HTTP 200；按页500条发现现行主法，并承载 1.1 的 Constitutional 子类过滤。目录行不等于正文入库或有效性审核。 |
+| `sg-sso-statutes` | [Singapore Statutes Online：Current Subsidiary Legislation](https://sso.agc.gov.sg/Browse/SL/Current/All) | SG | 2026-10-25 经项目代理返回 HTTP 200；按页500条发现现行附属法例。目录行不等于正文入库或有效性审核。 |
 | `sg-ccs-fair-trading` | [Competition and Consumer Commission of Singapore](https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/) | SG | 新加坡政府官方公平交易页面；补充误导宣传、价格透明及销售行为指引，对应 SG-3.5，与 SFA 标签规则互补。页面正文标注内容更新于 2025-09-26，仍按日轮询并保留后续版本。 |
 | `sg-customs-import` | [Singapore Customs](https://www.customs.gov.sg/doing-business/import-operations/import-procedures/import-procedures-overview/) | SG | 可达，商业进口主体、许可和税费义务。 |
 | `sg-iras-imports` | [Inland Revenue Authority of Singapore](https://www.iras.gov.sg/taxes/goods-services-tax-%28gst%29/claiming-gst-%28input-tax%29/importing-of-goods/) | SG | 可达，进口 GST、抵扣及 e-Tax Guides。 |
@@ -130,6 +132,6 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 - [Current Acts](https://sso.agc.gov.sg/Browse/Act/Current/All)：526 条、每页 500 条、共 2 页；正文 SHA-256 `6511278f4396493a0fc70972a517981109d24b4b12a98fd66be245b44a5e1e7a`。
 - [Current Subsidiary Legislation](https://sso.agc.gov.sg/Browse/SL/Current/All)：5,872 条、每页 500 条、共 12 页；正文 SHA-256 `e4cd754fc669de8c2b86440522f145d93532053e34a957dbdc8f6ca26a11beaf`。
 
-经有界目录解析、稳定法规身份、来源行定位和来源池迁移后，两项已加入活动清单，分别关联 SG-1.2 与 SG-1.3，并置于“现行主法与附属法例”层级；与 SFA 标签、海关进口来源建立了明确交叉核验关系。代理白名单没有放宽，浏览器请求头仅对该精确官方主机启用。目录页按页面完整校验，超过 128 条活动候选容量的行会从保留的目录快照分批补入；单来源每日额度与主机冷却仍生效。
+经有界目录解析、稳定法规身份、来源行定位和来源池迁移后，两项已加入活动来源池；清单 v7 恢复 1.2 与 1.3，并将 1.1 宪制文件作为 Current Acts 下的 Constitutional 子类过滤。三项任务分别覆盖宪制文件、现行主法与现行附属法例，置于“现行主法与附属法例”层级；其中主法与附属法例来源和清单关联互补，食品标签、海关进口来源用于业务交叉核验。代理白名单没有放宽，浏览器请求头仅对该精确官方主机启用。目录页按页面完整校验，超过 128 条活动候选容量的行会从保留的目录快照分批补入；单来源每日额度与主机冷却仍生效。
 
 本次证明的是官方目录入口和目录响应可达，不是 526 或 5,872 份法规正文均已下载、解析或建向量。目录记录 `Current` 也不是适用性或法律效力结论。两份隔离 `source_observation` 回执与原始页面保存在 `.dev/aitea-sso-registration-97f2eb8161d8/SG/`；正式运行后的分页、原件下载和索引进度以 `data/official-updates/SG/` 事件账本及 `make collection-catalog` 为准。

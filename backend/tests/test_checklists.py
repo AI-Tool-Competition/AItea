@@ -43,7 +43,7 @@ def discover(client, code="1.3", request="first"):
 def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(client):
     catalog = client.get("/api/tea/collection-plans")
     assert catalog.status_code == 200
-    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 16), ("SG", 12)]
+    assert [(p["country"], p["item_count"]) for p in catalog.json()["items"]] == [("ID", 16), ("SG", 15)]
     detail = client.get(BASE).json()
     assert len(detail["plan"]["chapters"]) == 5
     assert len(detail["items"]) == 16
@@ -65,7 +65,8 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
     )
     assert len(singapore["plan"]["channels"]) == 6
     assert [item["id"] for item in singapore["plan"]["items"] if item["conditional"]] == ["4.1", "4.2"]
-    assert len(singapore["plan"]["items"]) == 12
+    assert len(singapore["plan"]["items"]) == 15
+    assert {"1.1", "1.2", "1.3"} <= {item["id"] for item in singapore["plan"]["items"]}
     assert all(item["id"] != "2.1" for item in singapore["plan"]["items"])
     assert all(item["source_id"] is None for item in singapore["items"])
 

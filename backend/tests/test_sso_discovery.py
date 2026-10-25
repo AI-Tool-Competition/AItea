@@ -164,12 +164,18 @@ def test_aws_waf_200_page_is_explicit_access_challenge_not_empty_legislation():
     assert "验证" in result["reason"] and "scope" not in result
 
 
-def test_version_four_snapshot_keeps_its_frozen_generic_recipe():
+def test_sso_plan_history_and_current_catalogue_restoration_are_versioned():
     root = PROJECT_ROOT / "config" / "collection-plans"
     old = json.loads((root / "versions/singapore-demo-20261009.v4.json").read_text())
     recipe_version = json.loads((root / "versions/singapore-demo-20261009.v5.json").read_text())
+    removed_version = json.loads((root / "versions/singapore-demo-20261009.v6.json").read_text())
     current = json.loads((root / "singapore-demo-20261009.json").read_text())
-    assert old["version"] == 4 and recipe_version["version"] == 5 and current["version"] == 6
+    assert (
+        old["version"] == 4
+        and recipe_version["version"] == 5
+        and removed_version["version"] == 6
+        and current["version"] == 7
+    )
     assert old["source_document"] == recipe_version["source_document"]
     for code in {"1.1", "1.2", "1.3"}:
         before = next(x for x in old["items"] if x["id"] == code)
@@ -177,3 +183,10 @@ def test_version_four_snapshot_keeps_its_frozen_generic_recipe():
         assert not recipe_for(before).get("sso_catalog_2026", False)
         assert recipe_for(after)["sso_catalog_2026"] is True
         assert before["steps"] == after["steps"] and before["acceptance"] == after["acceptance"]
+        assert code not in {x["id"] for x in removed_version["items"]}
+        restored = next(x for x in current["items"] if x["id"] == code)
+        assert recipe_for(restored)["sso_catalog_2026"] is True
+        assert "PageSize=500" in restored["entries"][0]["url"]
+    assert "2.1" in {x["id"] for x in recipe_version["items"]}
+    assert "2.1" not in {x["id"] for x in current["items"]}
+    assert current["limits"]["item_count"] == len(current["items"]) == 15

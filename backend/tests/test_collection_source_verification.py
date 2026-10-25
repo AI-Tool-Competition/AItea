@@ -53,7 +53,7 @@ def transport(monkeypatch, bodies):
 def test_all_checklist_requirements_and_hashes_survive_matrix_generation():
     plans = load_blueprints()
     rows = verification.source_rows(plans, False)
-    assert len(rows) == 28
+    assert len(rows) == 31
     assert sum(row["state"] == "conditional_not_triggered" for row in rows) == 2
     assert sum(row["execution"] == "dataset_review" for row in rows) == 0
     wto = next(row for row in rows if row["plan_id"] == "indonesia-20261003" and row["item_id"] == "5.4")

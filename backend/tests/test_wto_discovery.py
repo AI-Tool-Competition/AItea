@@ -337,7 +337,7 @@ def test_oversized_xml_cannot_accept_a_complete_prefix_with_a_different_blob_has
 
 
 def test_new_adapter_does_not_change_previous_immutable_plan_behavior():
-    for member, old_version, current_version in [("ID", 5, 15), ("SG", 2, 6)]:
+    for member, old_version, current_version in [("ID", 5, 15), ("SG", 2, 7)]:
         current = item(member)
         old = item(member, old_version)
         assert current["verbatim_requirements"] == old["verbatim_requirements"]

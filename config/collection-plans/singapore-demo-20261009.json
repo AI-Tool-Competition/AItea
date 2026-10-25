@@ -1,6 +1,6 @@
 {
   "id": "singapore-demo-20261009",
-  "version": 6,
+  "version": 7,
   "country": "SG",
   "title": "六堡茶新加坡出海法律资料采集清单（比赛Demo版）",
   "source_document": {
@@ -8,7 +8,7 @@
     "date": "2026-10-09",
     "sha256": "cd3f72ba56c05b62c55a8dfe558a53fe84978613843d9712380cc5d01b5feb47"
   },
-  "description": "纯中国六堡茶干茶，经当地进口商进口，覆盖六类经营渠道。法规来源仅保留项目代理下可访问入口；现行法正文范围与已核正文分别验收，受限来源保留为明确缺口。",
+  "description": "纯中国六堡茶干茶，经当地进口商进口，覆盖六类经营渠道。现行法目录已由项目代理复核可达；目录、正文取得、解析和法律审核分别验收。案例数据源仍受限，保留为明确缺口。",
   "principles": [
     "六堡茶新加坡出海法律资料采集清单",
     "比赛 Demo 版",
@@ -27,7 +27,7 @@
     "交易与消费者：Sale of Goods Act、Misrepresentation Act、Unfair Contract Terms Act、Consumer Protection Fair Trading Act、Electronic Transactions Act及适用竞争规则。",
     "主体数据与品牌：Companies Act及业务登记法规、Personal Data Protection Act及适用营销法规、Trade Marks Act、Geographical Indications Act及必要版权法规。",
     "线下经营与救济：按实际事实核Employment Act、食品场所及租赁规则、Small Claims Tribunals Act、Rules of Court、International Arbitration Act和Sale of Goods United Nations Convention Act等。以上只安排采集顺序，具体名称、现行状态、授权规则与版本均以SSO为准。",
-    "本版共16项任务：正式法规3项、判例1项、监管补充7项、条件性争议解决2项、国际条约3项。新增来源为比赛方案建议；本轮只修订清单及核验样本，未执行批量下载或入库。",
+    "本版共15项任务：正式法规3项、监管补充7项、条件性争议解决2项、国际条约3项。案例数据入口仍不可达，2.1保留为覆盖缺口；本次恢复既有官方目录任务，不表示批量正文下载或入库已完成。",
     "一级／二级资料用途与主法／附属立法法阶分离；目录、截图、模型命题不作为有效法律正文；现行状态须审核。"
   ],
   "chapters": [
@@ -36,7 +36,7 @@
       "title": "第1章 法律法规",
       "notes": [
         "保留正式法规原范围，执行时先取得目录，再完成业务相关正文及授权附属立法。以下业务主题只用于安排顺序和检索，不删除其他现行法规。",
-        "Singapore Statutes Online 的宪制文件、Acts 与附属立法目录在项目代理下返回 403，v6 将原 1.1、1.2、1.3 从活动清单移除，完整定义保存在 v5 历史快照。官方 eGazette 继续作为独立法规公布记录来源，但不替代合并修订后的现行法正文；该部分检索覆盖暂缺。"
+        "2026-10-24 的 Singapore Statutes Online 403 作为历史观测保留；2026-10-25 项目 HTTPS 代理重新取得 Current Acts 与 Current Subsidiary Legislation 目录（均 HTTP 200）。v7 恢复 1.1、1.2、1.3：宪制文件为 Current Acts 的受限子类，主法与附属立法分别分页发现。当日目录分别为 526 条、5,872 条，仅是目录观测，不代表全文已下载、解析、索引或审核。官方 eGazette 仍作为独立公布记录来源，不替代合并修订后的现行法正文。"
       ]
     },
     {
@@ -101,7 +101,7 @@
     }
   ],
   "limits": {
-    "item_count": 12,
+    "item_count": 15,
     "exhaustive_legislation_scope": true,
     "regulatory_documents_target": [
       30,
@@ -126,6 +126,199 @@
     ]
   },
   "items": [
+    {
+      "id": "1.1",
+      "chapter_id": "1",
+      "title": "Constitutional Instruments 三份宪制性文件",
+      "kind": "law",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://sso.agc.gov.sg/Browse/Act/Current/All?PageSize=500&SortBy=Title&SortOrder=ASC&SubType=Constitutional",
+          "purpose": "catalog",
+          "note": "Current Acts 共用目录的 Constitutional 子类；筛选范围固定为三份宪制性文件，不扩采全站。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-1.1",
+        "kind:law"
+      ],
+      "scope_include": [
+        "Constitutional Instruments 三份宪制性文件",
+        "范围：三份全部保留。宪法最高效力与两份独立建国基础文件分别记录，不能因同处目录认定三者效力相同。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 从Constitutional Instruments目录取得Constitution of the Republic of Singapore、Independence of Singapore Agreement 1965及Republic of Singapore Independence Act 1965，逐件核对文件名称。",
+        "2. 保存三份全文、附表、修订说明及可取得的历史版本，记录当前版本日期、实际生效日期和原文地址。",
+        "3. 按条文编号定位，与Acts任务中的重复文件合并，保留各自法律性质。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：三份全部保留。宪法最高效力与两份独立建国基础文件分别记录，不能因同处目录认定三者效力相同。",
+        "验收：三份均有正文及版本记录。一般进出口或税额问题优先查具体法规；发生政府权限、基本权利或规范冲突时再调用宪制依据。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：三份均有正文及版本记录。一般进出口或税额问题优先查具体法规；发生政府权限、基本权利或规范冲突时再调用宪制依据。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Constitutional Instruments 三份宪制性文件\n网页链接：https://sso.agc.gov.sg/Browse/act/Current/All?PageSize=20&SortBy=Title&SortOrder=ASC&SubType=Constitutional\n采集步骤：1. 从Constitutional Instruments目录取得Constitution of the Republic of Singapore、Independence of Singapore Agreement 1965及Republic of Singapore Independence Act 1965，逐件核对文件名称。\n2. 保存三份全文、附表、修订说明及可取得的历史版本，记录当前版本日期、实际生效日期和原文地址。\n3. 按条文编号定位，与Acts任务中的重复文件合并，保留各自法律性质。\n抓取注意事项：范围：三份全部保留。宪法最高效力与两份独立建国基础文件分别记录，不能因同处目录认定三者效力相同。\n验收：三份均有正文及版本记录。一般进出口或税额问题优先查具体法规；发生政府权限、基本权利或规范冲突时再调用宪制依据。",
+      "execution": "discovery",
+      "adapter": "sso",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
+      }
+    },
+    {
+      "id": "1.2",
+      "chapter_id": "1",
+      "title": "Acts Primary Legislation 现行主法及必要版本",
+      "kind": "law",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://sso.agc.gov.sg/Browse/Act/Current/All?PageSize=500&SortBy=Title&SortOrder=ASC",
+          "purpose": "catalog",
+          "note": "官方 Current Acts 分页目录；按标题升序、每页500条发现，目录行与正文分开验收。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-1.2",
+        "kind:law"
+      ],
+      "scope_include": [
+        "Acts Primary Legislation 现行主法及必要版本",
+        "范围：现行Acts全量保留，包括仍有效的历史Ordinances及被保留适用的UK enactments。未生效法全量登记并隔离；废止或Spent先存元数据和关系，业务历史问题需要时补全文。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 遍历Current目录及分页，保存全量现行清单；从同站Browse发现Uncommenced和Repealed/Spent，分别登记状态。宪制文件与1.1去重。",
+        "2. 取得现行正文及附表。先完成食品、海关与GST、公司、买卖与消费者、电商、数据、商标、竞争、租赁与雇佣、仲裁及涉外适用等业务法规，其他现行主法仍保留在全量任务中。",
+        "3. 通过Timeline、Acts Supplement和Revised Editions关联公布本、修正法、重编本及必要历史版本，逐条核对生效与过渡安排。",
+        "4. 按Act及section定位，保存标题、编号、状态、版本日期、正文地址和已取得全文状态；将未取得正文的条目列为待补。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：现行Acts全量保留，包括仍有效的历史Ordinances及被保留适用的UK enactments。未生效法全量登记并隔离；废止或Spent先存元数据和关系，业务历史问题需要时补全文。",
+        "准确性：不能用制定年份判断失效，不能以Current目录推定全部条文已生效。Food Safety and Security Act等分期实施法律须按条文查当前生效及旧法保留安排。",
+        "验收：全目录数量按采集当日对账；比赛会调用的每部主法须有适用正文。全量下载尚未完成时显示实际覆盖，目录记录不算全文。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：全目录数量按采集当日对账；比赛会调用的每部主法须有适用正文。全量下载尚未完成时显示实际覆盖，目录记录不算全文。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Acts Primary Legislation 现行主法及必要版本\n网页链接：https://sso.agc.gov.sg/Browse/Act/Current\n采集步骤：1. 遍历Current目录及分页，保存全量现行清单；从同站Browse发现Uncommenced和Repealed/Spent，分别登记状态。宪制文件与1.1去重。\n2. 取得现行正文及附表。先完成食品、海关与GST、公司、买卖与消费者、电商、数据、商标、竞争、租赁与雇佣、仲裁及涉外适用等业务法规，其他现行主法仍保留在全量任务中。\n3. 通过Timeline、Acts Supplement和Revised Editions关联公布本、修正法、重编本及必要历史版本，逐条核对生效与过渡安排。\n4. 按Act及section定位，保存标题、编号、状态、版本日期、正文地址和已取得全文状态；将未取得正文的条目列为待补。\n抓取注意事项：范围：现行Acts全量保留，包括仍有效的历史Ordinances及被保留适用的UK enactments。未生效法全量登记并隔离；废止或Spent先存元数据和关系，业务历史问题需要时补全文。\n准确性：不能用制定年份判断失效，不能以Current目录推定全部条文已生效。Food Safety and Security Act等分期实施法律须按条文查当前生效及旧法保留安排。\n验收：全目录数量按采集当日对账；比赛会调用的每部主法须有适用正文。全量下载尚未完成时显示实际覆盖，目录记录不算全文。",
+      "execution": "discovery",
+      "adapter": "sso",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
+      }
+    },
+    {
+      "id": "1.3",
+      "chapter_id": "1",
+      "title": "Subsidiary Legislation 现行附属立法及授权关系",
+      "kind": "law",
+      "conditional": false,
+      "trigger": "",
+      "priority": 1,
+      "entries": [
+        {
+          "url": "https://sso.agc.gov.sg/Browse/SL/Current/All?PageSize=500&SortBy=Title&SortOrder=ASC",
+          "purpose": "catalog",
+          "note": "官方 Current Subsidiary Legislation 分页目录；按标题升序、每页500条发现，目录行与正文分开验收。"
+        }
+      ],
+      "trusted_hosts": [],
+      "tags": [
+        "country:SG",
+        "checklist:SG-1.3",
+        "kind:law"
+      ],
+      "scope_include": [
+        "Subsidiary Legislation 现行附属立法及授权关系",
+        "范围：现行附属立法全量保留；尚未生效全文隔离当前检索，撤销或Spent先存元数据和关系。Regulations、Rules、Orders及Notifications等按实际内容分类，名称不构成统一效力排序。"
+      ],
+      "scope_exclude": [],
+      "steps": [
+        "1. 遍历Current目录，保存全量清单；通过Browse发现Uncommenced、Revoked/Spent、SL Supplement及Revised Editions，分类登记。",
+        "2. 取得现行正文、附表及授权依据。优先完成上述业务主法所附的食品、进口、税务、消费者、数据及公司规则，保持与母法和具体授权条款的对应。",
+        "3. 将修订、废止和生效通知分别关联其目标文件及条款；保存原始公布、现行整合和必要历史版本。",
+        "4. 核对正文编号、制定机关、生效日期、状态及实际原文地址，未生效修订和个别对象豁免分别标识。"
+      ],
+      "fields": [
+        "原始标题",
+        "发布机关或裁判引称",
+        "文种与语种",
+        "原始网址及实际正文地址",
+        "获取时间与SHA256",
+        "版本日期",
+        "实际生效和适用期间",
+        "原文条款、段落或页码",
+        "核验状态和缺失依据",
+        "业务主题",
+        "资料分级与关联证据"
+      ],
+      "version_rules": [
+        "范围：现行附属立法全量保留；尚未生效全文隔离当前检索，撤销或Spent先存元数据和关系。Regulations、Rules、Orders及Notifications等按实际内容分类，名称不构成统一效力排序。",
+        "准确性：母法废止后核对延续及过渡条款，不能自动将其下全部文件标为失效。食品标签须使用适用于2026年的文本；生效通知服务于版本判断。",
+        "验收：每个演示义务能定位到Act与相应附属立法；法规正文只存一份，监管官网的同件不重复入库。"
+      ],
+      "relation_rules": [
+        "一级／二级是资料用途，不等于主法／附属立法法阶。只按已保存原文或官方目录证据关联固定版本；引用、授权、修订及国内实施关系分别核实。",
+        "一级法律资料文本完整后建立真实向量；二级法律资料文本化并关联一级，普通附件仅存原件；未经法律审核不得用于有效法规RAG。"
+      ],
+      "acceptance": [
+        "验收：每个演示义务能定位到Act与相应附属立法；法规正文只存一份，监管官网的同件不重复入库。"
+      ],
+      "verbatim_requirements": "抓取内容标题：Subsidiary Legislation 现行附属立法及授权关系\n网页链接：https://sso.agc.gov.sg/Browse/SL/Current\n采集步骤：1. 遍历Current目录，保存全量清单；通过Browse发现Uncommenced、Revoked/Spent、SL Supplement及Revised Editions，分类登记。\n2. 取得现行正文、附表及授权依据。优先完成上述业务主法所附的食品、进口、税务、消费者、数据及公司规则，保持与母法和具体授权条款的对应。\n3. 将修订、废止和生效通知分别关联其目标文件及条款；保存原始公布、现行整合和必要历史版本。\n4. 核对正文编号、制定机关、生效日期、状态及实际原文地址，未生效修订和个别对象豁免分别标识。\n抓取注意事项：范围：现行附属立法全量保留；尚未生效全文隔离当前检索，撤销或Spent先存元数据和关系。Regulations、Rules、Orders及Notifications等按实际内容分类，名称不构成统一效力排序。\n准确性：母法废止后核对延续及过渡条款，不能自动将其下全部文件标为失效。食品标签须使用适用于2026年的文本；生效通知服务于版本判断。\n验收：每个演示义务能定位到Act与相应附属立法；法规正文只存一份，监管官网的同件不重复入库。",
+      "execution": "discovery",
+      "adapter": "sso",
+      "limits": {
+        "max_original_bytes": 134217728,
+        "sso_catalog_2026": true
+      }
+    },
     {
       "id": "3.1",
       "chapter_id": "3",

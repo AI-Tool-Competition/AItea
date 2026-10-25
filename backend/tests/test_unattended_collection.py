@@ -13,6 +13,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
+from zoneinfo import ZoneInfo
 
 import pytest
 from app.configuration.paths import PROJECT_ROOT
@@ -35,6 +36,24 @@ def source(identifier="sg-main", *, host="one.gov.sg", path="/food", **changes):
         "discovery_keywords": ["food"],
         **changes,
     }
+
+
+def sso_source():
+    return source(
+        "sg-sso-test",
+        host="sso.agc.gov.sg",
+        path="/Browse/SL/Current/All",
+        kind="catalogue",
+        discovery_keywords=[],
+        discovery={
+            "adapter": "sso_catalog_2026",
+            "category": "SL",
+            "state": "Current",
+            "page_size": 20,
+            "cache_limit": 10000,
+        },
+        request_window={"timezone": "Asia/Singapore", "start": "03:00", "end": "07:00"},
+    )
 
 
 def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tmp_path):
@@ -158,6 +177,11 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
         "page_size": 500,
         "cache_limit": 10000,
     }
+    assert sso_acts["request_window"] == {
+        "timezone": "Asia/Singapore",
+        "start": "03:00",
+        "end": "07:00",
+    }
     assert sso_laws["discovery"]["category"] == "SL"
     assert sso_laws["verification"]["checklist_items"] == ["SG-1.3"]
 
@@ -168,6 +192,23 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     ] = 501
     rejected.write_text(json.dumps(invalid_sso_policy))
     with pytest.raises(ValueError, match="discovery policy"):
+        collection.source_pool(rejected, "SG")
+
+    invalid_sso_window = deepcopy(registry)
+    legacy_sso = next(row for row in invalid_sso_window["sources"] if row["id"] == "sg-sso-statutes")
+    legacy_sso.pop("request_window")
+    rejected.write_text(json.dumps(invalid_sso_window))
+    assert collection.source_pool(rejected, "SG")
+    assert collection.request_window_wait_until(
+        legacy_sso, datetime(2026, 10, 26, 7, 0, tzinfo=ZoneInfo("Asia/Singapore")).timestamp()
+    ) == datetime(2026, 10, 27, 3, 0, tzinfo=ZoneInfo("Asia/Singapore")).timestamp()
+
+    out_of_policy_sso_window = deepcopy(registry)
+    next(row for row in out_of_policy_sso_window["sources"] if row["id"] == "sg-sso-statutes")[
+        "request_window"
+    ]["start"] = "00:00"
+    rejected.write_text(json.dumps(out_of_policy_sso_window))
+    with pytest.raises(ValueError, match="03:00–07:00"):
         collection.source_pool(rejected, "SG")
 
     inaccessible = deepcopy(registry)
@@ -403,6 +444,62 @@ def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
     invalid = {**document, "document_date": "2017122917000"}
     with pytest.raises(ValueError, match="row identity or locator"):
         collection.source_reference_fields(source_row, invalid, hashlib.sha256(raw).hexdigest())
+
+
+def test_sso_request_window_uses_singapore_local_time_and_excludes_closing_time():
+    zone = ZoneInfo("Asia/Singapore")
+    policy_source = sso_source()
+    at_0259 = datetime(2026, 10, 26, 2, 59, tzinfo=zone).timestamp()
+    at_0300 = datetime(2026, 10, 26, 3, 0, tzinfo=zone).timestamp()
+    at_0659 = datetime(2026, 10, 26, 6, 59, tzinfo=zone).timestamp()
+    at_0700 = datetime(2026, 10, 26, 7, 0, tzinfo=zone).timestamp()
+
+    assert collection.request_window_wait_until(policy_source, at_0259) == at_0300
+    assert collection.request_window_wait_until(policy_source, at_0300) is None
+    assert collection.request_window_wait_until(policy_source, at_0659) is None
+    assert collection.request_window_wait_until(policy_source, at_0700) == datetime(
+        2026, 10, 27, 3, 0, tzinfo=zone
+    ).timestamp()
+
+
+def test_sso_scheduler_waits_outside_official_window_then_resumes_saved_frontier(environment):
+    env = environment
+    row = sso_source()
+    collector = env.make([row])
+    target = "https://sso.agc.gov.sg/SL/Food-Act"
+    collector.state["sources"][row["id"]] = {
+        "frontier": {
+            target: {
+                "parent_url": row["url"],
+                "parent_hash": "a" * 64,
+                "purpose": "document",
+                "attempt_count": 0,
+            }
+        }
+    }
+    observed = []
+
+    def fetch(_source, url, _cached=None):
+        observed.append((url, env.clock[0]))
+        return {"outcome": {"status": "success", "http_status": 200}, "asset": None, "request_id": url}
+
+    env.monkeypatch.setattr(collector, "fetch", fetch)
+    singapore = ZoneInfo("Asia/Singapore")
+    closing = datetime(2026, 10, 26, 7, 0, tzinfo=singapore).timestamp()
+    reopening = datetime(2026, 10, 27, 3, 0, tzinfo=singapore).timestamp()
+    env.clock[0] = closing
+
+    assert collector.tick() == []
+    waiting = collector.state["sources"][row["id"]]
+    assert waiting["scheduling_status"] == "request_window_wait"
+    assert waiting["next_at"] == reopening
+    assert observed == []
+
+    env.clock[0] = reopening
+    collector.tick()
+    assert [url for url, _ in observed] == [row["url"], target]
+    assert all(reopening <= at < reopening + 4 * 3600 for _, at in observed)
+    assert collector.state["sources"][row["id"]]["frontier"][target]["attempt_count"] == 1
 
 
 def test_sso_frontier_replays_catalogue_rows_after_each_bounded_batch(tmp_path):

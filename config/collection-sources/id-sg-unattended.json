@@ -1179,6 +1179,11 @@
         "state": "Current",
         "page_size": 500,
         "cache_limit": 10000
+      },
+      "request_window": {
+        "timezone": "Asia/Singapore",
+        "start": "03:00",
+        "end": "07:00"
       }
     },
     {
@@ -1226,6 +1231,11 @@
         "state": "Current",
         "page_size": 500,
         "cache_limit": 10000
+      },
+      "request_window": {
+        "timezone": "Asia/Singapore",
+        "start": "03:00",
+        "end": "07:00"
       }
     },
     {

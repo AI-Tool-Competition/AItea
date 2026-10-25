@@ -24,9 +24,11 @@ import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as datetime_time
 from pathlib import Path
-from urllib.parse import urlencode, unquote, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "scripts")]
@@ -199,6 +201,28 @@ def sha(path):
 def source_pool(path, country):
     """Load and validate the active source entries through the collection context."""
     return active_sources(read_source_registry(path), country, _validated_url)
+
+
+def request_window_wait_until(source, now):
+    """Return the next permitted request time, or None while inside a source window."""
+    policy = source.get("request_window")
+    if policy is None and source.get("discovery", {}).get("adapter") == "sso_catalog_2026":
+        # Historical pool revisions predate the explicit field. Keep them safe
+        # during migration and recovery by applying the same fixed official window.
+        policy = {"timezone": "Asia/Singapore", "start": "03:00", "end": "07:00"}
+    if policy is None:
+        return None
+    timezone = ZoneInfo(policy["timezone"])
+    local_now = datetime.fromtimestamp(now, timezone)
+    start = datetime_time.fromisoformat(policy["start"])
+    end = datetime_time.fromisoformat(policy["end"])
+    opens_today = datetime.combine(local_now.date(), start, tzinfo=timezone)
+    closes_today = datetime.combine(local_now.date(), end, tzinfo=timezone)
+    if opens_today <= local_now < closes_today:
+        return None
+    if local_now < opens_today:
+        return opens_today.timestamp()
+    return datetime.combine(local_now.date() + timedelta(days=1), start, tzinfo=timezone).timestamp()
 
 
 def recipe(source):
@@ -1093,6 +1117,16 @@ class Collector:
             dict(current.get("cache", {})),
             dict(current.get("frontier", {})),
         )
+        window_wait_until = request_window_wait_until(source, time.time())
+        if window_wait_until is not None:
+            current.update(cache=cache, frontier=frontier, last_receipts=[])
+            current["next_at"] = max(
+                window_wait_until,
+                current.get("next_at", 0),
+                current.get("retry_not_before") or 0,
+            )
+            current["scheduling_status"] = "request_window_wait"
+            return current
         root_due = time.time() >= current.get("root_next_at", 0) or source["url"] not in cache
         urls = deque()
         is_sso = source.get("discovery", {}).get("adapter") == "sso_catalog_2026"
@@ -1136,6 +1170,9 @@ class Collector:
         deferred = None
         receipts = []
         while urls and len(receipts) < self.limits["requests_per_source_cycle"]:
+            window_wait_until = request_window_wait_until(source, time.time())
+            if window_wait_until is not None:
+                break
             url = urls.popleft()
             if (
                 url in visited
@@ -1281,6 +1318,11 @@ class Collector:
             default=0,
         )
         current["next_at"] = max(next_at, host_until, current.get("retry_not_before") or 0)
+        if window_wait_until is not None:
+            current["next_at"] = max(current["next_at"], window_wait_until)
+            current["scheduling_status"] = "request_window_wait"
+        elif current.get("scheduling_status") == "request_window_wait":
+            current.pop("scheduling_status", None)
         if host_until > time.time():
             current["retry_not_before"] = max(current.get("retry_not_before") or 0, host_until)
             current["scheduling_status"] = "host_cooldown"
@@ -1293,10 +1335,25 @@ class Collector:
 
     def tick(self):
         self.reload_sources()
+        now = time.time()
+        for source in self.sources:
+            window_wait_until = request_window_wait_until(source, now)
+            state = self.state["sources"].get(source["id"])
+            if window_wait_until is None:
+                if state and state.get("scheduling_status") == "request_window_wait":
+                    state.pop("scheduling_status", None)
+                continue
+            state = self.state["sources"].setdefault(source["id"], {})
+            state["next_at"] = max(
+                window_wait_until,
+                state.get("next_at", 0),
+                state.get("retry_not_before") or 0,
+            )
+            state["scheduling_status"] = "request_window_wait"
         selected = choose_sources(
             self.sources,
             self.state["sources"],
-            now=time.time(),
+            now=now,
             max_sources=self.limits["sources_per_tick"],
         )
         for decision in replacement_decisions(self.sources, self.state["sources"], selected, now=time.time()):

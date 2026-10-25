@@ -264,6 +264,24 @@ def _validate_discovery_policy(source: dict, validate_url) -> None:
         or parsed.fragment
     ):
         raise ValueError("SSO source must use its exact current catalogue root")
+    request_window = source.get("request_window")
+    if request_window is not None and request_window != {
+        "timezone": "Asia/Singapore",
+        "start": "03:00",
+        "end": "07:00",
+    }:
+        raise ValueError("SSO automated extraction must use the official Singapore 03:00–07:00 window")
+
+
+def _validate_request_window(source: dict) -> None:
+    """Reject request-window metadata unless the collector enforces its exact policy."""
+    policy = source.get("request_window")
+    is_sso = (
+        isinstance(source.get("discovery"), dict)
+        and source["discovery"].get("adapter") == "sso_catalog_2026"
+    )
+    if policy is not None and not is_sso:
+        raise ValueError("Request windows are only supported for the SSO catalogue adapter")
 
 
 def _validate_collection_limits(source: dict) -> None:
@@ -365,6 +383,7 @@ def validate_source_registry(
         _validate_html_document_paths(source)
         _validate_html_asset_hosts(source, scope, validate_url)
         _validate_discovery_policy(source, validate_url)
+        _validate_request_window(source)
         _validate_collection_limits(source)
         if protocol == "aitea-official-source-pool-v2":
             if source.get("status") not in {"active", "archived"} or source.get("transport") != "proxy":

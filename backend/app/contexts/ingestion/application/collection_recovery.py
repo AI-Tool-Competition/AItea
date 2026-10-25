@@ -191,7 +191,15 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                     or unknown
                     or (
                         vision_page
-                        and (metadata.get("complete") is False or status == "ocr_uncertain")
+                        and (
+                            metadata.get("complete") is False
+                            or status == "ocr_uncertain"
+                            or (
+                                status == "ocr_failed"
+                                and isinstance(metadata.get("error_response"), dict)
+                                and isinstance(metadata["error_response"].get("blob"), dict)
+                            )
+                        )
                     )
                 )
                 and type(page.get("page")) is int
@@ -677,11 +685,22 @@ class CollectionRecovery:
             vision_page = metadata.get("provider") != "mineru" and bool(
                 metadata.get("prompt_version") or metadata.get("request_id")
             )
+            envelope = metadata.get("error_response")
+            bound_failed_vision = (
+                page.get("status") == "ocr_failed"
+                and vision_page
+                and isinstance(envelope, dict)
+                and isinstance(envelope.get("blob"), dict)
+            )
             retryable_page = page.get("status") in {"ocr_failed", "ocr_uncertain", "pending_ocr"} and (
                 _unknown(page)
                 or (
                     vision_page
-                    and (metadata.get("complete") is False or page.get("status") == "ocr_uncertain")
+                    and (
+                        metadata.get("complete") is False
+                        or page.get("status") == "ocr_uncertain"
+                        or bound_failed_vision
+                    )
                 )
             )
             cycles = page.get("ocr_retry_cycles", [])
@@ -700,15 +719,16 @@ class CollectionRecovery:
                     retryable_visual = False
                 if not (mineru_fallback or retryable_visual):
                     raise ValueError("retry_page_checkpoint_not_eligible")
-            envelope = metadata.get("error_response")
-            if metadata.get("http_status") == 429 and isinstance(envelope, dict):
+            if isinstance(envelope, dict) and isinstance(envelope.get("blob"), dict):
                 raw = read_image_blob(self.db.data_dir, row["owner_id"], envelope["blob"])
                 evidence = json.loads(raw)
                 validate_response_binding(evidence, document["content_hash"], page)
-                if evidence.get("http_status") != 429 or any(
-                    evidence.get(key) != value for key, value in envelope.items() if key != "blob"
-                ):
+                if any(evidence.get(key) != value for key, value in envelope.items() if key != "blob"):
+                    raise ValueError("retry_requires_bound_ocr_error_receipt")
+                if metadata.get("http_status") == 429 and evidence.get("http_status") != 429:
                     raise ValueError("retry_requires_bound_429_receipt")
+            elif bound_failed_vision:
+                raise ValueError("retry_requires_bound_ocr_error_receipt")
             previous = deepcopy(page)
             # Keep every previous checkpoint addressable from the current page,
             # but don't recursively duplicate all earlier cycles into each new

@@ -1,5 +1,6 @@
 """Recovery is durable, source-fenced, and preserves paid evidence."""
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -23,6 +24,7 @@ from app.contexts.documents.infrastructure.parsers.native_parser import (
 from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
 from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
     preserve_previous_asset_attempt,
+    persist_response_evidence,
 )
 from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import bind_linked_image_bounded
 from app.shared.domain.values import dump, now
@@ -84,6 +86,49 @@ def due(service):
         conn.execute("UPDATE collection_recovery_jobs SET available_at=0 WHERE status='waiting'")
         conn.execute("UPDATE collection_items SET available_at=0 WHERE status='failed'")
         conn.execute("UPDATE processing_jobs SET available_at=0 WHERE status='failed'")
+
+
+def bound_failed_vision_page(service, page, *, owner="owner"):
+    request = {
+        "request_id": "vision-request-1",
+        "attempts": 1,
+        "image_sha256": "a" * 64,
+        "prompt_version": "legal-page-transcription-v3",
+        "requested_model": "vision-test-model",
+    }
+    page["ocr"] = {"provider": "vision", **request}
+    response = b'{"choices":[]}'
+    evidence = {
+        "format": "ocr-error-response-v1",
+        "error_code": "invalid_provider_choices",
+        "payload_kind": "provider_response",
+        "request_sha256": hashlib.sha256(b"request").hexdigest(),
+        "source_hash": page["source_hash"],
+        "page": page["page"],
+        "request_id": request["request_id"],
+        "attempt": request["attempts"],
+        "image_sha256": request["image_sha256"],
+        "prompt_version": request["prompt_version"],
+        "requested_model": request["requested_model"],
+        "response_base64": base64.b64encode(response).decode("ascii"),
+        "content_hash": hashlib.sha256(response).hexdigest(),
+        "size": len(response),
+        "observed_bytes": len(response),
+        "capture_truncated": False,
+        "response_complete": True,
+    }
+    reference = persist_response_evidence(
+        service.archive.blobs,
+        owner,
+        evidence,
+        source_hash=page["source_hash"],
+        request_page=page,
+    )
+    page["ocr"]["error_response"] = {
+        **{key: value for key, value in evidence.items() if key != "response_base64"},
+        "blob": reference,
+    }
+    return page
 
 
 def test_empty_and_existing18_migration_preserves_all_business_rows(service):
@@ -255,6 +300,68 @@ def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
     decision = classify_processing(manifest, phase="parse")
     assert decision.reason == "paid_ocr_retry"
     assert decision.retryable and decision.pages == (1,)
+
+
+def test_failed_vision_page_with_bound_response_is_automatically_retried_without_complete_flag(service):
+    content = make_pdf([("Official text", False)])
+    original = service.archive.blobs.put_bytes("owner", content)
+    manifest = _parsed_result(_parse_pdf(content), original.digest, "law")
+    page = manifest["pages"][0]
+    page.update(status="ocr_failed", source_hash=original.digest)
+    bound_failed_vision_page(service, page)
+    decision = classify_processing(manifest, phase="parse")
+    assert decision.reason == "ocr_quality_retry"
+    assert decision.retryable and decision.pages == (page["page"],)
+
+    with service.db.transaction() as conn:
+        document = service.archive.store_original(
+            conn,
+            "owner",
+            original,
+            "law.pdf",
+            "application/pdf",
+            "https://official.invalid/law.pdf",
+            collection="country:ID",
+            level="primary",
+            tags=["country:ID"],
+            identity_key="bound-vision-error-automatic-retry",
+            kind_hint="law",
+        )
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+            (dump(manifest), document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision("ocr_failure_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+
+    result = service.collection.recovery.run_due(limit=32)
+
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+        job = conn.execute(
+            "SELECT phase,status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
+        ).fetchone()
+    assert tuple(job) == ("parse", "queued")
+    assert tuple(recovery) == ("queued", "ocr_quality_retry")
+    retried = saved["pages"][0]
+    assert retried["status"] == "pending_ocr" and retried["ocr"] == {"attempts": 0}
+    assert retried["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["error_response"]["blob"]
 
 
 def test_native_asset_retry_history_has_no_three_cycle_stop():

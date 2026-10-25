@@ -721,7 +721,6 @@ def rebuild_pdf_bounded(manifest: dict) -> dict:
 
 def _mineru_page_index_state(manifest: dict) -> tuple:
     """Capture page fields that can change MinerU-derived searchable content."""
-    from app.contexts.documents.infrastructure.parsers.ingestion_quality import pdf_page_status
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
         is_visual_fallback_page,
     )
@@ -732,11 +731,9 @@ def _mineru_page_index_state(manifest: dict) -> tuple:
             page.get("source_hash"),
             page.get("text"),
             page.get("printed_page"),
-            page.get("status"),
-            pdf_page_status(page),
-            tuple(page.get("reasons", [])),
             is_visual_fallback_page(page),
-            (page.get("ocr_fallback") or {}).get("accepted") is True,
+            isinstance(page.get("ocr_fallback"), dict)
+            and page["ocr_fallback"].get("accepted") is True,
         )
         for page in manifest.get("pages", [])
     )
@@ -746,7 +743,11 @@ def _mineru_index_rebuild_needed(previous: dict, updated: dict) -> bool:
     """Avoid rebuilding thousands of chunks for retry-metadata-only checkpoints."""
     if not isinstance(previous.get("elements"), list) or not isinstance(previous.get("chunks"), list):
         return True
-    if _mineru_page_index_state(previous) != _mineru_page_index_state(updated):
+    try:
+        index_state_changed = _mineru_page_index_state(previous) != _mineru_page_index_state(updated)
+    except (KeyError, TypeError, ValueError):
+        return True
+    if index_state_changed:
         return True
 
     # A page checkpoint is persisted before the derived manifest. If a worker

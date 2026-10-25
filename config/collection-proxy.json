@@ -20,6 +20,7 @@
     "jdih.dephub.go.id",
     "jdih.halal.go.id",
     "jdih.kemendag.go.id",
+    "jdih.kemenkeu.go.id",
     "jdih.kemnaker.go.id",
     "jdih.kppu.go.id",
     "jdih.lkpp.go.id",
@@ -62,6 +63,7 @@
   "doh_hosts": [],
   "browser_header_hosts": [
     "api-treaty-room.kemlu.go.id",
+    "jdih.kemenkeu.go.id",
     "jdih.kemnaker.go.id",
     "jdih.setneg.go.id",
     "treaty-room.kemlu.go.id",

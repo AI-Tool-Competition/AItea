@@ -439,7 +439,16 @@ export interface ChecklistCandidate {
   note: string;
   created_at: string;
   source_record: {
-    provider: "setneg" | "bkpm" | "rcepsec" | "ipos" | "acra" | "wto" | "sg_official_html" | "mkri";
+    provider:
+      | "setneg"
+      | "bkpm"
+      | "rcepsec"
+      | "ipos"
+      | "acra"
+      | "wto"
+      | "sg_official_html"
+      | "mkri"
+      | "jdih_kemenkeu";
     interpretation: "unreviewed_source_values";
     fields: Record<string, string | number | null>;
     structure?: {
@@ -449,6 +458,7 @@ export interface ChecklistCandidate {
       file_name: string;
       anchor_class: string;
       link_mechanism: string;
+      related_links?: { label: string; title: string; url: string }[];
     };
     file?: Record<string, string | number>;
     warnings?: string[];

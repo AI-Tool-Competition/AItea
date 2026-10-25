@@ -32,6 +32,34 @@ const sourceFieldLabels: Record<string, string> = {
   id: "来源文书 ID",
   id_theme: "官方目录主题 ID",
   document_type: "来源文种分类",
+  document_code: "来源文号代码",
+  title: "来源标题",
+  number: "来源编号",
+  year: "来源年份",
+  instrument_type: "法规形式",
+  type_abbreviation: "文种简称",
+  issuer: "发布机关",
+  decision_date: "制定日期",
+  promulgation_date: "公布日期",
+  effective_period: "来源生效期间",
+  place_of_issue: "发布地点",
+  gazette_source: "公报来源",
+  language: "来源语种",
+  status: "来源状态文字",
+  source_display_date: "来源页展示日期（语义未标明）",
+  related_record_count: "官方关联条目数量",
+  official_detail_url: "详情页链接",
+  official_file_url: "原件下载链接",
+  official_file_label: "官方文件标签",
+  file_role: "文件角色",
+  file_name: "文件名",
+  catalog_url: "目录页链接",
+  catalog_order: "目录排序条件",
+  catalog_issuer_filter: "目录发布机关筛选",
+  catalog_title: "目录显示标题",
+  search_page: "目录页码",
+  reported_result_count: "目录报告结果数",
+  highest_linked_page: "发现的最高页码",
   document_file_url: "来源原件链接",
   verified_original_url: "校验后的原件链接",
   regulation_number: "文号",
@@ -51,7 +79,6 @@ const sourceFieldLabels: Record<string, string> = {
   lokasi: "来源位置",
   subjek: "主题",
   bidang_hukum: "法律领域",
-  status: "来源状态标签",
   status_hukum: "来源法律状态标签",
   ln: "国家公报号",
   tln: "国家公报补编号",
@@ -72,8 +99,13 @@ const sourceProviderLabels: Record<string, string> = {
   wto: "世界贸易组织",
   sg_official_html: "新加坡官方资料",
   mkri: "印尼宪法法院原件",
+  jdih_kemenkeu: "印尼财政部 JDIH",
 };
 const sourceUnitLabels: Record<string, string> = {
+  official_regulation_record: "官方法规记录",
+  official_tax_catalog: "官方税务目录",
+  official_full_text: "官方法规正文",
+  official_attachment: "官方法规附件",
   preamble: "序言",
   chapter: "章节",
   annex: "附件",
@@ -362,6 +394,28 @@ export function ChecklistCandidates({
                                 </div>
                               ))}
                           </dl>
+                          {candidate.source_record.structure?.related_links?.length ? (
+                            <div className="ta-checklist-source-related">
+                              <strong>官方页面列出的关联资料</strong>
+                              <ul>
+                                {candidate.source_record.structure.related_links.map((related) => {
+                                  const relatedHref = safeSourceUrl(related.url);
+                                  return (
+                                    <li key={related.url}>
+                                      {relatedHref ? (
+                                        <a href={relatedHref} target="_blank" rel="noreferrer">
+                                          {related.title}
+                                        </a>
+                                      ) : (
+                                        <span>{related.title}</span>
+                                      )}
+                                      <small>{related.label}</small>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          ) : null}
                           {candidate.source_record.file?.realName && (
                             <p>原件文件名：{candidate.source_record.file.realName}</p>
                           )}

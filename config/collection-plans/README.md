@@ -1,6 +1,6 @@
 # 法规采集方案
 
-当前启用两份来源独立的预置方案：[`indonesia-20261003.json`](indonesia-20261003.json) 为印度尼西亚第一期 v10，5 章、29 项；[`singapore-demo-20261009.json`](singapore-demo-20261009.json) 为六堡茶新加坡比赛 Demo 清单 v5，5 章、16 项、6 类渠道。各国家通过 `country` 和不可变文档国别分别管理。印尼 v10 为 1.8 中央部委法规补入已通过项目代理核验的交通部 JDIH 分页目录；来源只覆盖该部，历史版本 v9 保存在 [`versions/indonesia-20261003.v9.json`](versions/indonesia-20261003.v9.json)。
+当前启用两份来源独立的预置方案：[`indonesia-20261003.json`](indonesia-20261003.json) 为印度尼西亚第一期 v11，5 章、29 项；[`singapore-demo-20261009.json`](singapore-demo-20261009.json) 为六堡茶新加坡比赛 Demo 清单 v5，5 章、16 项、6 类渠道。各国家通过 `country` 和不可变文档国别分别管理。印尼 v10 为 1.8 中央部委法规补入已通过项目代理核验的交通部 JDIH 分页目录；v11 为 4.3 增加财政部 JDIH 的 DJP 发布机关目录及正文／附件区分。两项均为补充来源，不代表该部法规或税务资料完整；v10 历史方案保存在 [`versions/indonesia-20261003.v10.json`](versions/indonesia-20261003.v10.json)，更早的 v9 保存在 [`versions/indonesia-20261003.v9.json`](versions/indonesia-20261003.v9.json)。
 
 新加坡方案保留附件中的唯一入口、完整采集步骤和注意事项。现行 Acts 与附属立法的全量范围仍保留；监管材料总上限 45 份。判例仅进入 SG-LegalCite 专门的候选审核流程，限定引用判决年份 2016—2025，候选上限 150、核验命题上限 50；不把完整判决、长引文或候选池送入商业向量库。法院与 SIAC 两项未触发时跳过，MAS、SGX、EMA 及一般标准库不随官网导航扩采。正文、目录和审核覆盖分别验收。
 

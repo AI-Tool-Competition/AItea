@@ -27,7 +27,7 @@ _PATTERN_FIELDS = (
     "html_document_patterns",
     "exclude_patterns",
 )
-_ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "manual"}
+_ADAPTERS = {"bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "manual"}
 _SETNEG_HOST = "jdih.setneg.go.id"
 _SETNEG_API = "https://jdih.setneg.go.id/api/hukumproduk/"
 _SETNEG_TYPES = {"1.3": "UU", "1.4": "PERPU", "1.5": "PP", "1.6": "PERPRES"}
@@ -1229,6 +1229,9 @@ class _Recipe:
         self.dephub_regulations = recipe.get("dephub_regulations", False)
         if not isinstance(self.dephub_regulations, bool):
             raise ValueError("交通部法规目录配置无效。")
+        self.kemenkeu_tax = recipe.get("kemenkeu_tax", False)
+        if not isinstance(self.kemenkeu_tax, bool):
+            raise ValueError("财政部税务法规目录配置无效。")
         self.sso_catalog_2026 = recipe.get("sso_catalog_2026", False)
         if not isinstance(self.sso_catalog_2026, bool):
             raise ValueError("SSO 目录配置无效。")
@@ -1299,6 +1302,10 @@ class _Recipe:
             return "document"
         if self.dephub_regulations and parsed.hostname == _DEPHUB_HOST:
             from app.contexts.ingestion.infrastructure.source_adapters.dephub_discovery import purpose
+
+            return purpose(url)
+        if parsed.hostname == "jdih.kemenkeu.go.id" and self.kemenkeu_tax:
+            from app.contexts.ingestion.infrastructure.source_adapters.kemenkeu_discovery import purpose
 
             return purpose(url)
         if self.wto_public_catalog and parsed.hostname in {"docs.wto.org", "goods-schedules.wto.org"}:
@@ -1562,6 +1569,10 @@ def discover_page(url: str, content: bytes, mime_type: str, recipe: dict) -> dic
     if not content:
         return _result(reason="页面为空，不能确认原文。")
     mime = mime_type.split(";", 1)[0].strip().casefold()
+    if rules.kemenkeu_tax:
+        from app.contexts.ingestion.infrastructure.source_adapters.kemenkeu_discovery import inspect
+
+        return inspect(current, content, mime, rules)
     if rules.wto_public_catalog:
         from app.contexts.ingestion.infrastructure.source_adapters.wto_discovery import inspect
 
@@ -1923,6 +1934,20 @@ def recipe_for(item: dict) -> dict:
         "required_query": {},
         "max_links": 200,
     }
+    if adapter == "kemenkeu_tax":
+        if (
+            _country(item) != "ID"
+            or item.get("id") != "4.3"
+            or hosts != ["jdih.kemenkeu.go.id"]
+            or len(seeds) != 1
+            or seeds[0].get("purpose") != "catalog"
+        ):
+            return {
+                "adapter": "manual",
+                "reason": "财政部税务法规适配仅允许印尼 4.3 项的官方受限目录入口。",
+            }
+        result["kemenkeu_tax"] = True
+        return result
     wto_member = _country(item)
     if (wto_member, item.get("id")) in {("ID", "5.4"), ("SG", "5.2")} and item.get("limits", {}).get(
         "wto_public_catalog"

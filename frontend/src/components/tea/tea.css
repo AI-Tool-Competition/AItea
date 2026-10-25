@@ -3101,6 +3101,18 @@
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
+.ta-checklist-source-related {
+  margin: 8px 0;
+}
+.ta-checklist-source-related strong {
+  color: var(--foreground);
+}
+.ta-checklist-source-related ul {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
 .ta-checklist-source-record small {
   display: block;
   overflow-wrap: anywhere;

@@ -63,7 +63,7 @@ class ChecklistItem(Definition):
     acceptance: list[str]
     verbatim_requirements: str
     execution: Literal["discovery", "dataset_review"]
-    adapter: Literal["bpk", "ma_jdih", "sso", "html_links", "manual"]
+    adapter: Literal["bpk", "ma_jdih", "sso", "html_links", "kemenkeu_tax", "manual"]
     limits: dict
 
 
@@ -243,11 +243,21 @@ class ChecklistService:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("backfill limit must be between 1 and 1000")
         providers = (
-            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html", "mkri"}
+            {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html", "mkri", "jdih_kemenkeu"}
             if providers is None
             else set(providers)
         )
-        allowed_providers = {"setneg", "bkpm", "rcepsec", "ipos", "acra", "wto", "sg_official_html", "mkri"}
+        allowed_providers = {
+            "setneg",
+            "bkpm",
+            "rcepsec",
+            "ipos",
+            "acra",
+            "wto",
+            "sg_official_html",
+            "mkri",
+            "jdih_kemenkeu",
+        }
         if not providers or not providers <= allowed_providers:
             raise ValueError("unsupported candidate source provider")
         from app.shared.infrastructure.persistence.blob_store import BlobIntegrityError
@@ -295,6 +305,12 @@ class ChecklistService:
                 "(b.country='ID' AND p.final_url LIKE "
                 "'https://s.mkri.id/public/content/infoumum/regulation/pdf/%')"
             )
+        if "jdih_kemenkeu" in providers:
+            source_filters.append(
+                "(b.country='ID' AND b.plan_id='indonesia-20261003' AND b.item_id='4.3' AND "
+                "(p.final_url LIKE 'https://jdih.kemenkeu.go.id/search?%' OR "
+                "p.final_url LIKE 'https://jdih.kemenkeu.go.id/dok/%'))"
+            )
         candidates = []
         with closing(self.db.connect()) as conn:
             rows = conn.execute(
@@ -334,6 +350,8 @@ class ChecklistService:
                     if row["final_url"].startswith(
                         "https://s.mkri.id/public/content/infoumum/regulation/pdf/"
                     )
+                    else "jdih_kemenkeu"
+                    if row["final_url"].startswith("https://jdih.kemenkeu.go.id/")
                     else "wto"
                     if row["final_url"].startswith("https://docs.wto.org/")
                     or row["final_url"].startswith("https://www.wto.org/")
@@ -352,6 +370,7 @@ class ChecklistService:
                             or (provider == "setneg" and item["id"] not in {"1.3", "1.4", "1.5", "1.6"})
                             or (provider == "bkpm" and item["id"] != "4.1")
                             or (provider == "rcepsec" and item["id"] != "5.3")
+                            or (provider == "jdih_kemenkeu" and item["id"] != "4.3")
                         )
                     )
                     or (
@@ -428,7 +447,7 @@ class ChecklistService:
                     else "application/xml"
                     if provider == "wto" and "/GetXMLResults.aspx?" in row["final_url"]
                     else "text/html"
-                    if provider in {"rcepsec", "ipos", "acra", "wto", "sg_official_html"}
+                    if provider in {"rcepsec", "ipos", "acra", "wto", "sg_official_html", "jdih_kemenkeu"}
                     else "application/json"
                 )
                 result = discover_page(row["final_url"], body, mime, recipe_for(item))
@@ -444,7 +463,7 @@ class ChecklistService:
                 )
                 purpose_matches = (
                     result.get("purpose") in {"catalog", "detail", "document"}
-                    if provider in {"ipos", "acra", "wto", "sg_official_html", "mkri"}
+                    if provider in {"ipos", "acra", "wto", "sg_official_html", "mkri", "jdih_kemenkeu"}
                     else result.get("purpose") == expected_purpose
                 )
                 if not result.get("matched") or not purpose_matches:
@@ -1092,6 +1111,7 @@ class ChecklistService:
                             "wto",
                             "sg_official_html",
                             "mkri",
+                            "jdih_kemenkeu",
                         }
                         or source_record.get("interpretation") != "unreviewed_source_values"
                         or not isinstance(source_record.get("fields"), dict)

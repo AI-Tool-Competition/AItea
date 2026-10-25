@@ -72,10 +72,26 @@ def test_catalog_has_both_source_checklists_without_implicitly_seeding_data(clie
 def test_oversized_official_law_items_have_explicit_bounded_caps(client):
     plan = client.app.state.service.checklists.plans[PLAN]
     items = {item["id"]: item for item in plan["items"]}
-    assert plan["version"] == 10
+    assert plan["version"] == 11
     for item_id in ("1.3", "1.4", "1.5", "1.6", "4.1"):
         assert items[item_id]["limits"]["max_original_bytes"] == 300 * 1024 * 1024
         assert items[item_id]["limits"]["download_timeout_seconds"] == 900
+
+
+def test_indonesia_v11_uses_official_kemenkeu_tax_catalog_and_preserves_v10(client):
+    from app.contexts.ingestion.application.checklists import load_blueprint_version
+
+    current = client.app.state.service.checklists.plans[PLAN]
+    tax = next(item for item in current["items"] if item["id"] == "4.3")
+    previous = load_blueprint_version(PLAN, 10)
+    old_tax = next(item for item in previous["items"] if item["id"] == "4.3")
+    assert current["version"] == 11
+    assert tax["adapter"] == "kemenkeu_tax"
+    assert tax["entries"][0]["url"] == (
+        "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak"
+    )
+    assert previous["version"] == 10
+    assert old_tax["entries"][0]["url"] == "https://www.pajak.go.id/id/peraturan"
 
 
 def test_configuration_is_atomic_idempotent_versioned_and_private(client, tmp_path):
@@ -159,10 +175,13 @@ def test_new_plan_version_retires_old_sources_and_waits_for_old_runs(client):
         owner = conn.execute("SELECT owner_id FROM sources WHERE id=?", (old_source,)).fetchone()[0]
         assert conn.execute("SELECT enabled FROM sources WHERE id=?", (old_source,)).fetchone()[0] == 0
         assert conn.execute("SELECT enabled FROM sources WHERE id=?", (new_source,)).fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
-            (owner, PLAN, current_version - 1),
-        ).fetchone()[0] == 29
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM checklist_bindings WHERE owner_id=? AND plan_id=? AND version=?",
+                (owner, PLAN, current_version - 1),
+            ).fetchone()[0]
+            == 29
+        )
         assert not service.collection.source_due(conn, owner, new_source)
     assert not any(row["id"] == new_source for row in service.due_sources())
 
@@ -412,6 +431,58 @@ def test_saved_bkpm_catalog_backfill_preserves_verified_row_metadata(client):
     assert candidate["source_record"]["evidence"] == {"url": catalog_url, "sha256": blob.digest}
 
 
+def test_saved_kemenkeu_tax_catalog_backfill_preserves_instrument_identity(client):
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
+
+    configure(client)
+    run = discover(client, code="4.3", request="kemenkeu-tax-source-record-backfill")
+    service = client.app.state.service
+    owner = client.get("/api/tea/bootstrap").json()["user"]["id"]
+    with closing(service.db.connect()) as conn:
+        claim = conn.execute(
+            """SELECT i.*,r.plan FROM collection_items i JOIN collection_runs r ON r.id=i.run_id
+            WHERE i.run_id=? AND i.host='jdih.kemenkeu.go.id' ORDER BY i.id LIMIT 1""",
+            (run["id"],),
+        ).fetchone()
+    assert claim
+    claim = dict(claim)
+    claim["plan"] = json.loads(claim["plan"])
+    item = next(entry for entry in service.checklists.plans[PLAN]["items"] if entry["id"] == "4.3")
+    detail_url = "https://jdih.kemenkeu.go.id/dok/per-6pj2026/files"
+    body = b"""<html><head><title>PER-6/PJ/2026 - Official tax regulation | JDIH Kementerian Keuangan</title></head><body>
+      <div class="breadcrumb-inner"><div class="page-title"><h1>PER-6/PJ/2026</h1></div>
+      <ul class="dok-meta"><li>Direktorat Jenderal Pajak</li><li>01 Januari 2026</li><li>Berlaku</li></ul></div>
+      <div class="dok-file-list"><div class="justify-content-between d-flex"><div>
+      <a href="/api/download/19e80404-0ce8-48b1-8938-31530ada8701/PER-6%20PJ%202026.pdf">Fulltext PDF (Indonesia)</a>
+      </div><span>1 MB</span></div></div></body></html>"""
+    result = discover_page(detail_url, body, "text/html", recipe_for(item))
+    for link in result["links"]:
+        link.pop("source_record", None)
+    blob = service.archive.blobs.put_bytes(owner, body)
+    fetched = {
+        "url": detail_url,
+        "filename": "djp-files.html",
+        "mime_type": "text/html",
+        "blob": blob,
+        "request_evidence": {"method": "GET", "url": detail_url},
+    }
+    with service.db.transaction() as conn:
+        service.checklists.save_page(conn, claim, fetched, claim["plan"], result)
+
+    candidate = client.get(BASE + "/items/4.3/candidates").json()["items"][0]
+    assert candidate["source_record"] is None
+    recovered = service.checklists.backfill_candidate_source_records(providers={"jdih_kemenkeu"})
+    assert recovered == {"scanned": 1, "verified": 1, "inserted": 1, "skipped": 0}
+    candidate = next(
+        row
+        for row in client.get(BASE + "/items/4.3/candidates").json()["items"]
+        if row["id"] == candidate["id"]
+    )
+    assert candidate["source_record"]["provider"] == "jdih_kemenkeu"
+    assert candidate["source_record"]["fields"]["document_code"] == "PER-6/PJ/2026"
+    assert candidate["source_record"]["evidence"] == {"url": detail_url, "sha256": blob.digest}
+
+
 def test_retired_rcep_catalog_remains_available_in_immutable_plan_history(client):
     from app.contexts.ingestion.application.checklists import load_blueprint_version
     from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import discover_page, recipe_for
@@ -420,9 +491,7 @@ def test_retired_rcep_catalog_remains_available_in_immutable_plan_history(client
     archived = load_blueprint_version(PLAN, 8)
     previous = load_blueprint_version(PLAN, 9)
     current_sources = [
-        entry["url"]
-        for item in current["items"] if item["id"] == "5.3"
-        for entry in item["entries"]
+        entry["url"] for item in current["items"] if item["id"] == "5.3" for entry in item["entries"]
     ]
     historical_item = next(item for item in archived["items"] if item["id"] == "5.3")
     previous_central = next(item for item in previous["items"] if item["id"] == "1.8")
@@ -494,9 +563,7 @@ def test_bkpm_multipart_original_is_recovered_during_collection(client, monkeypa
         + b"\r\n--"
         + boundary
         + b'\r\nContent-Disposition: form-data; name="customPath"\r\n\r\noriginal/archive'
-        b"\r\n--"
-        + boundary
-        + b"--\r\n"
+        b"\r\n--" + boundary + b"--\r\n"
     )
     with service.db.transaction() as conn:
         binding = conn.execute(
@@ -545,9 +612,7 @@ def test_bkpm_multipart_original_is_recovered_during_collection(client, monkeypa
         item = conn.execute(
             "SELECT status,document_id FROM collection_items WHERE id=?", (claim["id"],)
         ).fetchone()
-        doc = conn.execute(
-            "SELECT * FROM documents WHERE id=?", (item["document_id"],)
-        ).fetchone()
+        doc = conn.execute("SELECT * FROM documents WHERE id=?", (item["document_id"],)).fetchone()
         cached = conn.execute(
             "SELECT etag,last_modified FROM collection_http_cache WHERE owner_id=? AND url=?",
             (owner, url),

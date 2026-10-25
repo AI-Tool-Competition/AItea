@@ -1080,3 +1080,174 @@ def test_mk_official_puu_alternative_keeps_type_filter_and_scopes_judgment_files
         (pdf, "document"),
     ]
     assert discover_page(pdf, b"%PDF-1.7\n", "application/pdf", rules)["matched"]
+
+
+def kemenkeu_tax_item():
+    return item(
+        "ID",
+        "4.3",
+        "kemenkeu_tax",
+        (
+            "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak",
+            "catalog",
+        ),
+    )
+
+
+def test_kemenkeu_tax_adapter_keeps_exact_issuer_query_and_bounded_routes():
+    from app.contexts.ingestion.infrastructure.source_adapters.kemenkeu_discovery import (
+        catalog_url,
+        purpose,
+        query_allowed,
+    )
+
+    rules = recipe_for(kemenkeu_tax_item())
+    assert rules["adapter"] == "kemenkeu_tax" and rules["kemenkeu_tax"] is True
+    assert rules["allowed_hosts"] == ["jdih.kemenkeu.go.id"]
+    assert query_allowed(catalog_url(2000))
+    assert purpose("https://jdih.kemenkeu.go.id/dok/per-7pj2025/files") == "detail"
+    assert (
+        purpose(
+            "https://jdih.kemenkeu.go.id/api/download/09e80404-0ce8-48b1-8938-31530ada8701/PER-7%20PJ%202025.pdf"
+        )
+        == "document"
+    )
+    for url in (
+        "https://jdih.kemenkeu.go.id/search?order=desc&teu=Other",
+        "https://jdih.kemenkeu.go.id/search?order=desc&order=asc&teu=Direktorat+Jenderal+Pajak",
+        "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak&page=2001",
+        "https://jdih.kemenkeu.go.id/dok/per-7pj2025/unknown",
+        "https://jdih.kemenkeu.go.id/api/download/09e80404-0ce8-48b1-8938-31530ada8701/../law.pdf",
+        "https://jdih.kemenkeu.go.id.evil.example/search?order=desc&teu=Direktorat+Jenderal+Pajak",
+    ):
+        assert purpose(url) is None
+
+
+def test_kemenkeu_tax_catalog_tracks_results_and_discovers_only_formal_instruments():
+    url = "https://jdih.kemenkeu.go.id/search?order=desc&teu=Direktorat+Jenderal+Pajak"
+    result = discover_page(
+        url,
+        html(
+            """<main><p>Ditemukan 202 hasil</p>
+              <a href="/dok/per-6pj2026">PER-6/PJ/2026</a>
+              <a href="/dok/kep-79pj2025">KEP-79/PJ/2025</a>
+              <a href="/dok/se-10pj2025">SE-10/PJ/2025</a>
+              <a href="/dok/pmk-28-tahun-2026">PMK 28 TAHUN 2026</a>
+              <a href="?order=desc&amp;teu=Direktorat+Jenderal+Pajak&amp;page=1">1 Page 1 is your current page</a>
+              <a href="?order=desc&amp;teu=Direktorat+Jenderal+Pajak&amp;page=2">2</a>
+            </main>""",
+            title="DJP regulations",
+        ),
+        "text/html",
+        recipe_for(kemenkeu_tax_item()),
+    )
+    assert result["matched"] and result["purpose"] == "catalog"
+    assert [(row["title"], row["purpose"]) for row in result["links"]] == [
+        ("PER-6/PJ/2026", "detail"),
+        ("KEP-79/PJ/2025", "detail"),
+        ("SE-10/PJ/2025", "detail"),
+        ("2", "catalog"),
+    ]
+    assert result["source_record"]["fields"]["reported_result_count"] == 202
+    assert result["source_record"]["fields"]["highest_linked_page"] == 2
+    assert result["links"][0]["source_record"]["fields"]["catalog_title"] == "PER-6/PJ/2026"
+    assert result["links"][0]["source_record"]["fields"]["reported_result_count"] == 202
+    assert all(
+        isinstance(value, (str, int)) or value is None
+        for value in result["links"][0]["source_record"]["fields"].values()
+    )
+
+
+def test_kemenkeu_tax_detail_preserves_visible_metadata_and_only_its_files_page():
+    definition = kemenkeu_tax_item()
+    url = "https://jdih.kemenkeu.go.id/dok/per-7pj2025/overview"
+    result = discover_page(
+        url,
+        html(
+            """<div class="row dok-item"><div class="col-4">Tipe Dokumen</div><div class="col-8"><span>Peraturan</span></div></div>
+              <div class="row dok-item"><div class="col-4">Kode</div><div class="col-8"><span>PER-7/PJ/2025</span></div></div>
+              <div class="row dok-item"><div class="col-4">Judul</div><div class="col-8"><span>Petunjuk Administrasi Pajak</span></div></div>
+              <div class="row dok-item"><div class="col-4">Nomor</div><div class="col-8"><span>7</span></div></div>
+              <div class="row dok-item"><div class="col-4">Tahun</div><div class="col-8"><span>2025</span></div></div>
+              <div class="row dok-item"><div class="col-4">T.E.U. (Tajuk Entri Utama)</div><div class="col-8"><span>Direktorat Jenderal Pajak</span></div></div>
+              <div class="row dok-item"><div class="col-4">Tanggal Penetapan</div><div class="col-8"><span>21 Mei 2025</span></div></div>
+              <div class="row dok-item"><div class="col-4">Status</div><div class="col-8"><span>Berlaku</span></div></div>
+              <div class="accordion-item"><div class="accordion-header"><button>Produk Hukum Terkait</button></div>
+                <div class="accordion-collapse collapse show"><div class="accordion-body">
+                  <a href="/dok/pmk-28-tahun-2026"><span class="title">PMK 28 TAHUN 2026</span></a>
+                  <a href="https://foreign.example/dok/other">Foreign result</a>
+                </div></div>
+              </div>
+              <a href="/api/download/09e80404-0ce8-48b1-8938-31530ada8701/PER-7%20PJ%202025.pdf">Fulltext 0</a>
+              <a href="/dok/per-7pj2025/files">Files</a>
+              <a href="https://unrelated.example/files">External files</a>""",
+            title="PER-7/PJ/2025 - Petunjuk Administrasi Pajak | JDIH Kementerian Keuangan",
+        ),
+        "text/html",
+        recipe_for(definition),
+    )
+    assert result["matched"] and result["purpose"] == "detail"
+    assert [row["url"] for row in result["links"]] == ["https://jdih.kemenkeu.go.id/dok/per-7pj2025/files"]
+    record = result["source_record"]
+    assert record["provider"] == "jdih_kemenkeu"
+    assert record["fields"]["document_code"] == "PER-7/PJ/2025"
+    assert record["fields"]["title"] == "Petunjuk Administrasi Pajak"
+    assert record["fields"]["issuer"] == "Direktorat Jenderal Pajak"
+    assert record["fields"]["decision_date"] == "21 Mei 2025"
+    assert record["fields"]["status"] == "Berlaku"
+    assert record["fields"]["related_record_count"] == 1
+    assert record["structure"]["related_links"] == [
+        {
+            "label": "Produk Hukum Terkait",
+            "title": "PMK 28 TAHUN 2026",
+            "url": "https://jdih.kemenkeu.go.id/dok/pmk-28-tahun-2026",
+        }
+    ]
+    assert any("Fulltext 标为 0" in warning for warning in result["warnings"])
+
+
+def test_kemenkeu_tax_files_distinguish_full_text_attachments_abstracts_and_empty_files():
+    definition = kemenkeu_tax_item()
+    url = "https://jdih.kemenkeu.go.id/dok/per-7pj2025/files"
+    result = discover_page(
+        url,
+        html(
+            """<div class="breadcrumb-inner"><div class="page-title"><h1>PER-7/PJ/2025</h1></div>
+              <ul class="dok-meta"><li>Direktorat Jenderal Pajak</li><li>21 Mei 2025</li><li>Berlaku</li></ul></div>
+              <div class="dok-file-list">
+                <div class="justify-content-between d-flex"><div><a href="/api/download/09e80404-0ce8-48b1-8938-31530ada8701/PER-7%20PJ%202025.pdf">Fulltext PDF (Indonesia)</a></div><span>0 Bytes</span></div>
+                <div class="justify-content-between d-flex"><div><a href="/api/download/19e80404-0ce8-48b1-8938-31530ada8701/PER-7%20PJ%202025%20signed.pdf">Fulltext PDF (Indonesia)</a></div><span>0.5 MB</span></div>
+                <div class="justify-content-between d-flex"><div><a href="/api/download/2df88590-f6b2-4e89-9a28-98f6d4084876/Lampiran%20PER-7%20PJ%202025.pdf">Fulltext PDF (Indonesia)</a></div><span>2 MB</span></div>
+                <div class="justify-content-between d-flex"><div><a href="/api/download/3df88590-f6b2-4e89-9a28-98f6d4084876/Abstrak%20PER-7.pdf">Abstrak PDF (Indonesia)</a></div><span>1 MB</span></div>
+              </div>""",
+            title="PER-7/PJ/2025 - Petunjuk Administrasi Pajak | JDIH Kementerian Keuangan",
+        ),
+        "text/html",
+        recipe_for(definition),
+    )
+    assert result["matched"] and result["purpose"] == "detail"
+    assert len(result["links"]) == 2
+    roles = {row["source_record"]["structure"]["unit_type"] for row in result["links"]}
+    assert roles == {"official_full_text", "official_attachment"}
+    full_text = next(
+        row
+        for row in result["links"]
+        if row["source_record"]["structure"]["unit_type"] == "official_full_text"
+    )
+    attachment = next(
+        row
+        for row in result["links"]
+        if row["source_record"]["structure"]["unit_type"] == "official_attachment"
+    )
+    assert any("0 Bytes" in warning for warning in result["warnings"])
+    assert full_text["source_record"]["fields"]["document_code"] == "PER-7/PJ/2025"
+    assert full_text["source_record"]["fields"]["issuer"] == "Direktorat Jenderal Pajak"
+    assert full_text["source_record"]["fields"]["source_display_date"] == "21 Mei 2025"
+    assert attachment["source_record"]["fields"]["file_role"] == "official_attachment"
+    assert any("摘要或预览" in warning for warning in result["warnings"])
+    assert discover_page(full_text["url"], b"%PDF-1.7\n%%EOF", "application/pdf", recipe_for(definition))[
+        "matched"
+    ]
+    assert not discover_page(full_text["url"], b"HTML error page", "application/pdf", recipe_for(definition))[
+        "matched"
+    ]

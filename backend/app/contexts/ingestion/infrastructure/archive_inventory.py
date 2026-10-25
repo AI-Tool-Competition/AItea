@@ -1998,6 +1998,7 @@ def _candidate_source_records(conn, partitions, summary, owner, country):
                 "wto",
                 "sg_official_html",
                 "mkri",
+                "jdih_kemenkeu",
             }
             or source_record.get("interpretation") != "unreviewed_source_values"
             or not isinstance(source_record.get("fields"), dict)

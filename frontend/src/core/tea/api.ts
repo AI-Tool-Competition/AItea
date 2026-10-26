@@ -517,6 +517,8 @@ export function safeSourceUrl(url?: string | null) {
   }
 }
 import type {
+  ApiSettings,
+  ApiSettingsPatch,
   LegalAnalysis,
   LegalFact,
   LegalFactInput,
@@ -536,6 +538,14 @@ import type {
   StageAnalysis,
   SearchResult,
 } from "./types";
+
+export function getApiSettings(signal?: AbortSignal) {
+  return teaRequest<ApiSettings>("/admin/api-settings", { signal });
+}
+
+export function saveApiSettings(input: ApiSettingsPatch, signal?: AbortSignal) {
+  return patch<ApiSettings>("/admin/api-settings", input, signal);
+}
 
 const legalPath = (caseId: string) =>
   `/cases/${encodeURIComponent(caseId)}/legal`;

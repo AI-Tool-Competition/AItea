@@ -46,6 +46,7 @@ def test_top_level_is_only_composition_and_stable_entrypoints():
     assert {path.name for path in APP.glob("*.py")} == {"__init__.py", "main.py", "bootstrap.py"}
     assert {p.name for p in (APP / "contexts").iterdir() if (p / "__init__.py").is_file()} == {
         "accounts",
+        "administration",
         "workflows",
         "conversations",
         "documents",

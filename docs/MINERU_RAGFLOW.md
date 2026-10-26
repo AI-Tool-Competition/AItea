@@ -56,6 +56,8 @@ uv run --project backend --locked python scripts/ragflow.py status --runtime use
 
 bootstrap 通过原有 `EMBEDDING_BASE_URL/API_KEY/MODEL` 注册 RAGFlow 模型提供商和实例，保存真实模型 ID、集成密钥到忽略配置；不下载 embedding 权重。私有密钥和内部账号密码不要提交或展示。
 
+`make ragflow-bootstrap` 每次先从活动私有配置刷新模型参数。配置完整的 `RERANK_BASE_URL/API_KEY/MODEL` 时，同步独立的 `aitea_rerank` 实例并写入 `RAGFLOW_RERANK_MODEL`，检索仍由 RAGFlow 执行。固定版本 `v1.0.0-rc2` 的 OpenAI-API-Compatible 驱动未实现重排，故使用该版本 [VLLM 的远端重排协议](https://github.com/infiniflow/ragflow/blob/v1.0.0-rc2/internal/entity/models/vllm.go)；此处只调用兼容接口，不部署本地模型。Base URL 填 `/rerank` 上级路径，接口接收 `model/query/documents/top_n`，返回 `results[].index/relevance_score`。重复同步复用已有实例，配置变化才更新；同步期间私有文件发生变化时拒绝写回旧绑定。后台保存、重启与停用规则统一见 [实例配置](INSTANCE_MANAGEMENT.md#后台-api-配置)。
+
 ## 索引与检索
 
 AItea 在 RAGFlow 中登记资料身份，再通过 chunk API 导入已校验的结构化切片，不触发 RAGFlow 内置解析或本地 ingestion worker。原件不超过 128 MiB 时登记原件；超过上限时创建空白虚拟文档，避免重复上传 MinerU 已处理的原件。`RAGFLOW_CHUNK_CONCURRENCY` 控制每份文档一次写入的块数，默认 8；它与 MinerU 在途数是独立配置。

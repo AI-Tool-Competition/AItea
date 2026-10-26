@@ -4,6 +4,8 @@
 
 `TEA_CONFIG_DIR` 可指定唯一活动配置根；完整实例恢复默认使用其 `data/config/catalogs/` 快照。修改前运行 `make instance-paths` 查看生效位置，详见 [实例管理](../docs/INSTANCE_MANAGEMENT.md)。
 
+管理员可在“系统管理 → API 配置”（`/tea/admin/api`）维护实例的模型与解析凭据，保存、生效与覆盖规则见 [后台 API 配置](../docs/INSTANCE_MANAGEMENT.md#后台-api-配置)。本目录不保存这些私有值。
+
 ## Agent 调度与记忆
 
 节点会话在配置生成密钥后使用模型自主选择工具，五项业务工具和 RAG、识图、联网搜索可组合调用；后台配置的分析流程继续约束证据、法域及核验。`AGENT_MODEL` 示例为 `gemini-3.8-flash`，独立于文档处理模型；地址和密钥可继承 `LLM_*`。私有设置、工具扩展方法、调用预算、记忆有效性及迁移说明统一维护在 [Agent 调度与记忆](../docs/AGENT_RUNTIME.md)。

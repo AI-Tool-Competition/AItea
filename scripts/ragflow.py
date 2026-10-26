@@ -52,6 +52,9 @@ def prepare(root=ROOT):
         or application.get("LLM_BASE_URL")
         or "",
         "AITEA_EMBEDDING_MODEL": application.get("EMBEDDING_MODEL") or "",
+        "AITEA_RERANK_API_KEY": application.get("RERANK_API_KEY") or "",
+        "AITEA_RERANK_BASE_URL": application.get("RERANK_BASE_URL") or "",
+        "AITEA_RERANK_MODEL": application.get("RERANK_MODEL") or "",
         "RAGFLOW_API_KEY": existing.get("RAGFLOW_API_KEY") or "",
     }
     if any("\n" in value or "\r" in value for value in values.values()):
@@ -65,7 +68,7 @@ def prepare(root=ROOT):
     )
     for name in ("mysql", "minio", "kvrocks", "nats", "infinity", "logs"):
         (paths.ragflow_data / name).mkdir(parents=True, exist_ok=True)
-    print("RAGFlow 私有配置已准备，embedding 沿用后端接口和密钥。")
+    print("RAGFlow 私有配置已准备，embedding 和 rerank 沿用后端接口和密钥。")
     return path
 
 

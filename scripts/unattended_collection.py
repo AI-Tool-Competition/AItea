@@ -1402,8 +1402,8 @@ class Collector:
                 for url, item in sorted(
                     frontier.items(),
                     key=lambda pair: (
+                        -int(is_bi_official and pair[1].get("purpose") == "catalog"),
                         pair[1].get("attempt_count", 0),
-                            -int(is_bi_official and pair[1].get("purpose") == "catalog"),
                         -int(pair[1].get("purpose") == "document"),
                         pair[0],
                     ),

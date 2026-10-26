@@ -574,6 +574,32 @@ def test_bi_catalogue_total_drift_forces_unconditional_root_recheck(environment)
     assert collector.state["sources"][configured["id"]].get("force_root_refresh") is None
 
 
+def test_bi_catalogue_retry_precedes_unattempted_details(environment):
+    env = environment
+    configured = bi_official_source()
+    root = configured["url"]
+    env.responses[root] = lambda _url, options: bi_catalogue_page(
+        2 if options.get("form_fields") is not None else 1
+    )
+    collector = env.make(
+        [configured],
+        country="ID",
+        limits={"requests_per_source_cycle": 2, "max_frontier": 4},
+    )
+
+    collector.tick()
+    state = collector.state["sources"][configured["id"]]
+    page_two = next(url for url, item in state["frontier"].items() if item["purpose"] == "catalog")
+    state["frontier"][page_two]["health"]["next_at"] = env.clock[0]
+    collector.save()
+
+    env.clock[0] += collector.limits["tick_seconds"]
+    collector.tick()
+
+    assert env.calls[2]["url"] == root
+    assert env.calls[2]["request_method"] == "POST"
+
+
 def test_bi_official_attachment_record_stays_bound_to_its_detail_page_bytes():
     configured = bi_official_source()
     detail = "https://www.bi.go.id/id/publikasi/peraturan/Pages/PBI_092026.aspx"

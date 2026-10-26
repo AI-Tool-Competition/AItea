@@ -179,6 +179,10 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 
 两次原始响应及请求回执分别保存在忽略目录 `.dev/aitea-ojk-jdih-probe/isolated-run/` 与 `.dev/aitea-ojk-jdih-probe/isolated-regulations-run/`；正文 SHA-256 分别为 `cc9b5d09f34e61f5e85a6371107d720324f355ce2e614281d577bbeef819a48c` 和 `1f28bec2bbc462c89668e348afb1c04e3c97e78fb112f8c6dd9ce0a27417e698`。两个候选均不进入正式来源池，也不绕过拒绝页。该结果只说明本次项目代理无法从这两个精确入口取得可验证内容，不推断 OJK 其他页面或整个域名不可访问；金融监管覆盖缺口继续记录，待找到可访问的官方原文入口后再评估接入。
 
+继续核验 OJK 官方网站列出的 SIKEPO 银行法规信息系统后，项目代理从 `https://sikepo.ojk.go.id/` 取得 HTTP 200、57,997 字节 HTML（SHA-256 `b8248dec61c67c681ca9d6b7138f5d4b4fbab39f7daaacef3e8eeb2204d48757`）。公开的 `GetLatestReg` 接口返回 1,121 字节双层 JSON，包含 3 条近期法规元数据，但没有法规原件链接；按记录筛选的 `DatabasePeraturan` 页面只返回空表格外壳，动态数据路由 `IndexPartial` 的独立 GET 返回 HTTP 500。隔离请求、HTML、JSON 和解析证据保存在 `.dev/aitea-ojk-sikepo-probe/`。因此 SIKEPO 是可达的官方元数据候选，但当前采集器尚不能完整枚举目录或取得原件，暂不注册为正文来源；不能把 3 条近期元数据当作完整法规清单或已入库文本。
+
+OJK 新闻稿说明 JDIH 已与国家 JDIHN 集成后，另通过项目代理对 `https://jdihn.go.id/` 执行 1 次、20 秒有界 GET，结果为 `network_timeout`，未取得正文；回执保存在 `.dev/aitea-jdihn-probe/isolated-run/`。本次只否定该精确入口的当前可采集性，不推断 JDIHN 的其他页面不可达，也不将搜索引擎缓存或第三方转录作为原件来源。
+
 ### 2026-10-26 当前来源池清单快照
 
 仓库中的 `aitea-official-source-pool-v2` 配置现有 29 个来源节点：印尼 13 个活动、5 个归档；新加坡 11 个活动；两国分属 2 个主题组，共记录 24 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 29 个节点内。

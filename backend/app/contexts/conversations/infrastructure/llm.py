@@ -11,7 +11,7 @@ import httpx
 
 from app.contexts.conversations.application.tool_runtime import ToolFailure
 
-_MAX_PROVIDER_BYTES = 1024 * 1024
+_MAX_PROVIDER_BYTES = 4 * 1024 * 1024
 
 
 def _uses_openai_endpoint(base):

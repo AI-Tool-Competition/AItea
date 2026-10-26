@@ -147,10 +147,11 @@ describe("Tea API transport", () => {
   });
 });
 
-it.each(["valid", "oversized", "unicode"])(
+it.each(["valid", "oversized", "unicode", "thinking", "thinking-oversized"])(
   "validates streamed tool output bounds (%s)",
   async (mode) => {
-    const oversized = mode === "oversized";
+    const oversized = mode === "oversized" || mode === "thinking-oversized";
+    const thinking = mode.startsWith("thinking");
     const preview: ToolOutputPreview = {
       text: "实际执行输出",
       items: [],
@@ -158,6 +159,7 @@ it.each(["valid", "oversized", "unicode"])(
       truncated: false,
     };
     if (oversized) preview.text = "x".repeat(4001);
+    if (thinking) preview.text = "思".repeat(oversized ? 60001 : 16000);
     if (mode === "unicode")
       preview.items = [{ label: "😀".repeat(200), text: "😀".repeat(650) }];
     const step = {
@@ -168,7 +170,7 @@ it.each(["valid", "oversized", "unicode"])(
       tools: [
         {
           id: "call",
-          name: "inspect_image",
+          name: thinking ? "agent_turn" : "inspect_image",
           label: "识图",
           position: 1,
           status: "completed",

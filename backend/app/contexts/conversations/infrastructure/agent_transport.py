@@ -1,4 +1,4 @@
-"""Bounded, cancellable OpenAI-compatible tool turns, including Gemini signatures."""
+"""Bounded tool turns with separate provider thinking and lossless history replay."""
 
 import asyncio
 import codecs
@@ -13,13 +13,25 @@ from app.contexts.conversations.application.tool_runtime import ToolFailure
 
 
 def provider_settings():
+    model = os.getenv("AGENT_MODEL") or "Nemotron-3.5"
     return {
         "base": (
             os.getenv("AGENT_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://aerisun.top/sub2api"
         ).rstrip("/"),
         "key": os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY") or "",
-        "model": os.getenv("AGENT_MODEL") or "gemini-3.8-flash",
+        "model": model,
+        "reasoning_effort": reasoning_effort(model),
     }
+
+
+def reasoning_effort(model):
+    name = model.lower().rsplit("/", 1)[-1]
+    effort = (os.getenv("AGENT_REASONING_EFFORT") or "").strip().lower()
+    if not effort:
+        return "high" if name.startswith("nemotron-3") else "low" if name.startswith("gemini-") else None
+    if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "auto"):
+        raise ToolFailure("not_configured", "模型思考强度配置无效，请检查 AGENT_REASONING_EFFORT。")
+    return effort
 
 
 async def cancellable(operation, check):
@@ -44,7 +56,10 @@ def valid_message(message, finish):
     if not isinstance(message, dict) or message.get("refusal"):
         raise ValueError("invalid message")
     content = message.get("content") or ""
+    reasoning = message.get("reasoning_content") or ""
     calls = message.get("tool_calls") or []
+    if not isinstance(reasoning, str) or len(reasoning) > 60000:
+        raise ValueError("invalid thinking bounds")
     if not isinstance(content, str) or len(content) > 20000 or not isinstance(calls, list) or len(calls) > 8:
         raise ValueError("invalid message bounds")
     if calls:
@@ -73,16 +88,26 @@ def valid_message(message, finish):
                 raise ValueError("invalid arguments")
     elif finish != "stop" or not content.strip():
         raise ValueError("incomplete answer")
-    # Preserve provider-owned extra_content (Gemini thought signatures) on replay.
+    # Keep provider thinking separate from the answer, but replay it verbatim
+    # with tool results, like sub2api web chat. Never render opaque signatures.
     return {
         key: value
         for key, value in {**message, "role": "assistant", "content": content}.items()
-        if key in ("role", "content", "tool_calls", "extra_content")
+        if key in ("role", "content", "reasoning_content", "tool_calls", "extra_content")
     }
 
 
 async def agent_turn(
-    messages, tools, on_delta, check, *, timeout=90, on_usage=None, on_summary=None, cache_key=None
+    messages,
+    tools,
+    on_delta,
+    check,
+    *,
+    timeout=180,
+    on_usage=None,
+    on_summary=None,
+    cache_key=None,
+    request_key=None,
 ):
     settings = provider_settings()
     body = {
@@ -96,18 +121,19 @@ async def agent_turn(
     }
     if cache_key:
         body["prompt_cache_key"] = cache_key
-    # Gemini's reasoning_content bridge carries provider-generated thought
-    # summaries. Do not expose opaque signatures or another model's raw reasoning.
-    gemini = settings["model"].lower().startswith("gemini-")
+    model_name = settings["model"].lower().rsplit("/", 1)[-1]
+    gemini = model_name.startswith("gemini-")
+    visible_thinking = gemini or model_name.startswith("nemotron-3")
+    if settings["reasoning_effort"]:
+        body["reasoning_effort"] = settings["reasoning_effort"]
     if gemini and on_summary:
-        body["reasoning_effort"] = "low"
         body["generationConfig"] = {"thinkingConfig": {"includeThoughts": True}}
     if len(json.dumps(body, ensure_ascii=False).encode()) > 256 * 1024:
         raise ToolFailure("input_limit", "上下文超过预算，请缩小问题范围。")
 
     async def read():
         decoder = codecs.getincrementaldecoder("utf-8")()
-        buffer, size, finish, content = "", 0, None, ""
+        buffer, size, finish, content, reasoning = "", 0, None, "", ""
         calls, extra = {}, {}
         usage = {}
         async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
@@ -118,13 +144,16 @@ async def agent_turn(
                 headers={
                     "Authorization": "Bearer " + settings["key"],
                     **({"X-Session-Id": cache_key} if cache_key else {}),
+                    **({"Idempotency-Key": request_key} if request_key else {}),
                 },
             ) as response:
                 response.raise_for_status()
                 async for part in response.aiter_bytes():
                     check()
                     size += len(part)
-                    if size > 1024 * 1024:
+                    # Nemotron can emit one small thinking fragment per token;
+                    # SSE envelopes count toward this bound as well as content.
+                    if size > 4 * 1024 * 1024:
                         raise ToolFailure("invalid_response", "模型响应超过大小限制。")
                     buffer += decoder.decode(part)
                     while boundary := re.search(r"\r?\n\r?\n", buffer):
@@ -147,6 +176,8 @@ async def agent_turn(
                                 }
                                 if extra:
                                     message["extra_content"] = extra
+                                if reasoning:
+                                    message["reasoning_content"] = reasoning
                                 valid = valid_message(message, finish)
                                 if on_usage and usage:
                                     on_usage(usage)
@@ -175,11 +206,13 @@ async def agent_turn(
                             if not isinstance(delta, dict) or delta.get("refusal") or finish is not None:
                                 raise ValueError("unexpected delta")
                             text = delta.get("content") or ""
-                            summary = delta.get("reasoning_content") or ""
-                            if gemini and on_summary and summary:
-                                if not isinstance(summary, str):
-                                    raise ValueError("invalid thought summary")
-                                on_summary(summary)
+                            if visible_thinking:
+                                summary = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                                if not isinstance(summary, str) or len(reasoning) + len(summary) > 60000:
+                                    raise ValueError("invalid thinking delta")
+                                reasoning += summary
+                                if on_summary and summary:
+                                    on_summary(summary)
                             if not isinstance(text, str) or len(content) + len(text) > 20000:
                                 raise ValueError("oversize content")
                             content += text

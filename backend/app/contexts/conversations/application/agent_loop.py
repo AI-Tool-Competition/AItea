@@ -23,7 +23,7 @@ from app.shared.domain.errors import AppError, fail
 from app.shared.domain.values import dump
 
 MODEL_TURN = ToolSpec(
-    "agent_turn", "规划下一步", "根据实际工具结果选择下一步操作或生成回复。", EmptyInput, 1, 90
+    "agent_turn", "规划下一步", "根据实际工具结果选择下一步操作或生成回复。", EmptyInput, 1, 180
 )
 COMPACT = ToolSpec(
     "compact_context",
@@ -324,6 +324,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                             on_usage=lambda usage: result["usage"].append(usage),
                             on_summary=attempt.emit_text,
                             cache_key=cache_key,
+                            request_key=f"aitea-agent-{journal.id}-{turn}",
                         )
                     )
                 finally:

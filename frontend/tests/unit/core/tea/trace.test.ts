@@ -28,6 +28,27 @@ const step: TraceStep = {
   tools: [tool],
 };
 
+it("keeps long streamed thinking beyond the tool excerpt limit without adding it to other calls", () => {
+  let steps: TraceStep[] = [
+    { ...step, tools: [{ ...tool, name: "agent_turn" }] },
+  ];
+  const chunk = "正在核对业务事实😀".repeat(250);
+  for (let index = 0; index < 5; index++) {
+    steps = mergeToolDelta(steps, {
+      step_id: step.id,
+      run_id: "run",
+      tool_id: tool.id,
+      sequence: index + 2,
+      text: chunk,
+    });
+  }
+  expect(steps[0]?.tools?.[0]?.output_preview?.text).toBe(chunk.repeat(5));
+  expect(steps[0]?.tools?.[0]?.output_preview?.truncated).toBe(false);
+  expect(
+    settleTraceSteps(steps, "cancelled")[0]?.tools?.[0]?.output_preview,
+  ).toEqual(steps[0]?.tools?.[0]?.output_preview);
+});
+
 it("merges only ordered output for an active call and rejects late deltas after stop or completion", () => {
   const delta = {
     step_id: "search",

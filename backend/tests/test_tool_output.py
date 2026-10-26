@@ -7,7 +7,7 @@ from app.shared.domain.values import dump
 
 def test_live_output_is_incremental_bounded_and_matches_the_completed_snapshot():
     events = []
-    spec = ToolSpec("agent_turn", "思考摘要", "读取实际摘要。", EmptyInput)
+    spec = ToolSpec("check_materials", "材料核对", "核对实际资料。", EmptyInput)
     run = ToolRun(
         emit=lambda event, data: events.append(MessageStreamEvent(event=event, data=data)), catalog=[spec]
     )
@@ -26,6 +26,28 @@ def test_live_output_is_incremental_bounded_and_matches_the_completed_snapshot()
     assert len(dump(output).encode()) <= 4096
     assert len({data["sequence"] for data in fragments}) == len(fragments)
     assert events[-1].data["tools"][0]["status"] == "completed"
+
+
+def test_long_thinking_stream_has_a_separate_budget_and_valid_bounded_frames():
+    events = []
+    spec = ToolSpec("agent_turn", "思考", "读取接口返回的思考。", EmptyInput)
+    run = ToolRun(
+        emit=lambda event, data: events.append(MessageStreamEvent(event=event, data=data)), catalog=[spec]
+    )
+    trace = {"id": "agent", "label": "协作", "status": "running", "detail": ""}
+    text = "实际返回的思考😀" * 2000
+    run.call(spec, {}, lambda _, attempt: attempt.emit_text(text), trace)
+    output = trace["tools"][0]["output_preview"]
+    fragments = [event.data["text"] for event in events if event.event == "tool_delta"]
+    assert output["text"] == "".join(fragments) == text
+    assert not output["truncated"]
+    assert all(len(part) <= 3500 for part in fragments)
+    # Per-call and per-run bounds apply even to many long model rounds.
+    for _ in range(3):
+        run.call(spec, {}, lambda _, attempt: attempt.emit_text("思考" * 20000), trace)
+    assert all(len(item["output_preview"]["text"].encode()) <= 60000 for item in trace["tools"])
+    assert sum(len(item["output_preview"]["text"].encode()) for item in trace["tools"]) <= 120000
+    assert trace["tools"][-1]["output_preview"]["truncated"]
 
 
 def test_actual_result_fields_are_preserved_without_private_tool_metadata():

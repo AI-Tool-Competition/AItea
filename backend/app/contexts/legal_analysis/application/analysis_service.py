@@ -341,6 +341,7 @@ class LegalService:
             "provider": digest(
                 [
                     os.getenv("AGENT_MODEL") or os.getenv("LLM_MODEL"),
+                    os.getenv("AGENT_REASONING_EFFORT"),
                     os.getenv("AGENT_BASE_URL") or os.getenv("LLM_BASE_URL"),
                     os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY"),
                 ]

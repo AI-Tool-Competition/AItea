@@ -39,7 +39,7 @@ class ToolOutputItem(StrictModel):
 class ToolOutputPreview(StrictModel):
     """Bounded excerpts of actual tool returns, never another generated summary."""
 
-    text: str = Field(default="", max_length=4000)
+    text: str = Field(default="", max_length=60000)
     items: list[ToolOutputItem] = Field(default_factory=list, max_length=8)
     notice: str = Field(default="", max_length=400)
     truncated: bool = False
@@ -85,6 +85,8 @@ class ToolCallSnapshot(StrictModel):
     def valid_attempt(self):
         if self.attempt > self.max_attempts:
             raise ValueError("tool attempt exceeds budget")
+        if self.name != "agent_turn" and self.output_preview and len(self.output_preview.text) > 4000:
+            raise ValueError("tool output exceeds excerpt budget")
         return self
 
 

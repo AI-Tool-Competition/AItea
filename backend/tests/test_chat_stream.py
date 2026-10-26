@@ -126,6 +126,28 @@ def test_provider_forwards_utf8_deltas_before_reading_next_chunk(monkeypatch):
     assert seen == ["准备茶叶", "资料。"]
 
 
+def test_legal_guidance_uses_the_selected_agent_thinking_effort(monkeypatch):
+    sent = provider(monkeypatch, lambda: iter([delta("办理建议。"), b"data: [DONE]\n\n"]))
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
+    assert (
+        assistant.generate_guidance(
+            {"language": "zh-CN", "instructions": ""},
+            {},
+            "",
+            {},
+            [],
+            [],
+            "",
+            max_tokens=6000,
+            on_delta=lambda _: None,
+        )
+        == "办理建议。"
+    )
+    assert sent[0]["model"] == "Nemotron-3.5"
+    assert sent[0]["reasoning_effort"] == "high"
+
+
 def test_chat_stream_reuses_opaque_openai_cache_key_and_logs_usage(chat, monkeypatch, caplog):
     import logging
 

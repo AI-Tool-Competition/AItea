@@ -33,6 +33,7 @@ def provider(monkeypatch, body, status=200):
 
 
 def test_fragmented_tool_arguments_and_gemini_signatures_are_preserved(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "gemini-3.8-flash")
     chunks = [
         delta(
             {
@@ -104,10 +105,11 @@ def test_reasoning_and_gateway_events_are_not_rendered_as_user_answer(monkeypatc
     result = asyncio.run(transport.agent_turn([], [], visible.append, lambda: None))
     assert result["content"] == "公开回复"
     assert visible == ["公开回复"]
-    assert "private" not in str(result)
+    assert result["reasoning_content"] == "private"
 
 
 def test_gemini_summary_stream_is_separate_and_session_routing_is_stable(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "gemini-3.8-flash")
     body = "".join(
         frame(value)
         for value in [
@@ -126,10 +128,114 @@ def test_gemini_summary_stream_is_separate_and_session_routing_is_stable(monkeyp
     )
     assert summaries == ["先核对已有资料，", "再检查来源。"]
     assert visible == ["以下是办理建议。"]
-    assert "reasoning_content" not in result
+    assert result["reasoning_content"] == "先核对已有资料，再检查来源。"
     assert requests[0].headers["x-session-id"] == "opaque-session"
     assert json.loads(requests[0].content)["prompt_cache_key"] == "opaque-session"
     assert json.loads(requests[0].content)["generationConfig"]["thinkingConfig"]["includeThoughts"] is True
+
+
+def test_nemotron_high_stream_and_exact_thinking_tool_history_replay(monkeypatch):
+    thinking = "先核对资料，" * 1000
+    reply = [
+        delta({"reasoning_content": thinking}),
+        # The web chat also accepts the compatible reasoning field.
+        delta({"reasoning": "再给出建议。"}),
+        delta({"reasoning_content": "已选定核对。", "reasoning": "不能重复拼接。"}),
+        delta(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "check-1",
+                        "type": "function",
+                        "function": {"name": "check_materials", "arguments": "{}"},
+                    }
+                ]
+            },
+            "tool_calls",
+        ),
+        "[DONE]",
+    ]
+    requests = provider(monkeypatch, "".join(frame(value) for value in reply).encode())
+    visible, summaries = [], []
+    messages = [{"role": "user", "content": "核对资料"}]
+    result = asyncio.run(
+        transport.agent_turn(
+            messages,
+            [],
+            visible.append,
+            lambda: None,
+            on_summary=summaries.append,
+            cache_key="scoped-session",
+            request_key="request-1-round-0",
+        )
+    )
+    assert result["reasoning_content"] == thinking + "再给出建议。已选定核对。"
+    assert "".join(summaries) == result["reasoning_content"]
+    assert visible == []
+    assert result["tool_calls"][0]["id"] == "check-1"
+    history = [*messages, result, {"role": "tool", "tool_call_id": "check-1", "content": "缺少主体信息"}]
+    asyncio.run(
+        transport.agent_turn(
+            history,
+            [],
+            visible.append,
+            lambda: None,
+            cache_key="scoped-session",
+            request_key="request-1-round-1",
+        )
+    )
+    assert json.loads(requests[1].content)["messages"] == history
+    for request in requests:
+        sent = json.loads(request.content)
+        assert sent["model"] == "Nemotron-3.5"
+        assert sent["reasoning_effort"] == "high"
+        assert "generationConfig" not in sent
+        assert request.headers["x-session-id"] == sent["prompt_cache_key"] == "scoped-session"
+    assert requests[0].headers["idempotency-key"] != requests[1].headers["idempotency-key"]
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+def test_explicit_thinking_effort_is_used_and_part_of_provider_identity(monkeypatch, effort):
+    requests = provider(monkeypatch, (frame(delta({"content": "answer"}, "stop")) + frame("[DONE]")).encode())
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", effort)
+    asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert json.loads(requests[0].content)["reasoning_effort"] == effort
+    assert transport.provider_settings()["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize("thinking", [60001 * "x", {"invalid": "not text"}])
+def test_invalid_thinking_is_rejected_before_a_tool_can_run(monkeypatch, thinking):
+    provider(
+        monkeypatch,
+        (
+            frame(delta({"reasoning_content": thinking, "content": "answer"}, "stop")) + frame("[DONE]")
+        ).encode(),
+    )
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert caught.value.code == "invalid_response"
+
+
+def test_invalid_reasoning_configuration_does_not_call_provider(monkeypatch):
+    requests = provider(monkeypatch, b"")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "unsupported")
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert caught.value.code == "not_configured"
+    assert not requests
+
+
+def test_fine_grained_thinking_stream_allows_envelope_overhead(monkeypatch):
+    chunk = delta({"reasoning_content": "核对"}) | {"id": "completion_" + "x" * 200, "model": "Nemotron-3.5"}
+    body = frame(chunk) * 4000 + frame(delta({"content": "结果"}, "stop")) + frame("[DONE]")
+    assert len(body.encode()) > 1024 * 1024
+    provider(monkeypatch, body.encode())
+    summaries = []
+    result = asyncio.run(
+        transport.agent_turn([], [], lambda _: None, lambda: None, on_summary=summaries.append)
+    )
+    assert result["reasoning_content"] == "".join(summaries) == "核对" * 4000
 
 
 def test_unknown_provider_reasoning_is_not_treated_as_gemini_summary(monkeypatch):

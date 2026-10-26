@@ -92,6 +92,7 @@ def test_save_all_providers_preserves_other_values_and_uses_private_permissions(
         "base": "https://agent.example/v1",
         "key": "agent-secret",
         "model": "agent-model",
+        "reasoning_effort": None,
     }
     assert settings(client)["restart_required"] is False
     assert restarted["EMBEDDING_API_KEY"] == "embedding-secret"

@@ -717,14 +717,16 @@ def test_answer_limit_is_shared_across_model_rounds_and_failure_does_not_cache(w
 
 def test_provider_context_keeps_tools_signatures_and_invalidates_on_memory_changes(workspace, monkeypatch):
     client, service, owner, case, payload = workspace
-    seen, keys = [], []
+    seen, keys, requests = [], [], []
     tool_reply = tools(("check_materials", {}))
+    tool_reply["reasoning_content"] = "接口返回的思考，回传时保留原文。"
     tool_reply["tool_calls"][0]["extra_content"] = {"google": {"thought_signature": "opaque"}}
     scenario(monkeypatch, [tool_reply, "材料待补充。", "继续办理。", "读取最新记忆。"], seen)
     original = agent_loop.agent_turn
 
     async def capture(*args, **options):
         keys.append(options["cache_key"])
+        requests.append(options["request_key"])
         return await original(*args, **options)
 
     monkeypatch.setattr(agent_loop, "agent_turn", capture)
@@ -737,6 +739,8 @@ def test_provider_context_keeps_tools_signatures_and_invalidates_on_memory_chang
     assert len(set(keys)) == 1
     assert seen[0][1] == seen[1][1] == seen[2][1]
     assert "opaque" in json.dumps(seen[2][0])
+    assert any(message.get("reasoning_content") == tool_reply["reasoning_content"] for message in seen[2][0])
+    assert len(set(requests)) == 3
     service.agent_memory.save(
         owner,
         case["id"],
@@ -781,3 +785,18 @@ def test_context_migration_is_additive_and_cache_rejects_foreign_or_stale_anchor
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == count
         assert conn.execute("SELECT COUNT(*) FROM agent_conversation_context").fetchone()[0] == 0
+
+
+def test_thinking_effort_change_invalidates_provider_history_but_keeps_public_discussion(
+    workspace, monkeypatch
+):
+    seen = []
+    reply = tools(("check_materials", {})) | {"reasoning_content": "已核对。"}
+    scenario(monkeypatch, [reply, "材料仍待补充。", "已使用新强度。"], seen)
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "low")
+    assert send(workspace).status_code == 200
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
+    assert send(workspace, {**workspace[4], "client_message_id": "new-effort"}).status_code == 200
+    assert not any(message.get("tool_calls") or message.get("reasoning_content") for message in seen[2][0])
+    assert any(message.get("content") == "材料仍待补充。" for message in seen[2][0])

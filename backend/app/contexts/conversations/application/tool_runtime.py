@@ -73,7 +73,7 @@ CHECK_MATERIALS = ToolSpec(
     "check_materials", "检查任务材料", "按服务端规则检查字段、材料和确认状态。", CheckInput
 )
 GENERATE_GUIDANCE = ToolSpec(
-    "generate_guidance", "生成分析与建议", "根据已提供的事实和依据生成有界回复。", GenerationInput, 2
+    "generate_guidance", "生成分析与建议", "根据已提供的事实和依据生成有界回复。", GenerationInput, 2, 180
 )
 TOOL_CATALOG = (SEARCH_DOCUMENTS, CHECK_MATERIALS, SEARCH_LEGAL, GENERATE_GUIDANCE)
 
@@ -227,26 +227,37 @@ class ToolRun:
                 output = record.setdefault(
                     "output_preview", {"text": "", "items": [], "notice": "", "truncated": False}
                 )
-                remaining = max(0, 3500 - len(output["text"].encode()))
+                # Provider thinking can be much longer than a tool excerpt.
+                # Bound the whole run as well so later snapshots remain small.
+                limit = 60000 if spec.name == "agent_turn" else 3500
+                remaining = max(0, limit - len(output["text"].encode()))
+                if spec.name == "agent_turn":
+                    used = sum(
+                        len(item.get("output_preview", {}).get("text", "").encode())
+                        for item in trace.get("tools", [])
+                        if item["name"] == "agent_turn"
+                    )
+                    remaining = min(remaining, max(0, 120000 - used))
                 fragment = text.encode()[:remaining].decode("utf-8", errors="ignore")
                 output["truncated"] |= fragment != text
                 if not fragment:
                     return
                 output["text"] += fragment
                 context.output_started = True
-                self.sequence += 1
-                trace.update(run_id=self.run_id, sequence=self.sequence)
-                if self.emit:
-                    self.emit(
-                        "tool_delta",
-                        {
-                            "step_id": trace["id"],
-                            "run_id": self.run_id,
-                            "tool_id": record["id"],
-                            "sequence": self.sequence,
-                            "text": fragment,
-                        },
-                    )
+                for start in range(0, len(fragment), 3500):
+                    self.sequence += 1
+                    trace.update(run_id=self.run_id, sequence=self.sequence)
+                    if self.emit:
+                        self.emit(
+                            "tool_delta",
+                            {
+                                "step_id": trace["id"],
+                                "run_id": self.run_id,
+                                "tool_id": record["id"],
+                                "sequence": self.sequence,
+                                "text": fragment[start : start + 3500],
+                            },
+                        )
 
         context.emit_text = emit_text
 

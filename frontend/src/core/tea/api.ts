@@ -305,10 +305,10 @@ function boundedText(value: unknown, limit: number) {
   return typeof value === "string" && Array.from(value).length <= limit;
 }
 
-function isToolOutput(data: unknown) {
+function isToolOutput(data: unknown, thinking: boolean) {
   return (
     record(data) &&
-    boundedText(data.text, 4000) &&
+    boundedText(data.text, thinking ? 60000 : 4000) &&
     boundedText(data.notice, 400) &&
     typeof data.truncated === "boolean" &&
     Array.isArray(data.items) &&
@@ -369,7 +369,8 @@ function isToolCall(data: unknown): data is ToolCall {
     typeof data.duration_ms === "number" &&
     Number.isFinite(data.duration_ms) &&
     data.duration_ms >= 0 &&
-    (data.output_preview == null || isToolOutput(data.output_preview)) &&
+    (data.output_preview == null ||
+      isToolOutput(data.output_preview, data.name === "agent_turn")) &&
     (data.error_code === undefined ||
       (typeof data.error_code === "string" && data.error_code.length <= 64))
   );

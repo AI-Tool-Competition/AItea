@@ -245,6 +245,7 @@ export interface Citation {
   document_version?: number;
 }
 export interface ToolOutputPreview {
+  /** Actual output: at most 4,000 characters, or 60,000 for provider thinking. */
   text: string;
   items: { label: string; text: string; status?: string; url?: string }[];
   notice: string;

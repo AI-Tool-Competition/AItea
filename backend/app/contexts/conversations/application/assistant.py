@@ -26,6 +26,7 @@ from app.contexts.conversations.infrastructure.llm import (
     _uses_openai_endpoint,
     stream_guidance,
 )
+from app.contexts.conversations.infrastructure.agent_transport import reasoning_effort
 from app.shared.application.streaming import StreamCancelled
 from app.shared.domain.countries import resolve_country
 from app.shared.domain.values import dump
@@ -157,7 +158,7 @@ def generate_guidance(
     base = (os.getenv("AGENT_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://aerisun.top/sub2api").rstrip(
         "/"
     )
-    model = os.getenv("AGENT_MODEL") or os.getenv("LLM_MODEL") or "gemini-3.8-flash"
+    model = os.getenv("AGENT_MODEL") or os.getenv("LLM_MODEL") or "Nemotron-3.5"
     uses_aerisun_deepseek = _uses_aerisun_deepseek_endpoint(base, model)
     messages = [{"role": "system", "content": system}]
     if uses_aerisun_deepseek:
@@ -172,6 +173,8 @@ def generate_guidance(
         "messages": messages,
         "max_tokens": max_tokens,
     }
+    if effort := reasoning_effort(model):
+        body["reasoning_effort"] = effort
     streaming = on_delta is not None or check_cancelled is not None
     if streaming:
         body["stream"] = True

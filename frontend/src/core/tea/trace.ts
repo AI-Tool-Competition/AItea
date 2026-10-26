@@ -28,12 +28,13 @@ export function mergeToolDelta(
           truncated: false,
         };
         const text = Array.from(output.text + delta.text);
+        const limit = tool.name === "agent_turn" ? 60000 : 4000;
         return {
           ...tool,
           output_preview: {
             ...output,
-            text: text.slice(0, 4000).join(""),
-            truncated: output.truncated || text.length > 4000,
+            text: text.slice(0, limit).join(""),
+            truncated: output.truncated || text.length > limit,
           },
         };
       }),

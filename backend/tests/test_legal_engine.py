@@ -204,6 +204,28 @@ def test_demo_runs_six_public_stages_without_legal_conclusions():
     assert result["trace"][0]["input_data"]["document_ids"] == ["law-a"]
 
 
+def test_invalid_fact_reference_receives_exact_scope_and_bounded_repair_feedback(monkeypatch):
+    attempts = []
+
+    def assess(context, proposed):
+        attempts.append(context)
+        if len(attempts) == 1:
+            proposed["issues"][0]["conditions"][0]["fact_keys"] = ["invented_fact"]
+        return proposed
+
+    install_model(monkeypatch, {"qa05": assess})
+    result = run(service(mode="live"), [fact()])
+    assert len(attempts) == 2
+    assert attempts[1]["reference_scope"]["issue-a"] == {
+        "fact_keys": ["event_date"],
+        "citation_ids": ["law-a"],
+    }
+    assert "unknown decisive facts" in attempts[1]["validation_feedback"]
+    assert all(
+        "invented_fact" not in condition["fact_keys"] for condition in result["issues"][0]["conditions"]
+    )
+
+
 def test_policy_defaults_are_editable_cards_and_program_checks_are_separate():
     from app.contexts.legal_analysis.domain.analysis_models import (
         LEGAL_MODULES,

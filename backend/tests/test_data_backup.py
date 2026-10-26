@@ -222,6 +222,7 @@ def test_complete_backup_restores_private_and_shared_without_reinterpreting_proo
         "processing_jobs": 1,
         "collection_items": 0,
         "collection_network_leases": 1,
+        "agent_runs": 0,
     }
     for table, expected in before.items():
         assert rows(restored / "tea.sqlite3", table) == expected

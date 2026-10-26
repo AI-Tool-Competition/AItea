@@ -30,6 +30,7 @@ import type {
 } from "@/core/tea/types";
 import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
 
+import { AgentMemory } from "./agent-memory";
 import { AnalysisProcess } from "./analysis-process";
 import { ChatSkills } from "./chat-skills";
 import { LegalResultView } from "./legal-result";
@@ -386,10 +387,19 @@ export function StageChat({
                   <Paperclip size={18} />
                 </Button>
                 <ChatSkills
+                  caseId={record.id}
+                  stageId={stage.id}
                   skills={skills}
                   onSkills={setSkills}
                   legal={legal}
                   onLegal={setLegal}
+                />
+                <AgentMemory
+                  key={`${accountId}:${record.id}:${stage.id}:${conversationId ?? ""}`}
+                  accountId={accountId}
+                  caseId={record.id}
+                  stageId={stage.id}
+                  conversationId={conversationId}
                 />
               </div>
               <span className="tea-composer-shortcut" id="tea-composer-hint">

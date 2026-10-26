@@ -372,6 +372,7 @@ class NodeWorkspace:
             conn.execute("INSERT INTO conversation_messages VALUES(?,?)", (message["id"], conversation_id))
             message["conversation_id"] = conversation_id
         user_message, answer = messages
+        self.service.agent_memory.record_turn(conn, case, conversation_id, messages)
         conn.execute(
             "INSERT INTO node_memories VALUES(?,?,?,?,?,?,?)",
             (

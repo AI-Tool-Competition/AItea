@@ -51,6 +51,9 @@ class Service:
         from app.contexts.conversations.application.conversations import ConversationService
 
         self.conversations = ConversationService(self)
+        from app.contexts.conversations.application.memory import AgentMemory
+
+        self.agent_memory = AgentMemory(self)
         from app.contexts.drafting.application.drafting import ArtifactService
 
         self.artifacts = ArtifactService(self)
@@ -60,7 +63,7 @@ class Service:
 
     @property
     def capabilities(self):
-        live = all(os.getenv(key) for key in ("LLM_API_KEY", "LLM_MODEL"))
+        live = bool(os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY"))
         return {
             "assistant_mode": "live" if live else "demo",
             "retrieval_mode": "ragflow" if self.embedding_fingerprint() else "unavailable",

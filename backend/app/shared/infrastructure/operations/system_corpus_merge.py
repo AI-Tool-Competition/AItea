@@ -43,7 +43,7 @@ ORIGIN_KEYS = (
 def _validate_target_schema(conn):
     """Resume a legacy merge after Service upgrades, without adopting cloud evidence."""
     version = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
-    migration._require(version in (19, 20, 21, 22), "alias_target_schema19_to22_required")
+    migration._require(version in (19, 20, 21, 22, 23, 24, 25), "alias_target_schema19_to25_required")
     tables = []
     if version >= 20:
         tables.append("document_parse_tasks")

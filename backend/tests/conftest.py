@@ -17,9 +17,10 @@ def isolated_providers(monkeypatch):
     monkeypatch.delenv("TEA_ENV_FILE", raising=False)
     # Empty values also prevent load_dotenv from filling credentials on import.
     # Provider contract tests explicitly replace these with mocked settings.
-    for prefix in ("LLM", "EMBEDDING", "RERANK", "VISION"):
+    for prefix in ("LLM", "AGENT", "EMBEDDING", "RERANK", "VISION"):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             monkeypatch.setenv(f"{prefix}_{field}", "")
+    monkeypatch.setenv("AGENT_TOOLS_BASE_URL", "")
     for key in (
         "MINERU_API_TOKEN",
         "RAGFLOW_BASE_URL",

@@ -216,7 +216,23 @@ export interface ToolCall {
     | "search_documents"
     | "search_legal_evidence"
     | "check_materials"
-    | "generate_guidance";
+    | "generate_guidance"
+    | "guide_business"
+    | "analyze_legal"
+    | "draft_document"
+    | "get_handoff"
+    | "discover_tools"
+    | "load_skill"
+    | "list_documents"
+    | "read_document"
+    | "inspect_image"
+    | "web_search"
+    | "recall_memory"
+    | "remember_memory"
+    | "update_plan"
+    | "agent_turn"
+    | "compact_context"
+    | "read_tool_result";
   label: string;
   position: number;
   status: "running" | "retrying" | "completed" | "failed" | "cancelled";
@@ -264,7 +280,34 @@ export type ChatSkill =
   | "materials"
   | "legal"
   | "draft"
-  | "handoff";
+  | "handoff"
+  | "research"
+  | "vision";
+export interface AgentCatalog {
+  tools: {
+    name: string;
+    label: string;
+    description: string;
+    parallel: boolean;
+  }[];
+  skills: {
+    id: ChatSkill;
+    label: string;
+    description: string;
+    tools: string[];
+  }[];
+  combinations: { label: string; skills: ChatSkill[]; description: string }[];
+}
+export interface AgentMemoryEntry {
+  id: string;
+  content: string;
+  kind: "preference" | "note";
+  conversation_id: string | null;
+  revision: number;
+  stale: boolean;
+  source_message_id: string | null;
+  updated_at: string;
+}
 export interface NodeConversation {
   id: string;
   case_id: string;

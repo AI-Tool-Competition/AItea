@@ -4,6 +4,10 @@
 
 `TEA_CONFIG_DIR` 可指定唯一活动配置根；完整实例恢复默认使用其 `data/config/catalogs/` 快照。修改前运行 `make instance-paths` 查看生效位置，详见 [实例管理](../docs/INSTANCE_MANAGEMENT.md)。
 
+## Agent 调度与记忆
+
+节点会话在配置生成密钥后使用模型自主选择工具，五项业务工具和 RAG、识图、联网搜索可组合调用；后台配置的分析流程继续约束证据、法域及核验。`AGENT_MODEL` 示例为 `gemini-3.8-flash`，独立于文档处理模型；地址和密钥可继承 `LLM_*`。私有设置、工具扩展方法、调用预算、记忆有效性及迁移说明统一维护在 [Agent 调度与记忆](../docs/AGENT_RUNTIME.md)。
+
 ## 流程配置
 
 `workflows/liubao-export.json` 提供印尼／新加坡 × 线上／线下四条六堡茶路线，复用 58 项任务定义。新建业务及后台默认选择印尼线上路线，详情见 [六堡茶流程说明](../docs/LIUBAO_WORKFLOWS.md)。服务启动读取并校验配置，格式不合法时明确报错。`TEA_TEMPLATE_FILE` 可指定后台导出的单条模板，覆盖四条路线中的同编号配置；留空加载内置配置，修改后重启服务。旧 `.env` 中指向已删除的 `config/workflows/china-indonesia.json` 会按明确的退役兼容规则使用六堡茶默认路线，不恢复旧模板。

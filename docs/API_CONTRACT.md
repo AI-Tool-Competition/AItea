@@ -12,7 +12,7 @@ Initialized storage that disappears, has an empty database file, or is replaced 
 - POST `/auth/logout` -> 204. GET `/health` -> `{status,version,assistant_mode,retrieval_mode,parser,collector:{status,last_error_at,shared_library_workers:'internal'|'external',official_source_import:{status,last_cycle_at,last_cycle_counts:{stored,skipped,blocked,deferred},last_error_at}}}` no secrets. Collector status is stopped/running/recovering/draining; a live HTTP server alone does not establish queue health. `shared_library_workers` reports the main application's configured background scope: `internal` (default) includes system documents; `external` leaves their fetch/processing/recovery/scheduling to dedicated workers while private work continues. It does not report whether an external runner is currently running and does not change shared read access or legal eligibility. `official_source_import` reports the background reader that converts verified ID/SG content-version receipts into versioned parse jobs; `stored` means queued for parsing, not approved or RAG-published.
 - `GET /bootstrap` also returns `admin_setup_required`. The first administrator can be initialized by `POST /admin/bootstrap` `{bootstrap_token}` with a logged-in non-demo account, or during registration. The token is configured only on the backend as `TEA_ADMIN_BOOTSTRAP_TOKEN`; initialization is atomic and only succeeds while no active administrator exists.
 - Admin-only `GET /admin/users?limit=50&offset=0&q=` returns `{items:[{id,name,email,created_at,can_login,is_admin,revision}],total}`; limit is 1–100 and ordering is stable by creation time then ID. `PATCH /admin/users/{id}` accepts `{expected_revision,can_login?,is_admin?}` and returns the updated row. Stale changes return 409 `stale_account`; a request that would remove the last active administrator returns 409 `last_admin`. Disabling an account removes its sessions. Template studio, debugging, sources and collection-management endpoints also require an administrator; account-owned workspace, document and case endpoints remain available to allowed users.
-- capabilities `{assistant_mode:'demo'|'live',retrieval_mode:'lexical'|'hybrid',parser:string}`.
+- capabilities `{assistant_mode:'demo'|'live',retrieval_mode:'ragflow'|'unavailable',parser:string}`. Historical messages may retain `lexical`/`hybrid` retrieval values.
 
 ## Template format
 Template = `{id,version,title,description,origin,destination,is_demo,modes:Mode[],stages:StageDefinition[],agent:AgentConfig}`.
@@ -100,7 +100,7 @@ TraceStep = `{id,label,status:'completed'|'skipped'|'failed'|'running'|'cached'|
   - `done`: `{messages:Message[],case:CaseDetail}` is the authoritative, persisted result, including citations, traces and any concurrent-data-change warning. Replace provisional text and deduplicate by message ID. Replaying a completed `client_message_id` returns the stored messages without calling the provider again.
   - `error`: `{code,message}` terminates an unsuccessful stream. An EOF without `done` is an interruption, never a successful reply. Before headers, errors use the ordinary HTTP/JSON envelope.
 
-Both message endpoints share a per-process limit of four generating conversations and one active request per case (`chat_busy` / `message_in_progress`). Streaming errors, cancellation before commit, and incomplete upstream streams do not persist a partial message pair. Disconnect cancels the upstream async model read, including while waiting for its first byte; synchronous retrieval stops at its next workflow checkpoint. A stop racing with a successful commit may leave a complete stored result; retry the same message ID to recover it. No automatic retries or cross-process run recovery are provided. Completed turns retain the existing transactional idempotency guarantee. Streaming uses a bounded queue, heartbeat comments during quiet work, the existing 45-second/1-MB provider bounds and a 20,000-character answer limit. The browser retains provisional text on interruption, offers explicit retry with the original ID, and times out after 60 seconds with no frames.
+Both message endpoints share a per-process limit of four generating conversations and one active request per case (`chat_busy` / `message_in_progress`). Live node conversations additionally acquire durable SQLite claims with the same cross-process limits. Cancellation before commit and incomplete upstream streams do not persist a partial message pair. Disconnect cancels the upstream async model read; synchronous retrieval stops at its next checkpoint. Retry a completed message ID to recover its stored result. Unknown external requests are never automatically replayed after interruption: `agent_request_not_replayable` requires an explicit new request. The UI first retries the original ID; a subsequent retry after that error creates a new ID. Streaming uses bounded queues and heartbeat comments. Legacy generation retains its 45-second bound; model-driven node turns allow 90 seconds per model request and 900 seconds overall, with a 1-MiB response and 20,000-character answer limit. The browser preserves provisional text on interruption and times out after 60 seconds with no frames. See [Agent runtime](AGENT_RUNTIME.md) for tool and context budgets.
 
 ## Documents / library
 
@@ -245,7 +245,7 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 - `POST /cases/{case_id}/stages/{stage_id}/conversations`：`{client_request_id, title?}`，幂等创建真实会话；每节点最多 100 个会话，未解锁节点拒绝创建。返回含 `id, stage_id, title, kind, created_at, updated_at`。
 - `POST /cases/{case_id}/stages/{stage_id}/guide-conversation`：确保节点唯一引导会话与首次提问消息，重复调用不重复提问；返回 `kind=guide`。
 - `GET /cases/{case_id}/messages` 新增可选 `conversation_id`；提供时只读取该会话，校验其业务与节点归属。未提供时保留旧版节点历史行为。
-- 消息 JSON 与流式接口新增可选 `conversation_id`、`mode: auto|legal`、`skills: (guidance|materials|legal|draft|handoff)[]`。流式事件新增 `step`，数据为实际 TraceStep；最终响应格式不变，消息可含 `conversation_id`，引导报告消息附带 `guide_result` 快照（步骤仍由 `trace` 提供）。文稿起草与消息使用同一幂等请求保存，重复提交不重复创建文稿。
+- 消息 JSON 与流式接口新增可选 `conversation_id`、`mode: auto|legal`、`skills: (guidance|materials|legal|draft|handoff|research|vision)[]`。流式事件新增 `step`，数据为实际 TraceStep；最终响应格式不变，消息可含 `conversation_id`，引导报告消息附带 `guide_result` 快照（步骤仍由 `trace` 提供）。文稿起草与消息使用同一幂等请求保存，重复提交不重复创建文稿。
 - `GET /cases/{case_id}/stages/{stage_id}/guides?limit=20&offset=0`：不可变分析快照列表，最新优先，limit 最大 100，含状态、真实步骤、结果及失败原因。
 - `POST /cases/{case_id}/stages/{stage_id}/guides/{guide_id}/retry`：`{client_request_id}`，新建重试记录并返回 `{id}`，保留旧记录。
 
@@ -258,10 +258,22 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 - `run_id: string`：本次执行标识；`sequence: integer`：本次执行内严格递增的步骤快照序号。
 - `tools: ToolCall[]`：按首次调用顺序排列，最多 128 项；未提供时兼容历史记录。
 - `ToolCall = {id,name,label,position,status,attempt,max_attempts,detail,duration_ms,error_code?}`。
-- `name` 为 `search_documents | check_materials | search_legal_evidence | generate_guidance`。
+- `name` 保留 `search_documents | check_materials | search_legal_evidence | generate_guidance`，并增加 `guide_business | analyze_legal | draft_document | get_handoff | discover_tools | load_skill | list_documents | read_document | inspect_image | web_search | recall_memory | remember_memory | update_plan | read_tool_result | agent_turn | compact_context`。
 - `status` 为 `running | retrying | completed | failed | cancelled`；`attempt` 为当前尝试次数，`max_attempts` 最大为 2，`duration_ms` 含重试等待。
 - 重试保持同一工具 `id`。每个 `step` 是完整快照；客户端在原位置更新，同一 `run_id` 下忽略小于等于已接收 `sequence` 的快照。
 - 普通聊天也推送实际步骤的开始、工具进度和结束；最终消息 `trace` 保存相同公开记录。工具成功不等于业务任务完成。
-- 模型被截断、协议异常或工作流失败时，JSON 和 SSE 聊天都不保存未完成回复；SSE 发送 `error`，不发送 `done`。重试继续使用原 `client_message_id` 的持久化幂等规则。
+- 模型被截断、协议异常或工作流失败时，JSON 和 SSE 聊天都不保存未完成回复；SSE 发送 `error`，不发送 `done`。已完成请求继续使用原 `client_message_id` 恢复结果；中断且不可重放的 Agent 请求需明确重新发送。
 
-执行预算、取消与安全重试边界见 [AGENT_TOOLS.md](AGENT_TOOLS.md)。
+模型驱动节点会话的预算、取消和记忆边界见 [Agent 调度与记忆](AGENT_RUNTIME.md)；固定分析流程的兼容说明见 [旧工具执行层](AGENT_TOOLS.md)。
+
+### Agent 目录与用户记忆
+
+以下接口要求当前账号拥有指定业务与节点，路径相对 `/api/tea`：
+
+- `GET /cases/{case_id}/stages/{stage_id}/agent-tools` → `{tools:[{name,label,description,parallel}],skills:[{id,label,description,tools:string[]}],combinations:[{label,skills:string[],description}]}`。目录仅描述已登记工具，不执行工具。
+- `GET /cases/{case_id}/stages/{stage_id}/memories?conversation_id=...&limit=50&offset=0` → `{items:MemoryEntry[],total}`，limit 为 1–100。返回节点共享记忆和指定会话的私有记忆；省略会话仅返回共享记忆。
+- `POST /cases/{case_id}/stages/{stage_id}/memories`：`{content,kind:'preference'|'note',conversation_id?:string|null}` → `MemoryEntry`。content 长度 1–2000，每节点最多 200 条活动记忆。
+- `PATCH /cases/{case_id}/stages/{stage_id}/memories/{memory_id}`：同新增字段并附 `expected_revision`，返回更新的 `MemoryEntry`；缺失或过期修订返回 `409 memory_conflict`。不会改变原记忆的作用范围。
+- `DELETE /cases/{case_id}/stages/{stage_id}/memories/{memory_id}?expected_revision=...` → `{deleted:true}`。仅删除指定显式记忆，不删除聊天历史。
+
+`MemoryEntry = {id,owner_id,case_id,stage_id,conversation_id:string|null,kind,content,revision,case_revision,source_message_id:string|null,deleted:0|1,stale:boolean,created_at,updated_at,context_hash}`。业务笔记的 `stale` 由当前业务内容指纹判断，回复偏好不因材料变化而失效；记忆没有法规审核资格。创建、修改和删除均使用既有错误封装，跨账号/业务访问返回 404。

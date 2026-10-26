@@ -203,6 +203,29 @@ describe("stage chat experience", () => {
     );
   });
 
+  it.each([
+    "agent_request_not_replayable",
+    "agent_context_changed",
+    "analysis_context_changed",
+    "agent_lease_lost",
+  ])("uses a new request only after explicit retry of %s", async (code) => {
+    const stream = transport();
+    render(<StageChat {...props} />);
+    await send();
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      stream.event("error", { code, message: "依据已变化，请重新发送" });
+    });
+    await screen.findByRole("button", { name: "重试回复" });
+    expect(stream.fetcher).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "重试回复" }));
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(3));
+    const before = JSON.parse(stream.fetcher.mock.calls[1]![1]!.body as string);
+    const after = JSON.parse(stream.fetcher.mock.calls[2]![1]!.body as string);
+    expect(after.client_message_id).not.toBe(before.client_message_id);
+    expect(after.content).toBe(before.content);
+  });
+
   it("cancels on unmount and ignores obsolete case updates", async () => {
     const stream = transport();
     const mounted = render(<StageChat {...props} />);

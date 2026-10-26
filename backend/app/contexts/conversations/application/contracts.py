@@ -13,8 +13,8 @@ class MessageInput(StrictModel):
     task_id: str | None = Field(default=None, max_length=64)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
     mode: Literal["auto", "legal"] = "auto"
-    skills: list[Literal["guidance", "materials", "legal", "draft", "handoff"]] = Field(
-        default_factory=list, max_length=5
+    skills: list[Literal["guidance", "materials", "legal", "draft", "handoff", "research", "vision"]] = Field(
+        default_factory=list, max_length=7
     )
     content: str = Field(min_length=1, max_length=20000)
     client_message_id: str = Field(min_length=1, max_length=100)
@@ -33,7 +33,28 @@ class ToolCallSnapshot(StrictModel):
     """Public execution facts only; never raw credentials, prompts or model reasoning."""
 
     id: str = Field(min_length=1, max_length=100)
-    name: Literal["search_documents", "search_legal_evidence", "check_materials", "generate_guidance"]
+    name: Literal[
+        "search_documents",
+        "search_legal_evidence",
+        "check_materials",
+        "generate_guidance",
+        "guide_business",
+        "analyze_legal",
+        "draft_document",
+        "get_handoff",
+        "discover_tools",
+        "load_skill",
+        "list_documents",
+        "read_document",
+        "inspect_image",
+        "web_search",
+        "recall_memory",
+        "remember_memory",
+        "update_plan",
+        "agent_turn",
+        "compact_context",
+        "read_tool_result",
+    ]
     label: str = Field(min_length=1, max_length=100)
     position: StrictInt = Field(ge=1, le=128)
     status: Literal["running", "retrying", "completed", "failed", "cancelled"]
@@ -69,3 +90,63 @@ class MessageStreamEvent(StrictModel):
     def encode(self):
 
         return f"event: {self.event}\ndata: {json.dumps(self.data, ensure_ascii=False)}\n\n"
+
+
+class MemoryInput(StrictModel):
+    content: str = Field(min_length=1, max_length=2000)
+    kind: Literal["preference", "note"] = "note"
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_revision: StrictInt | None = Field(default=None, ge=1)
+
+
+class MemoryEntry(StrictModel):
+    id: str
+    owner_id: str
+    case_id: str
+    stage_id: str
+    conversation_id: str | None
+    kind: Literal["preference", "note"]
+    content: str
+    revision: int
+    case_revision: int
+    source_message_id: str | None
+    deleted: int
+    stale: bool
+    created_at: str
+    updated_at: str
+    context_hash: str
+
+
+class MemoryList(StrictModel):
+    items: list[MemoryEntry]
+    total: int
+
+
+class MemoryDeleted(StrictModel):
+    deleted: bool
+
+
+class AgentToolInfo(StrictModel):
+    name: str
+    label: str
+    description: str
+    parallel: bool
+
+
+class AgentSkillInfo(StrictModel):
+    id: str
+    label: str
+    description: str
+    tools: list[str]
+
+
+class AgentCombination(StrictModel):
+    label: str
+    skills: list[str]
+    description: str
+
+
+class AgentCatalog(StrictModel):
+    tools: list[AgentToolInfo]
+    skills: list[AgentSkillInfo]
+    combinations: list[AgentCombination]

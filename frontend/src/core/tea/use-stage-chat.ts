@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { errorMessage, streamMessage, teaRequest } from "./api";
+import { errorMessage, streamMessage, teaRequest, TeaApiError } from "./api";
+import { clearMemoryDrafts } from "./memory-drafts";
 import { clearNodeAnalyses } from "./node-analysis";
 import { mergeTraceStep, settleTraceSteps } from "./trace";
 import type {
@@ -21,6 +22,7 @@ export interface ChatTurn {
   label: string;
   state: "sending" | "failed" | "stopped";
   error?: string;
+  errorCode?: string;
   steps?: TraceStep[];
 }
 type Draft = { text: string; turns: ChatTurn[] };
@@ -30,6 +32,7 @@ type ChatEntry =
 const drafts = new Map<string, Draft>();
 const controllers = new Set<AbortController>();
 export function clearChatDrafts() {
+  clearMemoryDrafts();
   clearNodeAnalyses();
   for (const controller of controllers) controller.abort();
   controllers.clear();
@@ -257,6 +260,7 @@ export function useStageChat({
       turn.state = controller.signal.aborted ? "stopped" : "failed";
       turn.label = controller.signal.aborted ? "已停止回复" : "回复未完成";
       turn.error = controller.signal.aborted ? undefined : errorMessage(error);
+      turn.errorCode = error instanceof TeaApiError ? error.code : undefined;
       turn.steps = settleTraceSteps(
         turn.steps ?? [],
         controller.signal.aborted ? "cancelled" : "failed",
@@ -342,7 +346,25 @@ export function useStageChat({
     historyError,
     send,
     retry: (turn: ChatTurn) => {
-      void submit(turn.request);
+      if (
+        [
+          "agent_request_not_replayable",
+          "agent_context_changed",
+          "analysis_context_changed",
+          "agent_lease_lost",
+        ].includes(turn.errorCode ?? "")
+      ) {
+        setTurns((items) =>
+          items.filter(
+            (item) =>
+              item.request.client_message_id !== turn.request.client_message_id,
+          ),
+        );
+        void submit({
+          ...turn.request,
+          client_message_id: crypto.randomUUID(),
+        });
+      } else void submit(turn.request);
     },
     stop: () => active.current?.controller.abort(),
     loadEarlier,

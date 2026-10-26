@@ -28,7 +28,7 @@ from app.shared.infrastructure.operations.system_corpus_migration import (
 )
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 23
+SUPPORTED_SCHEMA_VERSION = 25
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -160,17 +160,19 @@ def _database_check(path, *, primary=False):
         _require(conn.execute("PRAGMA foreign_key_check").fetchone() is None, "sqlite_foreign_key_failed")
         tables = _tables(conn)
         version = None
+        applied = set()
         if "schema_migrations" in tables:
+            applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
             version = conn.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0]
         if primary:
             _require({"schema_migrations", "users", "documents"} <= tables, "application_database_required")
             _require(type(version) is int and 1 <= version <= SUPPORTED_SCHEMA_VERSION, "unsupported_schema")
-            if version >= 16:
+            if 16 in applied:
                 try:
                     conn.execute("SELECT user_id,can_login,is_admin,revision FROM user_access LIMIT 0")
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("account_access_schema_incomplete") from exc
-            if version >= 19:
+            if 19 in applied:
                 try:
                     conn.execute(
                         "SELECT id,owner_id,queue_kind,item_id,phase,status,reason,available_at,binding,binding_sha256,retry_plan,revision FROM collection_recovery_jobs LIMIT 0"
@@ -180,14 +182,14 @@ def _database_check(path, *, primary=False):
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("collection_recovery_schema_incomplete") from exc
-            if version >= 20:
+            if 20 in applied:
                 try:
                     conn.execute(
                         "SELECT id,document_id,owner_id,source_hash,profile_hash,part_index,first_page,last_page,part_blob,state,batch_id,private_data,result_blob,progress,attempts,next_at,error_code FROM document_parse_tasks LIMIT 0"
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("document_parse_schema_incomplete") from exc
-            if version >= 21:
+            if 21 in applied:
                 try:
                     conn.execute("SELECT owner_id,profile,name,remote_id FROM ragflow_datasets LIMIT 0")
                     conn.execute(
@@ -198,14 +200,14 @@ def _database_check(path, *, primary=False):
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("ragflow_schema_incomplete") from exc
-            if version >= 22:
+            if 22 in applied:
                 try:
                     conn.execute(
                         "SELECT candidate_id,source_record,source_page_url,source_page_sha256,created_at FROM checklist_candidate_source_records LIMIT 0"
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("candidate_source_record_schema_incomplete") from exc
-            if version >= 23:
+            if 23 in applied:
                 try:
                     conn.execute(
                         "SELECT event_key,source_id,country,source_url,content_hash,previous_content_hash,source_event_at,source_kind,declared_mime_type,mime_type,discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,source_root,document_id,status,reason,created_at,updated_at FROM official_source_imports LIMIT 0"
@@ -213,6 +215,28 @@ def _database_check(path, *, primary=False):
                     conn.execute("SELECT country,event_ns FROM official_source_import_cursor LIMIT 0")
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("official_source_import_schema_incomplete") from exc
+            if 24 in applied:
+                try:
+                    conn.execute(
+                        "SELECT id,owner_id,case_id,client_id,payload_hash,status,lease_until,result,trace FROM agent_runs LIMIT 0"
+                    )
+                    conn.execute(
+                        "SELECT run_id,call_id,name,input_hash,status,result FROM agent_tool_receipts LIMIT 0"
+                    )
+                    conn.execute(
+                        "SELECT id,owner_id,case_id,stage_id,conversation_id,revision,content,deleted FROM agent_memory_entries LIMIT 0"
+                    )
+                    conn.execute(
+                        "SELECT conversation_id,case_id,summary,source_message_id FROM agent_session_summaries LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("agent_runtime_schema_incomplete") from exc
+            if 25 in applied:
+                try:
+                    conn.execute("SELECT context_hash FROM agent_memory_entries LIMIT 0")
+                    conn.execute("SELECT context_hash FROM agent_session_summaries LIMIT 0")
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("agent_memory_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")
@@ -760,6 +784,15 @@ def _restore_database(path, source, target):
                 "SELECT COUNT(*) FROM collection_network_leases"
             ).fetchone()[0]
             conn.execute("DELETE FROM collection_network_leases")
+        if "agent_runs" in tables:
+            claims["agent_runs"] = conn.execute(
+                "SELECT COUNT(*) FROM agent_runs WHERE status='running'"
+            ).fetchone()[0]
+            # Expire the old process's claim without replaying unknown paid tools.
+            conn.execute(
+                "UPDATE agent_runs SET status='interrupted',lease_until='',updated_at=? WHERE status='running'",
+                (now(),),
+            )
         conn.commit()
     return {"relocated_paths": paths, "released_claims": claims}
 

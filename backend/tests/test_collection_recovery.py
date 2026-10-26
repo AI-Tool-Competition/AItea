@@ -462,9 +462,10 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
     assert tuple(recovery) == ("queued", "paid_ocr_retry")
     assert saved["pages"][0]["status"] == "pending_ocr"
     assert len(saved["pages"][0]["ocr_retry_cycles"]) == MAX_AUTOMATIC_OCR_INLINE_CYCLES
-    assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["source_hash"] == document[
-        "content_hash"
-    ]
+    assert (
+        saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["source_hash"]
+        == document["content_hash"]
+    )
     if fallback_attempts is not None:
         assert saved["pages"][0]["ocr_fallback"]["attempts"] == PREVIOUS_VISUAL_RETRY_LIMIT + 1
 
@@ -745,7 +746,9 @@ def test_page_recovery_accepts_bounded_recent_history_after_many_retry_cycles(se
         )
 
     with closing(service.db.connect()) as conn:
-        saved = json.loads(conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0])
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
     page = saved["pages"][0]
     cycle = page["ocr_retry_cycles"][-1]
     assert len(cycle["previous_page"]["ocr_attempt_history"]) == 3
@@ -1548,7 +1551,11 @@ def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(ser
         source_hash=document["content_hash"],
         reasons=["table_structure_ambiguous"],
         text="Original MinerU tariff row",
-        ocr_fallback={"protocol": PROTOCOL, "attempts": PREVIOUS_VISUAL_RETRY_LIMIT, "source_page": page["page"]},
+        ocr_fallback={
+            "protocol": PROTOCOL,
+            "attempts": PREVIOUS_VISUAL_RETRY_LIMIT,
+            "source_page": page["page"],
+        },
         ocr={"attempts": 0},
     )
     previous = bound_failed_vision_page(service, deepcopy(page))
@@ -2420,8 +2427,7 @@ def test_failed_official_mdb_is_retried_once_when_audited_parser_is_configured(
     scheduled = [
         json.loads(row["detail"])
         for row in rows(service, "collection_recovery_events")
-        if row["recovery_id"] == official_recovery["id"]
-        and row["event"] == "mdb_parser_refresh_scheduled"
+        if row["recovery_id"] == official_recovery["id"] and row["event"] == "mdb_parser_refresh_scheduled"
     ]
     assert len(scheduled) == 1
     assert scheduled[0]["max_attempts"] == 1
@@ -2571,7 +2577,7 @@ def test_backup_restore_preserves_recovery_events_and_due_queue(service, tmp_pat
     before = rows(service, "collection_recovery_events")
     backup = tmp_path / "backup"
     create_backup(service.db.data_dir, backup)
-    assert verify_backup(backup)["schema_version"] == 22
+    assert verify_backup(backup)["schema_version"] == 25
     restore_backup(backup, tmp_path / "restored")
     restored = Service(tmp_path / "restored")
     assert rows(restored, "collection_recovery_events") == before

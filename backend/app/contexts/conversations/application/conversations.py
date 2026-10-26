@@ -15,6 +15,14 @@ class ConversationService:
     def __init__(self, app):
         self.app = app
 
+    def tool_catalog(self, owner, case_id, stage_id):
+        from app.contexts.conversations.application.agent_tools import AgentTools
+
+        with closing(self.app.db.connect()) as conn:
+            case = self.app.agent_memory.scope(conn, owner, case_id, stage_id)
+        stage = next(s for s in case["stages"] if s["id"] == stage_id)
+        return AgentTools(self.app, owner, case, stage, {}, {}, "", lambda: None).catalog()
+
     def insert_message(self, conn, case_id, stage_id, task_id, role, content, citations, trace):
         message = {
             "id": uid(),
@@ -256,9 +264,10 @@ class ConversationService:
         agent = stage.get("analysis") or case["template"]["agent"]
         legal_enabled = bool((agent.get("legal") or {}).get("enabled"))
         conversation_id = payload.get("conversation_id")
+        dynamic = bool(conversation_id and self.app.capabilities["assistant_mode"] == "live")
         skills = []
         collecting = False
-        if conversation_id:
+        if conversation_id and not dynamic:
             from app.contexts.conversations.application.node_workspace import SKILLS, select_skills
 
             skills = select_skills(payload["content"], payload.get("skills", []), payload.get("mode", "auto"))
@@ -289,7 +298,14 @@ class ConversationService:
                 skills = ["guidance"]
             if emit:
                 emit("status", {"label": "正在调用" + "、".join(SKILLS[key] for key in skills) + "…"})
-        if legal_enabled:
+        if dynamic:
+            from app.contexts.conversations.application.agent_loop import run_agent
+
+            legal_enabled = False
+            result = run_agent(
+                self.app, owner, case, stage, payload, prepared, emit=emit, check_cancelled=check_cancelled
+            )
+        elif legal_enabled:
             question = payload["content"]
             chat_context = None
             if conversation_id and len(question) < 12000:
@@ -460,6 +476,8 @@ class ConversationService:
             if check_cancelled:
                 check_cancelled()
             current = self.app.case_detail(owner, case_id, conn)
+            if dynamic and current["revision"] != case["revision"]:
+                fail(409, "agent_context_changed", "业务资料已变化，本轮文稿和记忆未保存，请重新发送")
             if legal_enabled:
                 legal_record = self.app.legal.own(conn, owner, case_id, analysis["id"])
                 if legal_record.get("_snapshot") != self.app.legal.snapshot(conn, owner, current):
@@ -482,13 +500,27 @@ class ConversationService:
                     conn, case_id, stage["id"], task_id, "assistant", output, citations, trace
                 ),
             ]
+            if dynamic:
+                from app.contexts.conversations.application.agent_loop import commit_agent_result
+
+                notice = commit_agent_result(self.app, conn, owner, current, stage["id"], result, messages[0])
+                if notice:
+                    messages[1]["content"] += "\n\n" + notice
+                    conn.execute(
+                        "UPDATE messages SET content=? WHERE id=?",
+                        (messages[1]["content"], messages[1]["id"]),
+                    )
             if conversation_id:
-                if prepared.get("guide_phase") is not None and legal_enabled:
+                if prepared.get("guide_phase") is not None and (
+                    legal_enabled or (dynamic and result["_analyses"])
+                ):
+                    if dynamic:
+                        analysis = self.app.legal.own(conn, owner, case_id, result["_analyses"][-1]["id"])
                     guide_id = self.app.node_workspace.queue_guide(
                         conn, current, stage["id"], "chat:" + payload["client_message_id"], "引导会话分析报告"
                     )
                     snapshot = {
-                        **result,
+                        **(analysis["result"] if dynamic else result),
                         "status": "completed",
                         "legal_analysis_id": analysis["id"],
                         "legal_revision": analysis["revision"],
@@ -505,7 +537,7 @@ class ConversationService:
                         messages[1]["id"],
                     )
                     messages[1]["guide_result"] = {**snapshot, "trace": []}
-                if "draft" in skills:
+                if "draft" in skills and not dynamic:
                     title_match = re.search(r"[《「“]([^》」”\n]{1,100})[》」”]", payload["content"])
                     title = title_match[1] if title_match else prepared["selected"]["title"] + " · 文稿"
                     artifact = self.app.create_artifact(

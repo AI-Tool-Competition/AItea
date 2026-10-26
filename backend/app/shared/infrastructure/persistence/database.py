@@ -164,6 +164,15 @@ class Database:
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_access'"
                     ).fetchone():
                         raise RuntimeError("account access schema is incomplete")
+                    self._migrate_agent_runtime(conn)
+                    if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=25").fetchone():
+                        conn.execute(
+                            "ALTER TABLE agent_memory_entries ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
+                        )
+                        conn.execute(
+                            "ALTER TABLE agent_session_summaries ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
+                        )
+                        conn.execute("INSERT INTO schema_migrations VALUES(25,?)", (now(),))
                     conn.commit()
                 except BaseException:
                     conn.rollback()
@@ -172,6 +181,42 @@ class Database:
                 self._storage_identity = self._disk_identity()
             else:
                 self._check_identity()
+
+    @staticmethod
+    def _migrate_agent_runtime(conn):
+        """Additive migration, shared by new and existing stores; no business-data reset."""
+        if conn.execute("SELECT 1 FROM schema_migrations WHERE version=24").fetchone():
+            return
+        statements = (
+            """CREATE TABLE agent_runs(
+                id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),
+                case_id TEXT NOT NULL REFERENCES cases(id),stage_id TEXT NOT NULL,
+                conversation_id TEXT,client_id TEXT NOT NULL,payload_hash TEXT NOT NULL,
+                case_revision INTEGER NOT NULL,status TEXT NOT NULL,lease_until TEXT NOT NULL,
+                result TEXT,trace TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,UNIQUE(case_id,client_id))""",
+            "CREATE UNIQUE INDEX agent_active_case ON agent_runs(case_id) WHERE status='running'",
+            """CREATE TABLE agent_tool_receipts(
+                run_id TEXT NOT NULL REFERENCES agent_runs(id),call_id TEXT NOT NULL,
+                name TEXT NOT NULL,input_hash TEXT NOT NULL,status TEXT NOT NULL,
+                result TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(run_id,call_id))""",
+            """CREATE TABLE agent_memory_entries(
+                id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),
+                case_id TEXT NOT NULL REFERENCES cases(id),stage_id TEXT NOT NULL,
+                conversation_id TEXT,kind TEXT NOT NULL,content TEXT NOT NULL,
+                revision INTEGER NOT NULL,case_revision INTEGER NOT NULL,
+                source_message_id TEXT REFERENCES messages(id),deleted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,updated_at TEXT NOT NULL)""",
+            "CREATE INDEX agent_memory_scope ON agent_memory_entries(case_id,stage_id,deleted,updated_at,id)",
+            """CREATE TABLE agent_session_summaries(
+                conversation_id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES cases(id),
+                stage_id TEXT NOT NULL,case_revision INTEGER NOT NULL,
+                summary TEXT NOT NULL,source_message_id TEXT NOT NULL REFERENCES messages(id),
+                updated_at TEXT NOT NULL)""",
+        )
+        for statement in statements:
+            conn.execute(statement)
+        conn.execute("INSERT INTO schema_migrations VALUES(24,?)", (now(),))
 
     def _disk_identity(self):
         try:

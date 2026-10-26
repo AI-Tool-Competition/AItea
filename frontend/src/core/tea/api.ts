@@ -278,6 +278,22 @@ function isToolCall(data: unknown): data is ToolCall {
       "search_legal_evidence",
       "check_materials",
       "generate_guidance",
+      "guide_business",
+      "analyze_legal",
+      "draft_document",
+      "get_handoff",
+      "discover_tools",
+      "load_skill",
+      "list_documents",
+      "read_document",
+      "inspect_image",
+      "web_search",
+      "recall_memory",
+      "remember_memory",
+      "update_plan",
+      "agent_turn",
+      "compact_context",
+      "read_tool_result",
     ].includes(String(data.name)) &&
     typeof data.label === "string" &&
     data.label.length <= 100 &&

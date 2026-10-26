@@ -239,7 +239,19 @@ class LegalService:
             if doc["role"] != "primary":
                 fail(422, "invalid_document", "关联附件仅保存原件，不能作为正文检索来源")
 
-    def search(self, owner, query, case_id, template, jurisdictions, limit, document_ids=None, as_of=None):
+    def search(
+        self,
+        owner,
+        query,
+        case_id,
+        template,
+        jurisdictions,
+        limit,
+        document_ids=None,
+        as_of=None,
+        *,
+        check_cancelled=None,
+    ):
         from app.shared.domain.countries import document_country
 
         allowed = set(self.allowed_countries(template))
@@ -260,6 +272,8 @@ class LegalService:
         as_of = as_of or datetime.now(timezone.utc).date()
         found, warnings, modes = {}, [], set()
         for country in requested or [None]:
+            if check_cancelled:
+                check_cancelled()
             result = self.service.search_eligible(
                 owner,
                 query,
@@ -270,6 +284,8 @@ class LegalService:
                 document_ids=document_ids,
                 historical=historical,
             )
+            if check_cancelled:
+                check_cancelled()
             modes.add(result["mode"])
             if result.get("warning"):
                 warnings.append(result["warning"])
@@ -322,7 +338,13 @@ class LegalService:
             "product": case["product"],
             "mode_id": case["mode_id"],
             "date": datetime.now(timezone.utc).date().isoformat(),
-            "provider": digest([os.getenv("LLM_MODEL"), os.getenv("LLM_BASE_URL"), os.getenv("LLM_API_KEY")]),
+            "provider": digest(
+                [
+                    os.getenv("AGENT_MODEL") or os.getenv("LLM_MODEL"),
+                    os.getenv("AGENT_BASE_URL") or os.getenv("LLM_BASE_URL"),
+                    os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY"),
+                ]
+            ),
             "embedding": self.service.embedding_fingerprint(),
             "rerank": self.service.rerank_fingerprint(),
             "ragflow_index": self.service.ragflow.cache_signature(conn, owner, case),

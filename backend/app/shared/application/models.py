@@ -14,6 +14,11 @@ from app.contexts.conversations.application.contracts import GuideRetry as Guide
 from app.contexts.conversations.application.contracts import MessageInput as MessageInput
 from app.contexts.conversations.application.contracts import MessageStreamEvent as MessageStreamEvent
 from app.contexts.conversations.application.contracts import ToolCallSnapshot as ToolCallSnapshot
+from app.contexts.conversations.application.contracts import MemoryInput as MemoryInput
+from app.contexts.conversations.application.contracts import MemoryEntry as MemoryEntry
+from app.contexts.conversations.application.contracts import MemoryList as MemoryList
+from app.contexts.conversations.application.contracts import MemoryDeleted as MemoryDeleted
+from app.contexts.conversations.application.contracts import AgentCatalog as AgentCatalog
 from app.contexts.drafting.application.contracts import ArtifactConfirm as ArtifactConfirm
 from app.contexts.drafting.application.contracts import ArtifactPatch as ArtifactPatch
 from app.contexts.drafting.application.contracts import NewArtifact as NewArtifact

@@ -16,7 +16,16 @@ def checkpoint_inputs(conn, document_id, fingerprint, limit=128):
 def schema19_snapshot(service):
     """Create a pre-MinerU/RAGFlow fixture for the explicit legacy export tool."""
     with service.db.transaction() as conn:
-        for table in ("ragflow_chunks", "ragflow_documents", "ragflow_datasets", "document_parse_tasks"):
+        for table in (
+            "agent_tool_receipts",
+            "agent_runs",
+            "agent_memory_entries",
+            "agent_session_summaries",
+            "ragflow_chunks",
+            "ragflow_documents",
+            "ragflow_datasets",
+            "document_parse_tasks",
+        ):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
             conn.execute(f"DROP TABLE {table}")
         conn.execute("DELETE FROM schema_migrations WHERE version>19")

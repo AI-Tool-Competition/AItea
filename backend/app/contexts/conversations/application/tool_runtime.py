@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import monotonic, sleep
+from threading import RLock
 from typing import Annotated
 from uuid import uuid4
 
@@ -59,6 +60,7 @@ class ToolSpec:
     input_model: type[ToolInput]
     attempts: int = 1
     timeout_seconds: float = 45
+    concurrency_safe: bool = False
 
 
 SEARCH_DOCUMENTS = ToolSpec(
@@ -150,7 +152,9 @@ class ToolAttempt:
 
 
 class ToolRun:
-    def __init__(self, emit=None, check_cancelled=None, *, timeout_seconds=900, max_calls=128):
+    def __init__(
+        self, emit=None, check_cancelled=None, *, timeout_seconds=900, max_calls=128, catalog=TOOL_CATALOG
+    ):
         self.emit = emit
         self.check_cancelled = check_cancelled or (lambda: None)
         self.deadline = monotonic() + timeout_seconds
@@ -158,6 +162,8 @@ class ToolRun:
         self.run_id = uuid4().hex
         self.sequence = 0
         self.calls = 0
+        self.catalog = tuple(catalog)
+        self._lock = RLock()
 
     @contextmanager
     def step(self, trace):
@@ -168,25 +174,28 @@ class ToolRun:
             _current.reset(token)
 
     def publish(self, trace):
-        self.sequence += 1
-        trace.update(run_id=self.run_id, sequence=self.sequence)
-        if self.emit:
-            self.emit("step", copy.deepcopy(trace))
+        with self._lock:
+            self.sequence += 1
+            trace.update(run_id=self.run_id, sequence=self.sequence)
+            if self.emit:
+                self.emit("step", copy.deepcopy(trace))
 
     def call(self, spec, inputs, operation, trace=None, *, summarize=None):
-        if spec not in TOOL_CATALOG:
+        if spec not in self.catalog:
             raise ToolFailure("unknown_tool", "未登记的工具不能执行。")
         self.check_cancelled()
-        if self.calls >= self.max_calls:
-            raise ToolFailure("call_limit", "本次调用次数已达上限，请缩小问题范围。")
-        self.calls += 1
+        with self._lock:
+            if self.calls >= self.max_calls:
+                raise ToolFailure("call_limit", "本次调用次数已达上限，请缩小问题范围。")
+            self.calls += 1
+            position = self.calls
         started = monotonic()
         context = ToolAttempt(self, started + spec.timeout_seconds)
         record = {
-            "id": f"{self.run_id}:{self.calls}",
+            "id": f"{self.run_id}:{position}",
             "name": spec.name,
             "label": spec.label,
-            "position": self.calls,
+            "position": position,
             "status": "running",
             "attempt": 1,
             "max_attempts": spec.attempts,
@@ -194,16 +203,19 @@ class ToolRun:
             "duration_ms": 0,
         }
         if trace is not None:
-            trace.setdefault("tools", []).append(record)
+            with self._lock:
+                trace.setdefault("tools", []).append(record)
+                trace["tools"].sort(key=lambda item: item["position"])
 
         def publish(status, detail, code=None):
-            record.update(
-                status=status, detail=detail[:400], duration_ms=round((monotonic() - started) * 1000, 2)
-            )
-            if code:
-                record["error_code"] = code
-            if trace is not None:
-                self.publish(trace)
+            with self._lock:
+                record.update(
+                    status=status, detail=detail[:400], duration_ms=round((monotonic() - started) * 1000, 2)
+                )
+                if code:
+                    record["error_code"] = code
+                if trace is not None:
+                    self.publish(trace)
 
         try:
             publish("running", spec.description)

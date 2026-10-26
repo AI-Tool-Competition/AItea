@@ -154,8 +154,10 @@ def generate_guidance(
     )
     history = context.get("recent_messages", [])
     inputs = guidance_inputs(content, context, citations, checks, previous_output)
-    base = (os.getenv("LLM_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-    model = os.environ["LLM_MODEL"]
+    base = (os.getenv("AGENT_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://aerisun.top/sub2api").rstrip(
+        "/"
+    )
+    model = os.getenv("AGENT_MODEL") or os.getenv("LLM_MODEL") or "gemini-3.8-flash"
     uses_aerisun_deepseek = _uses_aerisun_deepseek_endpoint(base, model)
     messages = [{"role": "system", "content": system}]
     if uses_aerisun_deepseek:

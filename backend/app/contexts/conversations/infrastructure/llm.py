@@ -52,7 +52,9 @@ async def stream_guidance(base, body, on_delta, check_cancelled, on_usage=None, 
             async with client.stream(
                 "POST",
                 base + "/chat/completions",
-                headers={"Authorization": "Bearer " + os.environ["LLM_API_KEY"]},
+                headers={
+                    "Authorization": "Bearer " + (os.getenv("AGENT_API_KEY") or os.environ["LLM_API_KEY"])
+                },
                 json=body,
             ) as response:
                 response.raise_for_status()

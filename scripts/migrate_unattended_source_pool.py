@@ -68,7 +68,12 @@ def _verified_addition(source: dict) -> None:
         ):
             raise ValueError("New source receipt checksum does not match")
         proof = json.loads(raw)
-        observation = proof.get("last_observation", {})
+        observation_state = proof.get("last_observation", {})
+        observation = (
+            observation_state.get("last_observation", observation_state)
+            if isinstance(observation_state, dict)
+            else {}
+        )
         root_request = proof.get("root_request")
         checked = datetime.fromisoformat(verification["checked_at"])
     except (OSError, KeyError, TypeError, json.JSONDecodeError, ValueError) as error:

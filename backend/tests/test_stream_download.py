@@ -213,6 +213,20 @@ def test_explicit_range_binds_offsets_total_and_strong_validator(transport):
     assert headers[0]["response_status"] == 206
 
 
+def test_requested_range_rejects_full_response_before_reading_body(transport):
+    responses, requests, _ = transport
+    response = Response(
+        [b"full document must not be consumed"],
+        status=200,
+        headers={"Content-Length": "34", "Content-Type": "application/pdf"},
+    )
+    responses.append(response)
+    with pytest.raises(ingestion_download.DownloadError, match="未按要求返回分段响应"):
+        download(byte_range=(0, 0), max_bytes=300 * 1024**2)
+    assert requests[0][2]["Range"] == "bytes=0-0"
+    assert response.reads == 0
+
+
 def test_dedicated_dataset_range_exceeds_generic_total_only_with_exact_binding(transport):
     responses, requests, _ = transport
     start = 200 * 1024 * 1024

@@ -143,6 +143,48 @@ def _sso_catalogue_evidence(source: dict, event: dict, url: str) -> dict | None:
     }
 
 
+def _treaty_room_catalogue_evidence(source: dict, event: dict, url: str) -> dict | None:
+    """Retain the official treaty row and exact catalogue page for each original."""
+    policy = source.get("discovery", {})
+    if not isinstance(policy, dict) or policy.get("adapter") != "treaty_room_public":
+        return None
+    from app.contexts.ingestion.infrastructure.source_adapters.treaty_room_discovery import (
+        purpose,
+        validate_candidate_reference,
+    )
+
+    if purpose(url) != "document":
+        return None
+    if event.get("discovery_purpose") != "document":
+        raise ValueError("invalid_treaty_room_reference")
+
+    record = event.get("source_record")
+    identity = event.get("source_identity_key")
+    validate_candidate_reference(
+        record,
+        parent_url=event.get("discovery_parent_url"),
+        parent_hash=event.get("discovery_parent_hash"),
+        target_url=url,
+        identity_key=identity,
+    )
+    fields = record["fields"]
+    if (
+        source.get("country") != "ID"
+        or source.get("allowed_hosts") != ["api-treaty-room.kemlu.go.id"]
+        or event.get("discovery_title") != fields["title"][:300]
+    ):
+        raise ValueError("invalid_treaty_room_reference")
+    return {
+        "identity_key": identity,
+        "catalog_url": fields["catalog_url"],
+        "catalog_sha256": fields["catalog_sha256"],
+        "treaty_id": fields["treaty_id"],
+        "original_slot": fields["original_slot"],
+        "title": fields["title"],
+        "source_record": record,
+    }
+
+
 def _safe_file(
     root: Path, relative: str, expected_hash: str, *, max_bytes: int = _MAX_ORIGINAL_BYTES
 ) -> bytes:
@@ -671,9 +713,19 @@ class OfficialSourceImporter:
             )
             return "skipped"
         sso_evidence = _sso_catalogue_evidence(source, event, url)
+        treaty_evidence = _treaty_room_catalogue_evidence(source, event, url)
         identity_key = f"official-source:{source['id']}:{url}"
         source_response = None
-        if sso_evidence is not None:
+        if treaty_evidence is not None:
+            identity_key = f"official-source:{source['id']}:{treaty_evidence['identity_key']}"
+            source_response = {
+                "protocol": "official-source-catalogue-evidence-v1",
+                "source_id": source["id"],
+                "checklist_items": source.get("verification", {}).get("checklist_items", []),
+                "title": treaty_evidence["title"],
+                "treaty_room": treaty_evidence,
+            }
+        elif sso_evidence is not None:
             identity_key = f"official-source:{source['id']}:{sso_evidence['identity_key']}"
             source_response = {
                 "protocol": "official-source-catalogue-evidence-v1",

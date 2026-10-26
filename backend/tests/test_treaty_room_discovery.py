@@ -1,5 +1,6 @@
 """Public treaty originals, catalog-only diplomacy, and immutable older plans."""
 
+import hashlib
 import json
 from contextlib import closing
 from copy import deepcopy
@@ -18,6 +19,8 @@ from app.contexts.ingestion.infrastructure.source_adapters.treaty_room_discovery
     BASE,
     catalog_url,
     original_url,
+    priority_topics,
+    validate_candidate_reference,
 )
 from app.shared.domain.errors import AppError
 from app.shared.domain.values import now
@@ -140,6 +143,61 @@ def test_economic_partnership_trade_agreements_register_their_originals(title):
     assert result["scope"]["documents"][0]["priority_topics"] == ["trade_customs"]
     assert len(result["links"]) == 1
     assert result["links"][0]["purpose"] == "document"
+
+
+@pytest.mark.parametrize(
+    ("title", "topic"),
+    [
+        (
+            "Regional Comprehensive Economic Partnership Agreement (RCEP)",
+            "rcep",
+        ),
+        (
+            "Persetujuan Kemitraan Ekonomi Komprehensif Regional (RCEP)",
+            "rcep",
+        ),
+        (
+            "Agreement Establishing the ASEAN-China Free Trade Area (ACFTA)",
+            "acfta",
+        ),
+        (
+            "Agreement on Trade in Goods of the ASEAN-China Free Trade Area",
+            "acfta",
+        ),
+    ],
+)
+def test_rcep_and_acfta_titles_are_priority_original_candidates(title, topic):
+    topics = priority_topics(title)
+    assert "trade_customs" in topics
+    assert topic in topics
+    assert inspect([row(title=title)])["links"][0]["purpose"] == "document"
+
+
+def test_treaty_original_candidate_keeps_parent_hash_and_validated_raw_metadata():
+    body = response([row(title="Regional Comprehensive Economic Partnership Agreement (RCEP)")])
+    parent_hash = hashlib.sha256(body).hexdigest()
+    link = inspect([row(title="Regional Comprehensive Economic Partnership Agreement (RCEP)")])["links"][0]
+    identity = link["identity_key"]
+    record = link["source_record"]
+
+    assert validate_candidate_reference(
+        record,
+        parent_url=catalog_url(),
+        parent_hash=parent_hash,
+        target_url=link["url"],
+        identity_key=identity,
+    ) == record
+    assert record["fields"]["source_metadata"]["id_perjanjian"] == record["fields"]["treaty_id"]
+    assert record["fields"]["catalog_sha256"] == parent_hash
+    assert record["fields"]["legal_review_status"] == "not_reviewed"
+    with pytest.raises(ValueError):
+        validate_candidate_reference(
+            record,
+            parent_url=catalog_url(),
+            parent_hash="0" * 64,
+            target_url=link["url"],
+            identity_key=identity,
+        )
 
 
 @pytest.mark.parametrize(

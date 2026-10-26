@@ -486,8 +486,8 @@ def _download(
                     )
                 if response.status == 206 and byte_range is None:
                     raise DownloadError("抓取来源返回了不完整的分段响应。")
-                if range_total_bytes is not None and response.status != 206:
-                    raise DownloadError("专用数据集必须返回与固定总大小一致的分段响应。")
+                if byte_range is not None and response.status != 206:
+                    raise DownloadError("抓取来源未按要求返回分段响应。")
                 encoding = response.getheader("Content-Encoding", "identity").strip().lower()
                 compressed = (accept_compressed_html or accept_compressed_json) and encoding == "gzip"
                 if encoding not in {"identity", ""} and not compressed:

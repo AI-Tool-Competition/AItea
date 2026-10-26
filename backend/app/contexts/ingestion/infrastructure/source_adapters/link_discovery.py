@@ -1330,6 +1330,13 @@ class _Recipe:
             or not 1 <= self.max_catalog_records <= 10_000
         ):
             raise ValueError("目录记录上限必须为 1 至 10,000。")
+        self.max_catalog_pages = recipe.get("max_catalog_pages", 2_000)
+        if (
+            isinstance(self.max_catalog_pages, bool)
+            or not isinstance(self.max_catalog_pages, int)
+            or not 1 <= self.max_catalog_pages <= 2_000
+        ):
+            raise ValueError("目录分页上限必须为 1 至 2,000。")
         for key in ("include_terms", "exclude_terms", "bpk_types", "bpk_search_terms"):
             values = recipe.get(key, [])
             if (

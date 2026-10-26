@@ -597,6 +597,66 @@ def test_query_source_probe_proof_uses_exact_root_request_when_health_redacts_qu
         migration._verified_addition(source)
 
 
+def test_migration_accepts_collector_state_receipt_with_exact_root_request(tmp_path, monkeypatch):
+    source = copy.deepcopy(
+        next(
+            row
+            for row in json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())[
+                "sources"
+            ]
+            if row["id"] == "id-beacukai-regulations"
+        )
+    )
+    source["id"] = "id-collector-state-proof"
+    source["url"] = "https://peraturan.beacukai.go.id/index.html?category=regulation"
+    body_hash = hashlib.sha256(b"verified query catalogue").hexdigest()
+    source["verification"].update(
+        checked_at=datetime.now(UTC).isoformat(),
+        body_sha256=body_hash,
+        server_receipt_path=".dev/source-observation.json",
+    )
+    exact_url = source["url"]
+    receipt = {
+        "kind": "source_observation",
+        "source_id": source["id"],
+        "last_observation": {
+            "protocol": "aitea-source-health-v1",
+            "source_id": source["id"],
+            "health": "healthy",
+            "last_observation": {
+                "at": datetime.now(UTC).timestamp(),
+                "status": "success",
+                "http_status": 200,
+                "url": "https://peraturan.beacukai.go.id/index.html",
+                "content_hash": body_hash,
+            },
+        },
+        "root_request": {
+            "request_id": "b" * 32,
+            "source_id": source["id"],
+            "url": exact_url,
+            "network_url": exact_url,
+            "status": "finished",
+            "outcome": {
+                "status": "success",
+                "http_status": 200,
+                "url": exact_url,
+                "content_hash": body_hash,
+            },
+            "request_evidence": {"method": "GET"},
+        },
+    }
+    monkeypatch.setattr(migration, "ROOT", tmp_path)
+    receipt_path = tmp_path / source["verification"]["server_receipt_path"]
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps(receipt))
+    source["verification"]["server_receipt_sha256"] = hashlib.sha256(
+        receipt_path.read_bytes()
+    ).hexdigest()
+
+    migration._verified_addition(source)
+
+
 def test_migration_reactivates_archived_source_with_verified_checklist_mapping(tmp_path, monkeypatch):
     new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     old_pool = copy.deepcopy(new_pool)

@@ -237,6 +237,22 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert "id-bpjph-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
             assert "id-bi-jdih-regulations" in {source["id"] for source in active}
+            treaty_room = next(row for row in active if row["id"] == "id-treaty-room-public")
+            assert treaty_room["discovery"] == {
+                "adapter": "treaty_room_public",
+                "page_size": 40,
+                "max_pages": 250,
+                "max_records": 10_000,
+            }
+            assert treaty_room["group_id"] == "id-international-treaties"
+            assert treaty_room["verification"]["checklist_items"] == ["ID-5.1"]
+            assert treaty_room["verification"]["latest_probe"]["catalogue_total"] == 4171
+            assert any(
+                relation["source_id"] == "id-treaty-room-public"
+                and relation["related_source_id"] == "id-setneg-uu"
+                and relation["type"] == "complements"
+                for relation in registry["source_relations"]
+            )
             jdih = next(row for row in active if row["id"] == "id-bi-jdih-regulations")
             assert jdih["discovery"] == {"adapter": "bi_jdih", "max_records": 10_000}
             assert jdih["group_id"] == "id-central-bank-regulations"
@@ -701,6 +717,60 @@ def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
     invalid = {**document, "document_date": "2017122917000"}
     with pytest.raises(ValueError, match="row identity or locator"):
         collection.source_reference_fields(source_row, invalid, hashlib.sha256(raw).hexdigest())
+
+
+def test_treaty_room_dynamic_source_recipe_and_reference_keep_catalogue_evidence():
+    from app.contexts.ingestion.infrastructure.source_adapters import treaty_room_discovery
+
+    catalogue_url = treaty_room_discovery.catalog_url()
+    configured = source(
+        "id-treaty-room-public",
+        host=treaty_room_discovery.HOST,
+        path="/publik/perjanjian",
+        country="ID",
+        kind="catalogue",
+        topics=["international_treaties", "trade_customs"],
+        discovery_keywords=[],
+        discovery={
+            "adapter": "treaty_room_public",
+            "page_size": 40,
+            "max_pages": 250,
+            "max_records": 10_000,
+        },
+    )
+    configured["url"] = catalogue_url
+    recipe = collection.recipe(configured)
+    assert recipe["treaty_room"] is True
+    assert recipe["max_catalog_records"] == 10_000
+    assert recipe["max_catalog_pages"] == 250
+    assert collection.request_url(configured, catalogue_url) == catalogue_url
+    assert collection.request_url(configured, treaty_room_discovery.catalog_url(2)) == treaty_room_discovery.catalog_url(2)
+
+    raw = json.dumps(
+        {
+            "success": True,
+            "data": [
+                {
+                    "id_perjanjian": 77,
+                    "judul": "Regional Comprehensive Economic Partnership Agreement (RCEP)",
+                    "file": {"id_konten": 177, "file": "RCEP-Agreement.pdf"},
+                }
+            ],
+            "total": 1,
+            "current_page": 1,
+            "last_page": 1,
+            "length": 1,
+        }
+    ).encode()
+    body_hash = hashlib.sha256(raw).hexdigest()
+    discovered = collection.discover_page(catalogue_url, raw, "application/json", recipe)
+    link = discovered["links"][0]
+    evidence = collection.source_reference_fields(configured, link, body_hash, catalogue_url)
+    assert evidence["identity_key"] == "treaty-room:77:file"
+    assert evidence["source_record"]["fields"]["catalog_sha256"] == body_hash
+    assert evidence["source_record"]["fields"]["source_metadata"]["id_perjanjian"] == 77
+    with pytest.raises(ValueError):
+        collection.source_reference_fields(configured, link, "0" * 64, catalogue_url)
 
 
 def test_bi_jdih_uses_virtual_batches_and_keeps_metadata_bound_to_its_detail(environment):
@@ -1994,7 +2064,7 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 30
+    assert len(configured) == 31
     setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row

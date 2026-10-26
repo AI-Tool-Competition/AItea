@@ -365,6 +365,36 @@ def _validate_discovery_policy(source: dict, validate_url) -> None:
             or parsed.fragment
         ):
             raise ValueError("Dephub source must use its exact official catalogue root")
+    elif policy.get("adapter") == "treaty_room_public":
+        if (
+            set(policy) != {"adapter", "page_size", "max_pages", "max_records"}
+            or type(policy.get("page_size")) is not int
+            or policy["page_size"] != 40
+            or type(policy.get("max_pages")) is not int
+            or not 1 <= policy["max_pages"] <= 500
+            or type(policy.get("max_records")) is not int
+            or not 1 <= policy["max_records"] <= 10_000
+        ):
+            raise ValueError("Invalid bounded TreatyRoom discovery policy")
+        expected_url = (
+            "https://api-treaty-room.kemlu.go.id/publik/perjanjian"
+            "?id_negara=&id_organisasi=&id_subjek=&jenis_perjanjian=&judul_perjanjian=&limit=40&page=1"
+        )
+        try:
+            normalized, host = validate_url(source["url"])
+            parsed = urlsplit(source["url"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("TreatyRoom source must use its exact public catalogue root") from error
+        if (
+            source.get("country") != "ID"
+            or source.get("kind") != "catalogue"
+            or source.get("allowed_hosts") != ["api-treaty-room.kemlu.go.id"]
+            or host != "api-treaty-room.kemlu.go.id"
+            or normalized != expected_url
+            or source["url"] != expected_url
+            or parsed.fragment
+        ):
+            raise ValueError("TreatyRoom source must use its exact public catalogue root")
     else:
         raise ValueError("Invalid bounded source discovery policy")
     request_window = source.get("request_window")
@@ -441,7 +471,13 @@ def validate_source_registry(
         specialized_discovery = (
             isinstance(source.get("discovery"), dict)
             and source["discovery"].get("adapter")
-            in {"sso_catalog_2026", "bi_official", "bi_jdih", "dephub_regulations"}
+            in {
+                "sso_catalog_2026",
+                "bi_official",
+                "bi_jdih",
+                "dephub_regulations",
+                "treaty_room_public",
+            }
         )
         normalized, host = validate_url(source["url"])
         if identifier == SETNEG_ID or host == "jdih.setneg.go.id" or "setneg_type" in source:

@@ -8,6 +8,7 @@ from app.bootstrap import Service
 from app.contexts.ingestion.application.official_source_import import (
     OfficialSourceImporter,
     _sso_catalogue_evidence,
+    _treaty_room_catalogue_evidence,
 )
 from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 from app.interfaces.http.factory import create_app
@@ -642,6 +643,135 @@ def test_sso_current_html_versions_keep_catalogue_identity_and_row_evidence(tmp_
         assert source_response["document_date"] == ("20240520" if index == 1 else "20171229170000")
         assert source_response["source_locator"]["row"] == index
         assert source_response["catalogue_sha256"] == catalogue_hashes[index - 1]
+
+
+def test_treaty_room_original_versions_keep_stable_identity_and_full_catalogue_metadata(tmp_path):
+    from app.contexts.ingestion.infrastructure.source_adapters.treaty_room_discovery import (
+        catalog_url,
+    )
+
+    service, config = _importer(tmp_path)
+    catalogue = catalog_url()
+    catalogue_body = json.dumps(
+        {
+            "success": True,
+            "data": [
+                {
+                    "id_perjanjian": 810,
+                    "judul": "Regional Comprehensive Economic Partnership Agreement (RCEP)",
+                    "mulaiBerlaku": "2022-01-02",
+                    "file": {
+                        "id_konten": 910,
+                        "file": "RCEP-Agreement.pdf",
+                        "file2": None,
+                        "file3": None,
+                        "file4": None,
+                    },
+                }
+            ],
+            "total": 1,
+            "current_page": 1,
+            "last_page": 1,
+            "length": 1,
+        }
+    ).encode()
+    catalogue_hash = hashlib.sha256(catalogue_body).hexdigest()
+    from app.contexts.ingestion.infrastructure.source_adapters.treaty_room_discovery import inspect_catalog
+    from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import _Recipe
+
+    discovery_recipe = {
+        "adapter": "html_links",
+        "allowed_hosts": ["api-treaty-room.kemlu.go.id"],
+        "catalog_patterns": [r"^/publik/perjanjian(?:\?|$)"],
+        "treaty_room": True,
+    }
+    link = inspect_catalog(
+        catalogue,
+        catalogue_body,
+        "application/json",
+        _Recipe(discovery_recipe),
+    )["links"][0]
+    source = {
+        "id": "id-treaty-room-public",
+        "country": "ID",
+        "kind": "catalogue",
+        "allowed_hosts": ["api-treaty-room.kemlu.go.id"],
+        "discovery": {
+            "adapter": "treaty_room_public",
+            "page_size": 40,
+            "max_pages": 250,
+            "max_records": 10_000,
+        },
+        "verification": {"checklist_items": ["ID-5.1"]},
+    }
+    config.write_text(json.dumps({"sources": [source]}))
+    country_root = tmp_path / "official-updates/ID"
+    (country_root / "files").mkdir(parents=True)
+    first_event_ns = time.time_ns()
+    cache = {}
+    for index, original in enumerate(
+        [b"%PDF-1.4\nfirst version", b"%PDF-1.4\nrevised version"], start=1
+    ):
+        digest = hashlib.sha256(original).hexdigest()
+        relative = f"files/rcep-version-{index}.pdf"
+        (country_root / relative).write_bytes(original)
+        event = {
+            "at": time.time() + index,
+            "kind": "content_version",
+            "source_id": source["id"],
+            "source_kind": "catalogue",
+            "source_root": False,
+            "url": link["url"],
+            "content_hash": digest,
+            "previous_content_hash": None if index == 1 else "a" * 64,
+            "path": relative,
+            "mime_type": "application/pdf",
+            "discovery_matched": True,
+            "discovery_purpose": "document",
+            "discovery_parent_url": catalogue,
+            "discovery_parent_hash": catalogue_hash,
+            "discovery_title": link["title"],
+            "source_identity_key": link["identity_key"],
+            "source_record": link["source_record"],
+            "legal_review": "unreviewed",
+        }
+        assert _treaty_room_catalogue_evidence(source, event, link["url"])
+        event_ns = first_event_ns + index
+        event_dir = country_root / "events/2026-10-26"
+        event_dir.mkdir(parents=True, exist_ok=True)
+        (event_dir / f"{event_ns}-treaty-version.json").write_text(json.dumps(event))
+        cache[link["url"]] = {
+            "content_hash": digest,
+            "mime_type": "application/pdf",
+            "discovery": {"matched": True, "purpose": "document"},
+        }
+    (country_root / "state.json").write_text(
+        json.dumps(
+            {
+                "updated_at": time.time() + 10,
+                "sources": {source["id"]: {"cache": cache}},
+            }
+        )
+    )
+
+    importer = OfficialSourceImporter(service, config_path=config)
+    assert importer.run_once() == {"stored": 2, "skipped": 0, "blocked": 0, "deferred": 0}
+    with service.db.connect() as conn:
+        docs = conn.execute(
+            "SELECT version,family_id,manifest FROM documents WHERE owner_id=? ORDER BY version",
+            (SYSTEM_OWNER_ID,),
+        ).fetchall()
+    assert [row["version"] for row in docs] == [1, 2]
+    assert docs[0]["family_id"] == docs[1]["family_id"]
+    for row in docs:
+        manifest = json.loads(row["manifest"])
+        evidence = manifest["source_response"]["treaty_room"]
+        assert manifest["source_response"]["checklist_items"] == ["ID-5.1"]
+        assert evidence["identity_key"] == link["identity_key"]
+        assert evidence["catalog_url"] == catalogue
+        assert evidence["catalog_sha256"] == catalogue_hash
+        assert evidence["treaty_id"] == 810
+        assert evidence["source_record"]["fields"]["legal_review_status"] == "not_reviewed"
 
 
 def test_only_exactly_configured_guidance_html_detail_is_imported(tmp_path):

@@ -1217,7 +1217,7 @@ def test_failure_removes_only_its_own_temporary_snapshot(archive, monkeypatch):
     assert sorted(p.name for p in unrelated.parent.iterdir()) == sorted([previous.name, unrelated.name])
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
+@pytest.mark.parametrize("version", list(range(7, 26)))
 def test_supported_schema_versions_are_reported_without_upgrading(archive, version):
     document(archive, "law")
     with archive.db.transaction() as conn:
@@ -1234,6 +1234,21 @@ def test_supported_schema_versions_are_reported_without_upgrading(archive, versi
                 "CREATE TABLE IF NOT EXISTS checklist_page_evidence(item_id TEXT PRIMARY KEY,evidence TEXT NOT NULL)"
             )
             conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES(11,?)", (AT,))
+        if version == 23:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS official_source_imports(
+                    event_key TEXT PRIMARY KEY,source_id TEXT NOT NULL,country TEXT NOT NULL,
+                    source_url TEXT NOT NULL,content_hash TEXT NOT NULL,previous_content_hash TEXT,
+                    source_event_at REAL,source_kind TEXT,declared_mime_type TEXT,mime_type TEXT,
+                    discovery_matched INTEGER,discovery_purpose TEXT,discovery_parent_url TEXT,
+                    discovery_parent_hash TEXT,discovery_title TEXT,source_root INTEGER,
+                    document_id TEXT,status TEXT NOT NULL,reason TEXT,created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL)"""
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS official_source_import_cursor(country TEXT PRIMARY KEY,event_ns INTEGER NOT NULL)"
+            )
+            conn.execute("INSERT OR IGNORE INTO schema_migrations VALUES(23,?)", (AT,))
     if version < 10:
         with archive.db.transaction() as conn:
             for trigger in ("retrieval_document_insert", "retrieval_document_update"):

@@ -38,6 +38,18 @@ systemctl --user status aitea-collection.service
 make collection-status
 ```
 
+查看每个国家的采集状态时，使用有界摘要命令；它会报告来源健康、调度结果、缓存与发现队列数量，并核对账本绑定的来源池哈希，不输出候选 URL 或整份发现状态：
+
+```bash
+uv run --project backend --locked python scripts/unattended_collection.py status \
+  --pool "$PWD/config/collection-sources/id-sg-unattended.json" \
+  --root "$PWD/data/official-updates/ID" --country ID
+
+uv run --project backend --locked python scripts/unattended_collection.py status \
+  --pool "$PWD/config/collection-sources/id-sg-unattended.json" \
+  --root "$PWD/data/official-updates/SG" --country SG
+```
+
 无人登录和服务器重启后运行需要管理员为此账号开启 linger：`loginctl show-user "$USER" -p Linger` 应输出 `Linger=yes`。无桌面会话的终端还需设置当前账号的 `XDG_RUNTIME_DIR=/run/user/$(id -u)` 及 `DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus`。不要覆盖其他账号的用户服务或修改系统网络配置。
 
 服务与两个国家采集器分别维护进程身份、锁及持久状态。子进程异常退出后自动退避重启；watchdog 异常退出后 systemd 自动重启。在 systemd 的 `KillMode=mixed` 下，主进程异常退出会清理原服务进程组，再从请求账本恢复，不保证保留原 PID。脱离 systemd 的 watchdog 重启可接管身份、启动令牌和继承锁相符的幸存子进程。正常停止最多等待当前有界请求结束；此服务只包含单请求 20 秒的新采集器，不接收旧的长窗口周期任务。

@@ -111,6 +111,98 @@ def bi_catalogue_page(page_number, *, total=20):
     ).encode()
 
 
+def test_status_summary_reports_health_and_queue_counts_without_raw_urls():
+    private_url = "https://official.example/legal/private-document.pdf?token=secret"
+    state = {
+        "status": "waiting",
+        "updated_at": 120.0,
+        "last_progress_at": 110.0,
+        "active_sources": [],
+        "binding": {
+            "country": "SG",
+            "root": "/srv/aitea/official-updates/SG",
+            "pool_sha256": "a" * 64,
+            "limits": {"workers": 4, "per_host": 2, "daily_requests": 256},
+        },
+        "pool_migrations": [{"at": 100.0, "added_source_ids": ["sg-new"], "archived_source_ids": []}],
+        "sources": {
+            "sg-example": {
+                "health": "degraded",
+                "scheduling_status": "network_error",
+                "attempt_count": 7,
+                "success_count": 4,
+                "failure_count": 3,
+                "consecutive_failures": 2,
+                "last_attempt_at": 105.0,
+                "last_success_at": 80.0,
+                "next_at": 180.0,
+                "root_next_at": 190.0,
+                "cache": {private_url: {"size": 42}},
+                "frontier": {
+                    private_url: {"scope_excluded": False, "title": "private document title"},
+                    "https://official.example/unrelated": {"scope_excluded": True},
+                },
+                "last_observation": {
+                    "status": "network_error",
+                    "failure_code": "network_timeout",
+                    "error_type": "DownloadError",
+                    "url": private_url,
+                },
+            },
+            "sg-old-archived": {
+                "health": "content_invalid",
+                "scheduling_status": "content_invalid",
+                "consecutive_failures": 5,
+                "cache": {},
+                "frontier": {},
+            },
+        },
+    }
+
+    report = collection.status_summary(
+        state,
+        current_pool_sha256="b" * 64,
+        current_pool_sources=[
+            {"id": "sg-example", "country": "SG", "status": "active"},
+            {"id": "sg-old-archived", "country": "SG", "status": "archived"},
+        ],
+    )
+    rendered = json.dumps(report)
+
+    assert report["protocol"] == "aitea-unattended-collection-status-v1"
+    assert report["pool_binding"]["matches"] is False
+    assert report["configured_source_counts"] == {"active": 1, "archived": 1}
+    assert report["configured_active_without_state_count"] == 0
+    assert report["health_counts_by_configuration"] == {
+        "active": {"degraded": 1},
+        "archived": {"content_invalid": 1},
+    }
+    assert report["totals"] == {"cached_urls": 1, "frontier_urls": 2, "scope_excluded_urls": 1}
+    assert report["sources"][0]["last_observation"]["failure_code"] == "network_timeout"
+    assert private_url not in rendered
+    assert "private document title" not in rendered
+    assert "cache" not in report["sources"][0]
+    assert "frontier" not in report["sources"][0]
+
+
+def test_status_summary_bounds_source_rows():
+    state = {
+        "binding": {"country": "ID", "pool_sha256": "a" * 64},
+        "sources": {
+            f"source-{index}": {"health": "healthy", "cache": {}, "frontier": {}}
+            for index in range(300)
+        },
+    }
+
+    report = collection.status_summary(state, current_pool_sha256="a" * 64)
+
+    assert report["pool_binding"]["matches"] is True
+    assert report["source_count"] == 300
+    assert report["reported_source_count"] == 256
+    assert report["truncated_source_count"] == 44
+    assert len(report["sources"]) == 256
+
+
 def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tmp_path):
     registry_path = ROOT / "config/collection-sources/id-sg-unattended.json"
     registry = json.loads(registry_path.read_text())

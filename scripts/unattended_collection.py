@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -53,12 +53,12 @@ from app.contexts.ingestion.infrastructure.source_registry_json import (  # noqa
     JsonSourceRegistry,
     read_source_registry,
 )
-from app.shared.infrastructure.persistence.blob_store import BlobStore  # noqa: E402
 from app.shared.infrastructure.http.download import (  # noqa: E402
     DownloadError,
     _download,
     _validated_url,
 )
+from app.shared.infrastructure.persistence.blob_store import BlobStore  # noqa: E402
 from official_source_supervisor_recovery import (  # noqa: E402
     load,
     lock,
@@ -93,6 +93,198 @@ LIMITS = {
     "min_free_bytes": 8 * 1024**3,
     "tick_seconds": 30,
 }
+MAX_STATUS_SOURCES = 256
+MAX_STATUS_ACTIVE_SOURCES = 32
+
+
+def _status_counter(value):
+    return value if type(value) is int and value >= 0 else 0
+
+
+def _status_timestamp(value):
+    return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+
+def _status_label(value, *, limit=64):
+    return value if isinstance(value, str) and 0 < len(value) <= limit else None
+
+
+def status_summary(state, *, current_pool_sha256=None, current_pool_sources=None):
+    """Return bounded source health and queue counts without raw URLs or candidates."""
+    if not isinstance(state, dict):
+        raise TypeError("collector state must be a JSON object")
+    binding = state.get("binding") if isinstance(state.get("binding"), dict) else {}
+    source_states = state.get("sources") if isinstance(state.get("sources"), dict) else {}
+    country = binding.get("country")
+    configured_sources = None
+    if isinstance(current_pool_sources, list):
+        configured_sources = {}
+        for item in current_pool_sources:
+            if (
+                isinstance(item, dict)
+                and item.get("country") == country
+                and isinstance(item.get("id"), str)
+                and item.get("status") in ("active", "archived")
+            ):
+                configured_sources[item["id"]] = item["status"]
+    rows = []
+    health_counts, scheduling_counts = Counter(), Counter()
+    health_by_configuration = {"active": Counter(), "archived": Counter(), "unlisted": Counter(), "unknown": Counter()}
+    scheduling_by_configuration = {
+        "active": Counter(),
+        "archived": Counter(),
+        "unlisted": Counter(),
+        "unknown": Counter(),
+    }
+    totals = {"cached_urls": 0, "frontier_urls": 0, "scope_excluded_urls": 0}
+    for identifier, source in source_states.items():
+        if not isinstance(identifier, str) or not isinstance(source, dict):
+            continue
+        cache = source.get("cache") if isinstance(source.get("cache"), dict) else {}
+        frontier = source.get("frontier")
+        if isinstance(frontier, dict):
+            frontier_count, frontier_items = len(frontier), frontier.values()
+        elif isinstance(frontier, list):
+            frontier_count, frontier_items = len(frontier), frontier
+        else:
+            frontier_count, frontier_items = 0, ()
+        excluded = sum(
+            isinstance(item, dict) and item.get("scope_excluded") is True for item in frontier_items
+        )
+        health = _status_label(source.get("health"), limit=32) or "unknown"
+        scheduling_status = _status_label(source.get("scheduling_status"), limit=48) or "unknown"
+        configured_status = (
+            configured_sources.get(identifier, "unlisted") if configured_sources is not None else "unknown"
+        )
+        health_counts[health] += 1
+        scheduling_counts[scheduling_status] += 1
+        health_by_configuration[configured_status][health] += 1
+        scheduling_by_configuration[configured_status][scheduling_status] += 1
+        totals["cached_urls"] += len(cache)
+        totals["frontier_urls"] += frontier_count
+        totals["scope_excluded_urls"] += excluded
+        observation = source.get("last_observation")
+        observation = observation if isinstance(observation, dict) else {}
+        summarized_observation = {
+            "status": _status_label(observation.get("status"), limit=48),
+            "http_status": observation.get("http_status")
+            if type(observation.get("http_status")) is int and 100 <= observation["http_status"] <= 599
+            else None,
+            "failure_code": _status_label(observation.get("failure_code"), limit=64),
+            "error_type": _status_label(observation.get("error_type"), limit=96),
+            "retry_after_seconds": _status_timestamp(observation.get("retry_after_seconds")),
+        }
+        rows.append(
+            {
+                "source_id": identifier[:128],
+                "configured_status": configured_status,
+                "health": health,
+                "scheduling_status": scheduling_status,
+                "attempt_count": _status_counter(source.get("attempt_count")),
+                "success_count": _status_counter(source.get("success_count")),
+                "failure_count": _status_counter(source.get("failure_count")),
+                "consecutive_failures": _status_counter(source.get("consecutive_failures")),
+                "cached_urls": len(cache),
+                "frontier_urls": frontier_count,
+                "scope_excluded_urls": excluded,
+                "last_attempt_at": _status_timestamp(source.get("last_attempt_at")),
+                "last_success_at": _status_timestamp(source.get("last_success_at")),
+                "next_at": _status_timestamp(source.get("next_at")),
+                "root_next_at": _status_timestamp(source.get("root_next_at")),
+                "last_observation": summarized_observation,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            row["configured_status"] != "active",
+            row["health"] == "healthy",
+            -row["consecutive_failures"],
+            row["source_id"],
+        )
+    )
+    active_sources = state.get("active_sources")
+    active_sources = (
+        [item[:128] for item in active_sources if isinstance(item, str)][:MAX_STATUS_ACTIVE_SOURCES]
+        if isinstance(active_sources, list)
+        else []
+    )
+    pool_sha256 = binding.get("pool_sha256")
+    pool_match = None
+    if isinstance(pool_sha256, str) and isinstance(current_pool_sha256, str):
+        pool_match = pool_sha256 == current_pool_sha256
+    limits = binding.get("limits") if isinstance(binding.get("limits"), dict) else {}
+    summarized_limits = {
+        key: _status_counter(limits.get(key))
+        for key in ("workers", "per_host", "daily_requests", "daily_source_requests", "tick_seconds")
+        if key in limits
+    }
+    migrations = state.get("pool_migrations")
+    migrations = migrations if isinstance(migrations, list) else []
+    last_migration = migrations[-1] if migrations and isinstance(migrations[-1], dict) else {}
+    return {
+        "protocol": "aitea-unattended-collection-status-v1",
+        "country": _status_label(country, limit=2),
+        "status": _status_label(state.get("status"), limit=32) or "unknown",
+        "root": _status_label(binding.get("root"), limit=1024),
+        "updated_at": _status_timestamp(state.get("updated_at")),
+        "last_progress_at": _status_timestamp(state.get("last_progress_at")),
+        "pool_binding": {
+            "bound_sha256": pool_sha256 if isinstance(pool_sha256, str) and len(pool_sha256) == 64 else None,
+            "current_sha256": current_pool_sha256,
+            "matches": pool_match,
+        },
+        "limits": summarized_limits,
+        "in_flight_source_count": len(state.get("active_sources", []))
+        if isinstance(state.get("active_sources"), list)
+        else 0,
+        "in_flight_source_ids": active_sources,
+        "configured_source_counts": {
+            "active": sum(value == "active" for value in configured_sources.values()),
+            "archived": sum(value == "archived" for value in configured_sources.values()),
+        }
+        if configured_sources is not None
+        else None,
+        "configured_active_without_state_count": sum(
+            status == "active" and identifier not in source_states
+            for identifier, status in configured_sources.items()
+        )
+        if configured_sources is not None
+        else None,
+        "configured_archived_without_state_count": sum(
+            status == "archived" and identifier not in source_states
+            for identifier, status in configured_sources.items()
+        )
+        if configured_sources is not None
+        else None,
+        "unlisted_state_source_count": len(health_by_configuration["unlisted"]),
+        "health_counts_by_configuration": {
+            key: dict(sorted(value.items()))
+            for key, value in health_by_configuration.items()
+            if value
+        },
+        "scheduling_counts_by_configuration": {
+            key: dict(sorted(value.items()))
+            for key, value in scheduling_by_configuration.items()
+            if value
+        },
+        "source_count": len(source_states),
+        "reported_source_count": min(len(rows), MAX_STATUS_SOURCES),
+        "truncated_source_count": max(0, len(rows) - MAX_STATUS_SOURCES),
+        "health_counts": dict(sorted(health_counts.items())),
+        "scheduling_counts": dict(sorted(scheduling_counts.items())),
+        "totals": totals,
+        "pool_migration_count": len(migrations),
+        "last_pool_migration": {
+            "at": _status_timestamp(last_migration.get("at")),
+            "added_source_count": len(last_migration.get("added_source_ids", []))
+            if isinstance(last_migration.get("added_source_ids"), list)
+            else 0,
+            "archived_source_count": len(last_migration.get("archived_source_ids", []))
+            if isinstance(last_migration.get("archived_source_ids"), list)
+            else 0,
+        },
+        "sources": rows[:MAX_STATUS_SOURCES],
+    }
 
 
 def _charged_bytes(receipt):
@@ -2066,7 +2258,25 @@ def main(argv=None):
     args = parser.parse_args(argv)
     os.umask(0o077)
     if args.action == "status":
-        print(json.dumps(load(args.root.resolve() / "state.json"), ensure_ascii=False))
+        root = args.root.resolve()
+        state = load(root / "state.json")
+        pool_sha256 = None
+        pool_sources = None
+        pool_read_error = None
+        try:
+            revision = JsonSourceRegistry(args.pool, root / "registry-versions").read()
+            pool_sha256 = revision.digest
+            pool_sources = revision.payload.get("sources")
+        except (OSError, ValueError) as error:
+            pool_read_error = type(error).__name__
+        report = status_summary(
+            state,
+            current_pool_sha256=pool_sha256,
+            current_pool_sources=pool_sources,
+        )
+        if pool_read_error:
+            report["pool_read_error"] = pool_read_error
+        print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
         return 0
     args.root.resolve().mkdir(parents=True, exist_ok=True, mode=0o700)
     try:

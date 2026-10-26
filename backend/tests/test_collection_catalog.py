@@ -237,6 +237,81 @@ def test_raw_candidates_remain_unreviewed_and_distinct_from_formal_records(data,
     assert source["frontier_urls"] == "1" and source["next_at_utc"].endswith("+00:00")
 
 
+def test_catalog_resolves_country_registry_revision_for_source_metadata(data):
+    directory = data / "official-updates/ID"
+    history = directory / "registry-versions"
+    history.mkdir(parents=True)
+    registry = {
+        "protocol": "aitea-official-source-pool-v2",
+        "sources": [
+            {
+                "id": "official-id",
+                "country": "ID",
+                "status": "active",
+                "title": "Indonesian official catalogue",
+                "url": "https://jdih.example.id/regulations",
+                "kind": "catalogue",
+                "topics": ["trade"],
+            },
+            {
+                "id": "archived-id",
+                "country": "ID",
+                "status": "archived",
+                "title": "Archived Indonesian catalogue",
+                "url": "https://archive.example.id/regulations",
+                "kind": "catalogue",
+                "topics": ["trade"],
+            },
+            {
+                "id": "official-sg",
+                "country": "SG",
+                "title": "Singapore official catalogue",
+                "url": "https://example.gov.sg/regulations",
+                "kind": "catalogue",
+                "topics": ["trade"],
+            },
+        ],
+    }
+    raw_registry = json.dumps(registry, ensure_ascii=False, separators=(",", ":")).encode()
+    digest = hashlib.sha256(raw_registry).hexdigest()
+    (history / f"{digest}.json").write_bytes(raw_registry)
+    (directory / "state.json").write_text(
+        json.dumps(
+            {
+                "binding": {"country": "ID", "pool_sha256": digest},
+                "updated_at": 1792480000,
+                "status": "waiting",
+                "sources": {
+                    "official-id": {
+                        "health": "healthy",
+                        "last_observation": {"status": "success", "http_status": 200},
+                        "cache": {},
+                        "frontier": {},
+                    },
+                    "archived-id": {
+                        "health": "degraded",
+                        "last_observation": {"status": "network_error"},
+                        "cache": {},
+                        "frontier": {},
+                    },
+                },
+            }
+        )
+    )
+
+    report = collection_catalog.export_materials(data, country="ID")
+
+    source_rows = {row["source_id"]: row for row in rows(report["path"] / "sources.csv")}
+    assert report["summary"]["format_version"] == 3
+    assert report["summary"]["raw_observations"]["ID"]["source_metadata_available"] is True
+    assert source_rows["official-id"]["registry_status"] == "active"
+    assert source_rows["official-id"]["title"] == "Indonesian official catalogue"
+    assert source_rows["official-id"]["url"] == "https://jdih.example.id/regulations"
+    assert source_rows["official-id"]["topics"] == '["trade"]'
+    assert source_rows["archived-id"]["registry_status"] == "archived"
+    assert "Singapore official catalogue" not in json.dumps(source_rows)
+
+
 def test_failed_derived_export_does_not_publish_or_destroy_core_snapshot(data, monkeypatch):
     def fail(*args):
         raise OSError("injected disk failure")

@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–23 without opening originals.
+"""Export a private, read-only inventory of schema 7–25 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -34,7 +34,7 @@ from app.configuration.paths import InstancePaths
 from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
+SUPPORTED_SCHEMA_VERSIONS = tuple(range(7, 26))
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
@@ -111,7 +111,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–23; use the matching application version"
+                "archive inventory requires schema 7–25; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -150,14 +150,25 @@ def _validate_schema(conn):
             conn.execute(
                 "SELECT candidate_id,source_record,source_page_url,source_page_sha256,created_at FROM checklist_candidate_source_records LIMIT 0"
             )
-        if version >= 23:
+        if conn.execute("SELECT 1 FROM schema_migrations WHERE version=23").fetchone():
             conn.execute(
                 "SELECT event_key,source_id,country,source_url,content_hash,previous_content_hash,source_event_at,source_kind,declared_mime_type,mime_type,discovery_matched,discovery_purpose,discovery_parent_url,discovery_parent_hash,discovery_title,source_root,document_id,status,reason,created_at,updated_at FROM official_source_imports LIMIT 0"
             )
             conn.execute("SELECT country,event_ns FROM official_source_import_cursor LIMIT 0")
+        if version >= 24:
+            for query in (
+                "SELECT id,owner_id,case_id,stage_id,conversation_id,client_id,payload_hash,case_revision,status,lease_until,result,trace,created_at,updated_at FROM agent_runs LIMIT 0",
+                "SELECT run_id,call_id,name,input_hash,status,result,updated_at FROM agent_tool_receipts LIMIT 0",
+                "SELECT id,owner_id,case_id,stage_id,conversation_id,kind,content,revision,case_revision,source_message_id,deleted,created_at,updated_at FROM agent_memory_entries LIMIT 0",
+                "SELECT conversation_id,case_id,stage_id,case_revision,summary,source_message_id,updated_at FROM agent_session_summaries LIMIT 0",
+            ):
+                conn.execute(query)
+        if version >= 25:
+            conn.execute("SELECT context_hash FROM agent_memory_entries LIMIT 0")
+            conn.execute("SELECT context_hash FROM agent_session_summaries LIMIT 0")
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–23 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–25 database") from exc
 
 
 class _Originals:
@@ -2345,7 +2356,7 @@ def export_inventory(
                 _pages(conn, partitions, originals, summary, owner, country)
                 if schema_version >= 22:
                     _candidate_source_records(conn, partitions, summary, owner, country)
-                if schema_version >= 23:
+                if conn.execute("SELECT 1 FROM schema_migrations WHERE version=23").fetchone():
                     _official_source_imports(conn, partitions, summary, owner, country)
                 _relations(conn, partitions, summary, owner, country)
                 if include_text:
@@ -2385,7 +2396,7 @@ def export_inventory(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–23)"
+        description="Export a read-only catalog of stored originals (schema 7–25)"
     )
     parser.add_argument("--data-dir", default=str(InstancePaths.resolve().data))
     parser.add_argument("--country", default=os.getenv("TEA_INVENTORY_COUNTRY") or None)

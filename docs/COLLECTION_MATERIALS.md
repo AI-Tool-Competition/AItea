@@ -21,7 +21,7 @@ make collection-catalog COUNTRY=SG
 | inventory 中的 `texts.jsonl` | 按文档与版本查正文、切片及定位 |
 | inventory 中的 `ocr-pages.jsonl`、`ocr-regions.jsonl` | 用页码、区域和源哈希定位扫描件与识别依据 |
 | inventory 中的 `source-mapping.jsonl` | 查格式与结构定位；保留不支持格式的显式缺口 |
-| `sources.csv` | 查来源健康、失败原因、下次复查 UTC 时间；额度等待是可恢复状态 |
+| `sources.csv` | 查当前来源的活动/归档状态、健康、失败原因、发现队列与下次复查 UTC 时间；额度等待是可恢复状态 |
 | `raw-latest-versions.csv` | 原始仓最新缓存的 URL、摘要和路径；原件被采集不等于解析或审核完成 |
 | inventory 内的 `official-source-imports.jsonl` | 每个新内容版本被自动排入解析、跳过或阻止的原因与正式资料版本 ID，同一数据库快照读取 |
 | `summary.json`、`COMPLETE.json` | 观察时间、统计、缺口、索引队列阶段，以及本目录文件的大小和 SHA-256 |

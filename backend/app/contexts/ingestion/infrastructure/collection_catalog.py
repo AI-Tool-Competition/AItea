@@ -30,6 +30,7 @@ from app.configuration.paths import InstancePaths
 from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
 MAX_STATE_BYTES = 32 * 1024**2
+MAX_SOURCE_POOL_BYTES = 1024 * 1024
 DOCUMENT_COLUMNS = (
     "country",
     "legal_level",
@@ -79,6 +80,7 @@ RELATION_COLUMNS = (
 SOURCE_COLUMNS = (
     "country",
     "source_id",
+    "registry_status",
     "title",
     "url",
     "kind",
@@ -247,23 +249,44 @@ def _state(path):
     return state, hashlib.sha256(raw).hexdigest()
 
 
-def _source_metadata(root, digest):
-    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+def _source_metadata(root, digest, country):
+    if (
+        country not in {"ID", "SG"}
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", digest)
+    ):
         return {}
-    directory = root / "official-updates/pools"
-    try:
-        if not stat.S_ISDIR(directory.lstat().st_mode):
-            return {}
-        fd = os.open(directory / (digest + ".json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                return {}
-            raw = stream.read(MAX_STATE_BYTES + 1)
-        if len(raw) > MAX_STATE_BYTES or hashlib.sha256(raw).hexdigest() != digest:
-            return {}
-        return {row["id"]: row for row in json.loads(raw)["sources"]}
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}
+    official_updates = root / "official-updates"
+    directories = (
+        official_updates / country / "registry-versions",
+        official_updates / "pools",
+    )
+    for directory in directories:
+        try:
+            for parent in (official_updates, directory.parent, directory):
+                if not stat.S_ISDIR(parent.lstat().st_mode):
+                    raise ValueError("source registry history must use real directories")
+            fd = os.open(directory / (digest + ".json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                raw = stream.read(MAX_SOURCE_POOL_BYTES + 1)
+            if len(raw) > MAX_SOURCE_POOL_BYTES or hashlib.sha256(raw).hexdigest() != digest:
+                continue
+            payload = json.loads(raw)
+            sources = payload.get("sources") if isinstance(payload, dict) else None
+            if not isinstance(sources, list):
+                continue
+            return {
+                row["id"]: row
+                for row in sources
+                if isinstance(row, dict)
+                and isinstance(row.get("id"), str)
+                and row.get("country") == country
+            }
+        except (OSError, ValueError, TypeError, RecursionError):
+            continue
+    return {}
 
 
 def _raw(root, output, countries, summary):
@@ -278,7 +301,7 @@ def _raw(root, output, countries, summary):
                 state, digest = _state(root / "official-updates" / country / "state.json")
                 if state["binding"]["country"] != country:
                     raise ValueError("raw source country does not match directory")
-                metadata = _source_metadata(root, state["binding"].get("pool_sha256"))
+                metadata = _source_metadata(root, state["binding"].get("pool_sha256"), country)
                 summary["raw_observations"][country] = {
                     "state_sha256": digest,
                     "state_updated_utc": _utc(state.get("updated_at")),
@@ -303,6 +326,9 @@ def _raw(root, output, countries, summary):
                             **source,
                             "country": country,
                             "source_id": identifier,
+                            "registry_status": metadata.get(identifier, {}).get(
+                                "status", "unlisted" if metadata else "unknown"
+                            ),
                             "next_at_utc": _utc(source.get("next_at")),
                             "last_success_utc": _utc(source.get("last_success_at")),
                             "state_updated_utc": _utc(state.get("updated_at")),
@@ -390,7 +416,7 @@ def _readme(snapshot, summary):
 | [documents.csv](documents.csv) | 按 country、legal_level、family_id、version 筛选原件、文本、OCR、向量与待补状态 |
 | [relations.csv](relations.csv) | 查看一二级映射、引用与版本关系，保留两端固定文档及版本 |
 | [正式总库完整快照](../{snapshot.name}/summary.json) | 数据库同一只读事务中的资料、关系、正文及来源映射 |
-| [sources.csv](sources.csv) | 自动采集来源健康、失败原因、下次复查时间（UTC） |
+| [sources.csv](sources.csv) | 自动采集来源的活动/归档状态、健康、失败原因、发现队列和下次复查时间（UTC） |
 | [raw-latest-versions.csv](raw-latest-versions.csv) | 原始采集仓最新缓存版本；全部待审核，尚不等于正式入库 |
 | [summary.json](summary.json) | 统计、缺口和原始状态观察时间 |
 
@@ -412,6 +438,7 @@ gaps 列保留未完成、未知、过期索引和审核状态，不伪造成功
 requests/、events/ 和 files/。本目录只列最新缓存；全部历史引用、旧版本、失败请求和换源原因
 仍保留在原仓。原始状态是分别观察的快照，观察时间和 SHA 见 summary.json，不冒充数据库原子快照。
 403/网络失败不是网站过期；陈旧来源留证、低频复查，相关官方替代来源继续采集。
+`sources.csv.registry_status` 区分当前活动来源、已归档来源及未列入当前清单的历史状态；已归档来源的旧失败不会计入活动来源故障。
 
 目录导出只读数据库，不调用模型、不改变审核和队列，也不逐一重算原件哈希。
 COMPLETE.json 记录本目录文件摘要；完整备份仍须包含数据库、原件和原始采集仓，目录不能代替备份。
@@ -435,7 +462,7 @@ def export_materials(data_dir, *, country=None, ragflow_profile=None):
     staging = Path(tempfile.mkdtemp(prefix=".materials-", dir=catalogs))
     staging.chmod(0o700)
     summary = {
-        "format_version": 2,
+        "format_version": 3,
         "generated_at": datetime.now(UTC).isoformat(),
         "scope": "shared_system_library_only",
         "inventory_path": snapshot.name,

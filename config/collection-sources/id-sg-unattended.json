@@ -35,7 +35,6 @@
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "贸易准入、进口限制、消费者保护及原产地实施规范；仅取与已确认法律问题有关的正式文件。",
         "checklist_items": [
-          "ID-1.8",
           "ID-4.2"
         ],
         "server_status": "reachable_content",
@@ -45,7 +44,14 @@
         "limitations": [
           "目录包含其他贸易部门事项，需按主题筛选；同一次浏览曾被拒绝，但本机有界直连已取得真实法规目录。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+        ],
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.2"
+          ],
+          "reason": "ID-1.8 属于交通部正式法规目录；贸易部来源仅保留其实际覆盖的 ID-4.2 贸易规则。"
+        }
       },
       "status": "active",
       "transport": "proxy",
@@ -405,7 +411,6 @@
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "定位外国投资、经营准入、贸易主体和风险分类经营许可的正式依据及关联规范。",
         "checklist_items": [
-          "ID-1.8",
           "ID-4.1"
         ],
         "server_status": "reachable_content",
@@ -415,7 +420,14 @@
         "limitations": [
           "不收 OSS 界面点击、表格填写教程和不相关投资宣传；单个目录不能证明全量法规覆盖。",
           "来源发现和网络可达不等于法律有效性审核通过；取得的文本仍需原件、版本、适用期间、一级/二级关系和审核门禁。"
-        ]
+        ],
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.1"
+          ],
+          "reason": "ID-1.8 属于交通部正式法规目录；投资协调部门来源仅保留其实际覆盖的 ID-4.1 企业许可。"
+        }
       },
       "status": "active",
       "transport": "proxy",
@@ -454,7 +466,6 @@
         "official_identity": "Direktorat Jenderal Bea dan Cukai 正式法规目录，页面署名与 peraturan.beacukai.go.id 官方域名一致；项目代理实际取得 HTTP 200 页面。",
         "business_use": "发现海关、进出口、关税与消费税正式规范，补充印尼茶叶跨境贸易与进口成本核查；目录覆盖范围仍需逐项核对。",
         "checklist_items": [
-          "ID-1.8",
           "ID-4.2",
           "ID-4.3"
         ],
@@ -474,7 +485,15 @@
           "单次有界代理轮询共记录 128 条来源引用、4 个内容版本事件和 3 个映射资源，原件仍需逐份核验。",
           "官网说明目录数据库仍在持续更新；不作为全国法规全量证明，不替代财政部、税务总局或国家法规发布渠道。",
           "网络可达和来源发现不等于法规现行有效或适用于具体茶产品；需核对原件、版本、适用期与修订关系。"
-        ]
+        ],
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.2",
+            "ID-4.3"
+          ],
+          "reason": "ID-1.8 属于交通部正式法规目录；海关来源仅保留其实际覆盖的 ID-4.2 与 ID-4.3。"
+        }
       },
       "status": "active",
       "transport": "proxy",
@@ -744,7 +763,6 @@
         "official_identity": "政府或主管机关正式域名及页面机构署名；本次已浏览官方页面或官方检索结果核对。",
         "business_use": "定位进口税费、估价、海关、税收及协定实施部长规章，保留修订/废止关系。",
         "checklist_items": [
-          "ID-1.8",
           "ID-4.3"
         ],
         "server_status": "access_unavailable",
@@ -761,6 +779,13 @@
           "status": "network_error",
           "failure_code": "tls_certificate_verification_failed",
           "consecutive_failures": 10
+        },
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.8",
+            "ID-4.3"
+          ],
+          "reason": "ID-1.8 属于交通部正式法规目录；已归档财政部来源仅保留历史税务清单 ID-4.3。"
         }
       },
       "status": "archived",
@@ -851,8 +876,7 @@
           "ID-1.3",
           "ID-1.4",
           "ID-1.5",
-          "ID-1.6",
-          "ID-1.8"
+          "ID-1.6"
         ],
         "server_status": "access_unavailable",
         "server_receipt_path": ".dev/unattended-collection-20261020/source-pool-audit/id-ditjenpp-regulations.json",
@@ -868,6 +892,16 @@
           "status": "network_error",
           "failure_code": "network_timeout",
           "consecutive_failures": 10
+        },
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.3",
+            "ID-1.4",
+            "ID-1.5",
+            "ID-1.6",
+            "ID-1.8"
+          ],
+          "reason": "ID-1.8 属于交通部正式法规目录；已归档国家法规发布来源仅保留其余已核对的国家法规项。"
         }
       },
       "status": "archived",
@@ -1114,7 +1148,6 @@
           "ID-1.5",
           "ID-1.6",
           "ID-1.7",
-          "ID-1.8",
           "ID-1.10"
         ],
         "server_status": "access_unavailable",
@@ -1128,6 +1161,19 @@
           "status": "http_error",
           "failure_code": "http_403",
           "consecutive_failures": 4
+        },
+        "checklist_scope_change": {
+          "previous_items": [
+            "ID-1.2",
+            "ID-1.3",
+            "ID-1.4",
+            "ID-1.5",
+            "ID-1.6",
+            "ID-1.7",
+            "ID-1.8",
+            "ID-1.10"
+          ],
+          "reason": "ID-1.8 属于交通部正式法规目录；已归档 BPK 来源保留其余历史全国及地方规范映射。"
         }
       },
       "status": "archived",
@@ -1556,6 +1602,57 @@
         "daily_bytes": 268435456,
         "timeout_seconds": 900
       }
+    },
+    {
+      "id": "id-kemenhub-regulations",
+      "country": "ID",
+      "topics": [
+        "transport",
+        "shipping",
+        "aviation",
+        "railways",
+        "logistics"
+      ],
+      "title": "印尼交通部 JDIH 正式法规目录",
+      "url": "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=1&per-page=12",
+      "priority": 85,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.dephub.go.id"
+      ],
+      "discovery_keywords": [],
+      "discovery": {
+        "adapter": "dephub_regulations",
+        "max_pages": 2000,
+        "max_records": 24000
+      },
+      "transport": "proxy",
+      "collection_limits": {
+        "max_document_bytes": 134217728,
+        "daily_bytes": 268435456,
+        "timeout_seconds": 900
+      },
+      "verification": {
+        "official_evidence_url": "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=1&per-page=12",
+        "checked_at": "2026-10-26T03:10:55.052300+00:00",
+        "official_identity": "印度尼西亚交通部官方 JDIH 页面，以交通部正式法规目录提供 Peraturan 与 Peraturan Menteri 条目。",
+        "business_use": "监测交通、道路、航运、航空、铁路及物流领域正式法规与修订线索；原文和适用期间仍须按业务事实复核。",
+        "checklist_items": [
+          "ID-1.8"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-kemenhub-collector-probe-20261026-110723/collector/events/2026-10-26/1792984054365398900-8951d37cd7b24d98bdae780d72f8c64f.json",
+        "server_receipt_sha256": "3bf72974ece2cb3263d3186ba7e140595643b12fbd0e9f1f0e84b295611e6bbb",
+        "body_sha256": "d8156eb6f02115de94902e0201423639635dbcd201a805d6d27a0e5106ad1072",
+        "limitations": [
+          "目录分页每页 12 条，解析器只保留正式 Peraturan/PM 标题并排除草案、决定、指令及通函；目录发现不代表已收齐全部原件。",
+          "原件下载限制为单件 128 MiB、来源日 256 MiB，并沿用项目代理、主机并发、日请求额度和退避。",
+          "来源可达与原件获取不等于法规有效性、修订关系或具体业务适用性审核。"
+        ]
+      },
+      "status": "active",
+      "group_id": "id-transport-regulations"
     }
   ],
   "schema_version": 2,
@@ -1578,7 +1675,6 @@
             "ID-1.4",
             "ID-1.5",
             "ID-1.6",
-            "ID-1.8",
             "ID-4.2",
             "ID-4.3"
           ],
@@ -1611,7 +1707,6 @@
           "title": "企业许可与税务",
           "parent_id": "id",
           "checklist_items": [
-            "ID-1.8",
             "ID-4.1",
             "ID-4.3"
           ],
@@ -1652,7 +1747,6 @@
             "ID-1.5",
             "ID-1.6",
             "ID-1.7",
-            "ID-1.8",
             "ID-1.10"
           ],
           "source_ids": [
@@ -1694,6 +1788,19 @@
           "source_ids": [
             "id-bi-regulations",
             "id-bi-jdih-regulations"
+          ],
+          "children": []
+        },
+        {
+          "id": "id-transport-regulations",
+          "country": "ID",
+          "title": "交通、航运与航空运输",
+          "parent_id": "id",
+          "checklist_items": [
+            "ID-1.8"
+          ],
+          "source_ids": [
+            "id-kemenhub-regulations"
           ],
           "children": []
         }
@@ -1820,7 +1927,6 @@
       "type": "cross_checks",
       "checklist_items": [
         "ID-1.3",
-        "ID-1.8",
         "ID-4.2"
       ],
       "reason": "贸易部专题来源与国家法规发布目录交叉核对文件身份、公布信息及可能的修订关联。"
@@ -1879,7 +1985,6 @@
       "related_source_id": "id-kemendag-regulations",
       "type": "cross_checks",
       "checklist_items": [
-        "ID-1.8",
         "ID-4.2"
       ],
       "reason": "海关总署法规与贸易部进出口规则按同一交易事项交叉核对；一方目录不替代另一方正式规范。"
@@ -1889,10 +1994,10 @@
       "related_source_id": "sg-customs-import",
       "type": "complements",
       "checklist_items": [
-        "ID-1.8",
+        "ID-4.2",
         "SG-3.1"
       ],
-      "reason": "印尼出口侧海关规范与新加坡进口许可及通关要求共同覆盖跨境交易两端；两国规则分别适用，不能相互替代。"
+      "reason": "印尼海关法规与新加坡进口许可及通关要求共同覆盖跨境交易两端；分别按 ID-4.2 与 SG-3.1 核对，两国规则各自适用且不能互相替代。"
     },
     {
       "source_id": "id-bpk-regulations",
@@ -2022,6 +2127,16 @@
       "type": "cross_checks",
       "checklist_items": [],
       "reason": "JDIH BI 结构化法规元数据与央行官网法规目录并列比对编号、标题和原件入口；差异作为核查线索，不推断文本效力、版本或优先级。"
+    },
+    {
+      "source_id": "id-kemenhub-regulations",
+      "related_source_id": "id-beacukai-regulations",
+      "type": "complements",
+      "checklist_items": [
+        "ID-1.8",
+        "ID-4.2"
+      ],
+      "reason": "交通部运输法规与海关进出口实施规则涉及不同主管机关；相关物流事项可按 ID-1.8 与 ID-4.2 并列核验，不以一方来源替代另一方。"
     }
   ]
 }

@@ -6,6 +6,9 @@ import re
 from urllib.parse import parse_qsl, urlsplit
 
 HOST = "jdih.dephub.go.id"
+MAX_CATALOG_PAGES = 2_000
+MAX_CATALOG_RECORDS = 24_000
+PAGE_SIZE = 12
 _TOKEN = re.compile(r"[A-Za-z0-9]{64,512}\Z")
 _FORMAL_TITLE = re.compile(
     r"^\s*(?:peraturan\b|pm\s*(?:(?:nomor|no\.?)\s*)?\d+\b|"
@@ -28,7 +31,27 @@ def _query(url: str) -> dict[str, str] | None:
     return values
 
 
-def purpose(url: str) -> str | None:
+def page_number(url: str, *, max_pages: int = MAX_CATALOG_PAGES) -> int | None:
+    """Return the page of the one reviewed twelve-row regulation catalogue."""
+    if type(max_pages) is not int or not 1 <= max_pages <= MAX_CATALOG_PAGES:
+        return None
+    parsed = urlsplit(url)
+    if parsed.path != "/peraturan/index":
+        return None
+    query = _query(url)
+    if (
+        query is None
+        or set(query) != {"kelompok", "page", "per-page"}
+        or query["kelompok"] != "4"
+        or query["per-page"] != str(PAGE_SIZE)
+        or not re.fullmatch(r"[1-9]\d{0,3}", query["page"])
+    ):
+        return None
+    number = int(query["page"])
+    return number if number <= max_pages else None
+
+
+def purpose(url: str, *, max_pages: int = MAX_CATALOG_PAGES) -> str | None:
     """Classify only the verified catalogue, detail, and PDF API routes."""
     parsed = urlsplit(url)
     if parsed.scheme != "https" or parsed.hostname != HOST or parsed.port not in (None, 443):
@@ -36,17 +59,10 @@ def purpose(url: str) -> str | None:
     if parsed.path == "/peraturan" and not parsed.query:
         return "catalog"
 
+    if parsed.path == "/peraturan/index":
+        return "catalog" if page_number(url, max_pages=max_pages) is not None else None
     query = _query(url)
     if query is None:
-        return None
-    if parsed.path == "/peraturan/index":
-        if (
-            set(query) == {"kelompok", "page", "per-page"}
-            and query["kelompok"] == "4"
-            and query["per-page"] == "12"
-            and re.fullmatch(r"[1-9]\d{0,3}", query["page"])
-        ):
-            return "catalog"
         return None
     if parsed.path == "/peraturan/detail" and set(query) == {"data"} and _TOKEN.fullmatch(query["data"]):
         return "detail"

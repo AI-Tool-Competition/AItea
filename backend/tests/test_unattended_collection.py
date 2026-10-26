@@ -88,6 +88,25 @@ def bi_jdih_source():
     )
 
 
+def dephub_source(**changes):
+    return source(
+        "id-kemenhub-test",
+        host="jdih.dephub.go.id",
+        path="/peraturan/index?kelompok=4&page=1&per-page=12",
+        country="ID",
+        kind="catalogue",
+        topics=["transport", "shipping", "aviation", "logistics"],
+        discovery_keywords=[],
+        discovery={"adapter": "dephub_regulations", "max_pages": 2_000, "max_records": 24_000},
+        collection_limits={
+            "max_document_bytes": 128 * 1024**2,
+            "daily_bytes": 256 * 1024**2,
+            "timeout_seconds": 900,
+        },
+        **changes,
+    )
+
+
 def bi_catalogue_page(page_number, *, total=20):
     start = (page_number - 1) * 10 + 1
     end = min(start + 9, total)
@@ -382,6 +401,29 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     with pytest.raises(ValueError, match="exact official catalogue root"):
         collection.source_pool(rejected, "ID")
 
+    dephub_probe = {
+        "protocol": "aitea-official-source-pool-v1",
+        "sources": [dephub_source()],
+    }
+    rejected.write_text(json.dumps(dephub_probe))
+    configured_dephub = collection.source_pool(rejected, "ID")[0]
+    dephub_recipe = collection.recipe(configured_dephub)
+    root_url = configured_dephub["url"]
+    assert dephub_recipe["dephub_regulations"] is True
+    assert collection.page_purpose(root_url, dephub_recipe) == "catalog"
+    assert collection.page_purpose(root_url.replace("&page=1&", "&page=2000&"), dephub_recipe) == "catalog"
+    assert collection.page_purpose(root_url.replace("&page=1&", "&page=2001&"), dephub_recipe) is None
+    invalid_dephub_policy = deepcopy(dephub_probe)
+    invalid_dephub_policy["sources"][0]["discovery"]["max_pages"] = 2_001
+    rejected.write_text(json.dumps(invalid_dephub_policy))
+    with pytest.raises(ValueError, match="Dephub regulation discovery policy"):
+        collection.source_pool(rejected, "ID")
+    invalid_dephub_root = deepcopy(dephub_probe)
+    invalid_dephub_root["sources"][0]["url"] += "&extra=1"
+    rejected.write_text(json.dumps(invalid_dephub_root))
+    with pytest.raises(ValueError, match="exact official catalogue root"):
+        collection.source_pool(rejected, "ID")
+
     invalid_sso_window = deepcopy(registry)
     legacy_sso = next(row for row in invalid_sso_window["sources"] if row["id"] == "sg-sso-statutes")
     legacy_sso.pop("request_window")
@@ -595,6 +637,33 @@ def html(*links, text="Food import official guidance"):
         + "".join(f'<a href="{link}">Food official document {index}</a>' for index, link in enumerate(links))
         + "</body></html>"
     ).encode()
+
+
+def test_dephub_collector_caches_bounded_catalogue_pages_with_parent_evidence(environment):
+    env = environment
+    configured = dephub_source()
+    root = configured["url"]
+    page_two = root.replace("&page=1&", "&page=2&")
+    env.responses[root] = (
+        '<html><body><h1>Peraturan Kementerian Perhubungan</h1>'
+        '<a href="?kelompok=4&amp;page=2&amp;per-page=12">Next page</a></body></html>'
+    ).encode()
+    env.responses[page_two] = (
+        "<html><body><h1>Peraturan Kementerian Perhubungan</h1>Page two</body></html>"
+    ).encode()
+    collector = env.make([configured], country="ID")
+
+    collector.tick()
+    state = collector.state["sources"][configured["id"]]
+    root_asset = state["cache"][root]
+    next_asset = state["cache"][page_two]
+    assert root_asset["discovery"]["purpose"] == "catalog"
+    assert root_asset["request_evidence"]["method"] == "GET"
+    assert root_asset["request_evidence"]["network_url"] == root
+    assert next_asset["discovery"]["purpose"] == "catalog"
+    assert next_asset["source_parent_url"] == root
+    assert next_asset["source_parent_hash"] == root_asset["content_hash"]
+    assert next_asset["catalog_page_number"] == 2
 
 
 def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
@@ -1925,7 +1994,7 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 29
+    assert len(configured) == 30
     setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row

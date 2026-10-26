@@ -136,6 +136,40 @@ def test_catalog_accepts_only_reviewed_discovery_exclusion_update(tmp_path):
     assert catalog.candidate({}) is not None
 
 
+def test_catalog_accepts_only_exactly_reviewed_checklist_remapping(tmp_path):
+    from app.contexts.ingestion.application.source_catalog import SourceCatalog
+    from app.contexts.ingestion.infrastructure.source_registry_json import JsonSourceRegistry
+    from app.shared.infrastructure.http.download import _validated_url
+
+    original = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
+    updated = copy.deepcopy(original)
+    kemendag = next(row for row in updated["sources"] if row["id"] == "id-kemendag-regulations")
+    previous_items = list(kemendag["verification"]["checklist_items"])
+    kemendag["verification"]["checklist_items"] = ["ID-4.2", "ID-4.3"]
+    kemendag["verification"].pop("checklist_scope_change", None)
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_text(json.dumps(original))
+    catalog = SourceCatalog(JsonSourceRegistry(runtime_path, tmp_path / "registry-history"), _validated_url)
+
+    runtime_path.write_text(json.dumps(updated))
+    with pytest.raises(ValueError, match="reviewed network or document scope"):
+        catalog.candidate({})
+
+    kemendag["verification"]["checklist_scope_change"] = {
+        "previous_items": ["ID-4.1"],
+        "reason": "移除错误分配的交通部法规清单项，保留贸易部实际覆盖的进口规则。",
+    }
+    runtime_path.write_text(json.dumps(updated))
+    with pytest.raises(ValueError, match="reviewed network or document scope"):
+        catalog.candidate({})
+
+    kemendag["verification"]["checklist_scope_change"]["previous_items"] = previous_items
+    runtime_path.write_text(json.dumps(updated))
+    candidate = catalog.candidate({})
+    assert candidate is not None
+    assert candidate.payload["sources"][0]["id"] == "id-kemendag-regulations"
+
+
 def test_migration_records_exact_discovery_exclusion_change(tmp_path):
     new_pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     old_pool = copy.deepcopy(new_pool)
@@ -434,7 +468,7 @@ def test_migration_accepts_receipt_verified_additions_and_archives(tmp_path, mon
     added["id"] = "id-beacukai-proof-test"
     added["title"] = "Verified test addition"
     added["verification"]["checked_at"] = datetime.now(UTC).isoformat()
-    added["verification"]["checklist_items"] = ["ID-1.8"]
+    added["verification"]["checklist_items"] = ["ID-4.2"]
     body_hash = hashlib.sha256(b"bounded official page").hexdigest()
     receipt = {
         "kind": "source_observation",

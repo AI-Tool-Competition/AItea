@@ -1300,6 +1300,13 @@ class _Recipe:
         self.dephub_regulations = recipe.get("dephub_regulations", False)
         if not isinstance(self.dephub_regulations, bool):
             raise ValueError("交通部法规目录配置无效。")
+        self.dephub_max_pages = recipe.get("dephub_max_pages", 2_000)
+        if (
+            isinstance(self.dephub_max_pages, bool)
+            or not isinstance(self.dephub_max_pages, int)
+            or not 1 <= self.dephub_max_pages <= 2_000
+        ):
+            raise ValueError("交通部法规目录分页上限无效。")
         self.bpjph_jdih = recipe.get("bpjph_jdih", False)
         if not isinstance(self.bpjph_jdih, bool):
             raise ValueError("BPJPH 法规目录配置无效。")
@@ -1404,7 +1411,7 @@ class _Recipe:
         if self.dephub_regulations and parsed.hostname == _DEPHUB_HOST:
             from app.contexts.ingestion.infrastructure.source_adapters.dephub_discovery import purpose
 
-            return purpose(url)
+            return purpose(url, max_pages=self.dephub_max_pages)
         if parsed.hostname == _BPJPH_HOST:
             from app.contexts.ingestion.infrastructure.source_adapters.bpjph_discovery import purpose
 

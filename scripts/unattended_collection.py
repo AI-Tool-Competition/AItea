@@ -42,6 +42,7 @@ from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_hos
 from app.contexts.ingestion.infrastructure.source_adapters import (  # noqa: E402
     bi_jdih_discovery,
     bi_official_discovery,
+    dephub_discovery,
 )
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     discover_page,
@@ -472,6 +473,20 @@ def recipe(source):
                 "max_links": 200,
                 "max_catalog_records": discovery["max_records"],
             }
+        if discovery.get("adapter") == "dephub_regulations":
+            return {
+                "adapter": "bpk",
+                "allowed_hosts": source["allowed_hosts"],
+                "catalog_patterns": [r"^/peraturan/index(?:\?|$)"],
+                "detail_patterns": [r"^/peraturan/detail(?:\?|$)"],
+                "document_patterns": [r"^/api/media(?:\?|$)"],
+                "html_document_patterns": [],
+                "include_terms": [],
+                "exclude_terms": [],
+                "max_links": 200,
+                "dephub_regulations": True,
+                "dephub_max_pages": discovery["max_pages"],
+            }
         category = discovery["category"]
         page_size = discovery["page_size"]
         return {
@@ -588,6 +603,8 @@ def request_url(source, url):
     if discovery and discovery.get("adapter") == "bi_jdih":
         if bi_jdih_discovery.purpose(url) == "catalog":
             return source["url"]
+        return url
+    if discovery and discovery.get("adapter") == "dephub_regulations":
         return url
     if discovery is None or url != source["url"]:
         return url
@@ -1054,7 +1071,12 @@ class Collector:
         ):
             return source["url"]
         adapter = source.get("discovery", {}).get("adapter")
-        is_catalog_adapter = adapter in {"sso_catalog_2026", "bi_official", "bi_jdih"}
+        is_catalog_adapter = adapter in {
+            "sso_catalog_2026",
+            "bi_official",
+            "bi_jdih",
+            "dephub_regulations",
+        }
         candidates = []
         for url, item in current.get("frontier", {}).items():
             if (
@@ -1326,6 +1348,12 @@ class Collector:
                     "queued_url": url,
                     "network_url": network_url,
                 }
+            elif not request_options.get("form_fields") and not request_options.get("json_body"):
+                receipt["request_evidence"] = {
+                    "method": "GET",
+                    "queued_url": url,
+                    "network_url": network_url,
+                }
             if request_options.get("json_body"):
                 validators = {}
             fetched = _download(
@@ -1587,12 +1615,15 @@ class Collector:
         is_sso = adapter == "sso_catalog_2026"
         is_bi_official = adapter == "bi_official"
         is_bi_jdih = adapter == "bi_jdih"
-        is_catalog_adapter = is_sso or is_bi_official or is_bi_jdih
+        is_dephub = adapter == "dephub_regulations"
+        is_catalog_adapter = is_sso or is_bi_official or is_bi_jdih or is_dephub
         frontier_limit = (
             source["discovery"]["max_records"] + source["discovery"]["max_pages"]
             if is_bi_official
             else source["discovery"]["max_records"] + bi_jdih_discovery.MAX_CATALOG_PAGES
             if is_bi_jdih
+            else source["discovery"]["max_records"] + source["discovery"]["max_pages"]
+            if is_dephub
             else self.limits["max_frontier"]
         )
         parent_url = url
@@ -1601,6 +1632,12 @@ class Collector:
         source_catalog_offset = bi_jdih_discovery.catalog_offset(url) if is_bi_jdih else None
         if is_bi_jdih and source_catalog_offset is None:
             source_catalog_offset = frontier.get(url, {}).get("catalog_offset")
+        dephub_max_pages = source.get("discovery", {}).get("max_pages", 2_000)
+        source_catalog_page = (
+            dephub_discovery.page_number(url, max_pages=dephub_max_pages) if is_dephub else None
+        )
+        if is_dephub and source_catalog_page is None:
+            source_catalog_page = frontier.get(url, {}).get("catalog_page_number")
         links = asset.get("discovery", {}).get("links", [])
         if is_catalog_adapter:
             links = sorted(links, key=lambda link: link.get("purpose") != "catalog")
@@ -1617,6 +1654,12 @@ class Collector:
                 or bi_official_discovery.page_number(parent_url)
                 or asset.get("catalog_page_number")
             ) if is_bi_official else None
+            if is_dephub:
+                link_catalog_page = (
+                    dephub_discovery.page_number(candidate, max_pages=dephub_max_pages)
+                    or source_catalog_page
+                    or asset.get("catalog_page_number")
+                )
             link_catalog_offset = (
                 bi_jdih_discovery.catalog_offset(candidate)
                 if is_bi_jdih and link["purpose"] == "catalog"
@@ -1625,6 +1668,14 @@ class Collector:
             cached_target = cache.get(candidate)
             if (
                 is_bi_official
+                and isinstance(cached_target, dict)
+                and cached_target.get("source_parent_url") == parent_url
+                and cached_target.get("source_parent_hash") == asset["content_hash"]
+                and time.time() - cached_target.get("observed_at", 0) < 7 * 86400
+            ):
+                continue
+            if (
+                is_dephub
                 and isinstance(cached_target, dict)
                 and cached_target.get("source_parent_url") == parent_url
                 and cached_target.get("source_parent_hash") == asset["content_hash"]
@@ -1683,6 +1734,11 @@ class Collector:
                         link_catalog_offset,
                         item.get("catalog_offset", link_catalog_offset),
                     )
+                if is_dephub and link_catalog_page is not None:
+                    item["catalog_page_number"] = min(
+                        link_catalog_page,
+                        item.get("catalog_page_number", link_catalog_page),
+                    )
                 # A changed known parent version invalidates its target.
                 # A first reference from a different page only adds a
                 # mapping: shared navigation must not repeatedly consume
@@ -1734,6 +1790,8 @@ class Collector:
                             if is_sso
                             else "bi_jdih_catalogue_pagination_priority"
                             if is_bi_jdih
+                            else "dephub_catalogue_pagination_priority"
+                            if is_dephub
                             else "bi_official_catalogue_pagination_priority"
                         ),
                     )
@@ -1744,7 +1802,7 @@ class Collector:
                     continue
                 candidates = (
                     [key for key, value in frontier.items() if value.get("purpose") != "catalog"]
-                    if is_bi_official or is_bi_jdih
+                    if is_bi_official or is_bi_jdih or is_dephub
                     else list(frontier)
                 )
                 if not candidates:
@@ -1773,6 +1831,18 @@ class Collector:
                     victim_offset = frontier[victim].get("catalog_offset")
                     if link_catalog_offset is None or link_catalog_offset > (victim_offset or 0):
                         continue
+                elif is_dephub:
+                    victim = max(
+                        candidates,
+                        key=lambda key: (
+                            frontier[key].get("catalog_page_number", 0),
+                            frontier[key].get("discovered_at", 0),
+                            key,
+                        ),
+                    )
+                    victim_page = frontier[victim].get("catalog_page_number", 0)
+                    if link_catalog_page is None or link_catalog_page > victim_page:
+                        continue
                 else:
                     victim = min(
                         candidates,
@@ -1792,6 +1862,8 @@ class Collector:
                         if is_bi_official
                         else {"reason": "bi_jdih_frontier_rotation"}
                         if is_bi_jdih
+                        else {"reason": "dephub_frontier_rotation"}
+                        if is_dephub
                         else {}
                     ),
                 )
@@ -1803,7 +1875,7 @@ class Collector:
                 "purpose": link["purpose"],
                 "attempt_count": 0,
                 "discovered_at": time.time(),
-                **({"catalog_page_number": link_catalog_page} if is_bi_official else {}),
+                **({"catalog_page_number": link_catalog_page} if is_bi_official or is_dephub else {}),
                 **({"catalog_offset": link_catalog_offset} if is_bi_jdih and link_catalog_offset is not None else {}),
                 **reference_fields,
             }
@@ -1847,7 +1919,9 @@ class Collector:
         is_sso = adapter == "sso_catalog_2026"
         is_bi_official = adapter == "bi_official"
         is_bi_jdih = adapter == "bi_jdih"
-        is_catalog_adapter = is_sso or is_bi_official or is_bi_jdih
+        is_dephub = adapter == "dephub_regulations"
+        is_catalog_adapter = is_sso or is_bi_official or is_bi_jdih or is_dephub
+        dephub_max_pages = source.get("discovery", {}).get("max_pages", 2_000)
         if is_bi_official:
             latest_catalog_drift = max(
                 (
@@ -1873,9 +1947,11 @@ class Collector:
             if is_bi_official
             else source["discovery"]["max_records"] + bi_jdih_discovery.MAX_CATALOG_PAGES
             if is_bi_jdih
+            else source["discovery"]["max_records"] + dephub_max_pages
+            if is_dephub
             else self.limits["max_frontier"]
         )
-        cached_detail_replay = (is_bi_official or is_bi_jdih) and len(frontier) < frontier_limit
+        cached_detail_replay = (is_bi_official or is_bi_jdih or is_dephub) and len(frontier) < frontier_limit
         if is_catalog_adapter:
             def catalogue_index(entry):
                 if is_bi_official:
@@ -1889,6 +1965,12 @@ class Collector:
                     offset = bi_jdih_discovery.catalog_offset(entry[0])
                     return (
                         offset or 0,
+                        0 if entry[1].get("discovery", {}).get("purpose") == "catalog" else 1,
+                    )
+                if is_dephub:
+                    page = dephub_discovery.page_number(entry[0], max_pages=dephub_max_pages)
+                    return (
+                        page or entry[1].get("catalog_page_number") or 0,
                         0 if entry[1].get("discovery", {}).get("purpose") == "catalog" else 1,
                     )
                 match = re.search(r"/All(?:/(\d+))?$", urlsplit(entry[0]).path)
@@ -1917,7 +1999,10 @@ class Collector:
                 for url, item in sorted(
                     frontier.items(),
                     key=lambda pair: (
-                        -int((is_bi_official or is_bi_jdih) and pair[1].get("purpose") == "catalog"),
+                        -int(
+                            (is_bi_official or is_bi_jdih or is_dephub)
+                            and pair[1].get("purpose") == "catalog"
+                        ),
                         pair[1].get("attempt_count", 0),
                         -int(pair[1].get("purpose") == "document"),
                         pair[0],
@@ -1990,7 +2075,7 @@ class Collector:
                 )
             if asset:
                 previous_asset = cache.get(url)
-                if is_bi_official and url != source["url"]:
+                if (is_bi_official or is_dephub) and url != source["url"]:
                     mapping = frontier.get(url, {})
                     asset["source_parent_url"] = mapping.get("parent_url")
                     asset["source_parent_hash"] = mapping.get("parent_hash")
@@ -2047,9 +2132,15 @@ class Collector:
                         + bi_jdih_discovery.MAX_CATALOG_PAGES
                         + 1
                     )
+                elif is_dephub:
+                    cache_limit = (
+                        2 * source["discovery"]["max_records"]
+                        + dephub_max_pages
+                        + 1
+                    )
                 if url not in cache and len(cache) >= cache_limit:
                     candidates = [key for key in cache if key != source["url"]]
-                    if is_bi_official:
+                    if is_bi_official or is_dephub:
                         non_catalogue = [
                             key
                             for key in candidates

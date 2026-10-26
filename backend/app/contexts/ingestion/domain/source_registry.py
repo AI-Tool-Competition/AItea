@@ -117,6 +117,29 @@ def reviewed_discovery_scope_change(previous: dict, updated: dict) -> dict | Non
     }
 
 
+def reviewed_checklist_scope_change(previous: dict, updated: dict) -> dict | None:
+    """Return an explicitly reviewed source-to-checklist remapping."""
+    before = previous.get("verification", {}).get("checklist_items", [])
+    after_verification = updated.get("verification", {})
+    after = after_verification.get("checklist_items", [])
+    change = after_verification.get("checklist_scope_change")
+    if before == after:
+        return {}
+    if (
+        not isinstance(change, dict)
+        or set(change) != {"previous_items", "reason"}
+        or change.get("previous_items") != before
+        or not isinstance(change.get("reason"), str)
+        or not 10 <= len(change["reason"]) <= 500
+    ):
+        return None
+    return {
+        "previous_items": list(before),
+        "checklist_items": list(after),
+        "reason": change["reason"],
+    }
+
+
 def _validate_verification(source: dict, country: str, hosts: list[str], validate_url) -> None:
     verification = source.get("verification")
     if not isinstance(verification, dict):
@@ -315,6 +338,33 @@ def _validate_discovery_policy(source: dict, validate_url) -> None:
             or parsed.fragment
         ):
             raise ValueError("Bank Indonesia JDIH source must use its exact official catalogue root")
+    elif policy.get("adapter") == "dephub_regulations":
+        if (
+            set(policy) != {"adapter", "max_pages", "max_records"}
+            or type(policy.get("max_pages")) is not int
+            or not 1 <= policy["max_pages"] <= 2_000
+            or type(policy.get("max_records")) is not int
+            or not 1 <= policy["max_records"] <= 24_000
+        ):
+            raise ValueError("Invalid bounded Dephub regulation discovery policy")
+        expected_url = (
+            "https://jdih.dephub.go.id/peraturan/index?kelompok=4&page=1&per-page=12"
+        )
+        try:
+            normalized, host = validate_url(source["url"])
+            parsed = urlsplit(source["url"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Dephub source must use its exact official catalogue root") from error
+        if (
+            source.get("country") != "ID"
+            or source.get("kind") != "catalogue"
+            or source.get("allowed_hosts") != ["jdih.dephub.go.id"]
+            or host != "jdih.dephub.go.id"
+            or normalized != expected_url
+            or source["url"] != expected_url
+            or parsed.fragment
+        ):
+            raise ValueError("Dephub source must use its exact official catalogue root")
     else:
         raise ValueError("Invalid bounded source discovery policy")
     request_window = source.get("request_window")
@@ -390,7 +440,8 @@ def validate_source_registry(
         discovery_exclude_keywords = source.get("discovery_exclude_keywords", [])
         specialized_discovery = (
             isinstance(source.get("discovery"), dict)
-            and source["discovery"].get("adapter") in {"sso_catalog_2026", "bi_official", "bi_jdih"}
+            and source["discovery"].get("adapter")
+            in {"sso_catalog_2026", "bi_official", "bi_jdih", "dephub_regulations"}
         )
         normalized, host = validate_url(source["url"])
         if identifier == SETNEG_ID or host == "jdih.setneg.go.id" or "setneg_type" in source:

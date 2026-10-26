@@ -53,6 +53,31 @@ class AgentMemory:
     def public(row, signature):
         return {**dict(row), "stale": row["kind"] != "preference" and row["context_hash"] != signature}
 
+    def model_history(self, owner, case_id, stage_id, conversation_id, *, budget=60000):
+        """Replay chronological messages as a stable prefix; keep older history in storage."""
+        with closing(self.db.connect()) as conn:
+            self.scope(conn, owner, case_id, stage_id, conversation_id)
+            rows = conn.execute(
+                """SELECT m.role,m.content FROM messages m
+                JOIN conversation_messages cm ON cm.message_id=m.id
+                WHERE m.case_id=? AND m.stage_id=? AND cm.conversation_id=?
+                ORDER BY m.created_at DESC,m.id DESC LIMIT 200""",
+                (case_id, stage_id, conversation_id),
+            ).fetchall()
+        selected, size = [], 0
+        for row in rows:
+            message = dict(row)
+            cost = len(dump(message).encode())
+            if size + cost > budget:
+                break
+            selected.append(message)
+            size += cost
+        selected.reverse()
+        # A retained window starts with a user question, never a detached reply.
+        while selected and selected[0]["role"] != "user":
+            selected.pop(0)
+        return selected
+
     def list(self, owner, case_id, stage_id, conversation_id=None, *, limit=50, offset=0):
         with closing(self.db.connect()) as conn:
             case = self.scope(conn, owner, case_id, stage_id, conversation_id)

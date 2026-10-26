@@ -14,6 +14,8 @@ from app.contexts.conversations.application.contracts import GuideRetry as Guide
 from app.contexts.conversations.application.contracts import MessageInput as MessageInput
 from app.contexts.conversations.application.contracts import MessageStreamEvent as MessageStreamEvent
 from app.contexts.conversations.application.contracts import ToolCallSnapshot as ToolCallSnapshot
+from app.contexts.conversations.application.contracts import ToolOutputPreview as ToolOutputPreview
+from app.contexts.conversations.application.contracts import ToolOutputItem as ToolOutputItem
 from app.contexts.conversations.application.contracts import MemoryInput as MemoryInput
 from app.contexts.conversations.application.contracts import MemoryEntry as MemoryEntry
 from app.contexts.conversations.application.contracts import MemoryList as MemoryList

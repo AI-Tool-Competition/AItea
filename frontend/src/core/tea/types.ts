@@ -210,6 +210,12 @@ export interface Citation {
   source_url?: string;
   document_version?: number;
 }
+export interface ToolOutputPreview {
+  text: string;
+  items: { label: string; text: string; status?: string; url?: string }[];
+  notice: string;
+  truncated: boolean;
+}
 export interface ToolCall {
   id: string;
   name:
@@ -241,6 +247,7 @@ export interface ToolCall {
   detail: string;
   duration_ms: number;
   error_code?: string;
+  output_preview?: ToolOutputPreview | null;
 }
 export interface TraceStep {
   run_id?: string;
@@ -283,31 +290,6 @@ export type ChatSkill =
   | "handoff"
   | "research"
   | "vision";
-export interface AgentCatalog {
-  tools: {
-    name: string;
-    label: string;
-    description: string;
-    parallel: boolean;
-  }[];
-  skills: {
-    id: ChatSkill;
-    label: string;
-    description: string;
-    tools: string[];
-  }[];
-  combinations: { label: string; skills: ChatSkill[]; description: string }[];
-}
-export interface AgentMemoryEntry {
-  id: string;
-  content: string;
-  kind: "preference" | "note";
-  conversation_id: string | null;
-  revision: number;
-  stale: boolean;
-  source_message_id: string | null;
-  updated_at: string;
-}
 export interface NodeConversation {
   id: string;
   case_id: string;

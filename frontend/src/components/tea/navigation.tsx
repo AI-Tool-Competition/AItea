@@ -13,7 +13,6 @@ import {
   Plus,
   Settings2,
   UserRound,
-  BookOpen,
   Globe2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -62,7 +61,6 @@ export type TeaView =
   | "account";
 export const teaNavigationItems = [
   { id: "workspace", icon: MessageSquare, label: "出口业务" },
-  { id: "library", icon: BookOpen, label: "资料库" },
   { id: "studio", icon: Settings2, label: "管理后台" },
   { id: "sources", icon: Globe2, label: "来源管理" },
 ] as const;
@@ -458,18 +456,6 @@ export function TeaNavigation({
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={view === "library"}
-              aria-current={view === "library" ? "page" : undefined}
-              tooltip="资料库"
-              aria-label="资料库"
-              onClick={() => navigate(() => onNavigate("library"))}
-            >
-              <BookOpen />
-              <span>资料库</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               isActive={view === "account"}

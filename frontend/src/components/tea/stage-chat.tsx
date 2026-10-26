@@ -10,7 +10,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef } from "react";
 import type { StickToBottomContext } from "use-stick-to-bottom";
 
 import {
@@ -23,19 +23,16 @@ import { Button } from "@/components/ui/button";
 import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
 import type {
   Capabilities,
-  ChatSkill,
   CaseDetail,
   Message,
   StageState,
 } from "@/core/tea/types";
 import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
 
-import { AgentMemory } from "./agent-memory";
-import { AnalysisProcess } from "./analysis-process";
-import { ChatSkills } from "./chat-skills";
 import { LegalResultView } from "./legal-result";
 import { CitationCard } from "./library";
 import { Busy, dateLabel, ErrorNotice } from "./shared";
+import { MessageActivity } from "./tool-activity";
 
 const Answer = memo(function Answer({
   content,
@@ -75,7 +72,7 @@ const SavedMessage = memo(function SavedMessage({
         >
           {message.role === "assistant" ? "茶渡助手" : "你"}
         </div>
-        {message.trace?.length > 0 && <AnalysisProcess steps={message.trace} />}
+        <MessageActivity steps={message.trace ?? []} />
         <div className="tea-message-content">
           {message.role === "user" ? (
             message.content
@@ -142,12 +139,11 @@ function PendingTurn({
         </div>
         <div className="tea-message-body">
           <div className="tea-message-label">茶渡助手</div>
-          {!!turn.steps?.length && (
-            <AnalysisProcess
-              steps={turn.steps}
-              running={turn.state === "sending"}
-            />
-          )}
+          <MessageActivity
+            steps={turn.steps ?? []}
+            running={turn.state === "sending"}
+            incomplete={turn.state === "failed"}
+          />
           {turn.text && (
             <div className="tea-message-content">
               <Answer
@@ -158,7 +154,7 @@ function PendingTurn({
           )}
           {turn.state === "sending" ? (
             <div className="tea-assistant-working" role="status">
-              <span>{turn.text ? "正在回复…" : turn.label}</span>
+              <span>{turn.text ? "正在回复…" : "正在处理你的问题…"}</span>
               <i />
               <i />
               <i />
@@ -208,15 +204,11 @@ export function StageChat({
   conversationId?: string;
   guide?: boolean;
 }) {
-  const [skills, setSkills] = useState<ChatSkill[]>([]);
-  const [legal, setLegal] = useState(false);
   const chat = useStageChat({
     accountId,
     caseId: record.id,
     stageId: stage.id,
     conversationId,
-    skills,
-    mode: legal ? "legal" : "auto",
     onUpdate,
   });
   const input = useRef<HTMLTextAreaElement>(null);
@@ -296,7 +288,7 @@ export function StageChat({
                   <p>
                     {stage.status === "locked"
                       ? "可以先了解这一阶段的准备要求，完成前一阶段后继续办理。"
-                      : "这里与本节点其他会话共享资料和进度，可以选择需要的能力一起办理。"}
+                      : "直接说说你想办理的事情，也可以上传资料，一起梳理下一步。"}
                   </p>
                   <div className="tea-chat-suggestions">
                     {[
@@ -386,21 +378,6 @@ export function StageChat({
                 >
                   <Paperclip size={18} />
                 </Button>
-                <ChatSkills
-                  caseId={record.id}
-                  stageId={stage.id}
-                  skills={skills}
-                  onSkills={setSkills}
-                  legal={legal}
-                  onLegal={setLegal}
-                />
-                <AgentMemory
-                  key={`${accountId}:${record.id}:${stage.id}:${conversationId ?? ""}`}
-                  accountId={accountId}
-                  caseId={record.id}
-                  stageId={stage.id}
-                  conversationId={conversationId}
-                />
               </div>
               <span className="tea-composer-shortcut" id="tea-composer-hint">
                 Enter 发送 · Shift + Enter 换行

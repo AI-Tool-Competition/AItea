@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 
 import { teaRequest, TeaApiError, streamMessage } from "@/core/tea/api";
+import type { ToolOutputPreview } from "@/core/tea/types";
 
 describe("Tea API transport", () => {
   afterEach(() => {
@@ -106,4 +107,124 @@ describe("Tea API transport", () => {
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
     expect(cancelled).toHaveBeenCalled();
   });
+});
+
+it.each(["valid", "oversized", "unicode"])(
+  "validates streamed tool output bounds (%s)",
+  async (mode) => {
+    const oversized = mode === "oversized";
+    const preview: ToolOutputPreview = {
+      text: "实际执行输出",
+      items: [],
+      notice: "",
+      truncated: false,
+    };
+    if (oversized) preview.text = "x".repeat(4001);
+    if (mode === "unicode")
+      preview.items = [{ label: "😀".repeat(200), text: "😀".repeat(650) }];
+    const step = {
+      id: "agent",
+      label: "协作",
+      status: "running",
+      detail: "",
+      tools: [
+        {
+          id: "call",
+          name: "inspect_image",
+          label: "识图",
+          position: 1,
+          status: "completed",
+          attempt: 1,
+          max_attempts: 1,
+          detail: "",
+          duration_ms: 50,
+          output_preview: preview,
+        },
+      ],
+    };
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        `event: step\ndata: ${JSON.stringify(step)}\n\nevent: done\ndata: ${JSON.stringify({ messages: [], case: { id: "one" } })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    const received = rs.fn();
+    const promise = streamMessage(
+      "one",
+      { stage_id: "stage", content: "问题", client_message_id: "output" },
+      { onEvent: received },
+    );
+    if (oversized)
+      await expect(promise).rejects.toMatchObject({ code: "invalid_response" });
+    else {
+      await promise;
+      expect(received).toHaveBeenCalledWith({ event: "step", data: step });
+    }
+    rs.restoreAllMocks();
+  },
+);
+
+it("accepts a long sequence of cumulative tool results within the bounded stream budget", async () => {
+  const step = {
+    id: "agent",
+    label: "处理进度",
+    status: "running",
+    detail: "",
+    tools: Array.from({ length: 40 }, (_, index) => ({
+      id: `call-${index}`,
+      name: "web_search",
+      label: "搜索公开信息",
+      position: index + 1,
+      status: "completed",
+      attempt: 1,
+      max_attempts: 1,
+      detail: "",
+      duration_ms: 50,
+      output_preview: {
+        text: "x".repeat(3900),
+        items: [],
+        notice: "",
+        truncated: true,
+      },
+    })),
+  };
+  const encoded = new TextEncoder().encode(
+    `event: step\ndata: ${JSON.stringify(step)}\n\n`,
+  );
+  const done = { messages: [], case: { id: "one" } };
+  let remaining = 100;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (remaining-- > 0) controller.enqueue(encoded);
+      else {
+        controller.enqueue(
+          new TextEncoder().encode(
+            `event: done\ndata: ${JSON.stringify(done)}\n\n`,
+          ),
+        );
+        controller.close();
+      }
+    },
+  });
+  let received = 0;
+  rs.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(body, { headers: { "Content-Type": "text/event-stream" } }),
+  );
+  try {
+    await expect(
+      streamMessage(
+        "one",
+        {
+          stage_id: "stage",
+          content: "检查全部资料",
+          client_message_id: "long",
+        },
+        { onEvent: () => received++ },
+      ),
+    ).resolves.toEqual(done);
+    expect(encoded.byteLength * 100).toBeGreaterThan(8 * 1024 * 1024);
+    expect(received).toBe(100);
+  } finally {
+    rs.restoreAllMocks();
+  }
 });

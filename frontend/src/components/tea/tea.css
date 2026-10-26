@@ -636,9 +636,6 @@
   min-width: 0;
   gap: 4px;
 }
-.tea-composer-tools .tea-chat-skills {
-  display: contents;
-}
 .tea-composer .tea-send {
   display: grid;
   place-items: center;
@@ -4252,6 +4249,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .tea-analysis-process *,
+  .tea-tool-activity *,
   .tea-node-tools-menu,
   .tea-node-question > summary > svg {
     animation: none !important;
@@ -4920,8 +4918,7 @@
   gap: 3px;
   padding: 4px 0 12px;
 }
-.tea-artifact-view-tabs [aria-pressed="true"],
-.tea-chat-skills [aria-pressed="true"] {
+.tea-artifact-view-tabs [aria-pressed="true"] {
   background: var(--muted);
   color: var(--foreground);
 }
@@ -4953,25 +4950,6 @@
 .tea-editor-label[hidden] {
   display: none !important;
 }
-.tea-chat-skills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  align-items: center;
-}
-.tea-chat-skills > button,
-.tea-chat-skills > button svg {
-  color: var(--muted-foreground);
-}
-.tea-chat-skills-menu {
-  max-width: calc(100vw - 24px);
-}
-.tea-chat-skills-menu [data-slot="dropdown-menu-label"] {
-  white-space: normal;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--muted-foreground);
-}
 .tea-composer-toolbar .tea-composer-shortcut {
   display: none;
 }
@@ -4999,14 +4977,6 @@
     height: 36px;
     opacity: 1;
     pointer-events: auto;
-  }
-  .tea-chat-skills {
-    gap: 0;
-  }
-  .tea-chat-skills > button {
-    min-height: 40px;
-    padding: 0 7px;
-    font-size: 12px;
   }
   .tea-node-workspace .tea-composer-toolbar {
     gap: 3px;
@@ -5274,4 +5244,153 @@
   .tea-preview-pagination {
     flex-wrap: wrap;
   }
+}
+
+.tea-tool-activity {
+  min-width: 0;
+  margin: 4px 0 14px;
+  color: var(--muted-foreground);
+}
+.tea-tool-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 0;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tea-tool-trigger:hover {
+  color: var(--foreground);
+}
+.tea-tool-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.tea-tool-trigger > svg,
+.tea-tool-state > svg {
+  flex: none;
+}
+.tea-tool-heading {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tea-tool-content > div {
+  margin-top: 4px;
+  padding-left: 14px;
+  border-color: var(--border);
+}
+.tea-tool-list {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.tea-tool-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.tea-tool-kind {
+  flex: none;
+  margin-top: 2px;
+  opacity: 0.8;
+}
+.tea-tool-description {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tea-tool-label {
+  color: var(--foreground);
+}
+.tea-tool-description p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.tea-tool-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 20px;
+}
+.tea-tool-duration {
+  margin-left: 4px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.tea-tool-list [data-state="running"] .tea-tool-state,
+.tea-tool-list [data-state="retrying"] .tea-tool-state {
+  color: var(--primary);
+}
+.tea-tool-list [data-state="failed"] .tea-tool-state {
+  color: var(--destructive);
+}
+@media (max-width: 767px) {
+  .tea-tool-trigger {
+    min-height: 44px;
+  }
+  .tea-tool-item {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+  .tea-tool-state {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+}
+
+.tea-tool-output {
+  grid-column: 2 / -1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.tea-tool-output p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.tea-tool-output-items {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0;
+}
+.tea-tool-output-item strong,
+.tea-tool-output-item a {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.tea-tool-output-item a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.tea-tool-result-status {
+  margin-left: 8px;
+  font-size: 11px;
+}
+.tea-tool-output .tea-tool-output-notice {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.tea-tool-output-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  margin-top: 4px;
+  cursor: pointer;
+  color: var(--foreground);
+  font-size: 11px;
 }

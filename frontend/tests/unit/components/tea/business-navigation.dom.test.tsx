@@ -201,7 +201,8 @@ describe("business node navigation", () => {
         .getAttribute("aria-current"),
     ).toBe("page");
     expect(screen.queryByRole("button", { name: "对接准备" })).toBeNull();
-    expect(screen.getByRole("button", { name: "资料库" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "资料库" })).toBeNull();
+    expect(screen.getByRole("button", { name: "账号管理" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "展开其他节点" }));
     expect(screen.getByRole("button", { name: "对接准备" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "对接准备" }));
@@ -237,61 +238,6 @@ describe("business node navigation", () => {
     expect(screen.queryByRole("button", { name: "业务资料" })).toBeNull();
     fireEvent.click(project);
     expect(screen.getByRole("button", { name: "业务资料" })).toBeTruthy();
-  });
-
-  it("opens the shared and personal library without restricting it to the active business", async () => {
-    const fetcher = rs
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async (input) => read(input));
-    render(<TeaApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "资料库" }));
-    await screen.findByRole("heading", { name: "资料库" });
-    expect(
-      screen
-        .getByRole("button", { name: "资料库" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-    expect(
-      screen
-        .getByRole("button", { name: "法规总库" })
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
-    expect(screen.getByRole("button", { name: "上传资料" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "管理后台" })).toBeNull();
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.some(([input]) => {
-          const url = urlOf(input);
-          return (
-            url.pathname.endsWith("/documents") &&
-            url.searchParams.get("source_scope") === "system" &&
-            !url.searchParams.has("case_id")
-          );
-        }),
-      ).toBe(true),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "我的资料" }));
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.some(([input]) => {
-          const url = urlOf(input);
-          return (
-            url.pathname.endsWith("/documents") &&
-            url.searchParams.get("source_scope") === "personal" &&
-            !url.searchParams.has("case_id")
-          );
-        }),
-      ).toBe(true),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "引导会话" }));
-    expect(screen.getByTestId("selected-conversation").textContent).toBe(
-      "guide",
-    );
-    expect(
-      screen
-        .getByRole("button", { name: `项目：${first.title}` })
-        .getAttribute("aria-expanded"),
-    ).toBe("true");
   });
 
   it("switches business from the dropdown and leaves new business last", async () => {

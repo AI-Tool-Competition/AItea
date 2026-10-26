@@ -245,7 +245,8 @@ export function streamMessage(
     body,
     {
       signal,
-      maxBytes: 8 * 1024 * 1024,
+      // Cumulative tool snapshots include bounded excerpts of previous outputs.
+      maxBytes: 32 * 1024 * 1024,
       onFrame(event, data) {
         if (event === "done") {
           if (!Array.isArray(data.messages) || !record(data.case))
@@ -264,6 +265,30 @@ export function streamMessage(
         }
       },
     },
+  );
+}
+
+function boundedText(value: unknown, limit: number) {
+  // JSON Schema / Pydantic count Unicode characters, not UTF-16 code units.
+  return typeof value === "string" && Array.from(value).length <= limit;
+}
+
+function isToolOutput(data: unknown) {
+  return (
+    record(data) &&
+    boundedText(data.text, 4000) &&
+    boundedText(data.notice, 400) &&
+    typeof data.truncated === "boolean" &&
+    Array.isArray(data.items) &&
+    data.items.length <= 8 &&
+    data.items.every(
+      (item: unknown) =>
+        record(item) &&
+        boundedText(item.label, 200) &&
+        boundedText(item.text, 1200) &&
+        (item.status === undefined || boundedText(item.status, 64)) &&
+        (item.url === undefined || boundedText(item.url, 2000)),
+    )
   );
 }
 
@@ -312,6 +337,7 @@ function isToolCall(data: unknown): data is ToolCall {
     typeof data.duration_ms === "number" &&
     Number.isFinite(data.duration_ms) &&
     data.duration_ms >= 0 &&
+    (data.output_preview == null || isToolOutput(data.output_preview)) &&
     (data.error_code === undefined ||
       (typeof data.error_code === "string" && data.error_code.length <= 64))
   );

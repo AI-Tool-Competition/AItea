@@ -1,14 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorMessage, streamMessage, teaRequest, TeaApiError } from "./api";
-import { clearMemoryDrafts } from "./memory-drafts";
+import {
+  cacheChatHistory,
+  clearChatHistory,
+  mergeChatHistory,
+  readChatHistory,
+} from "./chat-cache";
 import { clearNodeAnalyses } from "./node-analysis";
 import { mergeTraceStep, settleTraceSteps } from "./trace";
 import type {
   CaseDetail,
-  ChatSkill,
   ListResult,
   Message,
   MessageInput,
@@ -32,7 +36,7 @@ type ChatEntry =
 const drafts = new Map<string, Draft>();
 const controllers = new Set<AbortController>();
 export function clearChatDrafts() {
-  clearMemoryDrafts();
+  clearChatHistory();
   clearNodeAnalyses();
   for (const controller of controllers) controller.abort();
   controllers.clear();
@@ -44,19 +48,20 @@ export function useStageChat({
   caseId,
   stageId,
   conversationId,
-  mode = "auto",
-  skills = [],
   onUpdate,
 }: {
   accountId: string;
   caseId: string;
   stageId: string;
   conversationId?: string;
-  mode?: "auto" | "legal";
-  skills?: ChatSkill[];
   onUpdate: (record: CaseDetail) => void;
 }) {
-  const scope = `${accountId}:${caseId}:${stageId}${conversationId ? ":" + conversationId : ""}`;
+  const scope = JSON.stringify([
+    accountId,
+    caseId,
+    stageId,
+    conversationId ?? null,
+  ]);
   const query = `stage_id=${encodeURIComponent(stageId)}${conversationId ? "&conversation_id=" + encodeURIComponent(conversationId) : ""}`;
   const [draft] = useState<Draft>(() => {
     const value = drafts.get(scope) ?? { text: "", turns: [] };
@@ -64,12 +69,14 @@ export function useStageChat({
     return value;
   });
   const [text, setText] = useState(draft.text);
-  const [history, setHistory] = useState<ListResult<Message>>({
-    items: [],
-    total: 0,
-  });
+  const [cached] = useState(() => readChatHistory(scope));
+  const [history, setHistory] = useState<ListResult<Message>>(
+    cached ?? { items: [], total: 0 },
+  );
+  const historyRef = useRef(history);
+  const historyReading = useRef(false);
   const [turns, setTurnState] = useState<ChatTurn[]>(draft.turns);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cached);
   const [moreBusy, setMoreBusy] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [reload, setReload] = useState(0);
@@ -80,6 +87,17 @@ export function useStageChat({
   const latestUpdate = useRef(onUpdate);
   latestUpdate.current = onUpdate;
   const moreAbort = useRef<AbortController | undefined>(undefined);
+
+  const updateHistory = useCallback(
+    (update: (previous: ListResult<Message>) => ListResult<Message>) => {
+      if (!mounted.current || drafts.get(scope) !== draft) return;
+      const next = update(historyRef.current);
+      historyRef.current = next;
+      cacheChatHistory(scope, next);
+      setHistory(next);
+    },
+    [scope, draft],
+  );
 
   function setTurns(update: (current: ChatTurn[]) => ChatTurn[]) {
     const next = update(draft.turns);
@@ -113,23 +131,35 @@ export function useStageChat({
   }, [scope, draft]);
   useEffect(() => {
     const abort = new AbortController();
-    setLoading(true);
+    controllers.add(abort);
+    historyReading.current = true;
+    setLoading(!cached);
     setHistoryError("");
     teaRequest<ListResult<Message>>(
       `/cases/${encodeURIComponent(caseId)}/messages?${query}`,
       { signal: abort.signal },
     )
       .then((result) => {
-        if (!abort.signal.aborted) setHistory(result);
+        if (!abort.signal.aborted)
+          updateHistory((previous) => mergeChatHistory(previous, result));
       })
       .catch((error) => {
-        if (!abort.signal.aborted) setHistoryError(errorMessage(error));
+        if (!abort.signal.aborted && drafts.get(scope) === draft)
+          setHistoryError(errorMessage(error));
       })
       .finally(() => {
-        if (!abort.signal.aborted) setLoading(false);
+        controllers.delete(abort);
+        if (!abort.signal.aborted) {
+          historyReading.current = false;
+          setLoading(false);
+        }
       });
-    return () => abort.abort();
-  }, [caseId, stageId, query, reload]);
+    return () => {
+      abort.abort();
+      controllers.delete(abort);
+      historyReading.current = false;
+    };
+  }, [caseId, stageId, query, reload, cached, draft, scope, updateHistory]);
   useEffect(() => {
     if (!text && !turns.length) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -143,9 +173,15 @@ export function useStageChat({
   useEffect(() => {
     if (!conversationId) return;
     const abort = new AbortController();
+    controllers.add(abort);
     let reading = false;
     const refresh = async () => {
-      if (reading || active.current || document.visibilityState === "hidden")
+      if (
+        reading ||
+        historyReading.current ||
+        active.current ||
+        document.visibilityState === "hidden"
+      )
         return;
       reading = true;
       try {
@@ -153,22 +189,12 @@ export function useStageChat({
           `/cases/${encodeURIComponent(caseId)}/messages?${query}`,
           { signal: abort.signal },
         );
-        if (!abort.signal.aborted && mounted.current) {
-          setHistory((previous) => ({
-            items: [
-              ...new Map(
-                [...previous.items, ...result.items].map((item) => [
-                  item.id,
-                  item,
-                ]),
-              ).values(),
-            ].sort(
-              (a, b) =>
-                a.created_at.localeCompare(b.created_at) ||
-                a.id.localeCompare(b.id),
-            ),
-            total: result.total,
-          }));
+        if (
+          !abort.signal.aborted &&
+          mounted.current &&
+          drafts.get(scope) === draft
+        ) {
+          updateHistory((previous) => mergeChatHistory(previous, result));
           setHistoryError("");
         }
       } catch {
@@ -188,8 +214,9 @@ export function useStageChat({
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
       abort.abort();
+      controllers.delete(abort);
     };
-  }, [caseId, conversationId, query]);
+  }, [caseId, conversationId, query, draft, scope, updateHistory]);
 
   async function submit(request: MessageInput) {
     if (active.current || loading || historyError) return;
@@ -239,7 +266,7 @@ export function useStageChat({
         },
       });
       if (!current()) return;
-      setHistory((previous) => {
+      updateHistory((previous) => {
         const messages = new Map(previous.items.map((item) => [item.id, item]));
         const added = result.messages.filter(
           (item) => !messages.has(item.id),
@@ -285,9 +312,7 @@ export function useStageChat({
     void submit({
       stage_id: stageId,
       ...(taskId ? { task_id: taskId } : {}),
-      ...(conversationId
-        ? { conversation_id: conversationId, mode, skills }
-        : {}),
+      ...(conversationId ? { conversation_id: conversationId } : {}),
       content,
       client_message_id: crypto.randomUUID(),
     });
@@ -295,6 +320,7 @@ export function useStageChat({
   async function loadEarlier() {
     if (moreBusy || active.current) return;
     const abort = new AbortController();
+    controllers.add(abort);
     moreAbort.current = abort;
     setMoreBusy(true);
     try {
@@ -303,7 +329,7 @@ export function useStageChat({
         { signal: abort.signal },
       );
       if (!abort.signal.aborted)
-        setHistory((previous) => ({
+        updateHistory((previous) => ({
           items: [
             ...new Map(
               [...result.items, ...previous.items].map((message) => [
@@ -317,6 +343,7 @@ export function useStageChat({
     } catch (error) {
       if (!abort.signal.aborted) setHistoryError(errorMessage(error));
     } finally {
+      controllers.delete(abort);
       if (!abort.signal.aborted) setMoreBusy(false);
     }
   }

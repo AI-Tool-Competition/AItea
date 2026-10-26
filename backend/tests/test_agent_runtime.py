@@ -171,6 +171,17 @@ def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidenc
     assert "web_search" in {d["function"]["name"] for d in seen[1][1]}
     assert "unreviewed_web" in str(seen[2][0])
     assert "https://example.org/notice" in str(seen[2][0])
+    previews = {
+        t["name"]: t.get("output_preview") for t in response.json()["messages"][1]["trace"][0]["tools"]
+    }
+    assert previews["web_search"]["text"] == "官方公告"
+    assert previews["web_search"]["items"][0] == {
+        "label": "官方公告",
+        "text": "公告原文",
+        "url": "https://example.org/notice",
+    }
+    assert previews["search_documents"]["notice"] == "RAGFlow 尚未配置。"
+    assert previews["load_skill"] is None
 
 
 def test_draft_and_explicit_memory_commit_once_with_messages(workspace, monkeypatch):
@@ -207,6 +218,7 @@ def test_draft_and_explicit_memory_commit_once_with_messages(workspace, monkeypa
     assert note["source_message_id"] == response.json()["messages"][0]["id"]
     assert not note["stale"]
     assert "已新建文稿" in response.json()["messages"][1]["content"]
+    assert "可在“记忆”" not in response.json()["messages"][1]["content"]
     assert send(workspace, payload).json()["messages"] == response.json()["messages"]
 
 
@@ -331,6 +343,21 @@ def test_memory_scope_and_long_history_summary_keep_source_ids(workspace):
     assert len(recalled["session_summary"]["summary"]) <= 8000
     assert all(entry["source_message_id"] for entry in summary)
     assert not recalled["session_summary"]["stale"]
+    history = service.agent_memory.model_history(
+        owner, case["id"], payload["stage_id"], payload["conversation_id"]
+    )
+    assert len(history) == 36
+    assert history[0]["content"].startswith("早先乌龙茶安排")
+    assert service.agent_memory.model_history(owner, case["id"], payload["stage_id"], other) == []
+    bounded = service.agent_memory.model_history(
+        owner, case["id"], payload["stage_id"], payload["conversation_id"], budget=4000
+    )
+    assert len(json.dumps(bounded, ensure_ascii=False).encode()) < 4200
+    assert not bounded or bounded[0]["role"] == "user"
+    with pytest.raises(AppError):
+        service.agent_memory.model_history(
+            "another-owner", case["id"], payload["stage_id"], payload["conversation_id"]
+        )
 
 
 def test_stale_case_cannot_commit_pending_writes(workspace, monkeypatch):
@@ -378,6 +405,12 @@ def test_streaming_trace_contract_and_catalog_expose_all_business_tools(workspac
     assert frames[-1].startswith("event: done"), response.text
     events = [json.loads(frame.split("data: ")[1]) for frame in frames if frame.startswith("event: step")]
     assert [e["sequence"] for e in events] == sorted(e["sequence"] for e in events)
+    snapshots = [t for event in events for t in event.get("tools", []) if t["name"] == "check_materials"]
+    assert "output_preview" not in snapshots[0]
+    assert snapshots[-1]["output_preview"]["items"]
+    done = json.loads(frames[-1].split("data: ")[1])
+    saved = next(t for t in done["messages"][1]["trace"][0]["tools"] if t["name"] == "check_materials")
+    assert saved["output_preview"] == snapshots[-1]["output_preview"]
 
 
 def test_legal_tool_uses_existing_versioned_analysis_and_preserves_evidence_gaps(workspace, monkeypatch):
@@ -481,6 +514,13 @@ def test_image_recognition_uses_scoped_original_and_keeps_it_unverified(workspac
     assert requests[0][1]["image"].startswith("data:image/png;base64,")
     assert response.json()["messages"][1]["citations"] == []
     assert "图片太小，无法确认文字" in str(seen[2][0])
+    output = next(
+        t["output_preview"]
+        for t in response.json()["messages"][1]["trace"][0]["tools"]
+        if t["name"] == "inspect_image"
+    )
+    assert output["text"] == "图片太小，无法确认文字"
+    assert "data:image" not in str(output)
 
 
 def test_backup_restores_memory_and_receipts_without_replaying_uncertain_calls(workspace, tmp_path):
@@ -578,3 +618,22 @@ def test_agent_rag_returns_only_reviewed_current_destination_evidence(
     assert {item["document_id"] for item in citations} == {approved["id"]}
     assert all(item["document_version"] == approved["version"] and item["locator"] for item in citations)
     assert '"mode": "ragflow"' in str(seen[2][0])
+
+
+def test_model_history_remains_a_stable_prefix_with_fresh_context_after_it(workspace, monkeypatch):
+    seen = []
+    scenario(monkeypatch, ["第一轮回复", "第二轮回复", "第三轮回复"], seen)
+    for index in range(3):
+        response = send(
+            workspace, {**workspace[4], "content": f"问题{index}", "client_message_id": f"cache-{index}"}
+        )
+        assert response.status_code == 200, response.text
+    assert seen[0][0][0] == seen[1][0][0] == seen[2][0][0]
+    assert (
+        seen[1][0][1:3]
+        == seen[2][0][1:3]
+        == [{"role": "user", "content": "问题0"}, {"role": "assistant", "content": "第一轮回复"}]
+    )
+    assert seen[2][0][-1] == {"role": "user", "content": "问题2"}
+    assert json.loads(seen[2][0][-2]["content"])["stage"]["id"] == workspace[4]["stage_id"]
+    assert seen[0][1] == seen[1][1] == seen[2][1]

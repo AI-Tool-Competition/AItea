@@ -160,3 +160,26 @@ def test_rate_limit_and_unknown_read_timeout_do_not_retry_paid_requests(monkeypa
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize("cached", [None, 0, 23])
+def test_usage_uses_reported_cache_tokens_and_does_not_invent_a_hit(monkeypatch, cached):
+    usage = {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+    if cached is not None:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached}
+    provider(
+        monkeypatch,
+        (
+            frame(delta({"content": "回复"}, "stop"))
+            + frame({"choices": [], "usage": usage})
+            + frame("[DONE]")
+        ).encode(),
+    )
+    observed = []
+    asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, on_usage=observed.append))
+    assert len(observed) == 1
+    assert observed[0]["prompt_tokens"] == 100
+    if cached is None:
+        assert "cached_tokens" not in observed[0]
+    else:
+        assert observed[0]["cached_tokens"] == cached

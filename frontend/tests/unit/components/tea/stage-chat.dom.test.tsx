@@ -121,6 +121,219 @@ async function send(text = "准备哪些资料？") {
 }
 
 describe("stage chat experience", () => {
+  it("restores scoped cached messages immediately and refreshes them without a loading flash", async () => {
+    const saved = {
+      id: "cached",
+      role: "assistant",
+      content: "已保存的对话内容",
+      stage_id: "stage",
+      task_id: null,
+      created_at: "2026-10-26T00:00:00Z",
+      citations: [],
+      trace: [],
+    };
+    let refresh!: (value: Response) => void;
+    const fetcher = rs
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [saved], total: 1 })),
+      )
+      .mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            refresh = resolve;
+          }),
+      );
+    const first = render(<StageChat {...props} conversationId="cache" />);
+    await screen.findByText(saved.content);
+    first.unmount();
+    const second = render(<StageChat {...props} conversationId="cache" />);
+    expect(screen.getByText(saved.content)).toBeTruthy();
+    expect(screen.queryByText("读取对话记录…")).toBeNull();
+    await act(async () => {
+      refresh(
+        new Response(
+          JSON.stringify({
+            items: [
+              saved,
+              {
+                ...saved,
+                id: "new",
+                content: "同步的新消息",
+                created_at: "2026-10-26T00:00:01Z",
+              },
+            ],
+            total: 2,
+          }),
+        ),
+      );
+    });
+    await screen.findByText("同步的新消息");
+    expect(screen.getAllByText(saved.content)).toHaveLength(1);
+    second.unmount();
+    const other = render(
+      <StageChat {...props} accountId="another" conversationId="cache" />,
+    );
+    expect(screen.queryByText(saved.content)).toBeNull();
+    expect(screen.getByText("读取对话记录…")).toBeTruthy();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    other.unmount();
+    clearChatDrafts();
+    render(<StageChat {...props} conversationId="cache" />);
+    expect(screen.queryByText(saved.content)).toBeNull();
+  });
+
+  it("aborts cached-history refresh on logout and prevents a late response from repopulating it", async () => {
+    let finish!: (value: Response) => void;
+    const fetcher = rs.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = render(<StageChat {...props} conversationId="late" />);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    clearChatDrafts();
+    expect(fetcher.mock.calls[0]![1]!.signal?.aborted).toBe(true);
+    await act(async () => {
+      finish(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "old",
+                role: "assistant",
+                content: "旧账号回复",
+                trace: [],
+                citations: [],
+              },
+            ],
+            total: 1,
+          }),
+        ),
+      );
+    });
+    view.unmount();
+    render(<StageChat {...props} conversationId="late" />);
+    expect(screen.queryByText("旧账号回复")).toBeNull();
+    expect(screen.getByText("读取对话记录…")).toBeTruthy();
+  });
+
+  it("handles capabilities internally and sends ordinary conversation requests", async () => {
+    const stream = transport();
+    render(<StageChat {...props} conversationId="conversation" />);
+    await send("请结合图片核对资料，看看下一步要做什么。");
+    expect(
+      screen.queryByRole("button", { name: /智能调用|法律分析|记忆|能力/ }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "上传资料" })).toBeTruthy();
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+    const request = JSON.parse(
+      stream.fetcher.mock.calls[1]![1]!.body as string,
+    );
+    expect(request.conversation_id).toBe("conversation");
+    expect(request.mode).toBeUndefined();
+    expect(request.skills).toBeUndefined();
+    expect(
+      stream.fetcher.mock.calls.some(([url]) =>
+        /agent-tools|memories/.test(
+          typeof url === "string"
+            ? url
+            : url instanceof URL
+              ? url.href
+              : url.url,
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("updates streamed activity in place, ignores late snapshots and collapses saved progress", async () => {
+    const stream = transport();
+    render(<StageChat {...props} conversationId="conversation" />);
+    await send();
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+    const call = {
+      id: "call",
+      name: "web_search",
+      label: "provider-tool",
+      position: 1,
+      status: "running",
+      attempt: 1,
+      max_attempts: 1,
+      detail: "private-detail",
+      duration_ms: 0,
+    };
+    const step = {
+      id: "agent",
+      run_id: "run",
+      sequence: 1,
+      label: "智能工具协作",
+      status: "running",
+      detail: "internal",
+      tools: [
+        call,
+        { ...call, id: "memory", name: "recall_memory", label: "检索记忆" },
+      ],
+    };
+    await act(async () => {
+      stream.event("step", step);
+      stream.event("status", { label: "正在选择工具与整理记忆…" });
+    });
+    await screen.findByText("正在搜索公开信息");
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    const completed = {
+      ...step,
+      sequence: 3,
+      status: "completed",
+      tools: [{ ...call, status: "completed", duration_ms: 1400 }],
+    };
+    await act(async () => {
+      stream.event("step", completed);
+      stream.event("step", { ...step, sequence: 2 });
+      stream.event("delta", { text: "已找到可供核对的公开来源。" });
+    });
+    await screen.findByText("已完成");
+    expect(screen.queryByText("进行中")).toBeNull();
+    expect(
+      screen.queryByText(
+        /智能工具协作|检索记忆|正在选择工具|provider-tool|private-detail/,
+      ),
+    ).toBeNull();
+    await act(async () => {
+      stream.event("done", {
+        messages: [
+          {
+            id: "u",
+            role: "user",
+            content: "准备哪些资料？",
+            stage_id: "stage",
+            task_id: null,
+            created_at: "2026-10-26T00:00:00Z",
+            citations: [],
+            trace: [],
+          },
+          {
+            id: "a",
+            role: "assistant",
+            content: "已找到可供核对的公开来源。",
+            stage_id: "stage",
+            task_id: null,
+            created_at: "2026-10-26T00:00:01Z",
+            citations: [],
+            trace: [completed],
+          },
+        ],
+        case: record,
+      });
+    });
+    await waitFor(() => expect(props.onUpdate).toHaveBeenCalledTimes(1));
+    const trigger = screen.getByRole("button", { name: /已完成 1 项处理/ });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("1.4 秒")).toBeTruthy();
+  });
+
   it("shows the sent question immediately, streams the answer and keeps the next draft", async () => {
     const stream = transport();
     render(<StageChat {...props} />);

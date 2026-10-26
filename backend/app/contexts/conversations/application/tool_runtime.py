@@ -180,7 +180,7 @@ class ToolRun:
             if self.emit:
                 self.emit("step", copy.deepcopy(trace))
 
-    def call(self, spec, inputs, operation, trace=None, *, summarize=None):
+    def call(self, spec, inputs, operation, trace=None, *, summarize=None, preview=None):
         if spec not in self.catalog:
             raise ToolFailure("unknown_tool", "未登记的工具不能执行。")
         self.check_cancelled()
@@ -228,6 +228,11 @@ class ToolRun:
                 try:
                     result = operation(args, context)
                     context.check()
+                    if preview:
+                        output = preview(result)
+                        if output is not None:
+                            with self._lock:
+                                record["output_preview"] = output
                     summary = summarize(result) if summarize else "已完成。"
                     publish("completed", summary)
                     return result

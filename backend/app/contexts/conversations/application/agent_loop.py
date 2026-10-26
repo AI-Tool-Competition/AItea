@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_skills import COMPOSITION_HINTS, SKILLS, skill_catalog
+from app.contexts.conversations.application.tool_output import tool_output_preview
 from app.contexts.conversations.application.agent_tools import AgentTools, EmptyInput
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolRun, ToolSpec, failure_code
 from app.contexts.conversations.infrastructure.agent_transport import agent_turn
@@ -164,7 +165,10 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         "文稿和记忆工具返回 pending_commit 表示等待本轮统一保存，不能声称已经创建。只有用户要求起草才调用 draft_document；"
         "只有用户明确要求记住才调用 remember_memory，并逐字引用其原话。模型不能完成任务、审核或办理外部手续。"
         "工具失败可纠正参数或选择替代途径，不重复相同失败调用。输出简洁中文，不输出私有思考。"
-        "面向业务用户说明结果，不展示工具英文名、参数、pending_commit 等内部状态。保存成功时系统会附上确认提示。\n"
+        "面向业务用户直接说明结果，不要求选择能力或开启法律模式。工具调度、技能组合、记忆检索与保存、上下文整理均在内部处理，"
+        "不列出这些内部过程，不展示工具英文名、参数、pending_commit 等状态，也不提示使用记忆管理入口。"
+        "用户明确要求记住时可自然回应其内容；文稿保存成功时系统会附上确认提示。\n"
+        "历史消息仅作讨论背景；本轮末尾的当前业务上下文与新工具返回优先于旧讨论，不把历史说法当作已确认事实。\n"
         + "业务配置："
         + agent.get("instructions", "")[:8000]
         + "\n技能目录："
@@ -181,11 +185,16 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         "memory": memory,
         "requested_skills": requested,
         "guide_intake": prepared.get("guide_phase"),
-        "recent_messages": prepared["history"],
     }
+    current_context = bounded_result(context, 45000)
+    remaining = max(0, 150000 - len((system + current_context + payload["content"]).encode()))
+    history = service.agent_memory.model_history(
+        owner, case["id"], stage["id"], payload["conversation_id"], budget=min(60000, remaining)
+    )
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": bounded_result(context, 45000)},
+        *history,
+        {"role": "user", "content": current_context},
         {"role": "user", "content": payload["content"]},
     ]
     result = {
@@ -199,6 +208,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         "_drafts": [],
         "_memories": [],
         "_analyses": [],
+        "usage": [],
     }
     fingerprints = {}
     paid_failures = set()
@@ -239,6 +249,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 args,
                 operation,
                 trace,
+                preview=lambda value: tool_output_preview(name, value),
                 summarize=lambda v: (v.get("warning") or v.get("notice") or ("已返回结果，供下一步判断。"))[
                     :400
                 ],
@@ -276,7 +287,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 run.call(COMPACT, {}, lambda *_: None, trace)
             if emit:
                 emit("start", {"step_id": "agent"})
-                emit("status", {"label": "正在选择工具与整理回复…"})
+                emit("status", {"label": "正在整理回复…"})
 
             def model_operation(args, attempt):
                 from app.contexts.conversations.application.assistant import _PROVIDER_SLOTS
@@ -297,6 +308,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                             delta,
                             attempt.check,
                             timeout=attempt.remaining,
+                            on_usage=lambda usage: result["usage"].append(usage),
                         )
                     )
                 finally:
@@ -405,5 +417,4 @@ def commit_agent_result(service, conn, owner, case, stage_id, result, user_messa
         service.agent_memory.save_in_transaction(
             conn, owner, case, stage_id, memory, source=user_message["id"]
         )
-        notices.append("已保存你要求记住的信息，可在“记忆”中查看、修改或删除。")
     return "\n\n".join(notices)

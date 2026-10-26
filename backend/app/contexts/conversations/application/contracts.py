@@ -29,6 +29,22 @@ class GuideRetry(StrictModel):
     client_request_id: str = Field(min_length=1, max_length=100)
 
 
+class ToolOutputItem(StrictModel):
+    label: str = Field(default="", max_length=200)
+    text: str = Field(default="", max_length=1200)
+    status: str | None = Field(default=None, max_length=64)
+    url: str | None = Field(default=None, max_length=2000)
+
+
+class ToolOutputPreview(StrictModel):
+    """Bounded excerpts of actual tool returns, never another generated summary."""
+
+    text: str = Field(default="", max_length=4000)
+    items: list[ToolOutputItem] = Field(default_factory=list, max_length=8)
+    notice: str = Field(default="", max_length=400)
+    truncated: bool = False
+
+
 class ToolCallSnapshot(StrictModel):
     """Public execution facts only; never raw credentials, prompts or model reasoning."""
 
@@ -63,6 +79,7 @@ class ToolCallSnapshot(StrictModel):
     detail: str = Field(max_length=400)
     duration_ms: float = Field(ge=0)
     error_code: str | None = Field(default=None, max_length=64)
+    output_preview: ToolOutputPreview | None = None
 
     @model_validator(mode="after")
     def valid_attempt(self):

@@ -257,18 +257,19 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 
 - `run_id: string`：本次执行标识；`sequence: integer`：本次执行内严格递增的步骤快照序号。
 - `tools: ToolCall[]`：按首次调用顺序排列，最多 128 项；未提供时兼容历史记录。
-- `ToolCall = {id,name,label,position,status,attempt,max_attempts,detail,duration_ms,error_code?}`。
+- `ToolCall = {id,name,label,position,status,attempt,max_attempts,detail,duration_ms,error_code?,output_preview?}`。
+- `output_preview = {text,items:[{label,text,status?,url?}],notice,truncated}`，可省略或为 `null`；仅从实际工具返回中选取字段。正文最多 4,000 字，最多 8 项，每项名称/正文/状态/链接分别最多 200/1,200/64/2,000 字，notice 最多 400 字；整个预览另受 4 KiB 序列化字节预算约束。来源只输出有效 HTTPS 链接，截取内容时 `truncated=true`。内部记忆和调度没有此字段；历史消息仍兼容未携带预览的记录。聊天 SSE 累计上限为 32 MiB，单帧限制沿用现有传输校验。
 - `name` 保留 `search_documents | check_materials | search_legal_evidence | generate_guidance`，并增加 `guide_business | analyze_legal | draft_document | get_handoff | discover_tools | load_skill | list_documents | read_document | inspect_image | web_search | recall_memory | remember_memory | update_plan | read_tool_result | agent_turn | compact_context`。
 - `status` 为 `running | retrying | completed | failed | cancelled`；`attempt` 为当前尝试次数，`max_attempts` 最大为 2，`duration_ms` 含重试等待。
 - 重试保持同一工具 `id`。每个 `step` 是完整快照；客户端在原位置更新，同一 `run_id` 下忽略小于等于已接收 `sequence` 的快照。
 - 普通聊天也推送实际步骤的开始、工具进度和结束；最终消息 `trace` 保存相同公开记录。工具成功不等于业务任务完成。
 - 模型被截断、协议异常或工作流失败时，JSON 和 SSE 聊天都不保存未完成回复；SSE 发送 `error`，不发送 `done`。已完成请求继续使用原 `client_message_id` 恢复结果；中断且不可重放的 Agent 请求需明确重新发送。
 
-模型驱动节点会话的预算、取消和记忆边界见 [Agent 调度与记忆](AGENT_RUNTIME.md)；固定分析流程的兼容说明见 [旧工具执行层](AGENT_TOOLS.md)。
+模型驱动节点会话的预算、取消、记忆边界和进度展示规则见 [Agent 调度与记忆](AGENT_RUNTIME.md)；固定分析流程的兼容说明见 [旧工具执行层](AGENT_TOOLS.md)。当前聊天端不发送 `mode` / `skills`，由服务端默认自动调度；这两个字段仍供旧客户端兼容。SSE 和历史记录契约保持完整，聊天界面只展示允许的业务进度，不渲染内部调度与记忆记录。
 
 ### Agent 目录与用户记忆
 
-以下接口要求当前账号拥有指定业务与节点，路径相对 `/api/tea`：
+以下兼容接口要求当前账号拥有指定业务与节点，路径相对 `/api/tea`。当前聊天界面不提供目录或记忆管理入口，也不主动请求这些列表：
 
 - `GET /cases/{case_id}/stages/{stage_id}/agent-tools` → `{tools:[{name,label,description,parallel}],skills:[{id,label,description,tools:string[]}],combinations:[{label,skills:string[],description}]}`。目录仅描述已登记工具，不执行工具。
 - `GET /cases/{case_id}/stages/{stage_id}/memories?conversation_id=...&limit=50&offset=0` → `{items:MemoryEntry[],total}`，limit 为 1–100。返回节点共享记忆和指定会话的私有记忆；省略会话仅返回共享记忆。

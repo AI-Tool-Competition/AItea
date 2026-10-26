@@ -81,7 +81,7 @@ def valid_message(message, finish):
     }
 
 
-async def agent_turn(messages, tools, on_delta, check, *, timeout=90):
+async def agent_turn(messages, tools, on_delta, check, *, timeout=90, on_usage=None):
     settings = provider_settings()
     body = {
         "model": settings["model"],
@@ -99,6 +99,7 @@ async def agent_turn(messages, tools, on_delta, check, *, timeout=90):
         decoder = codecs.getincrementaldecoder("utf-8")()
         buffer, size, finish, content = "", 0, None, ""
         calls, extra = {}, {}
+        usage = {}
         async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream(
                 "POST",
@@ -133,10 +134,24 @@ async def agent_turn(messages, tools, on_delta, check, *, timeout=90):
                                 }
                                 if extra:
                                     message["extra_content"] = extra
-                                return valid_message(message, finish)
+                                valid = valid_message(message, finish)
+                                if on_usage and usage:
+                                    on_usage(usage)
+                                return valid
                             payload = json.loads(data)
                             if not isinstance(payload, dict) or "error" in payload:
                                 raise ValueError("provider error")
+                            if isinstance(reported := payload.get("usage"), dict):
+                                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                                    if type(reported.get(key)) is int and reported[key] >= 0:
+                                        usage[key] = reported[key]
+                                details = reported.get("prompt_tokens_details")
+                                if (
+                                    isinstance(details, dict)
+                                    and type(details.get("cached_tokens")) is int
+                                    and details["cached_tokens"] >= 0
+                                ):
+                                    usage["cached_tokens"] = details["cached_tokens"]
                             choices = payload.get("choices")
                             if choices == [] and isinstance(payload.get("usage"), dict):
                                 continue

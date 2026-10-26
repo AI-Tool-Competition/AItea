@@ -479,6 +479,10 @@ def _download(
                         retryable=retryable,
                         retry_after=_retry_after(response.getheader("Retry-After")) if retryable else None,
                         response_host=host,
+                        # Error bodies are deliberately not consumed or stored.
+                        # They must not retain the full successful-response
+                        # reservation in a caller's daily byte budget.
+                        bytes_received=0,
                     )
                 if response.status == 206 and byte_range is None:
                     raise DownloadError("抓取来源返回了不完整的分段响应。")

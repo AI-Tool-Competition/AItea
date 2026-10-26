@@ -568,6 +568,7 @@ def test_transient_http_errors_preserve_server_retry_after(transport, status):
     assert error.value.retryable is True
     assert error.value.retry_after == 900
     assert error.value.response_host == "example.com"
+    assert error.value.bytes_received == 0
 
 
 def test_redirect_retry_after_identifies_actual_limited_host(transport):
@@ -592,6 +593,7 @@ def test_other_http_errors_are_permanent(transport, status):
         download()
     assert error.value.retryable is False
     assert error.value.retry_after is None
+    assert error.value.bytes_received == 0
 
 
 @pytest.mark.parametrize("delay", [60, 900])

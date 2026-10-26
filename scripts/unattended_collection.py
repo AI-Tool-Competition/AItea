@@ -11,6 +11,7 @@ import copy
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import shutil
@@ -92,6 +93,27 @@ LIMITS = {
     "min_free_bytes": 8 * 1024**3,
     "tick_seconds": 30,
 }
+
+
+def _charged_bytes(receipt):
+    """Return response-body bytes actually consumed under the bounded transport."""
+    charged = receipt.get("charged_bytes", 0)
+    if type(charged) is not int or charged < 0:
+        raise ValueError("Invalid collection receipt byte charge")
+    outcome = receipt.get("outcome")
+    if (
+        receipt.get("status") == "finished"
+        and isinstance(outcome, dict)
+        and outcome.get("status") == "http_error"
+        and type(outcome.get("http_status")) is int
+        and 400 <= outcome["http_status"] <= 599
+        and not receipt.get("raw_response")
+        and "bytes_received" not in receipt
+    ):
+        # Older transport receipts reserved the full response limit for HTTP
+        # errors even though the downloader closed them without reading a body.
+        return 0
+    return charged
 
 
 def download_failure_code(error):
@@ -819,6 +841,151 @@ class Collector:
             self.requests = {path.stem: load(path) for path in files}
             self.request_day = day
 
+    def response_limit(self, source, url):
+        collection_limits = source.get("collection_limits", {})
+        adapter = source.get("discovery", {}).get("adapter")
+        purpose = page_purpose(url, recipe(source))
+        if adapter == "bi_jdih" and purpose == "catalog":
+            return bi_jdih_discovery.MAX_HTML_BYTES
+        if adapter == "bi_jdih" and purpose == "detail":
+            return bi_jdih_discovery.MAX_JSON_BYTES
+        if purpose == "document":
+            return collection_limits.get("max_document_bytes", self.limits["max_response_bytes"])
+        return self.limits["max_response_bytes"]
+
+    def next_due_request(self, source, current, now):
+        cache = current.get("cache", {})
+        if (
+            now >= current.get("root_next_at", 0)
+            or source["url"] not in cache
+            or current.get("force_root_refresh") is True
+        ):
+            return source["url"]
+        adapter = source.get("discovery", {}).get("adapter")
+        is_catalog_adapter = adapter in {"sso_catalog_2026", "bi_official", "bi_jdih"}
+        candidates = []
+        for url, item in current.get("frontier", {}).items():
+            if (
+                url == source["url"]
+                or scope_excluded(source, url, item.get("title", ""))
+                or urlsplit(url).hostname not in source["allowed_hosts"]
+                or not due(item.get("health"), now)
+            ):
+                continue
+            candidates.append(
+                (
+                    (
+                        -int(is_catalog_adapter and item.get("purpose") == "catalog"),
+                        item.get("attempt_count", 0),
+                        -int(item.get("purpose") == "document"),
+                        url,
+                    ),
+                    url,
+                )
+            )
+        return min(candidates, default=(None, None))[1]
+
+    def budget_fingerprint(self, source_id):
+        own = [row for row in self.requests.values() if row.get("source_id") == source_id]
+        snapshot = (
+            self.request_day,
+            len(self.requests),
+            sum(_charged_bytes(row) for row in self.requests.values()),
+            len(own),
+            sum(_charged_bytes(row) for row in own),
+        )
+        return hashlib.sha256(json.dumps(snapshot, separators=(",", ":")).encode()).hexdigest()
+
+    def request_fits_budget(self, source, url, now):
+        network_url = request_url(source, url)
+        host = urlsplit(network_url).hostname
+        if (
+            host not in source["allowed_hosts"]
+            or self.host_cooldowns.get(host, 0) > now
+            or (source.get("transport") == "proxy" and proxy_for_host(host) is None)
+        ):
+            return False
+        if request_window_wait_until(source, now) is not None:
+            return False
+        own = [row for row in self.requests.values() if row.get("source_id") == source["id"]]
+        if len(self.requests) >= self.limits["daily_requests"]:
+            return False
+        if len(own) >= self.limits["daily_source_requests"]:
+            return False
+        limit = self.response_limit(source, url)
+        source_limit = source.get("collection_limits", {}).get(
+            "daily_bytes", self.limits["daily_source_bytes"]
+        )
+        if (
+            sum(_charged_bytes(row) for row in self.requests.values()) + limit > self.limits["daily_bytes"]
+            or sum(_charged_bytes(row) for row in own) + limit > source_limit
+            or shutil.disk_usage(self.root).free
+            < self.limits["min_free_bytes"] + max(128 * 1024**2, limit)
+        ):
+            return False
+        return True
+
+    def release_recovered_daily_quotas(self, now):
+        """Wake a quota-paused source when receipt reconciliation frees a real slot."""
+        for source in self.sources:
+            current = self.state.get("sources", {}).get(source["id"])
+            observation = (current or {}).get("last_observation") or {}
+            if (
+                not isinstance(current, dict)
+                or observation.get("status") != "budget_wait"
+                or observation.get("error_type") != "DailyQuota"
+            ):
+                continue
+            retry_after = observation.get("retry_after_seconds")
+            observed_at = observation.get("at")
+            if (
+                isinstance(retry_after, bool)
+                or not isinstance(retry_after, (int, float))
+                or not math.isfinite(retry_after)
+                or retry_after < 0
+                or isinstance(observed_at, bool)
+                or not isinstance(observed_at, (int, float))
+                or not math.isfinite(observed_at)
+            ):
+                continue
+            quota_until = observed_at + retry_after
+            retry_not_before = current.get("retry_not_before", 0)
+            next_at = current.get("next_at", 0)
+            if (
+                isinstance(retry_not_before, bool)
+                or not isinstance(retry_not_before, (int, float))
+                or not math.isfinite(retry_not_before)
+                or isinstance(next_at, bool)
+                or not isinstance(next_at, (int, float))
+                or not math.isfinite(next_at)
+                or retry_not_before > quota_until + 60
+                or next_at > quota_until + 60
+            ):
+                continue
+            fingerprint = self.budget_fingerprint(source["id"])
+            if current.get("quota_recheck_fingerprint") == fingerprint:
+                continue
+            url = self.next_due_request(source, current, now)
+            if url is None or not self.request_fits_budget(source, url, now):
+                continue
+            adjusted = [
+                row
+                for row in self.requests.values()
+                if row.get("source_id") == source["id"]
+                and row.get("charged_bytes", 0) > _charged_bytes(row)
+            ]
+            released_bytes = sum(row.get("charged_bytes", 0) - _charged_bytes(row) for row in adjusted)
+            current["next_at"] = now
+            current.pop("retry_not_before", None)
+            current["quota_recheck_fingerprint"] = fingerprint
+            self.event(
+                "daily_quota_released",
+                source_id=source["id"],
+                released_bytes=released_bytes,
+                adjusted_request_count=len(adjusted),
+                next_request_limit=self.response_limit(source, url),
+            )
+
     def reserve(self, source, url, *, response_limit=None):
         with self.mutex:
             self.roll_budget()
@@ -840,9 +1007,9 @@ class Collector:
             if (
                 len(self.requests) >= self.limits["daily_requests"]
                 or len(own) >= self.limits["daily_source_requests"]
-                or sum(row["charged_bytes"] for row in self.requests.values()) + limit
+                or sum(_charged_bytes(row) for row in self.requests.values()) + limit
                 > self.limits["daily_bytes"]
-                or sum(row["charged_bytes"] for row in own) + limit > source_daily_bytes
+                or sum(_charged_bytes(row) for row in own) + limit > source_daily_bytes
             ):
                 raise Deferred(
                     "budget_wait",
@@ -891,15 +1058,7 @@ class Collector:
         adapter = source.get("discovery", {}).get("adapter")
         purpose = page_purpose(url, recipe(source))
         is_document = purpose == "document"
-        response_limit = (
-            collection_limits.get("max_document_bytes", self.limits["max_response_bytes"])
-            if is_document
-            else self.limits["max_response_bytes"]
-        )
-        if adapter == "bi_jdih" and purpose == "catalog":
-            response_limit = bi_jdih_discovery.MAX_HTML_BYTES
-        elif adapter == "bi_jdih" and purpose == "detail":
-            response_limit = bi_jdih_discovery.MAX_JSON_BYTES
+        response_limit = self.response_limit(source, url)
         timeout_seconds = (
             collection_limits.get("timeout_seconds", self.limits["timeout_seconds"])
             if is_document
@@ -1831,6 +1990,7 @@ class Collector:
                 state.get("retry_not_before") or 0,
             )
             state["scheduling_status"] = "request_window_wait"
+        self.release_recovered_daily_quotas(now)
         selected = choose_sources(
             self.sources,
             self.state["sources"],

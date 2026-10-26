@@ -1175,6 +1175,72 @@ def test_daily_quota_resumes_child_after_midnight_without_waiting_for_root_inter
     assert len(list((collector.root / "requests").glob("*/*.json"))) == 2
 
 
+def test_legacy_http_error_reservation_releases_daily_quota_for_due_document(environment):
+    env = environment
+    configured = source()
+    configured["collection_limits"] = {
+        "max_document_bytes": 128 * 1024**2,
+        "daily_bytes": 200 * 1024**2,
+        "timeout_seconds": 900,
+    }
+    collector = env.make(
+        [configured],
+        limits={"daily_bytes": 512 * 1024**2, "daily_source_bytes": 256 * 1024**2},
+    )
+    old_url = "https://one.gov.sg/missing.pdf"
+    path, old = collector.reserve(
+        configured, old_url, response_limit=configured["collection_limits"]["max_document_bytes"]
+    )
+    old.update(
+        status="finished",
+        outcome={
+            "status": "http_error",
+            "http_status": 404,
+            "failure_code": "http_404",
+            "url": old_url,
+        },
+        finished_at=env.clock[0],
+    )
+    path.write_text(json.dumps(old), encoding="utf-8")
+    collector.requests[old["request_id"]] = old
+
+    now = env.clock[0]
+    quota_until = now + 86400
+    target = "https://one.gov.sg/next.pdf"
+    collector.state["sources"][configured["id"]] = {
+        "last_observation": {
+            "status": "budget_wait",
+            "error_type": "DailyQuota",
+            "at": now,
+            "retry_after_seconds": 86400,
+        },
+        "next_at": quota_until,
+        "retry_not_before": quota_until,
+        "root_next_at": now + 86400,
+        "cache": {configured["url"]: {}},
+        "frontier": {
+            target: {
+                "parent_url": configured["url"],
+                "parent_hash": "a" * 64,
+                "purpose": "document",
+                "attempt_count": 0,
+            }
+        },
+    }
+    env.responses[target] = pdf("after-quota-reconciliation")
+
+    assert collector.tick() == [configured["id"]]
+
+    assert env.calls[-1]["url"] == target
+    assert collector.requests[old["request_id"]]["charged_bytes"] == 128 * 1024**2
+    assert any(
+        event["kind"] == "daily_quota_released"
+        and event["source_id"] == configured["id"]
+        and event["released_bytes"] == 128 * 1024**2
+        for event in env.events(collector)
+    )
+
+
 def test_304_reuses_verified_original_and_does_not_invent_new_version(environment):
     env = environment
     collector = env.make()

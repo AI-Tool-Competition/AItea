@@ -14,6 +14,7 @@ the worker returns to the source-bound OCR recovery queue before indexing resume
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from contextlib import closing
@@ -35,8 +36,9 @@ OCR_AUTOMATIC_RETRY_REASONS = frozenset(
 MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 MAX_AUTOMATIC_OCR_CHECKPOINT_BYTES = 8 * 1024 * 1024
-MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS = 8
+MAX_AUTOMATIC_OCR_INLINE_CYCLES = 8
 MAX_HTML_PARSER_REFRESH_ATTEMPTS = 3
+MAX_MDB_PARSER_REFRESH_ATTEMPTS = 1
 PROCESSING_QUEUE_LIMIT = 200
 # Keep one bounded admission slot so recovery work cannot starve behind new imports.
 RECOVERY_QUEUE_RESERVE = 1
@@ -335,6 +337,33 @@ def _legacy_html_parser_refresh_plan(manifest, source_hash):
     }
 
 
+def _mdb_parser_refresh_plan(document, source_hash):
+    """Bind one local reparsing attempt to the source and audited MDB reader."""
+    from app.contexts.documents.infrastructure.parsers.mdb_parsing import (
+        PARSER_VERSION,
+        _trusted_executable,
+    )
+
+    if (
+        document.get("role") != "primary"
+        or not isinstance(document.get("filename"), str)
+        or not document["filename"].lower().endswith(".mdb")
+        or not document.get("source_url")
+        or document.get("content_hash") != source_hash
+        or not re.fullmatch(r"[a-f0-9]{64}", source_hash or "")
+    ):
+        return None
+    try:
+        _, reader_sha256 = _trusted_executable(os.getenv("TEA_MDB_READER_PATH", ""))
+    except (OSError, ValueError):
+        return None
+    return {
+        "source_hash": source_hash,
+        "target_parser_version": PARSER_VERSION,
+        "reader_sha256": reader_sha256,
+    }
+
+
 def _is_decode_replacement_page(page, source_hash):
     if not isinstance(page, dict) or page.get("source_hash") != source_hash:
         return False
@@ -423,10 +452,9 @@ def _mineru_decode_quality_targets(manifest, source_hash):
 
 
 def classify_processing(manifest, *, phase, error=None, retryable=False, interrupted=False):
-    """Use bound OCR evidence and bounded automatic retries, never exception text."""
+    """Use bound OCR evidence for automatic retries, never exception text."""
     from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
-        MAX_RETRY_CYCLES as MAX_MINERU_VISUAL_RETRIES,
         fallback_attempts,
         is_empty_page_visual_fallback_page,
         is_mineru_empty_page_review,
@@ -496,7 +524,8 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             unknown_outcome |= unknown
             try:
                 visual_fallback = is_visual_fallback_page(page)
-                visual_attempts = fallback_attempts(page) if visual_fallback else 0
+                if visual_fallback:
+                    fallback_attempts(page)
             except ValueError:
                 return Decision("invalid_checkpoint")
             fallback = page.get("ocr_fallback") or {}
@@ -511,22 +540,16 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 and isinstance(source_result_hash, str)
                 and len(source_result_hash) == 64
                 and all(character in "0123456789abcdef" for character in source_result_hash)
-                and visual_attempts < MAX_MINERU_VISUAL_RETRIES
             )
             failed_empty_visual_retry = failed_visual_retry and is_empty_page_visual_fallback_page(page)
             pending_visual_retry = (
                 vision_ready
                 and visual_fallback
                 and status == "pending_ocr"
-                and (
-                    visual_attempts < MAX_MINERU_VISUAL_RETRIES
-                    or _saved_visual_provider_retry(page) is not None
-                )
             )
             visual_table_quality_retry = (
                 vision_ready
                 and is_table_visual_fallback_page(page)
-                and visual_attempts < MAX_MINERU_VISUAL_RETRIES
                 and status == "ocr_complete"
                 and metadata.get("complete") is True
                 and not metadata.get("uncertain_spans")
@@ -538,19 +561,12 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             # MinerU's page-level chart/table warning is not a failed vision
             # request. Ambiguous tables have a separate, page-bounded visual
             # fallback; chart assets continue through their mapped checkpoints.
-            # A provider failure is not a completed quality fallback. Keep
-            # retrying failed requests after the visual-quality budget expires;
-            # the preserved response receipt and retry checkpoint make each
-            # repeated attempt auditable. Successful but still ambiguous visual
-            # output remains capped by MAX_MINERU_VISUAL_RETRIES.
+            # Provider failures and still-ambiguous visual results both remain
+            # eligible for durable retry. Source-bound checkpoints and queue
+            # backoff keep each repeated paid attempt auditable.
             vision_page = (
                 metadata.get("provider") != "mineru"
                 and bool(metadata.get("prompt_version") or metadata.get("request_id"))
-                and (
-                    not visual_fallback
-                    or status == "ocr_failed"
-                    or visual_attempts < MAX_MINERU_VISUAL_RETRIES
-                )
             )
             eligible = (
                 status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
@@ -1299,7 +1315,6 @@ class CollectionRecovery:
         from app.contexts.documents.infrastructure.providers.html_linked_asset_ocr import read_image_blob
         from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
             EMPTY_PAGE_PROTOCOL as MINERU_EMPTY_PAGE_FALLBACK_PROTOCOL,
-            MAX_RETRY_CYCLES as MAX_MINERU_VISUAL_RETRIES,
             PROTOCOL as MINERU_VISUAL_FALLBACK_PROTOCOL,
             fallback_attempts,
             is_mineru_empty_page_review,
@@ -1375,7 +1390,8 @@ class CollectionRecovery:
                     and is_mineru_empty_page_review(page)
                 )
                 try:
-                    retryable_visual = visual_fallback and fallback_attempts(page) < MAX_MINERU_VISUAL_RETRIES
+                    fallback_attempts(page)
+                    retryable_visual = visual_fallback
                 except ValueError:
                     retryable_visual = False
                 if not (mineru_fallback or mineru_empty_fallback or retryable_visual):
@@ -1391,9 +1407,10 @@ class CollectionRecovery:
             elif bound_failed_vision:
                 raise ValueError("retry_requires_bound_ocr_error_receipt")
             previous = deepcopy(page)
-            # Keep every previous checkpoint addressable from the current page,
-            # but don't recursively duplicate all earlier cycles into each new
-            # checkpoint. That keeps the manifest growth linear over retries.
+            # Keep recent checkpoint details inline without making the document
+            # manifest grow forever. The immutable `requeued` event below keeps
+            # each archived checkpoint reference, and one original MinerU page
+            # remains inline for its source/result validation.
             previous.pop("ocr_retry_cycles", None)
             payload = {
                 "protocol": "ocr-automatic-retry-checkpoint-v1",
@@ -1419,7 +1436,7 @@ class CollectionRecovery:
             }
             # Keep the prior output inline so import and backup walkers continue
             # to discover nested image and error-response blobs.
-            page["ocr_retry_cycles"] = [
+            cycles = [
                 *page.get("ocr_retry_cycles", []),
                 {
                     "protocol": payload["protocol"],
@@ -1428,6 +1445,27 @@ class CollectionRecovery:
                     "previous_page": previous,
                 },
             ]
+            if len(cycles) > MAX_AUTOMATIC_OCR_INLINE_CYCLES:
+                source_anchor = next(
+                    (
+                        cycle
+                        for cycle in cycles
+                        if isinstance(cycle, dict)
+                        and isinstance(cycle.get("previous_page"), dict)
+                        and cycle["previous_page"].get("page") == number
+                        and cycle["previous_page"].get("source_hash") == document["content_hash"]
+                        and (cycle["previous_page"].get("ocr") or {}).get("provider") == "mineru"
+                    ),
+                    None,
+                )
+                recent = cycles[-(MAX_AUTOMATIC_OCR_INLINE_CYCLES - 1) :]
+                page["ocr_retry_cycles"] = (
+                    [source_anchor, *recent]
+                    if source_anchor is not None and source_anchor not in recent
+                    else cycles[-MAX_AUTOMATIC_OCR_INLINE_CYCLES:]
+                )
+            else:
+                page["ocr_retry_cycles"] = cycles
             if is_mineru_table_review(previous):
                 page["ocr_fallback"] = {
                     "protocol": MINERU_VISUAL_FALLBACK_PROTOCOL,
@@ -1444,10 +1482,7 @@ class CollectionRecovery:
                 }
             elif is_visual_fallback_page(page):
                 fallback = deepcopy(page["ocr_fallback"])
-                fallback["attempts"] = min(
-                    MAX_MINERU_VISUAL_RETRIES,
-                    fallback_attempts(page) + 1,
-                )
+                fallback["attempts"] = fallback_attempts(page) + 1
                 fallback.pop("accepted", None)
                 fallback.pop("text_sha256", None)
                 fallback.pop("prompt_version", None)
@@ -1526,7 +1561,24 @@ class CollectionRecovery:
                 "SELECT * FROM documents WHERE id=? AND owner_id=?", (row["item_id"], row["owner_id"])
             ).fetchone()
             manifest = json.loads(document["manifest"])
-            if row["reason"] == "html_parser_refresh":
+            if row["reason"] == "mdb_parser_refresh":
+                from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+                try:
+                    plan = json.loads(row["retry_plan"])
+                except (TypeError, ValueError):
+                    self._block(conn, row, "mdb_parser_retry_plan_invalid")
+                    return "blocked"
+                expected = _mdb_parser_refresh_plan(dict(document), document["content_hash"])
+                if (
+                    document["owner_id"] != SYSTEM_OWNER_ID
+                    or expected is None
+                    or plan != expected
+                ):
+                    self._block(conn, row, "mdb_parser_checkpoint_changed")
+                    return "blocked"
+                decision = Decision("mdb_parser_refresh", True)
+            elif row["reason"] == "html_parser_refresh":
                 from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
 
                 try:
@@ -1913,6 +1965,105 @@ class CollectionRecovery:
                 scheduled += 1
         return scheduled
 
+    def _queue_legacy_mdb_parser_refreshes(self, *, limit, worker_scope):
+        """Retry official primary MDB files once when the audited parser becomes available."""
+        from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID
+
+        scope, arguments = worker_scope.sql("j.owner_id")
+        with closing(self.db.connect()) as conn:
+            identifiers = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT r.id FROM collection_recovery_jobs r
+                    JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
+                    JOIN documents d ON d.id=r.item_id AND d.owner_id=r.owner_id
+                    WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
+                        AND r.reason='processing_review' AND j.phase='parse' AND j.status='failed'
+                        AND d.owner_id=? AND d.role='primary' AND d.source_url IS NOT NULL
+                        AND lower(d.filename) LIKE '%.mdb'"""
+                    + scope
+                    + " ORDER BY r.updated_at,r.id LIMIT ?",
+                    (SYSTEM_OWNER_ID, *arguments, limit),
+                )
+            ]
+        scheduled = 0
+        for identifier in identifiers:
+            with self.db.transaction() as conn:
+                recovery = conn.execute(
+                    "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='processing_review'",
+                    (identifier,),
+                ).fetchone()
+                if recovery is None or not worker_scope.allows(recovery["owner_id"]):
+                    continue
+                binding = self._binding(
+                    conn, recovery["owner_id"], "processing", recovery["item_id"], "parse"
+                )
+                if binding is None or _digest(binding) != recovery["binding_sha256"]:
+                    self._block(conn, recovery, "source_changed")
+                    continue
+                document = conn.execute(
+                    """SELECT id,owner_id,content_hash,filename,mime_type,source_url,role
+                    FROM documents WHERE id=? AND owner_id=?""",
+                    (recovery["item_id"], recovery["owner_id"]),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT phase,status FROM processing_jobs WHERE document_id=? AND owner_id=?",
+                    (recovery["item_id"], recovery["owner_id"]),
+                ).fetchone()
+                if (
+                    document is None
+                    or job is None
+                    or job["phase"] != "parse"
+                    or job["status"] != "failed"
+                    or document["owner_id"] != SYSTEM_OWNER_ID
+                ):
+                    continue
+                plan = _mdb_parser_refresh_plan(dict(document), document["content_hash"])
+                if plan is None:
+                    continue
+                prior = conn.execute(
+                    """SELECT detail FROM collection_recovery_events
+                    WHERE recovery_id=? AND event='mdb_parser_refresh_scheduled'""",
+                    (recovery["id"],),
+                ).fetchall()
+                matching_attempts = 0
+                for event in prior:
+                    try:
+                        detail = json.loads(event["detail"])
+                    except (TypeError, ValueError):
+                        continue
+                    if (
+                        isinstance(detail, dict)
+                        and detail.get("source_hash") == plan["source_hash"]
+                        and detail.get("target_parser_version") == plan["target_parser_version"]
+                        and detail.get("reader_sha256") == plan["reader_sha256"]
+                    ):
+                        matching_attempts += 1
+                if matching_attempts >= MAX_MDB_PARSER_REFRESH_ATTEMPTS:
+                    continue
+                available = time.time()
+                conn.execute(
+                    "UPDATE processing_jobs SET available_at=? WHERE document_id=? AND owner_id=? AND status='failed'",
+                    (available, recovery["item_id"], recovery["owner_id"]),
+                )
+                conn.execute(
+                    """UPDATE collection_recovery_jobs SET status='waiting',reason='mdb_parser_refresh',
+                    available_at=?,retry_plan=?,revision=revision+1,updated_at=? WHERE id=?""",
+                    (available, dump(plan), now(), recovery["id"]),
+                )
+                self._event(
+                    conn,
+                    recovery["id"],
+                    "mdb_parser_refresh_scheduled",
+                    {
+                        **plan,
+                        "attempt": matching_attempts + 1,
+                        "max_attempts": MAX_MDB_PARSER_REFRESH_ATTEMPTS,
+                    },
+                )
+                scheduled += 1
+        return scheduled
+
     def _queue_pending_mineru_resumes(self, *, limit, worker_scope):
         """Requeue failed parses with intact, already-submitted MinerU batches."""
         scope, arguments = worker_scope.sql("j.owner_id")
@@ -2135,7 +2286,6 @@ class CollectionRecovery:
                 if (
                     recovery is None
                     or not worker_scope.allows(recovery["owner_id"])
-                    or recovery["recovery_count"] >= MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS
                 ):
                     continue
                 owner, document_id = recovery["owner_id"], recovery["item_id"]
@@ -3092,6 +3242,7 @@ class CollectionRecovery:
                 break
         result["chart_refreshes"] = self._queue_legacy_chart_refreshes(limit=limit, worker_scope=worker_scope)
         self._queue_legacy_html_parser_refreshes(limit=limit, worker_scope=worker_scope)
+        self._queue_legacy_mdb_parser_refreshes(limit=limit, worker_scope=worker_scope)
         self._queue_pending_mineru_resumes(limit=limit, worker_scope=worker_scope)
         self._queue_terminal_mineru_retries(limit=limit, worker_scope=worker_scope)
         self._queue_mineru_quality_retries(limit=limit, worker_scope=worker_scope)

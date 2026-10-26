@@ -71,15 +71,28 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(result["chunks"], [])
         self.assertEqual(result["remote_parse"]["state"], "planned")
 
-    def test_access_databases_are_explicitly_excluded_from_the_mineru_pipeline(self):
-        for filename, mime_type in (
-            ("tariff.mdb", "application/msaccess"),
-            ("archive.accdb", "application/octet-stream"),
-            ("archive.bin", "application/vnd.ms-access; charset=binary"),
+    def test_jet4_mdb_uses_the_read_only_structured_parser(self):
+        expected = {"parser": "mdb-libmdb-storage", "chunks": []}
+        content = b"\x00\x01\x00\x00Standard Jet DB" + b"x" * 64
+        with patch(
+            "app.contexts.documents.infrastructure.parsers.mdb_parsing.parse_mdb",
+            return_value=expected,
+        ) as parse_mdb:
+            for filename, mime_type in (
+                ("tariff.mdb", "application/msaccess"),
+                ("archive.bin", "application/vnd.ms-access; charset=binary"),
+            ):
+                with self.subTest(filename=filename, mime_type=mime_type):
+                    self.assertIs(native.parse_file(filename, content, mime_type), expected)
+                    parse_mdb.assert_called_with(content, filename=filename)
+
+    def test_accdb_stays_outside_the_audited_jet4_parser(self):
+        with patch(
+            "app.contexts.documents.infrastructure.parsers.mdb_parsing.parse_mdb",
+            side_effect=AssertionError("ACCDB must not enter the Jet4 parser"),
         ):
-            with self.subTest(filename=filename, mime_type=mime_type):
-                with self.assertRaisesRegex(ValueError, "MinerU API.*不支持 Microsoft Access"):
-                    native.parse_file(filename, b"stored database bytes", mime_type)
+            with self.assertRaisesRegex(ValueError, "ACCDB 格式尚无经过审计"):
+                native.parse_file("archive.accdb", b"stored database bytes", "application/octet-stream")
 
     def test_docx_compressed_xml_bomb_is_never_expanded_locally(self):
         data = io.BytesIO()

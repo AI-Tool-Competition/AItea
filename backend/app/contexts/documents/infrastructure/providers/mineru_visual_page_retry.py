@@ -8,10 +8,6 @@ from copy import deepcopy
 PROTOCOL = "mineru-table-visual-page-v1"
 EMPTY_PAGE_PROTOCOL = "mineru-empty-page-visual-v1"
 _VISUAL_PROTOCOLS = frozenset({PROTOCOL, EMPTY_PAGE_PROTOCOL})
-# Long legal tables can remain ambiguous after several blind reads. Keep the
-# retries finite, but allow enough checkpointed attempts for the persisted OCR
-# worker to recover them without requiring an operator to reset the job.
-MAX_RETRY_CYCLES = 32
 
 
 def is_mineru_table_review(page: dict) -> bool:
@@ -87,7 +83,7 @@ def fallback_attempts(page: dict) -> int:
     if not is_visual_fallback_page(page):
         return 0
     attempts = marker.get("attempts")
-    if type(attempts) is not int or not 1 <= attempts <= MAX_RETRY_CYCLES:
+    if type(attempts) is not int or attempts < 1:
         raise ValueError("MinerU 视觉回退次数检查点无效。")
     return attempts
 
@@ -124,8 +120,7 @@ def missing_visual_provider_pages(manifest: dict) -> tuple[int, ...]:
         ):
             continue
         try:
-            if fallback_attempts(page) >= MAX_RETRY_CYCLES:
-                continue
+            fallback_attempts(page)
         except ValueError:
             continue
         candidates.append((index, page))

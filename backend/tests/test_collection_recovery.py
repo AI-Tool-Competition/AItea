@@ -14,7 +14,7 @@ from app.contexts.ingestion.application.collection_recovery import (
     BASE_RECOVERY_SECONDS,
     CollectionRecovery,
     Decision,
-    MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS,
+    MAX_AUTOMATIC_OCR_INLINE_CYCLES,
     MAX_PAID_OCR_RETRY_SECONDS,
     PAID_OCR_RETRY_SECONDS,
     classify_processing,
@@ -25,7 +25,6 @@ from app.contexts.documents.infrastructure.parsers.native_parser import (
     parse_file,
 )
 from app.contexts.documents.infrastructure.providers import native_asset_ocr, vision
-from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import MAX_RETRY_CYCLES
 from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import (
     preserve_previous_asset_attempt,
     preserve_previous_page_attempt,
@@ -38,6 +37,8 @@ from app.shared.infrastructure.operations.scheduler import ScheduledCollector
 from support.ingestion_quality import make_pdf
 from support.native_asset_ocr import raster
 from support.pdf_ocr_reuse import register
+
+PREVIOUS_VISUAL_RETRY_LIMIT = 32
 
 
 @pytest.fixture
@@ -337,7 +338,7 @@ def test_legacy_mineru_office_render_proof_is_automatically_retried(monkeypatch)
         "text": "old transcript",
         "ocr_fallback": {
             "protocol": PROTOCOL,
-            "attempts": MAX_RETRY_CYCLES,
+            "attempts": PREVIOUS_VISUAL_RETRY_LIMIT,
             "source_result_hash": result_hash,
             "source_page": 1,
         },
@@ -383,7 +384,7 @@ def test_legacy_mineru_office_render_proof_is_automatically_retried(monkeypatch)
     assert decision.retryable and decision.pages == (1,)
 
 
-@pytest.mark.parametrize("fallback_attempts", [None, MAX_RETRY_CYCLES])
+@pytest.mark.parametrize("fallback_attempts", [None, PREVIOUS_VISUAL_RETRY_LIMIT])
 def test_unreceipted_source_bound_vision_failure_is_automatically_retried(service, fallback_attempts):
     content = make_pdf([("source page", False)])
     document = register(service, content, key="unreceipted-vision-failure")
@@ -460,12 +461,12 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
     assert tuple(job) == ("parse", "queued")
     assert tuple(recovery) == ("queued", "paid_ocr_retry")
     assert saved["pages"][0]["status"] == "pending_ocr"
-    assert len(saved["pages"][0]["ocr_retry_cycles"]) == 9
+    assert len(saved["pages"][0]["ocr_retry_cycles"]) == MAX_AUTOMATIC_OCR_INLINE_CYCLES
     assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["source_hash"] == document[
         "content_hash"
     ]
     if fallback_attempts is not None:
-        assert saved["pages"][0]["ocr_fallback"]["attempts"] == MAX_RETRY_CYCLES
+        assert saved["pages"][0]["ocr_fallback"]["attempts"] == PREVIOUS_VISUAL_RETRY_LIMIT + 1
 
 
 def test_incomplete_embed_retry_routes_to_ocr_before_reconciling(service, monkeypatch):
@@ -547,9 +548,8 @@ def test_incomplete_embed_retry_routes_to_ocr_before_reconciling(service, monkey
     assert json.loads(recoveries["parse"]["retry_plan"])[0]["page"] == page["page"]
 
 
-def test_failed_vision_page_with_bound_response_retries_after_visual_quality_budget(service):
+def test_failed_vision_page_with_bound_response_retries_after_old_visual_limit(service):
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
-        MAX_RETRY_CYCLES,
         PROTOCOL,
     )
 
@@ -559,8 +559,8 @@ def test_failed_vision_page_with_bound_response_retries_after_visual_quality_bud
     page = manifest["pages"][0]
     page.update(status="ocr_failed", source_hash=original.digest)
     bound_failed_vision_page(service, page)
-    page["ocr_fallback"] = {"protocol": PROTOCOL, "attempts": MAX_RETRY_CYCLES}
-    page["ocr_retry_cycles"] = [{"protocol": "previous-attempt"} for _ in range(MAX_RETRY_CYCLES)]
+    page["ocr_fallback"] = {"protocol": PROTOCOL, "attempts": PREVIOUS_VISUAL_RETRY_LIMIT}
+    page["ocr_retry_cycles"] = [{"protocol": "previous-attempt"} for _ in range(PREVIOUS_VISUAL_RETRY_LIMIT)]
     decision = classify_processing(manifest, phase="parse")
     assert decision.reason == "ocr_quality_retry"
     assert decision.retryable and decision.pages == (page["page"],)
@@ -613,7 +613,7 @@ def test_failed_vision_page_with_bound_response_retries_after_visual_quality_bud
     assert tuple(recovery) == ("queued", "ocr_quality_retry")
     retried = saved["pages"][0]
     assert retried["status"] == "pending_ocr" and retried["ocr"] == {"attempts": 0}
-    assert len(retried["ocr_retry_cycles"]) == MAX_RETRY_CYCLES + 1
+    assert len(retried["ocr_retry_cycles"]) == MAX_AUTOMATIC_OCR_INLINE_CYCLES
     assert retried["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["error_response"]["blob"]
 
 
@@ -896,7 +896,7 @@ def test_empty_mineru_page_without_vision_access_stays_out_of_index(monkeypatch)
     assert decision.reason == "quality_review" and not decision.retryable
 
 
-def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_cycles(monkeypatch):
+def test_mineru_visual_fallback_retries_incomplete_output_without_attempt_ceiling(monkeypatch):
     from app.contexts.documents.infrastructure.providers import vision
 
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
@@ -916,24 +916,23 @@ def test_mineru_visual_fallback_retries_incomplete_output_with_bounded_quality_c
     decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.reason == "ocr_quality_retry" and decision.pages == (4,)
 
-    # Keep retrying after the former eight-attempt ceiling.
+    # Continue through and beyond the former 32-attempt ceiling.
     page["ocr_fallback"]["attempts"] = 8
     decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.retryable and decision.pages == (4,)
 
-    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES - 1
+    page["ocr_fallback"]["attempts"] = PREVIOUS_VISUAL_RETRY_LIMIT - 1
     decision = classify_processing({"pages": [page]}, phase="parse")
     assert decision.retryable and decision.pages == (4,)
 
-    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES
+    page["ocr_fallback"]["attempts"] = 100_000
     decision = classify_processing({"pages": [page]}, phase="parse")
-    assert decision.reason == "quality_review" and not decision.retryable
+    assert decision.reason == "ocr_quality_retry" and decision.retryable
 
 
 def test_complete_visual_fallback_with_malformed_markdown_table_is_retryable(monkeypatch):
     from app.contexts.documents.infrastructure.providers import vision
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
-        MAX_RETRY_CYCLES,
         PROTOCOL,
     )
 
@@ -956,8 +955,8 @@ def test_complete_visual_fallback_with_malformed_markdown_table_is_retryable(mon
 
     assert decision.reason == "ocr_quality_retry"
     assert decision.retryable and decision.pages == (213,)
-    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES
-    assert not classify_processing({"pages": [page]}, phase="parse").retryable
+    page["ocr_fallback"]["attempts"] = 100_000
+    assert classify_processing({"pages": [page]}, phase="parse").retryable
 
 
 def test_blocked_complete_visual_table_failure_is_automatically_requeued(service, monkeypatch):
@@ -1042,7 +1041,6 @@ def test_blocked_complete_visual_table_failure_is_automatically_requeued(service
 def test_pending_mineru_visual_fallback_retries_after_interrupted_parse(monkeypatch):
     from app.contexts.documents.infrastructure.providers import vision
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
-        MAX_RETRY_CYCLES,
         PROTOCOL,
     )
 
@@ -1058,13 +1056,13 @@ def test_pending_mineru_visual_fallback_retries_after_interrupted_parse(monkeypa
     assert decision.reason == "mineru_visual_table_retry"
     assert decision.retryable and decision.pages == (4,)
 
-    page["ocr_fallback"]["attempts"] = MAX_RETRY_CYCLES
+    page["ocr_fallback"]["attempts"] = PREVIOUS_VISUAL_RETRY_LIMIT
     decision = classify_processing({"pages": [page]}, phase="parse")
-    assert decision.reason == "processing_review"
-    assert not decision.retryable
+    assert decision.reason == "mineru_visual_table_retry"
+    assert decision.retryable and decision.pages == (4,)
 
 
-def test_pending_mineru_visual_fallback_retries_saved_provider_error_past_quality_cap(monkeypatch):
+def test_pending_mineru_visual_fallback_retries_past_quality_cap(monkeypatch):
     from app.contexts.documents.infrastructure.providers import vision
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import PROTOCOL
     from app.contexts.ingestion.application.collection_recovery import _digest
@@ -1091,7 +1089,7 @@ def test_pending_mineru_visual_fallback_retries_saved_provider_error_past_qualit
         "page": 4,
         "source_hash": source_hash,
         "status": "pending_ocr",
-        "ocr_fallback": {"protocol": PROTOCOL, "attempts": MAX_RETRY_CYCLES},
+        "ocr_fallback": {"protocol": PROTOCOL, "attempts": PREVIOUS_VISUAL_RETRY_LIMIT},
         "ocr": {"attempts": 0},
         "ocr_retry_cycles": [
             {
@@ -1108,8 +1106,8 @@ def test_pending_mineru_visual_fallback_retries_saved_provider_error_past_qualit
 
     page["ocr_retry_cycles"][0]["previous_page"]["status"] = "ocr_complete"
     decision = classify_processing({"pages": [page]}, phase="parse")
-    assert decision.reason == "processing_review"
-    assert not decision.retryable
+    assert decision.reason == "mineru_visual_table_retry"
+    assert decision.retryable and decision.pages == (4,)
 
 
 def test_pending_mineru_visual_fallback_retries_archived_unknown_request(monkeypatch):
@@ -1159,9 +1157,9 @@ def test_pending_mineru_visual_fallback_retries_archived_unknown_request(monkeyp
 
 @pytest.mark.parametrize(
     ("validator_accepts", "attempts", "expected"),
-    [(True, 2, True), (False, 2, False), (True, MAX_RETRY_CYCLES, False)],
+    [(True, 2, True), (False, 2, False), (True, 100_000, True)],
 )
-def test_mineru_visual_page_with_missing_provider_tag_is_retried_only_when_receipt_valid(
+def test_mineru_visual_page_with_missing_provider_tag_is_retried_when_receipt_valid(
     monkeypatch, validator_accepts, attempts, expected
 ):
     from app.contexts.documents.infrastructure.providers import mineru
@@ -1550,7 +1548,7 @@ def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(ser
         source_hash=document["content_hash"],
         reasons=["table_structure_ambiguous"],
         text="Original MinerU tariff row",
-        ocr_fallback={"protocol": PROTOCOL, "attempts": MAX_RETRY_CYCLES, "source_page": page["page"]},
+        ocr_fallback={"protocol": PROTOCOL, "attempts": PREVIOUS_VISUAL_RETRY_LIMIT, "source_page": page["page"]},
         ocr={"attempts": 0},
     )
     previous = bound_failed_vision_page(service, deepcopy(page))
@@ -1598,7 +1596,7 @@ def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(ser
         ).fetchone()
     assert tuple(recovery) == ("queued", "mineru_visual_table_retry")
     assert saved["pages"][0]["status"] == "pending_ocr"
-    assert saved["pages"][0]["ocr_fallback"]["attempts"] == MAX_RETRY_CYCLES
+    assert saved["pages"][0]["ocr_fallback"]["attempts"] == PREVIOUS_VISUAL_RETRY_LIMIT + 1
 
 
 def test_blocked_mineru_download_resumes_existing_batch_without_resubmitting(service):
@@ -1860,7 +1858,7 @@ def test_confirmed_mineru_failure_retries_in_fresh_generation_and_reuses_other_p
     assert queue_size == 201
 
 
-def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_previous_manifest(
+def test_decode_replacement_mineru_pages_retry_past_old_limit_and_preserve_previous_manifest(
     service, monkeypatch
 ):
     from app.contexts.documents.infrastructure.providers import mineru
@@ -1998,17 +1996,7 @@ def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_prev
             error_type="incomplete_checkpoint",
         )
         conn.execute(
-            "UPDATE collection_recovery_jobs SET recovery_count=? WHERE item_id=?",
-            (MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS, document["id"]),
-        )
-
-    capped = service.collection.recovery.run_due(limit=32)
-    assert capped["requeued"] == 0
-    assert rows(service, "collection_recovery_jobs")[0]["status"] == "blocked"
-
-    with service.db.transaction() as conn:
-        conn.execute(
-            "UPDATE collection_recovery_jobs SET recovery_count=3,failure_count=7 WHERE item_id=?",
+            "UPDATE collection_recovery_jobs SET recovery_count=100,failure_count=7 WHERE item_id=?",
             (document["id"],),
         )
 
@@ -2060,7 +2048,7 @@ def test_decode_replacement_mineru_pages_retry_only_their_part_and_preserve_prev
             (document["id"],),
         ).fetchone()
     assert tuple(job) == ("parse", "queued")
-    assert tuple(recovery) == ("queued", "mineru_quality_retry", 4)
+    assert tuple(recovery) == ("queued", "mineru_quality_retry", 101)
 
 
 def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeypatch, service):
@@ -2341,6 +2329,102 @@ def test_failed_legacy_official_html_reparse_retries_are_automatic_and_bounded(s
     attempts = [json.loads(row["detail"]) for row in scheduled]
     assert [event["attempt"] for event in attempts] == [1, 2, 3]
     assert all(event["max_attempts"] == 3 for event in attempts)
+
+
+def test_failed_official_mdb_is_retried_once_when_audited_parser_is_configured(
+    service, monkeypatch, tmp_path
+):
+    from app.contexts.documents.application.system_library import SYSTEM_OWNER_ID, ensure_principal
+
+    reader = tmp_path / "mdb-reader"
+    reader.write_bytes(b"audited reader placeholder")
+    reader.chmod(0o700)
+    monkeypatch.setenv("TEA_MDB_READER_PATH", str(reader))
+
+    def save_failed(owner, key):
+        content = b"\x00\x01\x00\x00Standard Jet DB" + b"x" * 4096
+        blob = service.archive.blobs.put_bytes(owner, content)
+        with service.db.transaction() as conn:
+            doc = service.archive.store_original(
+                conn,
+                owner,
+                blob,
+                key + ".mdb",
+                "application/msaccess",
+                "https://goods-schedules.wto.org/system/files/Indonesia/" + key + ".mdb",
+                collection="country:ID",
+                level="primary",
+                tags=["country:ID", "checklist:ID-5.4"],
+                identity_key=key,
+                kind_hint="law",
+            )
+            conn.execute(
+                "UPDATE documents SET manifest=?,status='failed' WHERE id=?",
+                (dump({"source_hash": blob.digest}), doc["id"]),
+            )
+            conn.execute(
+                "UPDATE processing_jobs SET phase='parse',status='failed',attempts=1,available_at=0 WHERE document_id=?",
+                (doc["id"],),
+            )
+            service.collection.recovery.record_failure(
+                conn,
+                {"document_id": doc["id"], "owner_id": owner, "phase": "parse", "attempts": 1},
+                processing=True,
+                decision=Decision("processing_review"),
+                exhausted=True,
+                error_type="unsupported_format",
+            )
+        return doc["id"]
+
+    with service.db.transaction() as conn:
+        ensure_principal(conn)
+    official_id = save_failed(SYSTEM_OWNER_ID, "legacy-official-mdb")
+    private_id = save_failed("owner", "private-mdb")
+
+    result = service.collection.recovery.run_due(limit=32)
+    assert result["requeued"] == 1
+    with closing(service.db.connect()) as conn:
+        official_job = conn.execute(
+            "SELECT status FROM processing_jobs WHERE document_id=?", (official_id,)
+        ).fetchone()
+        official_recovery = conn.execute(
+            "SELECT id,status,reason FROM collection_recovery_jobs WHERE item_id=?", (official_id,)
+        ).fetchone()
+        private_recovery = conn.execute(
+            "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (private_id,)
+        ).fetchone()
+    assert official_job["status"] == "queued"
+    assert tuple(official_recovery[1:]) == ("queued", "mdb_parser_refresh")
+    assert tuple(private_recovery) == ("blocked", "processing_review")
+
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE processing_jobs SET status='failed',attempts=1,available_at=0 WHERE document_id=?",
+            (official_id,),
+        )
+        conn.execute("UPDATE documents SET status='failed' WHERE id=?", (official_id,))
+        service.collection.recovery.record_failure(
+            conn,
+            {
+                "document_id": official_id,
+                "owner_id": SYSTEM_OWNER_ID,
+                "phase": "parse",
+                "attempts": 1,
+            },
+            processing=True,
+            decision=Decision("processing_review"),
+            exhausted=True,
+            error_type="incomplete_checkpoint",
+        )
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 0
+    scheduled = [
+        json.loads(row["detail"])
+        for row in rows(service, "collection_recovery_events")
+        if row["recovery_id"] == official_recovery["id"]
+        and row["event"] == "mdb_parser_refresh_scheduled"
+    ]
+    assert len(scheduled) == 1
+    assert scheduled[0]["max_attempts"] == 1
 
 
 def test_embed_last_rejection_does_not_prove_entire_multibatch_call_was_unpaid():

@@ -32,6 +32,7 @@ MAX_ROWS = 20_000
 MAX_VALUE = 2 * 1024 * 1024
 MAX_REVIEW = 2000
 PROTOCOL = "aitea-mdb-storage-v1"
+PARSER_VERSION = "mdb-readonly-v1"
 _HASH = re.compile(r"[a-f0-9]{64}\Z")
 _TYPES = {
     1: "Boolean",
@@ -520,7 +521,7 @@ def _parse_output(encoded: bytes, *, content: bytes, filename: str, reader_sha25
         raise ValueError("MDB 导出未完整结束或没有正文表格。")
     warnings = sorted({entry["reason"] for entry in review})
     result = _parsed_result(
-        ParsedDocument("mdb-libmdb-storage", "1.0.0", PROTOCOL, elements, [], warnings),
+        ParsedDocument("mdb-libmdb-storage", PARSER_VERSION, PROTOCOL, elements, [], warnings),
         source_hash,
         Path(filename).stem,
     )

@@ -405,10 +405,12 @@ def parse_file(
     if extension in {".html", ".htm"} or normalized_mime == "text/html":
         document = _parse_html(content)
         return _parsed_result(document, hashlib.sha256(content).hexdigest(), Path(filename).stem)
-    if extension in {".mdb", ".accdb"} or normalized_mime in _ACCESS_DATABASE_MIMES:
-        raise ValueError(
-            "当前 MinerU API 处理链不支持 Microsoft Access 数据库（MDB/ACCDB），不会将其作为已解析正文加入检索。"
-        )
+    if extension == ".accdb":
+        raise ValueError("ACCDB 格式尚无经过审计的只读解析器；原件可保存，但不能作为已解析正文加入检索。")
+    if extension == ".mdb" or normalized_mime in _ACCESS_DATABASE_MIMES:
+        from app.contexts.documents.infrastructure.parsers.mdb_parsing import parse_mdb
+
+        return parse_mdb(content, filename=filename)
     from app.contexts.documents.infrastructure.providers.mineru import pending_manifest, supports
 
     if supports(filename, mime_type):

@@ -10,12 +10,12 @@
 
 ## 项目内构建
 
-可选系统工具只放当前 worktree 已忽略的 `.dev/legacy-tools/mdb/`，不需要全局安装软件包或修改 APT 配置。下面版本对应 Ubuntu 22.04 amd64 的本次实际验证；其他服务器须重新核验 ABI、官方包与 namespace 支持。
+可选系统工具只放当前 worktree 已忽略的 `.dev/legacy-tools/mdb/`，不需要全局安装软件包或修改 APT 配置。本机 Ubuntu 22.04 amd64 使用已安装的 `libglib2.0-0 2.72.1-1` 对应开发包构建；其他服务器须按其运行库版本核验 ABI、官方包与 namespace 支持。
 
 ```bash
 mkdir -p .dev/legacy-tools/mdb/packages .dev/legacy-tools/mdb/runtime
 cd .dev/legacy-tools/mdb/packages
-apt-get download mdbtools=1.0.0+dfsg-1 libmdb3=1.0.0+dfsg-1 libmdbsql3=1.0.0+dfsg-1 mdbtools-dev=1.0.0+dfsg-1 libglib2.0-dev=2.72.4-0ubuntu2.10
+apt-get download mdbtools=1.0.0+dfsg-1 libmdb3=1.0.0+dfsg-1 libmdbsql3=1.0.0+dfsg-1 mdbtools-dev=1.0.0+dfsg-1 libglib2.0-dev=2.72.1-1
 cd ../../../..
 for package in .dev/legacy-tools/mdb/packages/*.deb; do
   dpkg-deb --extract "$package" .dev/legacy-tools/mdb/runtime
@@ -30,6 +30,8 @@ cc -Wall -Wextra -Werror -O2 \
   -lmdb -lglib-2.0 -ldl -o .dev/legacy-tools/mdb/mdb-reader
 export TEA_MDB_READER_PATH="$PWD/.dev/legacy-tools/mdb/mdb-reader"
 ```
+
+服务配置将该绝对路径写入集中配置 `data/config/application.env` 的 `TEA_MDB_READER_PATH`，然后重启当前项目服务以加载配置。当前仅主资料 `.mdb` 进入该 reader；secondary 附件仍只保存原件，`.accdb` 和非 Jet4 文件不会降级猜读。解析器版本更新或首次配置 reader 后，正式来源池会对系统主资料中因未支持格式而失败的 MDB 自动安排一次重解析；正文仍需通过完整性门禁才能进入检索。
 
 下载后先逐包核对 `apt-cache show <package>=<version>` 的官方 SHA256，保存包 URL、版本、字节数和实际 SHA，再解包。此例只解包构建所需头文件与库，不运行包安装脚本；服务器已有的 glib 和 libc 也属于运行依赖。程序 manifest 记录辅助程序 SHA、协议版本、libmdb 头文件版本与实际加载的 libmdb 二进制 SHA。构建程序与项目配置仅由服务器管理员管理，用户上传文件不能选择可执行路径或命令。
 

@@ -242,6 +242,7 @@ export function useStageChat({
       turn,
     ]);
     let firstTextPublished = false;
+    let firstAnswerPublished = false;
     const current = () =>
       mounted.current &&
       !controller.signal.aborted &&
@@ -262,7 +263,10 @@ export function useStageChat({
         onEvent: (event) => {
           if (!current()) return;
           if (event.event === "start") {
-            if (!event.data.append) turn.text = "";
+            if (!event.data.append) {
+              turn.text = "";
+              firstAnswerPublished = false;
+            }
           } else if (event.event === "delta") turn.text += event.data.text;
           else if (event.event === "tool_delta")
             turn.steps = mergeToolDelta(turn.steps ?? [], event.data);
@@ -272,11 +276,13 @@ export function useStageChat({
           if (
             (event.event === "delta" || event.event === "tool_delta") &&
             event.data.text &&
-            !firstTextPublished
+            (!firstTextPublished ||
+              (event.event === "delta" && !firstAnswerPublished))
           ) {
             firstTextPublished = true;
-            // The first visible text must not wait behind token batching. Keep
-            // subsequent updates frame-bound so input remains responsive.
+            if (event.event === "delta") firstAnswerPublished = true;
+            // Publish the first thought and first answer immediately, including
+            // the disclosure transition. Batch subsequent text by frame.
             if (document.visibilityState === "visible")
               flushSync(publisher.flush);
             else publisher.flush();

@@ -159,17 +159,20 @@ describe("stage chat experience", () => {
     expect(screen.getByText("核对来源。")).toBeTruthy();
     const thinking = screen.getByRole("button", { name: "思考摘要 · 进行中" });
     expect(thinking.getAttribute("aria-expanded")).toBe("true");
+    // First answer text must publish the collapse even before the next frame.
+    rs.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(123);
     await act(async () => {
       stream.event("delta", { text: "我先核对材料。" });
-      stream.event("start", { step_id: "agent", append: true });
     });
     expect(screen.getByText("我先核对材料。")).toBeTruthy();
     expect(
       screen
         .getByRole("button", { name: /处理进度/ })
         .getAttribute("aria-expanded"),
-    ).toBe("true");
+    ).toBe("false");
+    expect(screen.queryByText("核对来源。")).toBeNull();
     await act(async () => {
+      stream.event("start", { step_id: "agent", append: true });
       stream.event("delta", { text: "\n\n请补充产品信息。" });
       stream.event("status", { label: "正在保存" });
     });
@@ -178,6 +181,15 @@ describe("stage chat experience", () => {
       stream.event("start", { step_id: "legacy-final" });
     });
     expect(screen.queryByText(/我先核对材料/)).toBeNull();
+    await act(async () => {
+      stream.event("delta", { text: "重新生成的正文。" });
+    });
+    expect(screen.getByText("重新生成的正文。")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: /处理进度/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
     fireEvent.click(screen.getByRole("button", { name: "停止回复" }));
     await waitFor(() =>
       expect(
@@ -364,7 +376,7 @@ describe("stage chat experience", () => {
       stream.event("delta", { text: "已找到可供核对的公开来源。" });
     });
     await screen.findByText("已找到可供核对的公开来源。");
-    expect(progress.getAttribute("aria-expanded")).toBe("true");
+    expect(progress.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("进行中")).toBeNull();
     expect(
       screen.queryByText(
@@ -372,7 +384,6 @@ describe("stage chat experience", () => {
       ),
     ).toBeNull();
     // Even a manually reopened progress area closes at the end of this turn.
-    fireEvent.click(progress);
     fireEvent.click(progress);
     expect(screen.getByText("已完成")).toBeTruthy();
     await act(async () => {

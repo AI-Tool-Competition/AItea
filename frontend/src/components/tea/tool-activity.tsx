@@ -127,22 +127,36 @@ export const MessageActivity = memo(function MessageActivity({
   );
 });
 
-// Text, model rounds and completed siblings never toggle a disclosure. Only
-// newly executing work, a terminal transition or the reader can change it.
-function useFollowingDisclosure(running: boolean, active: string[]) {
+// Follow new work until the answer starts. The first answer closes progress;
+// later events respect the reader's choice until the turn finishes.
+function useFollowingDisclosure(
+  running: boolean,
+  active: string[],
+  answering = false,
+) {
   const activity = active.join("\n");
-  const [state, setState] = useState({ running, activity, open: running });
+  const [state, setState] = useState({
+    running,
+    activity,
+    answering,
+    open: running && !answering,
+  });
   let next = state;
-  if (state.running !== running) next = { running, activity, open: running };
-  else if (state.activity !== activity) {
+  if (state.running !== running)
+    next = { running, activity, answering, open: running && !answering };
+  else if (!state.answering && answering)
+    next = { running, activity, answering, open: false };
+  else if (state.activity !== activity || state.answering !== answering) {
     const previous = new Set(state.activity.split("\n"));
-    const started = running && active.some((key) => !previous.has(key));
-    next = { running, activity, open: started ? true : state.open };
+    const started =
+      running && !answering && active.some((key) => !previous.has(key));
+    next = { running, activity, answering, open: started ? true : state.open };
   }
   if (next !== state) setState(next);
   return {
     open: next.open,
-    onOpenChange: (open: boolean) => setState({ running, activity, open }),
+    onOpenChange: (open: boolean) =>
+      setState({ running, activity, answering, open }),
   };
 }
 
@@ -185,6 +199,7 @@ export function ToolActivity({
   const disclosure = useFollowingDisclosure(
     running,
     active.map((tool) => `${tool.id}:${tool.attempt}`),
+    answering,
   );
   if (!visible.length && !preparing && !startedHere && !model) return null;
   const failed = incomplete || visible.some((tool) => tool.status === "failed");
@@ -195,12 +210,12 @@ export function ToolActivity({
     (tool) => tool.name !== "agent_turn",
   ).length;
   const heading = running
-    ? active.length > 1
-      ? `正在处理 ${active.length} 项工作`
-      : (active[0]?.view.active ??
-        (answering
-          ? "正在回复"
-          : thinking
+    ? answering
+      ? "正在回复"
+      : active.length > 1
+        ? `正在处理 ${active.length} 项工作`
+        : (active[0]?.view.active ??
+          (thinking
             ? "正在思考"
             : visible.length
               ? "正在整理回复"
@@ -260,7 +275,12 @@ export function ToolActivity({
             className="tea-tool-list"
           >
             {visible.map((tool) => (
-              <ToolRow key={tool.id} tool={tool} running={running} />
+              <ToolRow
+                key={tool.id}
+                tool={tool}
+                running={running}
+                answering={answering}
+              />
             ))}
           </ol>
         )}
@@ -275,17 +295,20 @@ export function ToolActivity({
 function ToolRow({
   tool,
   running,
+  answering,
 }: {
   tool: ActivityCall & {
     view: NonNullable<(typeof activities)[ToolCall["name"]]>;
   };
   running: boolean;
+  answering: boolean;
 }) {
   const id = useId();
   const working = tool.status === "running" || tool.status === "retrying";
   const disclosure = useFollowingDisclosure(
     running && working,
     working ? [`${tool.id}:${tool.attempt}`] : [],
+    answering,
   );
   const Icon = tool.view.icon;
   const StatusIcon = tool.cached ? History : icons[tool.status];

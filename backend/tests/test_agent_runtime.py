@@ -118,6 +118,10 @@ def test_business_tools_parallel_and_ordered_with_idempotent_messages(workspace,
     assert response.status_code == 200, response.text
     answer = response.json()["messages"][1]
     assert set(completed) == {"guide", "handoff"}
+    current_context = json.loads(seen[0][0][-2]["content"])
+    assert current_context["stage"]["tasks"] == [
+        {key: task[key] for key in ("id", "title", "status")} for task in workspace[3]["stages"][0]["tasks"]
+    ]
     assert [m["tool_call_id"] for m in seen[1][0] if m["role"] == "tool"] == [
         "call_guide_business_0",
         "call_get_handoff_1",
@@ -131,6 +135,17 @@ def test_business_tools_parallel_and_ordered_with_idempotent_messages(workspace,
     assert send(workspace).json()["messages"] == response.json()["messages"]
     assert len(seen) == 3
     assert response.json()["case"]["completed_tasks"] == workspace[3]["completed_tasks"]
+    handoff = json.loads(
+        next(m["content"] for m in seen[1][0] if m.get("tool_call_id") == "call_get_handoff_1")
+    )
+    current, following = workspace[3]["stages"][:2]
+    assert handoff["current_stage_id"] == current["id"]
+    assert handoff["next_stage"] == {key: following[key] for key in ("id", "name", "status")}
+    assert handoff["next_stage"]["id"] not in {t["id"] for t in current["tasks"]}
+    checks = json.loads(
+        next(m["content"] for m in seen[2][0] if m.get("tool_call_id") == "call_check_materials_0")
+    )["checks"]
+    assert {check["task_title"] for check in checks} == {t["title"] for t in current["tasks"]}
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -529,6 +544,37 @@ def test_image_recognition_uses_scoped_original_and_keeps_it_unverified(workspac
     )
     assert output["text"] == "图片太小，无法确认文字"
     assert "data:image" not in str(output)
+
+
+def test_image_page_placeholder_is_correctable_without_sending_a_paid_request(workspace, monkeypatch):
+    _, service, owner, case, _ = workspace
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII="
+    )
+    doc = service.store_document(owner, "label.png", png, "image/png", case_id=case["id"])
+    args = {"document_id": doc["id"], "version": doc["version"], "prompt": "描述标签"}
+    requests, seen = [], []
+
+    async def gateway(name, body, check, **kwargs):
+        requests.append(name)
+        return {"status": "completed", "output": {"text": "图像太小，无法确认文字。"}}
+
+    monkeypatch.setattr("app.contexts.conversations.application.agent_tools.gateway_tool", gateway)
+    corrected = tools(("inspect_image", args))
+    corrected["tool_calls"][0]["id"] = "corrected-image"
+    scenario(
+        monkeypatch,
+        [tools(("inspect_image", args | {"image_id": "none"})), corrected, "无法确认文字。"],
+        seen,
+    )
+    response = send(workspace)
+    assert response.status_code == 200, response.text
+    failure = json.loads(next(m["content"] for m in seen[1][0] if m["role"] == "tool"))
+    assert failure["error"] == "invalid_input"
+    assert failure["validation"][0]["loc"] == ["image_id"]
+    assert "JSON null" in failure["validation"][0]["msg"]
+    assert requests == ["image_recognition"]
+    assert response.json()["messages"][1]["content"] == "无法确认文字。"
 
 
 def test_backup_restores_memory_and_receipts_without_replaying_uncertain_calls(workspace, tmp_path):

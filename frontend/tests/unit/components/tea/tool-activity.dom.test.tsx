@@ -17,10 +17,14 @@ const tool: ToolCall = {
   duration_ms: 0,
 };
 
-it("keeps preparation open through text and closes only on completion or stop", () => {
+it("closes preparation on the first answer and closes a reopened panel on completion or stop", () => {
   const view = render(<MessageActivity steps={[]} running />);
   const trigger = screen.getByRole("button", { name: /处理进度/ });
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  view.rerender(<MessageActivity steps={[]} running answering />);
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByText("正在回复")).toBeTruthy();
+  fireEvent.click(trigger);
   view.rerender(<MessageActivity steps={[]} running answering />);
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
   view.rerender(<MessageActivity steps={[]} answering />);
@@ -46,7 +50,7 @@ it("fully collapses completed output and expands the next call and retry", () =>
     },
   };
   const next = { ...tool, id: "next", name: "inspect_image" as const };
-  view.rerender(<ToolActivity tools={[done, next]} running answering />);
+  view.rerender(<ToolActivity tools={[done, next]} running />);
   expect(first.getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByText(done.output_preview.text)).toBeNull();
   const second = screen.getByRole("button", { name: "查看图片 · 进行中" });
@@ -57,18 +61,13 @@ it("fully collapses completed output and expands the next call and retry", () =>
     <ToolActivity
       tools={[done, { ...next, status: "retrying", attempt: 2 }]}
       running
-      answering
     />,
   );
   expect(second.getAttribute("aria-expanded")).toBe("true");
-  view.rerender(<ToolActivity tools={[done, next]} running answering />);
+  view.rerender(<ToolActivity tools={[done, next]} running />);
   expect(second.getAttribute("aria-expanded")).toBe("true");
   view.rerender(
-    <ToolActivity
-      tools={[done, { ...next, status: "completed" }]}
-      running
-      answering
-    />,
+    <ToolActivity tools={[done, { ...next, status: "completed" }]} running />,
   );
   const parent = screen.getByRole("button", { name: /处理进度/ });
   expect(parent.getAttribute("aria-expanded")).toBe("true");
@@ -87,6 +86,64 @@ it("fully collapses completed output and expands the next call and retry", () =>
       .getByRole("button", { name: "查找资料 · 已完成" })
       .getAttribute("aria-expanded"),
   ).toBe("false");
+});
+
+it("collapses streaming thoughts at the first answer and never auto-opens later work during the answer", () => {
+  const thought: ToolCall = {
+    ...tool,
+    id: "thought",
+    name: "agent_turn",
+    output_preview: {
+      text: "正在核对实际返回的资料。",
+      items: [],
+      notice: "",
+      truncated: false,
+    },
+  };
+  const view = render(<ToolActivity tools={[thought, tool]} running />);
+  const parent = screen.getByRole("button", { name: /处理进度/ });
+  expect(screen.getByText(thought.output_preview!.text)).toBeTruthy();
+  // The provider may still mark the model/tool as running when text arrives.
+  view.rerender(<ToolActivity tools={[thought, tool]} running answering />);
+  expect(parent.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByText("正在回复")).toBeTruthy();
+  expect(screen.queryByText(thought.output_preview!.text)).toBeNull();
+  expect(screen.queryByRole("list")).toBeNull();
+  const next = { ...tool, id: "later", name: "web_search" as const };
+  view.rerender(
+    <ToolActivity tools={[thought, tool, next]} running answering />,
+  );
+  expect(parent.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(parent);
+  const row = screen.getByRole("button", { name: "思考摘要 · 进行中" });
+  expect(row.getAttribute("aria-expanded")).toBe("false");
+  expect(
+    screen
+      .getByRole("button", { name: "搜索公开信息 · 进行中" })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+  fireEvent.click(row);
+  const updated = {
+    ...thought,
+    output_preview: {
+      ...thought.output_preview!,
+      text: "核对完毕，继续回复。",
+    },
+  };
+  view.rerender(
+    <ToolActivity
+      tools={[updated, tool, { ...next, status: "retrying", attempt: 2 }]}
+      running
+      answering
+    />,
+  );
+  expect(parent.getAttribute("aria-expanded")).toBe("true");
+  expect(row.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText(updated.output_preview.text)).toBeTruthy();
+  view.rerender(
+    <ToolActivity tools={[updated, tool, next]} running={false} answering />,
+  );
+  expect(parent.getAttribute("aria-expanded")).toBe("false");
 });
 
 it("does not reopen manually collapsed progress for text, model rounds, or completed parallel siblings", () => {

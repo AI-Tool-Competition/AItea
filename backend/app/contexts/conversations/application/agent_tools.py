@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.contexts.conversations.application.agent_skills import COMPOSITION_HINTS, SKILLS, skill_catalog
 from app.contexts.conversations.application.tool_runtime import ToolInput, ToolSpec
@@ -36,7 +36,11 @@ class SkillInput(ToolInput):
 
 
 class TasksInput(ToolInput):
-    task_ids: list[str] = Field(default_factory=list, max_length=50)
+    task_ids: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        description="不传或 [] 核对当前节点全部任务；仅用户限定某任务时传服务端返回的任务 id，不推测编号。",
+    )
 
 
 class DocumentsInput(ToolInput):
@@ -53,15 +57,34 @@ class DocumentInput(ToolInput):
 
 
 class ImageInput(ToolInput):
-    document_id: str = Field(min_length=1, max_length=100)
-    version: int = Field(ge=1)
-    prompt: str = Field(min_length=1, max_length=2000)
-    image_id: str | None = Field(default=None, max_length=200)
+    document_id: str = Field(
+        min_length=1, max_length=100, description="list_documents 返回的当前业务文档 id，不是文件名。"
+    )
+    version: int = Field(ge=1, description="该文档实际返回的不可变版本号。")
+    prompt: str = Field(
+        min_length=1, max_length=2000, description="只询问图中可见内容，不清楚的内容标为不确定。"
+    )
+    image_id: str | None = Field(
+        default=None,
+        max_length=200,
+        description="原始 PNG/JPEG/WebP 图片必须省略或传 JSON null；仅查看文档页面图时传 read_document 返回的真实 image_id，不能填字符串 none/null 或猜测。",
+    )
+
+    @field_validator("image_id")
+    @classmethod
+    def real_page_id(cls, value):
+        if value is not None and value.strip().lower() in ("", "none", "null", "undefined"):
+            raise ValueError("原图请省略 image_id 或传 JSON null；页面图必须使用实际返回的编号")
+        return value
 
 
 class WebInput(ToolInput):
     query: str = Field(min_length=1, max_length=2000)
-    domains: list[str] = Field(default_factory=list, max_length=10)
+    domains: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="仅填用户指定或已由实际搜索结果确认的域名，不猜测政府域名后缀；不确定时省略或传 []。",
+    )
     recency_days: int | None = Field(default=None, ge=1, le=3650)
     max_results: int = Field(default=5, ge=1, le=10)
 
@@ -72,14 +95,24 @@ class LegalInput(ToolInput):
 
 class DraftInput(ToolInput):
     title: str = Field(min_length=1, max_length=120)
-    content: str = Field(min_length=1, max_length=18000)
-    task_id: str = Field(min_length=1, max_length=64)
+    content: str = Field(
+        min_length=1,
+        max_length=18000,
+        description="完整 Markdown 正文。用户陈述标明来源，未核验内容不能写已确认；正文不包含工具名、任务编号或内部状态。",
+    )
+    task_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="当前节点的真实任务 id；上下文或 guide_business 可取得，不使用任务标题或猜测编号。",
+    )
 
 
 class RememberInput(ToolInput):
     content: str = Field(min_length=1, max_length=2000)
     source_quote: str = Field(min_length=1, max_length=2000)
-    kind: Literal["preference", "note"] = "note"
+    kind: Literal["preference", "note"] = Field(
+        default="note", description="回复格式、语言、先后顺序等表达偏好选 preference；业务事项笔记选 note。"
+    )
 
 
 class PlanInput(ToolInput):
@@ -163,7 +196,7 @@ class AgentTools:
             (
                 "get_handoff",
                 "节点交接",
-                "读取前序节点的完成状态、复核标记和当前节点任务。",
+                "读取前序及当前节点的服务端进度、复核标记，以及明确的下一节点。tasks 是节点内任务，不能当成下一节点；可与材料核对同时调用。",
                 EmptyInput,
                 self.handoff,
                 True,
@@ -172,7 +205,7 @@ class AgentTools:
             (
                 "discover_tools",
                 "发现工具",
-                "按名称或需求发现 RAG 检索、图片识别、联网搜索、读取资料、记忆等工具，下一轮即可调用。",
+                "按名称或需求查询工具用法。登记工具均可直接调用，不需要先发现或激活；仅不清楚用法时查询。",
                 QueryInput,
                 self.discover,
                 False,
@@ -181,7 +214,7 @@ class AgentTools:
             (
                 "load_skill",
                 "加载组合技能",
-                "读取指定技能的组合提示，并加载相关工具；技能是操作建议，不强制固定调用顺序。",
+                "读取指定技能的组合提示；登记工具均已可用，不需要先加载技能，提示不强制固定调用顺序。",
                 SkillInput,
                 self.skill,
                 False,
@@ -226,7 +259,7 @@ class AgentTools:
             (
                 "inspect_image",
                 "识别图片",
-                "分析当前业务的图片或已有文档页面图，需要文档标识及版本；观察结果不替代 MinerU 入库解析或人工审核。",
+                "分析当前业务原图或已有页面图。原始图片省略 image_id，即使正文解析失败也可查看原图；页面图只能使用 read_document 返回的真实编号。识图失败不能声称看到了图中文字，观察也不等于已确认事实。",
                 ImageInput,
                 self.image,
                 True,
@@ -235,7 +268,7 @@ class AgentTools:
             (
                 "web_search",
                 "联网搜索",
-                "实时搜索公开网络，保留来源链接和检索时间。网页结果只是未审核线索，不作为已审核法规。不要外发用户敏感信息。",
+                "实时搜索公开网络，保留来源链接和检索时间。域名不明时不要加 domains 限制；成功但无来源时可放宽域名或改关键词再查一次，仍无结果则如实说明。网页只是未审核线索，不要外发用户敏感信息。",
                 WebInput,
                 self.web,
                 True,
@@ -309,15 +342,19 @@ class AgentTools:
                 attempt.check()
                 task = tasks[key]
                 checks.extend(
-                    item | {"task_id": key}
+                    item | {"task_id": key, "task_title": task["title"]}
                     for item in self.service.checks(conn, task, task.get("confirmed", False))
                 )
-        return {"checks": checks, "notice": "检查结果不会改变任务完成状态。"}
+        return {
+            "checks": checks,
+            "notice": "缺项针对尚未填写或核验的服务端记录；用户在聊天中说过的信息应注明已提供、待填写或核验，不要重复索要。检查不会改变任务完成状态。",
+        }
 
     def handoff(self, args, attempt):
         case, _ = self.current()
         index = next(i for i, stage in enumerate(case["stages"]) if stage["id"] == self.stage["id"])
         return {
+            "current_stage_id": self.stage["id"],
             "stages": [
                 {
                     "id": s["id"],
@@ -331,6 +368,12 @@ class AgentTools:
                 for s in case["stages"][: index + 1]
             ],
             "facts": case["facts"],
+            "next_stage": (
+                {key: case["stages"][index + 1][key] for key in ("id", "name", "status")}
+                if index + 1 < len(case["stages"])
+                else None
+            ),
+            "notice": "stages 内的 tasks 是同节点任务，下一节点仅以 next_stage 为准；null 表示没有后续节点。状态直接来自服务端，不因聊天建议解锁。向用户使用节点名称和任务标题，不展示内部编号或状态码。",
         }
 
     def discover(self, args, attempt):

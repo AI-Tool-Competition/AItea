@@ -74,6 +74,9 @@ export function useStageChat({
     cached ?? { items: [], total: 0 },
   );
   const historyRef = useRef(history);
+  // Reconcile the saved pair with the optimistic articles without remounting
+  // the streaming answer or interrupting the progress collapse animation.
+  const messageKeys = useRef(new Map<string, string>());
   const historyReading = useRef(false);
   const [turns, setTurnState] = useState<ChatTurn[]>(draft.turns);
   const [loading, setLoading] = useState(!cached);
@@ -266,6 +269,11 @@ export function useStageChat({
         },
       });
       if (!current()) return;
+      for (const message of result.messages)
+        messageKeys.current.set(
+          message.id,
+          `${request.client_message_id}:${message.role}`,
+        );
       updateHistory((previous) => {
         const messages = new Map(previous.items.map((item) => [item.id, item]));
         const added = result.messages.filter(
@@ -364,6 +372,8 @@ export function useStageChat({
     text,
     edit,
     messages: history.items,
+    messageKey: (message: Message) =>
+      messageKeys.current.get(message.id) ?? message.id,
     hasEarlier: history.items.length < history.total,
     turns,
     timeline,

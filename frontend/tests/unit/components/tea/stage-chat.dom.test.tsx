@@ -251,6 +251,10 @@ describe("stage chat experience", () => {
     const stream = transport();
     render(<StageChat {...props} conversationId="conversation" />);
     await send();
+    const article = screen.getByRole("article", { name: "茶渡助手回复" });
+    const progress = screen.getByRole("button", { name: /处理进度/ });
+    const answer = article.querySelector(".tea-message-content");
+    expect(progress.getAttribute("aria-expanded")).toBe("true");
     await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
     const call = {
       id: "call",
@@ -292,13 +296,17 @@ describe("stage chat experience", () => {
       stream.event("step", { ...step, sequence: 2 });
       stream.event("delta", { text: "已找到可供核对的公开来源。" });
     });
-    await screen.findByText("已完成");
+    await screen.findByText("已找到可供核对的公开来源。");
+    expect(progress.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("进行中")).toBeNull();
     expect(
       screen.queryByText(
         /智能工具协作|检索记忆|正在选择工具|provider-tool|private-detail/,
       ),
     ).toBeNull();
+    // Even a manually reopened progress area closes at the end of this turn.
+    fireEvent.click(progress);
+    expect(screen.getByText("已完成")).toBeTruthy();
     await act(async () => {
       stream.event("done", {
         messages: [
@@ -328,6 +336,9 @@ describe("stage chat experience", () => {
     });
     await waitFor(() => expect(props.onUpdate).toHaveBeenCalledTimes(1));
     const trigger = screen.getByRole("button", { name: /已完成 1 项处理/ });
+    expect(trigger).toBe(progress);
+    expect(screen.getByRole("article", { name: "茶渡助手回复" })).toBe(article);
+    expect(article.querySelector(".tea-message-content")).toBe(answer);
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(trigger);
     expect(screen.getAllByRole("listitem")).toHaveLength(1);

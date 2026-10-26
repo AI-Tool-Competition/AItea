@@ -17,11 +17,85 @@ const tool: ToolCall = {
   duration_ms: 0,
 };
 
+it("opens preparation immediately and closes text-only work on answer, completion or stop", () => {
+  const view = render(<MessageActivity steps={[]} running />);
+  const trigger = screen.getByRole("button", { name: /处理进度/ });
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  view.rerender(<MessageActivity steps={[]} running answering />);
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(trigger);
+  view.rerender(<MessageActivity steps={[]} answering />);
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByText("已完成回复")).toBeTruthy();
+  view.rerender(<MessageActivity steps={[]} running />);
+  view.rerender(<MessageActivity steps={[]} stopped />);
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByText("处理已停止")).toBeTruthy();
+});
+
+it("collapses completed tools, shows their real excerpt and expands the next call and retry", () => {
+  const view = render(<ToolActivity tools={[tool]} running />);
+  const first = screen.getByRole("button", { name: "查找资料 · 进行中" });
+  const done = {
+    ...tool,
+    status: "completed" as const,
+    output_preview: {
+      text: "已找到 3 份产品资料。",
+      items: [],
+      notice: "",
+      truncated: false,
+    },
+  };
+  const next = { ...tool, id: "next", name: "inspect_image" as const };
+  view.rerender(<ToolActivity tools={[done, next]} running answering />);
+  expect(first.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByText(done.output_preview.text)).toBeTruthy();
+  const second = screen.getByRole("button", { name: "查看图片 · 进行中" });
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(second);
+  expect(second.getAttribute("aria-expanded")).toBe("false");
+  view.rerender(
+    <ToolActivity
+      tools={[done, { ...next, status: "retrying", attempt: 2 }]}
+      running
+      answering
+    />,
+  );
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  view.rerender(<ToolActivity tools={[done, next]} running answering />);
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  view.rerender(
+    <ToolActivity
+      tools={[done, { ...next, status: "completed" }]}
+      running
+      answering
+    />,
+  );
+  const parent = screen.getByRole("button", { name: /处理进度/ });
+  expect(parent.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(parent);
+  fireEvent.click(screen.getByRole("button", { name: "查找资料 · 已完成" }));
+  view.rerender(
+    <ToolActivity
+      tools={[done, { ...next, status: "completed" }]}
+      running={false}
+      answering
+    />,
+  );
+  expect(parent.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(parent);
+  expect(
+    screen
+      .getByRole("button", { name: "查找资料 · 已完成" })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+});
+
 it("streams progress through Vercel Task without exposing internal labels or payloads", () => {
   const view = render(<ToolActivity tools={[tool]} running />);
   const trigger = screen.getByRole("button", { name: /处理进度/ });
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getByRole("region").id).toBe(
+  expect(screen.getByRole("region", { name: /处理进度/ }).id).toBe(
     trigger.getAttribute("aria-controls"),
   );
   expect(screen.getByText("正在查找资料")).toBeTruthy();
@@ -44,13 +118,14 @@ it("streams progress through Vercel Task without exposing internal labels or pay
       running={false}
     />,
   );
-  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   expect(screen.getByText("已完成 1 项处理")).toBeTruthy();
+  fireEvent.click(trigger);
   expect(screen.getByText("1.2 秒")).toBeTruthy();
   expect(screen.queryByText(/retry_after|最多.*次/)).toBeNull();
 });
 
-it("collapses completed work by default and respects a manual collapse while streaming", () => {
+it("respects manual collapse within a phase and follows newly executing tools", () => {
   const view = render(<ToolActivity tools={[tool]} running />);
   view.rerender(
     <ToolActivity tools={[{ ...tool, status: "completed" }]} running={false} />,
@@ -62,19 +137,34 @@ it("collapses completed work by default and respects a manual collapse while str
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
   fireEvent.click(trigger);
   view.rerender(
+    <ToolActivity tools={[{ ...tool, duration_ms: 600 }]} running />,
+  );
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  view.rerender(
     <ToolActivity
       tools={[tool, { ...tool, id: "next", name: "inspect_image" }]}
       running
     />,
   );
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByText("正在处理 2 项工作")).toBeTruthy();
+  expect(
+    screen
+      .getByRole("button", { name: "查找资料 · 进行中" })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
+  expect(
+    screen
+      .getByRole("button", { name: "查看图片 · 进行中" })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
 });
 
 it("never presents disconnected running work as completed", () => {
   render(<ToolActivity tools={[tool]} running={false} />);
   fireEvent.click(screen.getByRole("button", { name: /处理已停止/ }));
   expect(screen.getByText("已停止")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "查找资料 · 已停止" }));
   expect(screen.getByText("处理已停止，结果尚未确认。")).toBeTruthy();
   expect(screen.queryByText("已完成")).toBeNull();
 });
@@ -126,13 +216,39 @@ const internal: TraceStep = {
   })),
 };
 
-it("hides internal-only progress in live and historical messages", () => {
+it("shows a generic thinking indicator without exposing private internal progress", () => {
   const view = render(<MessageActivity steps={[internal]} running />);
-  expect(view.container.textContent).toBe("");
+  expect(
+    screen
+      .getByRole("button", { name: /正在思考/ })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
+  expect(
+    screen.queryByText(/记忆|法律流程|raw-data|agent_turn|智能工具协作/),
+  ).toBeNull();
   view.rerender(
-    <MessageActivity steps={[{ ...internal, status: "completed" }]} />,
+    <MessageActivity
+      steps={[
+        {
+          ...internal,
+          status: "completed",
+          tools: internal.tools!.map((call) => ({
+            ...call,
+            status: "completed",
+          })),
+        },
+      ]}
+    />,
   );
-  expect(view.container.textContent).toBe("");
+  expect(
+    screen
+      .getByRole("button", { name: /已完成回复/ })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: /已完成回复/ }));
+  expect(
+    screen.queryByText(/记忆|法律流程|raw-data|agent_turn|智能工具协作/),
+  ).toBeNull();
 });
 
 it("flattens real calls and hides memory and legal substeps even when expanded", () => {
@@ -158,7 +274,7 @@ it("flattens real calls and hides memory and legal substeps even when expanded",
       running
     />,
   );
-  expect(screen.getAllByRole("button")).toHaveLength(1);
+  expect(screen.getAllByRole("button")).toHaveLength(3);
   expect(screen.getAllByRole("listitem")).toHaveLength(2);
   expect(screen.getByText("核对适用依据")).toBeTruthy();
   expect(
@@ -217,6 +333,7 @@ it("displays actual tool output as safe text and sources, with expandable excerp
       running
     />,
   );
+  fireEvent.click(screen.getByRole("button", { name: "查找资料 · 已完成" }));
   expect(screen.getByText("主体名称")).toBeTruthy();
   expect(screen.getByText("原".repeat(179) + "😀…")).toBeTruthy();
   expect(screen.getByText("待补充")).toBeTruthy();

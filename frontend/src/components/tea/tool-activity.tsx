@@ -18,7 +18,7 @@ import {
   Square,
   type LucideIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { memo, useId, useState } from "react";
 
 import {
   Task,
@@ -29,8 +29,8 @@ import {
 import { safeSourceUrl } from "@/core/tea/api";
 import type { ToolCall, ToolOutputPreview, TraceStep } from "@/core/tea/types";
 
-// Only actual user-relevant work is visible. Routing, memory, plans and model
-// turns stay internal, including in saved messages. Never render raw payloads.
+// Only actual user-relevant work is visible. Model turns supply a generic
+// thinking indicator; routing, memory and private payloads stay internal.
 const activities: Partial<
   Record<ToolCall["name"], { label: string; active: string; icon: LucideIcon }>
 > = {
@@ -96,14 +96,18 @@ const icons = {
 type ActivityCall = ToolCall & { cached?: boolean };
 
 /** Flatten real calls without exposing the agent loop or six-stage analysis. */
-export function MessageActivity({
+export const MessageActivity = memo(function MessageActivity({
   steps,
   running = false,
+  answering = false,
   incomplete = false,
+  stopped = false,
 }: {
   steps: readonly TraceStep[];
   running?: boolean;
+  answering?: boolean;
   incomplete?: boolean;
+  stopped?: boolean;
 }) {
   const calls = new Map<string, ActivityCall>();
   for (const step of steps)
@@ -113,27 +117,50 @@ export function MessageActivity({
     <ToolActivity
       tools={[...calls.values()]}
       running={running}
+      answering={answering}
+      preparing={running}
       incomplete={incomplete || steps.some((step) => step.status === "failed")}
-      stopped={steps.some((step) => step.status === "cancelled")}
+      stopped={stopped || steps.some((step) => step.status === "cancelled")}
     />
   );
+});
+
+// A manual choice lasts for this execution phase only. New work resumes
+// following the stream; finishing always closes it. History remains browsable.
+function useFollowingDisclosure(phase: string, autoOpen: boolean) {
+  const [choice, setChoice] = useState<{ phase: string; open: boolean | null }>(
+    { phase, open: null },
+  );
+  // Discard an old override at the boundary, including when a later retry
+  // returns to a phase with the same status as an earlier attempt.
+  if (choice.phase !== phase) setChoice({ phase, open: null });
+  return {
+    open: choice.phase === phase ? (choice.open ?? autoOpen) : autoOpen,
+    onOpenChange: (open: boolean) => setChoice({ phase, open }),
+  };
 }
 
 export function ToolActivity({
   tools,
   running,
+  answering = false,
+  preparing = false,
   cached = false,
   incomplete = false,
   stopped = false,
 }: {
   tools: readonly ActivityCall[];
   running: boolean;
+  answering?: boolean;
+  preparing?: boolean;
   cached?: boolean;
   incomplete?: boolean;
   stopped?: boolean;
 }) {
   const id = useId();
-  const [expanded, setExpanded] = useState<boolean | null>(null);
+  // Preserve the initial preparation panel through the final collapse even
+  // when a text-only reply has no trace. Historical empty traces stay hidden.
+  const [startedHere] = useState(preparing);
   const visible = tools.flatMap((tool) => {
     const view = Object.hasOwn(activities, tool.name)
       ? activities[tool.name]
@@ -143,25 +170,48 @@ export function ToolActivity({
     const status = unfinished && !running ? "cancelled" : tool.status;
     return [{ ...tool, view, status, cached: cached || tool.cached }];
   });
-  if (!visible.length) return null;
   const active = visible.filter(
     (tool) => tool.status === "running" || tool.status === "retrying",
   );
+  const model = tools.filter((tool) => tool.name === "agent_turn").at(-1);
+  const thinking = model?.status === "running" || model?.status === "retrying";
+  const phase = JSON.stringify([
+    running,
+    answering,
+    active.map((tool) => [tool.id, tool.status, tool.attempt]),
+    model?.id,
+    model?.status,
+    model?.attempt,
+  ]);
+  const disclosure = useFollowingDisclosure(
+    phase,
+    running && (!answering || active.length > 0),
+  );
+  if (!visible.length && !preparing && !startedHere && !model) return null;
   const failed = incomplete || visible.some((tool) => tool.status === "failed");
   const cancelled =
     stopped || visible.some((tool) => tool.status === "cancelled");
-  const allCached = visible.every((tool) => tool.cached);
+  const allCached = visible.length > 0 && visible.every((tool) => tool.cached);
   const heading = running
     ? active.length > 1
       ? `正在处理 ${active.length} 项工作`
-      : (active[0]?.view.active ?? "正在整理回复")
+      : (active[0]?.view.active ??
+        (answering
+          ? "正在回复"
+          : thinking
+            ? "正在思考"
+            : visible.length
+              ? "正在整理回复"
+              : "正在准备回复"))
     : failed
       ? "部分处理未完成"
       : cancelled
         ? "处理已停止"
         : allCached
           ? "已沿用处理记录"
-          : `已完成 ${visible.length} 项处理`;
+          : visible.length
+            ? `已完成 ${visible.length} 项处理`
+            : "已完成回复";
   const HeaderIcon = running
     ? LoaderCircle
     : failed
@@ -172,11 +222,7 @@ export function ToolActivity({
           ? History
           : Check;
   return (
-    <Task
-      open={expanded ?? running}
-      onOpenChange={setExpanded}
-      className="tea-tool-activity"
-    >
+    <Task {...disclosure} className="tea-tool-activity">
       <TaskTrigger title={heading}>
         <button
           id={id + "-trigger"}
@@ -193,7 +239,7 @@ export function ToolActivity({
             {heading}
           </span>
           <ChevronDown
-            className="size-3.5 transition-transform group-data-[state=open]:rotate-180 motion-reduce:transition-none"
+            className="tea-tool-chevron size-3.5"
             aria-hidden="true"
           />
         </button>
@@ -204,58 +250,128 @@ export function ToolActivity({
         aria-labelledby={id + "-trigger"}
         className="tea-tool-content motion-reduce:animate-none"
       >
-        <ol
-          aria-label="处理进度"
-          aria-live={running ? "polite" : "off"}
-          aria-relevant="additions text"
-          className="tea-tool-list"
-        >
-          {visible.map((tool) => {
-            const working =
-              tool.status === "running" || tool.status === "retrying";
-            const Icon = tool.view.icon;
-            const StatusIcon = tool.cached ? History : icons[tool.status];
-            return (
-              <li key={tool.id} data-tool-id={tool.id} data-state={tool.status}>
-                <TaskItem className="tea-tool-item">
-                  <Icon className="tea-tool-kind size-4" aria-hidden="true" />
-                  <div className="tea-tool-description">
-                    <span className="tea-tool-label">{tool.view.label}</span>
-                    {tool.status === "failed" && (
-                      <p>本次处理未完成，请结合回复中的说明继续。</p>
-                    )}
-                    {tool.status === "cancelled" && (
-                      <p>处理已停止，结果尚未确认。</p>
-                    )}
-                  </div>
-                  <span className="tea-tool-state">
-                    <StatusIcon
-                      className={working ? "tea-spin size-3.5" : "size-3.5"}
-                      aria-hidden="true"
-                    />
-                    <span>
-                      {tool.cached ? "沿用结果" : labels[tool.status]}
-                    </span>
-                    {tool.status === "completed" &&
-                      !tool.cached &&
-                      tool.duration_ms > 0 && (
-                        <span className="tea-tool-duration">
-                          {tool.duration_ms < 1000
-                            ? "少于 1 秒"
-                            : `${(tool.duration_ms / 1000).toFixed(1)} 秒`}
-                        </span>
-                      )}
-                  </span>
-                  {tool.status === "completed" && tool.output_preview && (
-                    <ToolOutput preview={tool.output_preview} />
-                  )}
-                </TaskItem>
-              </li>
-            );
-          })}
-        </ol>
+        {visible.length > 0 && (
+          <ol
+            aria-label="处理进度"
+            aria-live={running ? "polite" : "off"}
+            aria-relevant="additions text"
+            className="tea-tool-list"
+          >
+            {visible.map((tool) => (
+              <ToolRow key={tool.id} tool={tool} running={running} />
+            ))}
+          </ol>
+        )}
+        {!active.length && (
+          <p className="tea-tool-preparation">
+            {running
+              ? answering
+                ? "正在输出回复…"
+                : "正在结合问题与现有信息整理回复…"
+              : failed
+                ? "本次回复未完成，请结合下方说明继续。"
+                : cancelled
+                  ? "回复已停止。"
+                  : "本次回复已整理完成。"}
+          </p>
+        )}
       </TaskContent>
     </Task>
+  );
+}
+
+function ToolRow({
+  tool,
+  running,
+}: {
+  tool: ActivityCall & {
+    view: NonNullable<(typeof activities)[ToolCall["name"]]>;
+  };
+  running: boolean;
+}) {
+  const id = useId();
+  const working = tool.status === "running" || tool.status === "retrying";
+  const disclosure = useFollowingDisclosure(
+    JSON.stringify([running, tool.status, tool.attempt]),
+    working,
+  );
+  const Icon = tool.view.icon;
+  const StatusIcon = tool.cached ? History : icons[tool.status];
+  const preview = tool.status === "completed" ? tool.output_preview : undefined;
+  const summary = [
+    preview?.text,
+    preview?.items?.[0]?.text,
+    preview?.items?.[0]?.label,
+  ].find((text) => text?.trim());
+  return (
+    <li data-tool-id={tool.id} data-state={tool.status}>
+      <Task {...disclosure} className="tea-tool-row">
+        <TaskTrigger title={tool.view.label}>
+          <button
+            id={id + "-trigger"}
+            type="button"
+            className="tea-tool-item"
+            aria-label={`${tool.view.label} · ${tool.cached ? "沿用结果" : labels[tool.status]}`}
+            aria-controls={id + "-content"}
+          >
+            <Icon className="tea-tool-kind size-4" aria-hidden="true" />
+            <span className="tea-tool-description">
+              <span className="tea-tool-label">{tool.view.label}</span>
+              {summary && (
+                <span className="tea-tool-summary">
+                  {Array.from(summary).slice(0, 100).join("")}
+                  {Array.from(summary).length > 100 ? "…" : ""}
+                </span>
+              )}
+            </span>
+            <span className="tea-tool-state">
+              <StatusIcon
+                className={working ? "tea-spin size-3.5" : "size-3.5"}
+                aria-hidden="true"
+              />
+              <span>{tool.cached ? "沿用结果" : labels[tool.status]}</span>
+              {tool.status === "completed" &&
+                !tool.cached &&
+                tool.duration_ms > 0 && (
+                  <span className="tea-tool-duration">
+                    {tool.duration_ms < 1000
+                      ? "少于 1 秒"
+                      : `${(tool.duration_ms / 1000).toFixed(1)} 秒`}
+                  </span>
+                )}
+            </span>
+            <ChevronDown
+              className="tea-tool-chevron size-3.5"
+              aria-hidden="true"
+            />
+          </button>
+        </TaskTrigger>
+        <TaskContent
+          id={id + "-content"}
+          role="region"
+          aria-labelledby={id + "-trigger"}
+          className="tea-tool-detail"
+        >
+          <TaskItem>
+            {working ? (
+              <p>
+                {tool.status === "retrying"
+                  ? "正在重新尝试，收到结果后继续。"
+                  : `${tool.view.active}，收到结果后继续。`}
+              </p>
+            ) : tool.status === "failed" ? (
+              <p>本次处理未完成，请结合回复中的说明继续。</p>
+            ) : tool.status === "cancelled" ? (
+              <p>处理已停止，结果尚未确认。</p>
+            ) : preview ? (
+              <ToolOutput preview={preview} />
+            ) : (
+              <p>本次处理已完成，未返回可展示的结果片段。</p>
+            )}
+          </TaskItem>
+        </TaskContent>
+      </Task>
+    </li>
   );
 }
 

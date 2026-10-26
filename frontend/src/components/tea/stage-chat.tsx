@@ -20,12 +20,16 @@ import {
   ClipboardSafeStreamdown,
 } from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
-import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
+import {
+  streamdownPluginsWithoutRawHtml,
+  streamdownSmoothStreamingAnimation,
+} from "@/core/streamdown";
 import type {
   Capabilities,
   CaseDetail,
   Message,
   StageState,
+  TraceStep,
 } from "@/core/tea/types";
 import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
 
@@ -46,6 +50,7 @@ const Answer = memo(function Answer({
       {...streamdownPluginsWithoutRawHtml}
       mode={streaming ? "streaming" : "static"}
       isAnimating={streaming}
+      animated={streamdownSmoothStreamingAnimation}
       parseIncompleteMarkdown={streaming}
     >
       {content}
@@ -53,14 +58,32 @@ const Answer = memo(function Answer({
   );
 });
 
-const SavedMessage = memo(function SavedMessage({
+const emptyTrace: TraceStep[] = [];
+
+const ChatMessage = memo(function ChatMessage({
+  role,
   message,
+  turn,
+  busy = false,
+  onRetry,
 }: {
-  message: Message;
+  role: Message["role"];
+  message?: Message;
+  turn?: ChatTurn;
+  busy?: boolean;
+  onRetry?: () => void;
 }) {
+  const sending = turn?.state === "sending";
+  const content =
+    message?.content ??
+    (role === "user" ? turn?.request.content : turn?.text) ??
+    "";
   return (
-    <article className={`tea-message ${message.role}`}>
-      {message.role === "assistant" && (
+    <article
+      className={`tea-message ${role}`}
+      aria-label={role === "assistant" ? "茶渡助手回复" : undefined}
+    >
+      {role === "assistant" && (
         <div className="tea-message-avatar" aria-hidden="true">
           <Leaf size={16} strokeWidth={1.6} />
         </div>
@@ -68,15 +91,23 @@ const SavedMessage = memo(function SavedMessage({
       <div className="tea-message-body">
         <div
           className="tea-message-label"
-          title={dateLabel(message.created_at)}
+          title={message ? dateLabel(message.created_at) : undefined}
         >
-          {message.role === "assistant" ? "茶渡助手" : "你"}
+          {role === "assistant" ? "茶渡助手" : "你"}
         </div>
-        <MessageActivity steps={message.trace ?? []} />
+        {role === "assistant" && (
+          <MessageActivity
+            steps={message?.trace ?? turn?.steps ?? emptyTrace}
+            running={sending}
+            answering={Boolean(content)}
+            incomplete={turn?.state === "failed"}
+            stopped={turn?.state === "stopped"}
+          />
+        )}
         <div className="tea-message-content">
-          {message.role === "user" ? (
-            message.content
-          ) : message.guide_result ? (
+          {role === "user" ? (
+            content
+          ) : message?.guide_result ? (
             <div className="tea-chat-report">
               <h3>分析结论与下一步</h3>
               <p className="tea-small-note">
@@ -94,10 +125,10 @@ const SavedMessage = memo(function SavedMessage({
               </details>
             </div>
           ) : (
-            <Answer content={message.content} />
+            <Answer content={content} streaming={sending} />
           )}
         </div>
-        {message.citations?.length > 0 && (
+        {!!message?.citations?.length && (
           <details className="tea-message-citations">
             <summary>
               <BookOpen size={13} />
@@ -111,54 +142,17 @@ const SavedMessage = memo(function SavedMessage({
             ))}
           </details>
         )}
-      </div>
-    </article>
-  );
-});
-
-function PendingTurn({
-  turn,
-  busy,
-  onRetry,
-}: {
-  turn: ChatTurn;
-  busy: boolean;
-  onRetry: () => void;
-}) {
-  return (
-    <>
-      <article className="tea-message user">
-        <div className="tea-message-body">
-          <div className="tea-message-label">你</div>
-          <div className="tea-message-content">{turn.request.content}</div>
-        </div>
-      </article>
-      <article className="tea-message assistant" aria-label="茶渡助手回复">
-        <div className="tea-message-avatar" aria-hidden="true">
-          <Leaf size={16} strokeWidth={1.6} />
-        </div>
-        <div className="tea-message-body">
-          <div className="tea-message-label">茶渡助手</div>
-          <MessageActivity
-            steps={turn.steps ?? []}
-            running={turn.state === "sending"}
-            incomplete={turn.state === "failed"}
-          />
-          {turn.text && (
-            <div className="tea-message-content">
-              <Answer
-                content={turn.text}
-                streaming={turn.state === "sending"}
-              />
-            </div>
-          )}
-          {turn.state === "sending" ? (
-            <div className="tea-assistant-working" role="status">
-              <span>{turn.text ? "正在回复…" : "正在处理你的问题…"}</span>
-              <i />
-              <i />
-              <i />
-            </div>
+        {role === "assistant" &&
+          turn &&
+          (sending ? (
+            content && (
+              <div className="tea-assistant-working" role="status">
+                <span>正在回复…</span>
+                <i />
+                <i />
+                <i />
+              </div>
+            )
           ) : (
             <div className="tea-turn-feedback">
               <span role={turn.error ? "alert" : "status"}>
@@ -174,12 +168,11 @@ function PendingTurn({
                 重试回复
               </Button>
             </div>
-          )}
-        </div>
-      </article>
-    </>
+          ))}
+      </div>
+    </article>
   );
-}
+});
 
 export function StageChat({
   record,
@@ -267,19 +260,28 @@ export function StageChat({
             <Busy label="读取对话记录…" />
           ) : (
             <>
-              {chat.timeline.map((entry) =>
+              {chat.timeline.flatMap((entry) =>
                 entry.message ? (
-                  <SavedMessage
-                    key={entry.message.id}
+                  <ChatMessage
+                    key={chat.messageKey(entry.message)}
+                    role={entry.message.role}
                     message={entry.message}
                   />
                 ) : (
-                  <PendingTurn
-                    key={entry.turn.request.client_message_id}
-                    turn={entry.turn}
-                    busy={chat.sending || chat.loading || !!chat.historyError}
-                    onRetry={() => chat.retry(entry.turn)}
-                  />
+                  [
+                    <ChatMessage
+                      key={`${entry.turn.request.client_message_id}:user`}
+                      role="user"
+                      turn={entry.turn}
+                    />,
+                    <ChatMessage
+                      key={`${entry.turn.request.client_message_id}:assistant`}
+                      role="assistant"
+                      turn={entry.turn}
+                      busy={chat.sending || chat.loading || !!chat.historyError}
+                      onRetry={() => chat.retry(entry.turn)}
+                    />,
+                  ]
                 ),
               )}
               {!hasConversation && !chat.historyError && (

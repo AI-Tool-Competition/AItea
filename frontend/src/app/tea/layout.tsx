@@ -1,4 +1,5 @@
 import { type Metadata } from "next";
+import "streamdown/styles.css";
 import "@/components/tea/tea.css";
 
 export const metadata: Metadata = {

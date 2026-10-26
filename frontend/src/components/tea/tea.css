@@ -4250,6 +4250,7 @@
 @media (prefers-reduced-motion: reduce) {
   .tea-analysis-process *,
   .tea-tool-activity *,
+  .tea-message-content [data-sd-animate],
   .tea-node-tools-menu,
   .tea-node-question > summary > svg {
     animation: none !important;
@@ -5262,10 +5263,12 @@
   font-size: 12px;
   cursor: pointer;
 }
-.tea-tool-trigger:hover {
+.tea-tool-trigger:hover,
+.tea-tool-item:hover {
   color: var(--foreground);
 }
-.tea-tool-trigger:focus-visible {
+.tea-tool-trigger:focus-visible,
+.tea-tool-item:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 4px;
   border-radius: 4px;
@@ -5279,10 +5282,57 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.tea-tool-chevron {
+  flex: none;
+  transition: transform 220ms ease;
+}
+[aria-expanded="true"] > .tea-tool-chevron {
+  transform: rotate(180deg);
+}
+.tea-tool-content,
+.tea-tool-detail {
+  overflow: hidden;
+}
+.tea-tool-content[data-state="open"],
+.tea-tool-detail[data-state="open"] {
+  animation: tea-tool-expand 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+.tea-tool-content[data-state="closed"],
+.tea-tool-detail[data-state="closed"] {
+  animation: tea-tool-collapse 220ms cubic-bezier(0.2, 0, 0, 1) both;
+  pointer-events: none;
+}
+@keyframes tea-tool-expand {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+@keyframes tea-tool-collapse {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
 .tea-tool-content > div {
   margin-top: 4px;
   padding-left: 14px;
   border-color: var(--border);
+}
+.tea-tool-preparation {
+  margin: 0;
+  padding: 6px 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.65;
 }
 .tea-tool-list {
   display: grid;
@@ -5293,11 +5343,36 @@
 }
 .tea-tool-item {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) auto 14px;
   align-items: start;
   gap: 8px;
   padding: 8px 0;
   font-size: 12px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.tea-tool-item > .tea-tool-chevron {
+  margin-top: 3px;
+}
+.tea-tool-summary {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.tea-tool-detail > div {
+  border: 0;
+  margin: 0;
+  padding: 0 0 8px 24px;
+}
+.tea-tool-detail p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
 }
 .tea-tool-kind {
   flex: none;
@@ -5311,11 +5386,6 @@
 }
 .tea-tool-label {
   color: var(--foreground);
-}
-.tea-tool-description p {
-  margin: 4px 0 0;
-  font-size: 11px;
-  line-height: 1.6;
 }
 .tea-tool-state {
   display: flex;
@@ -5343,7 +5413,13 @@
     min-height: 44px;
   }
   .tea-tool-item {
-    grid-template-columns: 16px minmax(0, 1fr);
+    grid-template-columns: 16px minmax(0, 1fr) 14px;
+    min-height: 44px;
+    row-gap: 2px;
+  }
+  .tea-tool-item > .tea-tool-chevron {
+    grid-column: 3;
+    grid-row: 1;
   }
   .tea-tool-state {
     grid-column: 2;

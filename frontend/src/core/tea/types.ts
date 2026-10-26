@@ -346,10 +346,18 @@ export interface MessageResult {
   messages: Message[];
   case: CaseDetail;
 }
+export interface ToolOutputDelta {
+  step_id: string;
+  run_id: string;
+  tool_id: string;
+  sequence: number;
+  text: string;
+}
 export type MessageStreamEvent =
   | { event: "status"; data: { label: string; step_id?: string } }
-  | { event: "start"; data: { step_id: string } }
+  | { event: "start"; data: { step_id: string; append?: boolean } }
   | { event: "delta"; data: { text: string } }
+  | { event: "tool_delta"; data: ToolOutputDelta }
   | { event: "step"; data: TraceStep };
 export interface Capabilities {
   assistant_mode: "demo" | "live";

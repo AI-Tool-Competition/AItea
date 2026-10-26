@@ -5,6 +5,29 @@ from app.contexts.conversations.application.contracts import MessageStreamEvent
 from app.shared.domain.values import dump
 
 
+def test_live_output_is_incremental_bounded_and_matches_the_completed_snapshot():
+    events = []
+    spec = ToolSpec("agent_turn", "思考摘要", "读取实际摘要。", EmptyInput)
+    run = ToolRun(
+        emit=lambda event, data: events.append(MessageStreamEvent(event=event, data=data)), catalog=[spec]
+    )
+    trace = {"id": "agent", "label": "协作", "status": "running", "detail": ""}
+
+    def operation(args, attempt):
+        for _ in range(100):
+            attempt.emit_text("实际摘要😀" * 10)
+        return "done"
+
+    run.call(spec, {}, operation, trace)
+    fragments = [event.data for event in events if event.event == "tool_delta"]
+    output = trace["tools"][0]["output_preview"]
+    assert "".join(data["text"] for data in fragments) == output["text"]
+    assert len(output["text"].encode()) <= 3500 and output["truncated"]
+    assert len(dump(output).encode()) <= 4096
+    assert len({data["sequence"] for data in fragments}) == len(fragments)
+    assert events[-1].data["tools"][0]["status"] == "completed"
+
+
 def test_actual_result_fields_are_preserved_without_private_tool_metadata():
     value = {
         "checks": [

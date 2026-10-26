@@ -58,3 +58,4 @@ from app.contexts.workflows.application.contracts import TemplateInput as Templa
 from app.contexts.workflows.application.contracts import TemplatePublishInput as TemplatePublishInput
 from app.contexts.workflows.application.contracts import Verify as Verify
 from app.shared.application.contracts import RevisionInput as RevisionInput
+from app.contexts.conversations.application.contracts import ToolOutputDelta as ToolOutputDelta

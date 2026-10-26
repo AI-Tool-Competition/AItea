@@ -81,7 +81,9 @@ def valid_message(message, finish):
     }
 
 
-async def agent_turn(messages, tools, on_delta, check, *, timeout=90, on_usage=None):
+async def agent_turn(
+    messages, tools, on_delta, check, *, timeout=90, on_usage=None, on_summary=None, cache_key=None
+):
     settings = provider_settings()
     body = {
         "model": settings["model"],
@@ -92,6 +94,14 @@ async def agent_turn(messages, tools, on_delta, check, *, timeout=90, on_usage=N
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if cache_key:
+        body["prompt_cache_key"] = cache_key
+    # Gemini's reasoning_content bridge carries provider-generated thought
+    # summaries. Do not expose opaque signatures or another model's raw reasoning.
+    gemini = settings["model"].lower().startswith("gemini-")
+    if gemini and on_summary:
+        body["reasoning_effort"] = "low"
+        body["generationConfig"] = {"thinkingConfig": {"includeThoughts": True}}
     if len(json.dumps(body, ensure_ascii=False).encode()) > 256 * 1024:
         raise ToolFailure("input_limit", "上下文超过预算，请缩小问题范围。")
 
@@ -105,7 +115,10 @@ async def agent_turn(messages, tools, on_delta, check, *, timeout=90, on_usage=N
                 "POST",
                 settings["base"] + "/chat/completions",
                 json=body,
-                headers={"Authorization": "Bearer " + settings["key"]},
+                headers={
+                    "Authorization": "Bearer " + settings["key"],
+                    **({"X-Session-Id": cache_key} if cache_key else {}),
+                },
             ) as response:
                 response.raise_for_status()
                 async for part in response.aiter_bytes():
@@ -162,6 +175,11 @@ async def agent_turn(messages, tools, on_delta, check, *, timeout=90, on_usage=N
                             if not isinstance(delta, dict) or delta.get("refusal") or finish is not None:
                                 raise ValueError("unexpected delta")
                             text = delta.get("content") or ""
+                            summary = delta.get("reasoning_content") or ""
+                            if gemini and on_summary and summary:
+                                if not isinstance(summary, str):
+                                    raise ValueError("invalid thought summary")
+                                on_summary(summary)
                             if not isinstance(text, str) or len(content) + len(text) > 20000:
                                 raise ValueError("oversize content")
                             content += text

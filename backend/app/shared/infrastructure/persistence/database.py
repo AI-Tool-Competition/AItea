@@ -173,6 +173,14 @@ class Database:
                             "ALTER TABLE agent_session_summaries ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
                         )
                         conn.execute("INSERT INTO schema_migrations VALUES(25,?)", (now(),))
+                    if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=27").fetchone():
+                        conn.execute("""CREATE TABLE agent_conversation_context(
+                            conversation_id TEXT PRIMARY KEY,
+                            owner_id TEXT NOT NULL REFERENCES users(id),
+                            case_id TEXT NOT NULL REFERENCES cases(id),stage_id TEXT NOT NULL,
+                            signature TEXT NOT NULL,source_message_id TEXT NOT NULL REFERENCES messages(id),
+                            messages TEXT NOT NULL,updated_at TEXT NOT NULL)""")
+                        conn.execute("INSERT INTO schema_migrations VALUES(27,?)", (now(),))
                     conn.commit()
                 except BaseException:
                     conn.rollback()

@@ -561,31 +561,6 @@
   font-size: 12px;
   color: var(--foreground);
 }
-.tea-assistant-working {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--foreground);
-}
-.tea-assistant-working > i {
-  width: 3px;
-  height: 3px;
-  background: var(--background);
-  border-radius: 50%;
-  animation: tea-pulse 1.3s infinite;
-}
-.tea-assistant-working > i:nth-last-child(2) {
-  animation-delay: 0.2s;
-}
-.tea-assistant-working > i:last-child {
-  animation-delay: 0.4s;
-}
-@keyframes tea-pulse {
-  50% {
-    opacity: 0.2;
-  }
-}
 .tea-composer-area {
   flex-shrink: 0;
   background: var(--background);
@@ -5355,15 +5330,6 @@
 .tea-tool-item > .tea-tool-chevron {
   margin-top: 3px;
 }
-.tea-tool-summary {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  line-height: 1.6;
-}
 .tea-tool-detail > div {
   border: 0;
   margin: 0;
@@ -5458,15 +5424,5 @@
 }
 .tea-tool-output .tea-tool-output-notice {
   margin-top: 6px;
-  font-size: 11px;
-}
-.tea-tool-output-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 0;
-  margin-top: 4px;
-  cursor: pointer;
-  color: var(--foreground);
   font-size: 11px;
 }

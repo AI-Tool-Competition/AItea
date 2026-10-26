@@ -107,6 +107,44 @@ def test_reasoning_and_gateway_events_are_not_rendered_as_user_answer(monkeypatc
     assert "private" not in str(result)
 
 
+def test_gemini_summary_stream_is_separate_and_session_routing_is_stable(monkeypatch):
+    body = "".join(
+        frame(value)
+        for value in [
+            delta({"reasoning_content": "先核对已有资料，"}),
+            delta({"reasoning_content": "再检查来源。"}),
+            delta({"content": "以下是办理建议。"}, "stop"),
+            "[DONE]",
+        ]
+    )
+    requests = provider(monkeypatch, body.encode())
+    visible, summaries = [], []
+    result = asyncio.run(
+        transport.agent_turn(
+            [], [], visible.append, lambda: None, on_summary=summaries.append, cache_key="opaque-session"
+        )
+    )
+    assert summaries == ["先核对已有资料，", "再检查来源。"]
+    assert visible == ["以下是办理建议。"]
+    assert "reasoning_content" not in result
+    assert requests[0].headers["x-session-id"] == "opaque-session"
+    assert json.loads(requests[0].content)["prompt_cache_key"] == "opaque-session"
+    assert json.loads(requests[0].content)["generationConfig"]["thinkingConfig"]["includeThoughts"] is True
+
+
+def test_unknown_provider_reasoning_is_not_treated_as_gemini_summary(monkeypatch):
+    provider(
+        monkeypatch,
+        (
+            frame(delta({"reasoning_content": "private", "content": "answer"}, "stop")) + frame("[DONE]")
+        ).encode(),
+    )
+    monkeypatch.setenv("AGENT_MODEL", "other-model")
+    summaries = []
+    asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, on_summary=summaries.append))
+    assert summaries == []
+
+
 def test_cancel_closes_provider_task_promptly():
     closed = []
 

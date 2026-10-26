@@ -21,6 +21,7 @@ def schema19_snapshot(service):
             "agent_runs",
             "agent_memory_entries",
             "agent_session_summaries",
+            "agent_conversation_context",
             "ragflow_chunks",
             "ragflow_documents",
             "ragflow_datasets",

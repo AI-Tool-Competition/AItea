@@ -166,7 +166,7 @@ def test_upgrade_backfills_old_messages_without_changing_them(setup):
     }
     NodeWorkspace(service)
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 26
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 27
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

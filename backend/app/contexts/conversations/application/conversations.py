@@ -555,6 +555,18 @@ class ConversationService:
                         (messages[1]["content"], messages[1]["id"]),
                     )
                 self.app.node_workspace.remember_turn(conn, current, conversation_id, messages)
+                if dynamic:
+                    from app.contexts.conversations.application.conversation_context import save_context
+
+                    save_context(
+                        conn,
+                        owner,
+                        case_id,
+                        stage["id"],
+                        conversation_id,
+                        messages[1]["id"],
+                        result.get("_model_context"),
+                    )
             conn.execute(
                 "INSERT INTO message_requests VALUES (?,?,?,?)",
                 (case_id, payload["client_message_id"], payload_hash, dump(messages)),

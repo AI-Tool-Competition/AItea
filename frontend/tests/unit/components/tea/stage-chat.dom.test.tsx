@@ -121,6 +121,73 @@ async function send(text = "准备哪些资料？") {
 }
 
 describe("stage chat experience", () => {
+  it("keeps commentary across model rounds and streams summary deltas in the active progress row", async () => {
+    const stream = transport();
+    render(<StageChat {...props} />);
+    await send();
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+    const model = {
+      id: "run:1",
+      name: "agent_turn",
+      label: "规划下一步",
+      position: 1,
+      status: "running",
+      attempt: 1,
+      max_attempts: 1,
+      detail: "",
+      duration_ms: 0,
+    };
+    await act(async () => {
+      stream.event("start", { step_id: "agent", append: true });
+      stream.event("step", {
+        id: "agent",
+        label: "智能工具协作",
+        status: "running",
+        detail: "",
+        run_id: "run",
+        sequence: 1,
+        tools: [model],
+      });
+      stream.event("tool_delta", {
+        step_id: "agent",
+        run_id: "run",
+        tool_id: "run:1",
+        sequence: 2,
+        text: "核对来源。",
+      });
+    });
+    expect(screen.getByText("核对来源。")).toBeTruthy();
+    const thinking = screen.getByRole("button", { name: "思考摘要 · 进行中" });
+    expect(thinking.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => {
+      stream.event("delta", { text: "我先核对材料。" });
+      stream.event("start", { step_id: "agent", append: true });
+    });
+    expect(screen.getByText("我先核对材料。")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: /处理进度/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    await act(async () => {
+      stream.event("delta", { text: "\n\n请补充产品信息。" });
+      stream.event("status", { label: "正在保存" });
+    });
+    expect(screen.getByText(/我先核对材料。.*请补充产品信息。/)).toBeTruthy();
+    await act(async () => {
+      stream.event("start", { step_id: "legacy-final" });
+    });
+    expect(screen.queryByText(/我先核对材料/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "停止回复" }));
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: /处理进度/ })
+          .getAttribute("aria-expanded"),
+      ).toBe("false"),
+    );
+  });
+
   it("restores scoped cached messages immediately and refreshes them without a loading flash", async () => {
     const saved = {
       id: "cached",
@@ -297,7 +364,7 @@ describe("stage chat experience", () => {
       stream.event("delta", { text: "已找到可供核对的公开来源。" });
     });
     await screen.findByText("已找到可供核对的公开来源。");
-    expect(progress.getAttribute("aria-expanded")).toBe("false");
+    expect(progress.getAttribute("aria-expanded")).toBe("true");
     expect(screen.queryByText("进行中")).toBeNull();
     expect(
       screen.queryByText(
@@ -305,6 +372,7 @@ describe("stage chat experience", () => {
       ),
     ).toBeNull();
     // Even a manually reopened progress area closes at the end of this turn.
+    fireEvent.click(progress);
     fireEvent.click(progress);
     expect(screen.getByText("已完成")).toBeTruthy();
     await act(async () => {

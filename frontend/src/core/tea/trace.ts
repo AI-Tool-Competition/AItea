@@ -1,4 +1,45 @@
-import type { TraceStep } from "./types";
+import type { ToolOutputDelta, TraceStep } from "./types";
+
+/** An ordered delta belongs to exactly one running call, never to the answer. */
+export function mergeToolDelta(
+  steps: readonly TraceStep[],
+  delta: ToolOutputDelta,
+): TraceStep[] {
+  return steps.map((step) => {
+    if (
+      step.id !== delta.step_id ||
+      step.run_id !== delta.run_id ||
+      step.status !== "running" ||
+      (step.sequence ?? 0) >= delta.sequence ||
+      !step.tools?.some(
+        (tool) => tool.id === delta.tool_id && tool.status === "running",
+      )
+    )
+      return step;
+    return {
+      ...step,
+      sequence: delta.sequence,
+      tools: step.tools.map((tool) => {
+        if (tool.id !== delta.tool_id) return tool;
+        const output = tool.output_preview ?? {
+          text: "",
+          items: [],
+          notice: "",
+          truncated: false,
+        };
+        const text = Array.from(output.text + delta.text);
+        return {
+          ...tool,
+          output_preview: {
+            ...output,
+            text: text.slice(0, 4000).join(""),
+            truncated: output.truncated || text.length > 4000,
+          },
+        };
+      }),
+    };
+  });
+}
 
 /** Replace a snapshot in its original position; late progress cannot undo completion. */
 export function mergeTraceStep(

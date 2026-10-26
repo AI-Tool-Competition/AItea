@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { errorMessage, streamMessage, teaRequest, TeaApiError } from "./api";
 import {
@@ -10,7 +11,8 @@ import {
   readChatHistory,
 } from "./chat-cache";
 import { clearNodeAnalyses } from "./node-analysis";
-import { mergeTraceStep, settleTraceSteps } from "./trace";
+import { createStreamPublisher } from "./stream-publisher";
+import { mergeToolDelta, mergeTraceStep, settleTraceSteps } from "./trace";
 import type {
   CaseDetail,
   ListResult,
@@ -239,13 +241,12 @@ export function useStageChat({
       ),
       turn,
     ]);
-    let frame: ReturnType<typeof setTimeout> | undefined;
+    let firstTextPublished = false;
     const current = () =>
       mounted.current &&
       !controller.signal.aborted &&
       drafts.get(scope) === draft;
-    const publish = () => {
-      frame = undefined;
+    const publisher = createStreamPublisher(() => {
       if (current())
         setTurns((items) =>
           items.map((item) =>
@@ -254,18 +255,34 @@ export function useStageChat({
               : item,
           ),
         );
-    };
+    });
     try {
       const result = await streamMessage(caseId, request, {
         signal: controller.signal,
         onEvent: (event) => {
           if (!current()) return;
-          if (event.event === "start") turn.text = "";
-          else if (event.event === "delta") turn.text += event.data.text;
+          if (event.event === "start") {
+            if (!event.data.append) turn.text = "";
+          } else if (event.event === "delta") turn.text += event.data.text;
+          else if (event.event === "tool_delta")
+            turn.steps = mergeToolDelta(turn.steps ?? [], event.data);
           else if (event.event === "step")
             turn.steps = mergeTraceStep(turn.steps ?? [], event.data);
           else turn.label = event.data.label;
-          frame ??= setTimeout(publish, 16);
+          if (
+            (event.event === "delta" || event.event === "tool_delta") &&
+            event.data.text &&
+            !firstTextPublished
+          ) {
+            firstTextPublished = true;
+            // The first visible text must not wait behind token batching. Keep
+            // subsequent updates frame-bound so input remains responsive.
+            if (document.visibilityState === "visible")
+              flushSync(publisher.flush);
+            else publisher.flush();
+          } else if (event.event === "delta" || event.event === "tool_delta")
+            publisher.schedule();
+          else publisher.flush();
         },
       });
       if (!current()) return;
@@ -308,7 +325,7 @@ export function useStageChat({
         ),
       );
     } finally {
-      clearTimeout(frame);
+      publisher.cancel();
       controllers.delete(controller);
       if (active.current?.controller === controller) active.current = undefined;
     }

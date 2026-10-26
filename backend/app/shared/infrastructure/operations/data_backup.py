@@ -28,7 +28,7 @@ from app.shared.infrastructure.operations.system_corpus_migration import (
 )
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 26
+SUPPORTED_SCHEMA_VERSION = 27
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -237,6 +237,13 @@ def _database_check(path, *, primary=False):
                     conn.execute("SELECT context_hash FROM agent_session_summaries LIMIT 0")
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("agent_memory_schema_incomplete") from exc
+            if 27 in applied:
+                try:
+                    conn.execute(
+                        "SELECT conversation_id,owner_id,case_id,stage_id,signature,source_message_id,messages FROM agent_conversation_context LIMIT 0"
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("agent_context_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")

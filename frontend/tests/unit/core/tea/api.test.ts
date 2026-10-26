@@ -88,6 +88,44 @@ describe("Tea API transport", () => {
       ),
     ).rejects.toMatchObject({ code: "stream_interrupted" });
   });
+  it.each([undefined, false, true])(
+    "preserves the optional continuation flag %s",
+    async (append) => {
+      const data = {
+        step_id: "agent",
+        ...(append === undefined ? {} : { append }),
+      };
+      const done = { messages: [], case: { id: "one" } };
+      rs.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          `event: start\ndata: ${JSON.stringify(data)}\n\nevent: done\ndata: ${JSON.stringify(done)}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } },
+        ),
+      );
+      const received = rs.fn();
+      await streamMessage(
+        "one",
+        { stage_id: "stage", content: "问题", client_message_id: "id" },
+        { onEvent: received },
+      );
+      expect(received).toHaveBeenCalledWith({ event: "start", data });
+    },
+  );
+  it("rejects an invalid continuation flag instead of silently clearing visible text", async () => {
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        'event: start\ndata: {"step_id":"agent","append":"false"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    await expect(
+      streamMessage(
+        "one",
+        { stage_id: "stage", content: "问题", client_message_id: "id" },
+        { onEvent: () => undefined },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+  });
   it("preserves streaming errors and releases a cancelled reader", async () => {
     const cancelled = rs.fn();
     const body = new ReadableStream<Uint8Array>({ cancel: cancelled });

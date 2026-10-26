@@ -257,9 +257,41 @@ export function streamMessage(
           onEvent({ event, data: { text: data.text } });
         else if (event === "status" && typeof data.label === "string")
           onEvent({ event, data: { label: data.label } });
-        else if (event === "start" && typeof data.step_id === "string")
-          onEvent({ event, data: { step_id: data.step_id } });
-        else if (event === "step") {
+        else if (event === "start" && typeof data.step_id === "string") {
+          if (data.append !== undefined && typeof data.append !== "boolean")
+            throw invalidStream();
+          onEvent({
+            event,
+            data: {
+              step_id: data.step_id,
+              ...(data.append === undefined ? {} : { append: data.append }),
+            },
+          });
+        } else if (event === "tool_delta") {
+          if (
+            !boundedText(data.step_id, 100) ||
+            !data.step_id ||
+            !boundedText(data.run_id, 100) ||
+            !data.run_id ||
+            !boundedText(data.tool_id, 100) ||
+            !data.tool_id ||
+            !Number.isSafeInteger(data.sequence) ||
+            (data.sequence as number) < 1 ||
+            !boundedText(data.text, 3500) ||
+            !data.text
+          )
+            throw invalidStream();
+          onEvent({
+            event,
+            data: {
+              step_id: data.step_id as string,
+              run_id: data.run_id as string,
+              tool_id: data.tool_id as string,
+              sequence: data.sequence as number,
+              text: data.text as string,
+            },
+          });
+        } else if (event === "step") {
           if (!isTraceStep(data)) throw invalidStream();
           onEvent({ event, data });
         }

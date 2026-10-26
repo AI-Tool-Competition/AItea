@@ -1,6 +1,10 @@
 import { expect, it } from "@rstest/core";
 
-import { mergeTraceStep, settleTraceSteps } from "@/core/tea/trace";
+import {
+  mergeToolDelta,
+  mergeTraceStep,
+  settleTraceSteps,
+} from "@/core/tea/trace";
 import type { ToolCall, TraceStep } from "@/core/tea/types";
 
 const tool: ToolCall = {
@@ -23,6 +27,45 @@ const step: TraceStep = {
   sequence: 1,
   tools: [tool],
 };
+
+it("merges only ordered output for an active call and rejects late deltas after stop or completion", () => {
+  const delta = {
+    step_id: "search",
+    run_id: "run",
+    tool_id: "run:1",
+    sequence: 2,
+    text: "真实输出😀",
+  };
+  const result = mergeToolDelta([step], delta);
+  expect(result[0]?.tools?.[0]?.output_preview?.text).toBe("真实输出😀");
+  expect(mergeToolDelta(result, delta)).toEqual(result);
+  expect(
+    mergeToolDelta(result, { ...delta, run_id: "other", sequence: 3 }),
+  ).toEqual(result);
+  expect(
+    mergeToolDelta(result, { ...delta, tool_id: "other", sequence: 3 }),
+  ).toEqual(result);
+  const stopped = settleTraceSteps(result, "cancelled");
+  expect(mergeToolDelta(stopped, { ...delta, sequence: 3 })).toEqual(stopped);
+  const done = mergeTraceStep(result, {
+    ...step,
+    sequence: 4,
+    tools: [
+      {
+        ...tool,
+        status: "completed",
+        output_preview: {
+          text: "最终真实结果",
+          items: [],
+          notice: "",
+          truncated: false,
+        },
+      },
+    ],
+  });
+  expect(mergeToolDelta(done, { ...delta, sequence: 5 })).toEqual(done);
+  expect(done[0]?.tools?.[0]?.output_preview?.text).toBe("最终真实结果");
+});
 
 it("keeps interleaved progress in its first position and ignores stale snapshots", () => {
   const other = { ...step, id: "check", sequence: 2 };

@@ -72,6 +72,8 @@ def scenario(monkeypatch, replies, seen=None):
         if isinstance(reply, str):
             delta(reply)
             return {"role": "assistant", "content": reply}
+        if reply.get("content"):
+            delta(reply["content"])
         return reply
 
     monkeypatch.setattr(agent_loop, "agent_turn", turn)
@@ -131,7 +133,10 @@ def test_business_tools_parallel_and_ordered_with_idempotent_messages(workspace,
     assert response.json()["case"]["completed_tasks"] == workspace[3]["completed_tasks"]
 
 
-def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidence(workspace, monkeypatch):
+@pytest.mark.parametrize("stream", [False, True])
+def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidence(
+    workspace, monkeypatch, stream
+):
     seen, requests = [], []
 
     async def gateway(name, payload, check, **options):
@@ -164,16 +169,19 @@ def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidenc
         ],
         seen,
     )
-    response = send(workspace)
+    response = send(workspace, stream=stream)
     assert response.status_code == 200, response.text
     assert requests[0][0] == "web_search"
-    assert response.json()["messages"][1]["citations"] == []
+    data = (
+        next(data for event, data in stream_events(response) if event == "done")
+        if stream
+        else response.json()
+    )
+    assert data["messages"][1]["citations"] == []
     assert "web_search" in {d["function"]["name"] for d in seen[1][1]}
     assert "unreviewed_web" in str(seen[2][0])
     assert "https://example.org/notice" in str(seen[2][0])
-    previews = {
-        t["name"]: t.get("output_preview") for t in response.json()["messages"][1]["trace"][0]["tools"]
-    }
+    previews = {t["name"]: t.get("output_preview") for t in data["messages"][1]["trace"][0]["tools"]}
     assert previews["web_search"]["text"] == "官方公告"
     assert previews["web_search"]["items"][0] == {
         "label": "官方公告",
@@ -481,7 +489,7 @@ def test_existing_database_migration_preserves_messages(workspace):
     Database(service.db.data_dir, require_existing=True)
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == count
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 26
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 27
 
 
 def test_image_recognition_uses_scoped_original_and_keeps_it_unverified(workspace, monkeypatch):
@@ -590,8 +598,9 @@ def test_compacted_tool_results_can_be_read_without_repeating_provider(workspace
         )
 
 
+@pytest.mark.parametrize("stream", [False, True])
 def test_agent_rag_returns_only_reviewed_current_destination_evidence(
-    workspace, monkeypatch, ragflow_library
+    workspace, monkeypatch, ragflow_library, stream
 ):
     from test_country_isolation import publish, stored
 
@@ -612,12 +621,28 @@ def test_agent_rag_returns_only_reviewed_current_destination_evidence(
         ],
         seen,
     )
-    response = send(workspace)
+    response = send(workspace, stream=stream)
     assert response.status_code == 200, response.text
-    citations = response.json()["messages"][1]["citations"]
+    data = (
+        next(data for event, data in stream_events(response) if event == "done")
+        if stream
+        else response.json()
+    )
+    citations = data["messages"][1]["citations"]
     assert {item["document_id"] for item in citations} == {approved["id"]}
     assert all(item["document_version"] == approved["version"] and item["locator"] for item in citations)
     assert '"mode": "ragflow"' in str(seen[2][0])
+    if stream:
+        states = [
+            tool
+            for event, data in stream_events(response)
+            if event == "step"
+            for tool in data.get("tools", [])
+            if tool["name"] == "search_documents"
+        ]
+        assert states[0]["status"] == "running"
+        assert states[-1]["status"] == "completed"
+        assert states[-1]["output_preview"]["items"][0]["text"] == citations[0]["excerpt"]
 
 
 def test_model_history_remains_a_stable_prefix_with_fresh_context_after_it(workspace, monkeypatch):
@@ -629,11 +654,130 @@ def test_model_history_remains_a_stable_prefix_with_fresh_context_after_it(works
         )
         assert response.status_code == 200, response.text
     assert seen[0][0][0] == seen[1][0][0] == seen[2][0][0]
-    assert (
-        seen[1][0][1:3]
-        == seen[2][0][1:3]
-        == [{"role": "user", "content": "问题0"}, {"role": "assistant", "content": "第一轮回复"}]
-    )
+    assert seen[1][0][: len(seen[0][0])] == seen[0][0]
+    assert seen[2][0][: len(seen[1][0])] == seen[1][0]
+    assert seen[1][0][len(seen[0][0])] == {"role": "assistant", "content": "第一轮回复"}
     assert seen[2][0][-1] == {"role": "user", "content": "问题2"}
     assert json.loads(seen[2][0][-2]["content"])["stage"]["id"] == workspace[4]["stage_id"]
     assert seen[0][1] == seen[1][1] == seen[2][1]
+
+
+def stream_events(response):
+    return [
+        (part.splitlines()[0][7:], json.loads(part.split("data: ", 1)[1]))
+        for part in response.text.split("\n\n")
+        if part.startswith("event:")
+    ]
+
+
+def test_public_commentary_appends_across_tool_rounds_and_replays_exactly(workspace, monkeypatch):
+    first = tools(("check_materials", {}))
+    first["content"] = "我先核对现有材料。"
+    scenario(monkeypatch, [first, tools(("guide_business", {})), "请补充主体信息。"])
+    response = send(workspace, stream=True)
+    events = stream_events(response)
+    assert [data for event, data in events if event == "start"] == [{"step_id": "agent", "append": True}] * 3
+    actual = "".join(data["text"] for event, data in events if event == "delta")
+    assert actual == "我先核对现有材料。\n\n请补充主体信息。"
+    saved = next(data for event, data in events if event == "done")
+    assert saved["messages"][1]["content"] == actual
+    assert send(workspace).json()["messages"] == saved["messages"]
+
+
+def test_summary_deltas_have_call_identity_and_are_saved_separately(workspace, monkeypatch):
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+
+    async def turn(messages, definitions, delta, check, **options):
+        options["on_summary"]("先核对")
+        options["on_summary"]("现有资料。")
+        delta("请补充材料。")
+        return {"role": "assistant", "content": "请补充材料。"}
+
+    monkeypatch.setattr(agent_loop, "agent_turn", turn)
+    events = stream_events(send(workspace, stream=True))
+    chunks = [data for event, data in events if event == "tool_delta"]
+    assert [data["text"] for data in chunks] == ["先核对", "现有资料。"]
+    assert chunks[0]["sequence"] < chunks[1]["sequence"]
+    answer = next(data for event, data in events if event == "done")["messages"][1]
+    assert answer["content"] == "请补充材料。"
+    call = answer["trace"][0]["tools"][0]
+    assert call["id"] == chunks[0]["tool_id"] == chunks[1]["tool_id"]
+    assert call["output_preview"]["text"] == "先核对现有资料。"
+
+
+def test_answer_limit_is_shared_across_model_rounds_and_failure_does_not_cache(workspace, monkeypatch):
+    first = tools(("check_materials", {})) | {"content": "甲" * 11000}
+    scenario(monkeypatch, [first, "乙" * 10000])
+    events = stream_events(send(workspace, stream=True))
+    assert events[-1][0] == "error"
+    with closing(workspace[1].db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM agent_conversation_context").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM message_requests").fetchone()[0] == 0
+
+
+def test_provider_context_keeps_tools_signatures_and_invalidates_on_memory_changes(workspace, monkeypatch):
+    client, service, owner, case, payload = workspace
+    seen, keys = [], []
+    tool_reply = tools(("check_materials", {}))
+    tool_reply["tool_calls"][0]["extra_content"] = {"google": {"thought_signature": "opaque"}}
+    scenario(monkeypatch, [tool_reply, "材料待补充。", "继续办理。", "读取最新记忆。"], seen)
+    original = agent_loop.agent_turn
+
+    async def capture(*args, **options):
+        keys.append(options["cache_key"])
+        return await original(*args, **options)
+
+    monkeypatch.setattr(agent_loop, "agent_turn", capture)
+    assert send(workspace).status_code == 200
+    # Reopen SQLite to ensure the cache is durable, not a process-only shortcut.
+    Database(service.db.data_dir, require_existing=True)
+    assert send(workspace, {**payload, "client_message_id": "follow-up"}).status_code == 200
+    assert seen[2][0][: len(seen[1][0])] == seen[1][0]
+    assert seen[2][0][len(seen[1][0])] == {"role": "assistant", "content": "材料待补充。"}
+    assert len(set(keys)) == 1
+    assert seen[0][1] == seen[1][1] == seen[2][1]
+    assert "opaque" in json.dumps(seen[2][0])
+    service.agent_memory.save(
+        owner,
+        case["id"],
+        payload["stage_id"],
+        {
+            "kind": "note",
+            "content": "请核对新主体",
+            "conversation_id": payload["conversation_id"],
+        },
+    )
+    assert send(workspace, {**payload, "client_message_id": "new-memory"}).status_code == 200
+    assert not any(message.get("tool_calls") for message in seen[3][0])
+    assert "请核对新主体" in seen[3][0][-2]["content"]
+    assert len(set(keys)) == 1
+
+
+def test_context_migration_is_additive_and_cache_rejects_foreign_or_stale_anchor(workspace, monkeypatch):
+    from app.contexts.conversations.application.conversation_context import read_context
+
+    client, service, owner, case, payload = workspace
+    scenario(monkeypatch, ["缓存回复。"])
+    assert send(workspace).status_code == 200
+    with closing(service.db.connect()) as conn:
+        row = conn.execute("SELECT * FROM agent_conversation_context").fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    args = (service, owner, case["id"], payload["stage_id"], payload["conversation_id"])
+    assert read_context(*args, row["signature"])
+    assert read_context(*args, "changed-provider-or-context") is None
+    assert read_context(*args, row["signature"], budget=1) is None
+    with pytest.raises(AppError):
+        read_context(service, "foreign-owner", *args[2:], row["signature"])
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE agent_conversation_context SET source_message_id=(SELECT id FROM messages WHERE role='user' LIMIT 1)"
+        )
+    assert read_context(*args, row["signature"]) is None
+    with service.db.transaction() as conn:
+        conn.execute("DROP TABLE agent_conversation_context")
+        conn.execute("DELETE FROM schema_migrations WHERE version=27")
+    Database(service.db.data_dir, require_existing=True)
+    Database(service.db.data_dir, require_existing=True)
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == count
+        assert conn.execute("SELECT COUNT(*) FROM agent_conversation_context").fetchone()[0] == 0

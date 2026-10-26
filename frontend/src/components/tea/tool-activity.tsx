@@ -15,6 +15,7 @@ import {
   PenLine,
   RotateCcw,
   Search,
+  Sparkles,
   Square,
   type LucideIcon,
 } from "lucide-react";
@@ -29,11 +30,12 @@ import {
 import { safeSourceUrl } from "@/core/tea/api";
 import type { ToolCall, ToolOutputPreview, TraceStep } from "@/core/tea/types";
 
-// Only actual user-relevant work is visible. Model turns supply a generic
-// thinking indicator; routing, memory and private payloads stay internal.
+// Only actual work and provider-supplied public summaries are visible.
+// Routing, memory, private payloads and opaque thought signatures stay internal.
 const activities: Partial<
   Record<ToolCall["name"], { label: string; active: string; icon: LucideIcon }>
 > = {
+  agent_turn: { label: "思考摘要", active: "正在思考", icon: Sparkles },
   search_documents: { label: "查找资料", active: "正在查找资料", icon: Search },
   search_legal_evidence: {
     label: "查找依据",
@@ -125,18 +127,22 @@ export const MessageActivity = memo(function MessageActivity({
   );
 });
 
-// A manual choice lasts for this execution phase only. New work resumes
-// following the stream; finishing always closes it. History remains browsable.
-function useFollowingDisclosure(phase: string, autoOpen: boolean) {
-  const [choice, setChoice] = useState<{ phase: string; open: boolean | null }>(
-    { phase, open: null },
-  );
-  // Discard an old override at the boundary, including when a later retry
-  // returns to a phase with the same status as an earlier attempt.
-  if (choice.phase !== phase) setChoice({ phase, open: null });
+// Text, model rounds and completed siblings never toggle a disclosure. Only
+// newly executing work, a terminal transition or the reader can change it.
+function useFollowingDisclosure(running: boolean, active: string[]) {
+  const activity = active.join("\n");
+  const [state, setState] = useState({ running, activity, open: running });
+  let next = state;
+  if (state.running !== running) next = { running, activity, open: running };
+  else if (state.activity !== activity) {
+    const previous = new Set(state.activity.split("\n"));
+    const started = running && active.some((key) => !previous.has(key));
+    next = { running, activity, open: started ? true : state.open };
+  }
+  if (next !== state) setState(next);
   return {
-    open: choice.phase === phase ? (choice.open ?? autoOpen) : autoOpen,
-    onOpenChange: (open: boolean) => setChoice({ phase, open }),
+    open: next.open,
+    onOpenChange: (open: boolean) => setState({ running, activity, open }),
   };
 }
 
@@ -162,6 +168,7 @@ export function ToolActivity({
   // when a text-only reply has no trace. Historical empty traces stay hidden.
   const [startedHere] = useState(preparing);
   const visible = tools.flatMap((tool) => {
+    if (tool.name === "agent_turn" && !tool.output_preview?.text) return [];
     const view = Object.hasOwn(activities, tool.name)
       ? activities[tool.name]
       : undefined;
@@ -175,23 +182,18 @@ export function ToolActivity({
   );
   const model = tools.filter((tool) => tool.name === "agent_turn").at(-1);
   const thinking = model?.status === "running" || model?.status === "retrying";
-  const phase = JSON.stringify([
-    running,
-    answering,
-    active.map((tool) => [tool.id, tool.status, tool.attempt]),
-    model?.id,
-    model?.status,
-    model?.attempt,
-  ]);
   const disclosure = useFollowingDisclosure(
-    phase,
-    running && (!answering || active.length > 0),
+    running,
+    active.map((tool) => `${tool.id}:${tool.attempt}`),
   );
   if (!visible.length && !preparing && !startedHere && !model) return null;
   const failed = incomplete || visible.some((tool) => tool.status === "failed");
   const cancelled =
     stopped || visible.some((tool) => tool.status === "cancelled");
   const allCached = visible.length > 0 && visible.every((tool) => tool.cached);
+  const completedCount = visible.filter(
+    (tool) => tool.name !== "agent_turn",
+  ).length;
   const heading = running
     ? active.length > 1
       ? `正在处理 ${active.length} 项工作`
@@ -209,8 +211,8 @@ export function ToolActivity({
         ? "处理已停止"
         : allCached
           ? "已沿用处理记录"
-          : visible.length
-            ? `已完成 ${visible.length} 项处理`
+          : completedCount
+            ? `已完成 ${completedCount} 项处理`
             : "已完成回复";
   const HeaderIcon = running
     ? LoaderCircle
@@ -262,18 +264,8 @@ export function ToolActivity({
             ))}
           </ol>
         )}
-        {!active.length && (
-          <p className="tea-tool-preparation">
-            {running
-              ? answering
-                ? "正在输出回复…"
-                : "正在结合问题与现有信息整理回复…"
-              : failed
-                ? "本次回复未完成，请结合下方说明继续。"
-                : cancelled
-                  ? "回复已停止。"
-                  : "本次回复已整理完成。"}
-          </p>
+        {!active.length && !answering && running && (
+          <p className="tea-tool-preparation">等待模型响应…</p>
         )}
       </TaskContent>
     </Task>
@@ -292,17 +284,12 @@ function ToolRow({
   const id = useId();
   const working = tool.status === "running" || tool.status === "retrying";
   const disclosure = useFollowingDisclosure(
-    JSON.stringify([running, tool.status, tool.attempt]),
-    working,
+    running && working,
+    working ? [`${tool.id}:${tool.attempt}`] : [],
   );
   const Icon = tool.view.icon;
   const StatusIcon = tool.cached ? History : icons[tool.status];
-  const preview = tool.status === "completed" ? tool.output_preview : undefined;
-  const summary = [
-    preview?.text,
-    preview?.items?.[0]?.text,
-    preview?.items?.[0]?.label,
-  ].find((text) => text?.trim());
+  const preview = tool.output_preview;
   return (
     <li data-tool-id={tool.id} data-state={tool.status}>
       <Task {...disclosure} className="tea-tool-row">
@@ -317,12 +304,6 @@ function ToolRow({
             <Icon className="tea-tool-kind size-4" aria-hidden="true" />
             <span className="tea-tool-description">
               <span className="tea-tool-label">{tool.view.label}</span>
-              {summary && (
-                <span className="tea-tool-summary">
-                  {Array.from(summary).slice(0, 100).join("")}
-                  {Array.from(summary).length > 100 ? "…" : ""}
-                </span>
-              )}
             </span>
             <span className="tea-tool-state">
               <StatusIcon
@@ -353,7 +334,9 @@ function ToolRow({
           className="tea-tool-detail"
         >
           <TaskItem>
-            {working ? (
+            {preview ? (
+              <ToolOutput preview={preview} />
+            ) : working ? (
               <p>
                 {tool.status === "retrying"
                   ? "正在重新尝试，收到结果后继续。"
@@ -363,8 +346,6 @@ function ToolRow({
               <p>本次处理未完成，请结合回复中的说明继续。</p>
             ) : tool.status === "cancelled" ? (
               <p>处理已停止，结果尚未确认。</p>
-            ) : preview ? (
-              <ToolOutput preview={preview} />
             ) : (
               <p>本次处理已完成，未返回可展示的结果片段。</p>
             )}
@@ -391,47 +372,34 @@ const resultStates: Record<string, string> = {
 };
 
 function ToolOutput({ preview }: { preview: ToolOutputPreview }) {
-  const [expanded, setExpanded] = useState(false);
-  const long =
-    Array.from(preview.text).length > 180 ||
-    preview.items.length > 2 ||
-    preview.items.some((item) => Array.from(item.text).length > 160);
-  const excerpt = (text: string, limit: number) => {
-    const characters = Array.from(text);
-    return expanded || characters.length <= limit
-      ? text
-      : characters.slice(0, limit).join("") + "…";
-  };
   return (
     <div className="tea-tool-output" aria-label="执行结果">
-      {preview.text && <p>{excerpt(preview.text, 180)}</p>}
+      {preview.text && <p>{preview.text}</p>}
       {!!preview.items.length && (
         <div className="tea-tool-output-items">
-          {(expanded ? preview.items : preview.items.slice(0, 2)).map(
-            (item, index) => {
-              const url = safeSourceUrl(item.url);
-              const status =
-                item.status && Object.hasOwn(resultStates, item.status)
-                  ? resultStates[item.status]
-                  : undefined;
-              return (
-                <div key={index} className="tea-tool-output-item">
-                  {item.label &&
-                    (url ? (
-                      <a href={url} target="_blank" rel="noopener noreferrer">
-                        {item.label}
-                      </a>
-                    ) : (
-                      <strong>{item.label}</strong>
-                    ))}
-                  {status && (
-                    <span className="tea-tool-result-status">{status}</span>
-                  )}
-                  {item.text && <p>{excerpt(item.text, 160)}</p>}
-                </div>
-              );
-            },
-          )}
+          {preview.items.map((item, index) => {
+            const url = safeSourceUrl(item.url);
+            const status =
+              item.status && Object.hasOwn(resultStates, item.status)
+                ? resultStates[item.status]
+                : undefined;
+            return (
+              <div key={index} className="tea-tool-output-item">
+                {item.label &&
+                  (url ? (
+                    <a href={url} target="_blank" rel="noopener noreferrer">
+                      {item.label}
+                    </a>
+                  ) : (
+                    <strong>{item.label}</strong>
+                  ))}
+                {status && (
+                  <span className="tea-tool-result-status">{status}</span>
+                )}
+                {item.text && <p>{item.text}</p>}
+              </div>
+            );
+          })}
         </div>
       )}
       {preview.notice && (
@@ -439,21 +407,6 @@ function ToolOutput({ preview }: { preview: ToolOutputPreview }) {
       )}
       {preview.truncated && (
         <p className="tea-tool-output-notice">此处为本次执行结果的节选。</p>
-      )}
-      {long && (
-        <button
-          type="button"
-          className="tea-tool-output-toggle"
-          aria-expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? "收起结果" : "展开结果"}
-          <ChevronDown
-            size={12}
-            aria-hidden="true"
-            className={expanded ? "rotate-180" : undefined}
-          />
-        </button>
       )}
     </div>
   );

@@ -132,6 +132,7 @@ class ToolAttempt:
         self.run = run
         self.deadline = min(deadline, run.deadline)
         self.output_started = False
+        self.emit_text = lambda text: None
 
     def check(self):
         self.run.check_cancelled()
@@ -216,6 +217,38 @@ class ToolRun:
                     record["error_code"] = code
                 if trace is not None:
                     self.publish(trace)
+
+        def emit_text(text):
+            """Stream actual public output without resending the entire call history."""
+            context.check()
+            if not text or trace is None:
+                return
+            with self._lock:
+                output = record.setdefault(
+                    "output_preview", {"text": "", "items": [], "notice": "", "truncated": False}
+                )
+                remaining = max(0, 3500 - len(output["text"].encode()))
+                fragment = text.encode()[:remaining].decode("utf-8", errors="ignore")
+                output["truncated"] |= fragment != text
+                if not fragment:
+                    return
+                output["text"] += fragment
+                context.output_started = True
+                self.sequence += 1
+                trace.update(run_id=self.run_id, sequence=self.sequence)
+                if self.emit:
+                    self.emit(
+                        "tool_delta",
+                        {
+                            "step_id": trace["id"],
+                            "run_id": self.run_id,
+                            "tool_id": record["id"],
+                            "sequence": self.sequence,
+                            "text": fragment,
+                        },
+                    )
+
+        context.emit_text = emit_text
 
         try:
             publish("running", spec.description)

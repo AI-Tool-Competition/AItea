@@ -20,10 +20,7 @@ import {
   ClipboardSafeStreamdown,
 } from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
-import {
-  streamdownPluginsWithoutRawHtml,
-  streamdownSmoothStreamingAnimation,
-} from "@/core/streamdown";
+import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
 import type {
   Capabilities,
   CaseDetail,
@@ -50,7 +47,9 @@ const Answer = memo(function Answer({
       {...streamdownPluginsWithoutRawHtml}
       mode={streaming ? "streaming" : "static"}
       isAnimating={streaming}
-      animated={streamdownSmoothStreamingAnimation}
+      animated={false}
+      caret="circle"
+      aria-busy={streaming}
       parseIncompleteMarkdown={streaming}
     >
       {content}
@@ -124,9 +123,9 @@ const ChatMessage = memo(function ChatMessage({
                 />
               </details>
             </div>
-          ) : (
+          ) : content ? (
             <Answer content={content} streaming={sending} />
-          )}
+          ) : null}
         </div>
         {!!message?.citations?.length && (
           <details className="tea-message-citations">
@@ -142,33 +141,17 @@ const ChatMessage = memo(function ChatMessage({
             ))}
           </details>
         )}
-        {role === "assistant" &&
-          turn &&
-          (sending ? (
-            content && (
-              <div className="tea-assistant-working" role="status">
-                <span>正在回复…</span>
-                <i />
-                <i />
-                <i />
-              </div>
-            )
-          ) : (
-            <div className="tea-turn-feedback">
-              <span role={turn.error ? "alert" : "status"}>
-                {turn.error ?? "已停止回复，以上内容尚未完成。"}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={onRetry}
-              >
-                <RotateCcw size={14} />
-                重试回复
-              </Button>
-            </div>
-          ))}
+        {role === "assistant" && turn && !sending && (
+          <div className="tea-turn-feedback">
+            <span role={turn.error ? "alert" : "status"}>
+              {turn.error ?? "已停止回复，以上内容尚未完成。"}
+            </span>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={onRetry}>
+              <RotateCcw size={14} />
+              重试回复
+            </Button>
+          </div>
+        )}
       </div>
     </article>
   );

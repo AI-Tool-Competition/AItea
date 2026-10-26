@@ -46,7 +46,7 @@ class ToolOutputPreview(StrictModel):
 
 
 class ToolCallSnapshot(StrictModel):
-    """Public execution facts only; never raw credentials, prompts or model reasoning."""
+    """Public output and provider summaries; never credentials, prompts or private reasoning."""
 
     id: str = Field(min_length=1, max_length=100)
     name: Literal[
@@ -88,14 +88,26 @@ class ToolCallSnapshot(StrictModel):
         return self
 
 
+class ToolOutputDelta(StrictModel):
+    step_id: str = Field(min_length=1, max_length=100)
+    run_id: str = Field(min_length=1, max_length=100)
+    tool_id: str = Field(min_length=1, max_length=100)
+    sequence: StrictInt = Field(ge=1)
+    text: str = Field(min_length=1, max_length=3500)
+
+
 class MessageStreamEvent(StrictModel):
     """SSE envelope; `done` carries the same result as POST /messages."""
 
-    event: Literal["status", "start", "delta", "step", "done", "error"]
+    event: Literal["status", "start", "delta", "step", "tool_delta", "done", "error"]
     data: dict
 
     @model_validator(mode="after")
     def valid_tool_progress(self):
+        if self.event == "start" and "append" in self.data and type(self.data["append"]) is not bool:
+            raise ValueError("invalid continuation flag")
+        if self.event == "tool_delta":
+            ToolOutputDelta.model_validate(self.data)
         if self.event == "step" and "tools" in self.data:
             tools = self.data["tools"]
             if not isinstance(tools, list) or len(tools) > 128:

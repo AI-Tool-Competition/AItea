@@ -15,6 +15,7 @@ from app.contexts.ingestion.application.collection_recovery import (
     CollectionRecovery,
     Decision,
     MAX_AUTOMATIC_MINERU_QUALITY_GENERATIONS,
+    MAX_PAID_OCR_RETRY_SECONDS,
     PAID_OCR_RETRY_SECONDS,
     classify_processing,
 )
@@ -229,18 +230,20 @@ def test_retry_after_is_persistent_and_not_shortened(service):
 
 
 @pytest.mark.parametrize(
-    "reason,provider_delay,expected_delay",
+    "reason,provider_delay,recovery_count,expected_delay",
     [
-        ("ocr_quality_retry", 0, BASE_RECOVERY_SECONDS),
-        ("paid_ocr_retry", 0, PAID_OCR_RETRY_SECONDS),
-        ("mineru_visual_table_retry", 0, BASE_RECOVERY_SECONDS),
-        ("ocr_quality_retry", 7200, 7200),
-        ("paid_ocr_retry", 7200, 7200),
-        ("transient_processing", 0, BASE_RECOVERY_SECONDS * 2**6),
+        ("ocr_quality_retry", 0, 6, BASE_RECOVERY_SECONDS),
+        ("paid_ocr_retry", 0, 0, PAID_OCR_RETRY_SECONDS),
+        ("paid_ocr_retry", 0, 1, PAID_OCR_RETRY_SECONDS * 2),
+        ("paid_ocr_retry", 0, 50, MAX_PAID_OCR_RETRY_SECONDS),
+        ("mineru_visual_table_retry", 0, 6, BASE_RECOVERY_SECONDS),
+        ("ocr_quality_retry", 7200, 6, 7200),
+        ("paid_ocr_retry", 7200, 0, 7200),
+        ("transient_processing", 0, 6, BASE_RECOVERY_SECONDS * 2**6),
     ],
 )
 def test_ocr_retry_backoff_stays_automatic_and_preserves_provider_delay(
-    service, reason, provider_delay, expected_delay
+    service, reason, provider_delay, recovery_count, expected_delay
 ):
     document = register(service, make_pdf([("Official terms", False)]), key=f"retry-delay-{reason}")
     claim = {
@@ -258,8 +261,8 @@ def test_ocr_retry_backoff_stays_automatic_and_preserves_provider_delay(
             exhausted=True,
         )
         conn.execute(
-            "UPDATE collection_recovery_jobs SET recovery_count=6 WHERE item_id=?",
-            (document["id"],),
+            "UPDATE collection_recovery_jobs SET recovery_count=? WHERE item_id=?",
+            (recovery_count, document["id"]),
         )
         before = time.time()
         service.collection.recovery.record_failure(

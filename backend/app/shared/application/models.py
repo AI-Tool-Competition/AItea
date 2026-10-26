@@ -1,5 +1,7 @@
 """Explicit public contract exports for HTTP consumers. Definitions belong to each context."""
 
+from app.contexts.administration.application.contracts import ApiSettings as ApiSettings
+from app.contexts.administration.application.contracts import ApiSettingsPatch as ApiSettingsPatch
 from app.contexts.ingestion.application.contracts import CandidatePatch as CandidatePatch
 from app.contexts.ingestion.application.contracts import ChecklistCollect as ChecklistCollect
 from app.contexts.ingestion.application.contracts import ChecklistConfigure as ChecklistConfigure

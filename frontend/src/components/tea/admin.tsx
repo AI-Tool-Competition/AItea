@@ -1,11 +1,14 @@
 "use client";
 
+import "./admin-api-settings.css";
+
 import {
   ArrowLeft,
   BookOpen,
   ChevronRight,
   GitBranch,
   LogOut,
+  KeyRound,
   PanelLeft,
   Sparkles,
   UsersRound,
@@ -18,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { type Bootstrap, type Template } from "@/core/tea/types";
 
 import { AdminAccounts } from "./admin-accounts";
+import { AdminApiSettings } from "./admin-api-settings";
 import { AdminLibrary } from "./admin-library";
 import { Brand } from "./shared";
 import { Sources } from "./sources";
@@ -28,7 +32,8 @@ export type AdminPage =
   | "analysis"
   | "library"
   | "sources"
-  | "accounts";
+  | "accounts"
+  | "api";
 const pages = {
   workflow: {
     title: "办理流程",
@@ -48,6 +53,11 @@ const pages = {
   accounts: {
     title: "账号权限",
     icon: UsersRound,
+    group: "系统管理",
+  },
+  api: {
+    title: "API 配置",
+    icon: KeyRound,
     group: "系统管理",
   },
 };
@@ -211,6 +221,8 @@ export function Admin({
             />
           ) : page === "accounts" ? (
             <AdminAccounts />
+          ) : page === "api" ? (
+            <AdminApiSettings key={bootstrap.user.id} />
           ) : (
             <Sources
               key={`${bootstrap.user.id}:${samples}`}

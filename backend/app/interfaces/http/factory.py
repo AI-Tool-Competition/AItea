@@ -1,12 +1,14 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from starlette.concurrency import run_in_threadpool
 
 from app.bootstrap import Service
 from app.contexts.accounts.application.auth import COOKIE, Auth
+from app.contexts.administration.application.api_settings import ApiSettingsService
 from app.contexts.documents.application.system_library import BackgroundWorkerScope
 from app.configuration.environment import load_environment
 from app.configuration.paths import InstancePaths
@@ -59,6 +61,17 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     app = FastAPI(title="AItea API", version="0.1.0", lifespan=lifespan)
     app.state.service = service
     app.state.auth = auth
+    settings_paths = (
+        InstancePaths(
+            project=Path(data_dir),
+            data=Path(data_dir),
+            catalogs=Path(data_dir) / "config/catalogs",
+            env_file=Path(data_dir) / "config/application.env",
+        )
+        if is_test
+        else InstancePaths.resolve()
+    )
+    app.state.api_settings = ApiSettingsService(settings_paths)
 
     def user(request: Request):
         current = auth.current(request.cookies.get(COOKIE))
@@ -87,6 +100,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
 
     from app.interfaces.http.boundaries import install
     from app.interfaces.http.routes import (
+        administration,
         collection,
         conversation,
         drafting,
@@ -97,6 +111,6 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     )
 
     install(app)
-    for routes in (identity, workspace, legal, conversation, knowledge, drafting, collection):
+    for routes in (identity, administration, workspace, legal, conversation, knowledge, drafting, collection):
         routes.register(app, service, auth, user, admin_user)
     return app

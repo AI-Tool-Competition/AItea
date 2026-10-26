@@ -1,0 +1,106 @@
+.ta-api-settings {
+  max-width: 1120px;
+}
+.ta-admin .ta-api-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin: 22px 0;
+}
+.ta-api-card {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+.ta-api-card h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.ta-api-card > p {
+  margin: 7px 0 18px;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+}
+.ta-api-model-fields,
+.ta-api-key-field {
+  display: grid;
+  gap: 14px;
+}
+.ta-api-key-field {
+  margin-top: 14px;
+}
+.ta-api-card .tea-field {
+  margin: 0;
+  min-width: 0;
+}
+.ta-api-card .tea-field > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ta-api-card small,
+.ta-api-actions > span {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.ta-api-card .tea-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+.ta-api-card .ta-api-help {
+  margin: 14px 0 0;
+  font-size: 12px;
+}
+.ta-api-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ta-api-actions > span {
+  margin-right: auto;
+}
+.ta-api-pending,
+.ta-api-notice {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ta-api-pending {
+  color: var(--tea-warning);
+}
+.ta-api-notice {
+  color: var(--tea-success);
+}
+.ta-api-operations {
+  margin-top: 24px;
+  color: var(--muted-foreground);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ta-api-operations summary {
+  cursor: pointer;
+}
+@media (max-width: 1050px) {
+  .ta-admin .ta-api-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 480px) {
+  .ta-api-card {
+    padding: 17px;
+  }
+  .ta-api-actions > span {
+    flex-basis: 100%;
+  }
+}

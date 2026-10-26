@@ -6,6 +6,40 @@ export interface User {
   can_login: boolean;
   is_admin: boolean;
 }
+export type ApiModelProvider = "agent" | "embedding" | "rerank";
+export interface ApiProviderKeySettings {
+  api_key_configured: boolean;
+}
+export interface ApiModelSettings extends ApiProviderKeySettings {
+  base_url: string;
+  model: string;
+}
+export interface ApiSettings {
+  revision: string;
+  agent: ApiModelSettings;
+  embedding: ApiModelSettings;
+  rerank: ApiModelSettings;
+  mineru: ApiProviderKeySettings;
+  agent_inherits_api_key: boolean;
+  embedding_inherits_api_key: boolean;
+  environment_overrides: string[];
+  restart_required: boolean;
+}
+export interface ApiProviderKeyPatch {
+  api_key?: string;
+  clear_api_key?: boolean;
+}
+export interface ApiModelPatch extends ApiProviderKeyPatch {
+  base_url?: string;
+  model?: string;
+}
+export interface ApiSettingsPatch {
+  expected_revision: string;
+  agent?: ApiModelPatch;
+  embedding?: ApiModelPatch;
+  rerank?: ApiModelPatch;
+  mineru?: ApiProviderKeyPatch;
+}
 export interface Mode {
   id: string;
   name: string;

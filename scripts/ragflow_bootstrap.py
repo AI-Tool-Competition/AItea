@@ -1,4 +1,4 @@
-"""Provision the local AItea integration account and cloud embedding provider."""
+"""Provision the local integration account and remote embedding/rerank models."""
 
 from __future__ import annotations
 
@@ -12,18 +12,74 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.configuration.paths import InstancePaths  # noqa: E402
+from app.configuration.environment import (  # noqa: E402
+    environment_content,
+    environment_lock,
+    write_environment,
+)
 from urllib.parse import quote
 
 import httpx
 from dotenv import dotenv_values, set_key
 
 
+def register_model(request, runtime, *, provider, instance, kind, api_key, base_url, model):
+    """Register a remote provider using the pinned v1.0.0-rc2 instance API."""
+    _, providers = request("GET", "/providers")
+    if not any(item.get("name", item.get("provider_name")) == provider for item in providers):
+        request("PUT", "/providers", {"provider_name": provider})
+    path = "/providers/" + quote(provider, safe="") + "/instances"
+    _, instances = request("GET", path)
+    instances = instances if isinstance(instances, list) else instances.get("instances", [])
+    existing = next(
+        (item for item in instances if item.get("instance_name", item.get("name")) == instance),
+        None,
+    )
+    payload = {
+        "instance_name": instance,
+        "api_key": api_key,
+        "base_url": base_url.rstrip("/"),
+        "model_info": [{"model_name": model, "model_type": [kind], "max_tokens": 8192}],
+    }
+    fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    saved = runtime / (kind + "-profile.sha256")
+    if existing is None:
+        request("POST", path, payload)
+    elif not saved.exists() or saved.read_text().strip() != fingerprint:
+        request("PUT", path + "/" + instance, payload)
+    _, registered_models = request("GET", "/models")
+    matching = [
+        item
+        for item in registered_models
+        if item.get("name") == model
+        and item.get("provider_name") == provider
+        and item.get("instance_name") == instance
+        and kind in item.get("model_type", [])
+    ]
+    if len(matching) != 1 or not matching[0].get("model_id"):
+        raise RuntimeError(f"未找到唯一的 RAGFlow {kind} 模型实例。")
+    saved.write_text(fingerprint + "\n")
+    saved.chmod(0o600)
+    return matching[0]["model_id"]
+
+
 def bootstrap(root):
+    from ragflow import prepare
+
     root = Path(root).resolve()
     paths = InstancePaths.resolve(root)
+    original = environment_content(paths.env_file)
+    # Always refresh the copied provider settings, including after admin edits.
+    prepare(root)
     runtime = paths.ragflow_config
     private = runtime / ".env"
     values = dotenv_values(private, interpolate=False)
+    embedding = [values.get("AITEA_EMBEDDING_" + field) for field in ("API_KEY", "BASE_URL", "MODEL")]
+    rerank = [values.get("AITEA_RERANK_" + field) for field in ("API_KEY", "BASE_URL", "MODEL")]
+    if not all(embedding):
+        raise RuntimeError("请先配置 EMBEDDING_BASE_URL、EMBEDDING_API_KEY 和 EMBEDDING_MODEL。")
+    if any(rerank) and not all(rerank):
+        raise RuntimeError("请同时配置 RERANK_BASE_URL、RERANK_API_KEY 和 RERANK_MODEL，或将三项全部清空。")
     base = "http://127.0.0.1:" + values["AITEA_RAGFLOW_API_PORT"]
     token = None
 
@@ -83,58 +139,47 @@ def bootstrap(root):
         raise RuntimeError("RAGFlow 未返回登录凭证。")
 
     provider, instance = "OpenAI-API-Compatible", "aitea_cloud"
-    _, providers = request("GET", "/providers")
-    if not any(item.get("name", item.get("provider_name")) == provider for item in providers):
-        request("PUT", "/providers", {"provider_name": provider})
-    path = "/providers/" + quote(provider, safe="") + "/instances"
-    _, instances = request("GET", path)
-    instances = instances if isinstance(instances, list) else instances.get("instances", [])
-    existing = next(
-        (item for item in instances if item.get("instance_name", item.get("name")) == instance),
-        None,
+    model_id = register_model(
+        request,
+        runtime,
+        provider=provider,
+        instance=instance,
+        kind="embedding",
+        api_key=embedding[0],
+        base_url=embedding[1],
+        model=embedding[2],
     )
-    api_key = values.get("AITEA_EMBEDDING_API_KEY")
-    embedding_base = values.get("AITEA_EMBEDDING_BASE_URL")
-    model = values.get("AITEA_EMBEDDING_MODEL")
-    if not all((api_key, embedding_base, model)):
-        raise RuntimeError("请先配置原有的 EMBEDDING_BASE_URL、EMBEDDING_API_KEY 和 EMBEDDING_MODEL。")
-    models = [{"model_name": model, "model_type": ["embedding"], "max_tokens": 8192}]
-    payload = {
-        "instance_name": instance,
-        "api_key": api_key,
-        "base_url": embedding_base.rstrip("/"),
-        "model_info": models,
-    }
-    fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    saved = runtime / "embedding-profile.sha256"
-    if existing is None:
-        request("POST", path, payload)
-    elif not saved.exists() or saved.read_text().strip() != fingerprint:
-        request("PUT", path + "/" + instance, payload)
-    saved.write_text(fingerprint + "\n")
-    saved.chmod(0o600)
     request(
         "PATCH",
         "/models/default",
         {
             "model_provider": provider,
             "model_instance": instance,
-            "model_name": model,
+            "model_name": embedding[2],
             "model_type": "embedding",
         },
     )
-    _, registered_models = request("GET", "/models")
-    matching_models = [
-        item
-        for item in registered_models
-        if item.get("name") == model
-        and item.get("provider_name") == provider
-        and item.get("instance_name") == instance
-        and "embedding" in item.get("model_type", [])
-    ]
-    if len(matching_models) != 1 or not matching_models[0].get("model_id"):
-        raise RuntimeError("未找到唯一的 RAGFlow embedding 模型实例。")
-    model_id = matching_models[0]["model_id"]
+    changes = {
+        "RAGFLOW_BASE_URL": base,
+        "RAGFLOW_EMBEDDING_MODEL": model_id,
+        "RAGFLOW_CHUNK_CONCURRENCY": "8",
+    }
+    if all(rerank):
+        # In v1.0.0-rc2 OpenAI-API-Compatible inherits an unimplemented rerank
+        # method. VLLM implements the existing flat-documents /rerank protocol.
+        changes["RAGFLOW_RERANK_MODEL"] = register_model(
+            request,
+            runtime,
+            provider="VLLM",
+            instance="aitea_rerank",
+            kind="rerank",
+            api_key=rerank[0],
+            base_url=rerank[1],
+            model=rerank[2],
+        )
+    elif (runtime / "rerank-profile.sha256").exists():
+        # Disable only a model managed by this integration; retain manual IDs.
+        changes["RAGFLOW_RERANK_MODEL"] = ""
     api_token = values.get("RAGFLOW_API_KEY")
     if api_token:
         _, check = request("GET", "/datasets?page_size=1", bearer=api_token, allow_error=True)
@@ -153,15 +198,11 @@ def bootstrap(root):
     if not api_token:
         raise RuntimeError("RAGFlow 未返回服务密钥。")
     set_key(str(private), "RAGFLOW_API_KEY", api_token)
-    application = paths.env_file
-    for key, value in {
-        "RAGFLOW_BASE_URL": base,
-        "RAGFLOW_API_KEY": api_token,
-        "RAGFLOW_EMBEDDING_MODEL": model_id,
-        "RAGFLOW_CHUNK_CONCURRENCY": "8",
-    }.items():
-        set_key(str(application), key, value)
+    changes["RAGFLOW_API_KEY"] = api_token
+    with environment_lock(paths.env_file):
+        if environment_content(paths.env_file) != original:
+            raise RuntimeError("同步期间实例配置已变更，请核对最新配置后重新同步。")
+        write_environment(paths.env_file, original, changes)
     os.chmod(private, 0o600)
-    os.chmod(application, 0o600)
-    print("RAGFlow 服务账号、后端密钥和云端 embedding 已接通。密钥仅保存在后端私有配置。")
+    print("RAGFlow 服务账号、后端密钥和已配置的云端模型已同步。请重启所属后端及采集服务。")
     return 0

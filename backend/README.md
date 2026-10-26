@@ -12,6 +12,7 @@ backend/
 │   │   └── environment.py          # 私有环境配置读取、覆盖优先级
 │   ├── contexts/                   # 按业务职责划分的限界上下文
 │   │   ├── accounts/               # 账号、会话、管理员权限
+│   │   ├── administration/         # 管理员实例 API 配置
 │   │   ├── workflows/              # 办理流程、配置、业务任务、调试
 │   │   ├── conversations/          # 对话、节点记忆、工具执行
 │   │   ├── documents/              # 原件版本、解析、审核、检索
@@ -38,6 +39,7 @@ backend/
 | --- | --- |
 | 数据库、原件或实例配置位置 | `configuration/paths.py` |
 | 账号与会话 | `contexts/accounts/application/auth.py` |
+| 后台 API 配置 | `contexts/administration/application/api_settings.py`，私有文件读写复用 `configuration/environment.py` |
 | 流程发布与业务任务 | `contexts/workflows/application/configurations.py`、`workspaces.py` |
 | 流程草稿与调试 | `contexts/workflows/application/workflow_studio.py`、`workflow_debugger.py` |
 | 文档版本与检索 | `contexts/documents/application/archive.py`、`retrieval.py` |

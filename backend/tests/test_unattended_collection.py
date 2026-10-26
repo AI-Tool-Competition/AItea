@@ -75,6 +75,19 @@ def bi_official_source():
     )
 
 
+def bi_jdih_source():
+    return source(
+        "id-bi-jdih-regulations",
+        host="jdih.bi.go.id",
+        path="/Web/DaftarPeraturan",
+        country="ID",
+        kind="catalogue",
+        topics=["banking", "monetary_policy", "financial_services"],
+        discovery_keywords=[],
+        discovery={"adapter": "bi_jdih", "max_records": 10_000},
+    )
+
+
 def bi_catalogue_page(page_number, *, total=20):
     start = (page_number - 1) * 10 + 1
     end = min(start + 9, total)
@@ -112,6 +125,18 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
             assert "id-bpk-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-regulations" not in {source["id"] for source in active}
             assert "id-bpjph-jdih-cari" in {source["id"] for source in active}
+            assert "id-bi-jdih-regulations" in {source["id"] for source in active}
+            jdih = next(row for row in active if row["id"] == "id-bi-jdih-regulations")
+            assert jdih["discovery"] == {"adapter": "bi_jdih", "max_records": 10_000}
+            assert jdih["group_id"] == "id-central-bank-regulations"
+            assert jdih["verification"]["checklist_items"] == ["ID-4.6"]
+            assert "id-bi-regulations" in {source["id"] for source in active}
+            assert any(
+                relation["source_id"] == "id-bi-jdih-regulations"
+                and relation["related_source_id"] == "id-bi-regulations"
+                and relation["type"] == "cross_checks"
+                for relation in registry["source_relations"]
+            )
             bpom = next(row for row in registry["sources"] if row["id"] == "id-bpom-regulations")
             bpjph = next(row for row in registry["sources"] if row["id"] == "id-bpjph-jdih-cari")
             assert bpom["verification"]["checklist_items"] == []
@@ -246,6 +271,23 @@ def test_versioned_source_registry_validates_hierarchy_relations_and_archives(tm
     invalid_bi_policy["sources"][0]["discovery"]["max_pages"] = 2_001
     rejected.write_text(json.dumps(invalid_bi_policy))
     with pytest.raises(ValueError, match="Bank Indonesia discovery policy"):
+        collection.source_pool(rejected, "ID")
+
+    jdih_probe = {
+        "protocol": "aitea-official-source-pool-v1",
+        "sources": [bi_jdih_source()],
+    }
+    rejected.write_text(json.dumps(jdih_probe))
+    assert collection.source_pool(rejected, "ID")[0]["discovery"]["adapter"] == "bi_jdih"
+    invalid_jdih_policy = deepcopy(jdih_probe)
+    invalid_jdih_policy["sources"][0]["discovery"]["max_records"] = 10_001
+    rejected.write_text(json.dumps(invalid_jdih_policy))
+    with pytest.raises(ValueError, match="Bank Indonesia JDIH discovery policy"):
+        collection.source_pool(rejected, "ID")
+    invalid_jdih_root = deepcopy(jdih_probe)
+    invalid_jdih_root["sources"][0]["url"] += "/other"
+    rejected.write_text(json.dumps(invalid_jdih_root))
+    with pytest.raises(ValueError, match="exact official catalogue root"):
         collection.source_pool(rejected, "ID")
 
     invalid_sso_window = deepcopy(registry)
@@ -498,6 +540,72 @@ def test_sso_source_recipe_preserves_row_identity_and_parent_locator():
     invalid = {**document, "document_date": "2017122917000"}
     with pytest.raises(ValueError, match="row identity or locator"):
         collection.source_reference_fields(source_row, invalid, hashlib.sha256(raw).hexdigest())
+
+
+def test_bi_jdih_uses_virtual_batches_and_keeps_metadata_bound_to_its_detail(environment):
+    env = environment
+    configured = bi_jdih_source()
+    root = configured["url"]
+    virtual_page = f"{root}?aitea_offset=199"
+    raw_catalog = (
+        '<html><title>Peraturan - JDIH Bank Indonesia</title><body><h1>Peraturan</h1>'
+        + "".join(
+            f'<a href="/Web/DaftarPeraturan/Detail/{number}">Peraturan PBI {number} Tahun 2026</a>'
+            for number in range(1, 451)
+        )
+        + "</body></html>"
+    ).encode()
+    env.responses[root] = raw_catalog
+    collector = env.make([configured], country="ID")
+
+    receipt = collector.fetch(configured, virtual_page)
+
+    assert collection.request_url(configured, virtual_page) == root
+    assert env.calls[-1]["url"] == root
+    assert receipt["outcome"]["status"] == "success"
+    assert receipt["request_evidence"]["method"] == "GET"
+    assert receipt["request_evidence"]["queued_url"] == virtual_page
+    assert receipt["asset"]["discovery"]["scope"] == {
+        "provider": "bi-jdih-readonly-api-v1",
+        "catalog_url": root,
+        "catalog_sha256": hashlib.sha256(raw_catalog).hexdigest(),
+        "offset": 199,
+        "total_detail_links": 450,
+        "page_size": 199,
+        "returned": 199,
+        "has_next": True,
+    }
+
+    detail_url = "https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?PeraturanID=12409"
+    detail_body = json.dumps(
+        {
+            "StatusCode": 200,
+            "Data": {
+                "PeraturanID": 12409,
+                "NomorPeraturan": "9/2026",
+                "Judul": "Peraturan Bank Indonesia tentang Pengaturan",
+                "JenisPeraturanDesc": "Peraturan Bank Indonesia",
+                "TanggalBerlaku": "2026-05-14",
+                "StatusText": "Berlaku",
+                "Mengubah": ["PBI 1/2020"],
+            },
+        }
+    ).encode()
+    discovered = collection.discover_page(
+        detail_url, detail_body, "application/json", collection.recipe(configured)
+    )
+    document = discovered["links"][0]
+    record = collection.source_reference_fields(
+        configured,
+        document,
+        hashlib.sha256(detail_body).hexdigest(),
+        detail_url,
+    )
+    assert record["identity_key"] == "bi:12409"
+    assert record["source_record"]["fields"]["amends"] == ["PBI 1/2020"]
+    assert record["source_record"]["interpretation"] == "unreviewed_source_values"
+    with pytest.raises(ValueError, match="invalid or detached"):
+        collection.source_reference_fields(configured, document, "bad-hash", detail_url)
 
 
 def test_bi_official_collector_posts_only_from_verified_adjacent_catalogue_page(environment):
@@ -1659,7 +1767,7 @@ def test_only_exact_setneg_source_enables_json_transport_and_original_pool_recip
     env = environment
     pool = json.loads((ROOT / "config/collection-sources/id-sg-unattended.json").read_text())
     configured = pool["sources"]
-    assert len(configured) == 28
+    assert len(configured) == 29
     setneg_ids = {"id-setneg-perpu", "id-setneg-uu", "id-setneg-pp", "id-setneg-perpres"}
     originals = [
         row

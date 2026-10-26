@@ -123,3 +123,19 @@ def test_bi_jdih_catalog_does_not_exceed_its_six_mib_adapter_limit():
     result = discover_page(ROOT_URL, oversized, "text/html", recipe)
     assert not result["matched"]
     assert "6 MiB" in result["reason"]
+
+
+def test_bi_jdih_catalog_rejects_records_beyond_its_configured_bound():
+    content = (
+        "<html><title>Peraturan JDIH</title><body><h1>Peraturan</h1>"
+        + "".join(
+            f'<a href="/Web/DaftarPeraturan/Detail/{number}">PBI {number}</a>'
+            for number in range(1, 10_002)
+        )
+        + "</body></html>"
+    ).encode()
+
+    result = discover_page(ROOT_URL, content, "text/html", recipe_for(ITEM))
+
+    assert not result["matched"]
+    assert "10,000" in result["reason"]

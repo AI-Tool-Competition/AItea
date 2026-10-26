@@ -292,6 +292,29 @@ def _validate_discovery_policy(source: dict, validate_url) -> None:
             or parsed.fragment
         ):
             raise ValueError("Bank Indonesia source must use its exact official catalogue root")
+    elif policy.get("adapter") == "bi_jdih":
+        if (
+            set(policy) != {"adapter", "max_records"}
+            or type(policy.get("max_records")) is not int
+            or policy["max_records"] != 10_000
+        ):
+            raise ValueError("Invalid bounded Bank Indonesia JDIH discovery policy")
+        try:
+            normalized, host = validate_url(source["url"])
+            parsed = urlsplit(source["url"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Bank Indonesia JDIH source must use its exact official catalogue root") from error
+        if (
+            source.get("country") != "ID"
+            or source.get("kind") != "catalogue"
+            or source.get("allowed_hosts") != ["jdih.bi.go.id"]
+            or host != "jdih.bi.go.id"
+            or normalized != source["url"]
+            or parsed.path != "/Web/DaftarPeraturan"
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Bank Indonesia JDIH source must use its exact official catalogue root")
     else:
         raise ValueError("Invalid bounded source discovery policy")
     request_window = source.get("request_window")
@@ -367,7 +390,7 @@ def validate_source_registry(
         discovery_exclude_keywords = source.get("discovery_exclude_keywords", [])
         specialized_discovery = (
             isinstance(source.get("discovery"), dict)
-            and source["discovery"].get("adapter") in {"sso_catalog_2026", "bi_official"}
+            and source["discovery"].get("adapter") in {"sso_catalog_2026", "bi_official", "bi_jdih"}
         )
         normalized, host = validate_url(source["url"])
         if identifier == SETNEG_ID or host == "jdih.setneg.go.id" or "setneg_type" in source:

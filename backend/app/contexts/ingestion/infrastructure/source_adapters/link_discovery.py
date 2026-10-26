@@ -1316,6 +1316,13 @@ class _Recipe:
             or not 1 <= self.max_links <= 500
         ):
             raise ValueError("单页候选数量必须为 1 至 500。")
+        self.max_catalog_records = recipe.get("max_catalog_records", 10_000)
+        if (
+            isinstance(self.max_catalog_records, bool)
+            or not isinstance(self.max_catalog_records, int)
+            or not 1 <= self.max_catalog_records <= 10_000
+        ):
+            raise ValueError("目录记录上限必须为 1 至 10,000。")
         for key in ("include_terms", "exclude_terms", "bpk_types", "bpk_search_terms"):
             values = recipe.get(key, [])
             if (
@@ -2132,7 +2139,7 @@ def recipe_for(item: dict) -> dict:
             or seeds[0].get("purpose") != "catalog"
         ):
             return {"adapter": "manual", "reason": "央行 JDIH 适配仅允许印尼 4.6 项的官方法规目录入口。"}
-        return result | {"max_links": 200}
+        return result | {"max_links": 200, "max_catalog_records": 10_000}
     if adapter == "bi_official":
         if (
             _country(item) != "ID"

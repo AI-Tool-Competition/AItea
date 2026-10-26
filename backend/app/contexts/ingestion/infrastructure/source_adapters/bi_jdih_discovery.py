@@ -12,9 +12,21 @@ _CATALOG_PATH = "/Web/DaftarPeraturan"
 _DETAIL_PATH = "/api/WebJDIH/GetDataWebPeraturan"
 _FILE_PREFIX = "/api/WebJDIH/GetFilePeraturan/"
 _ID = re.compile(r"[1-9][0-9]{0,11}\Z")
-_CATALOG_BYTES = 6 * 1024 * 1024
-_JSON_BYTES = 1024 * 1024
+MAX_HTML_BYTES = 6 * 1024 * 1024
+MAX_JSON_BYTES = 1024 * 1024
+_CATALOG_BYTES = MAX_HTML_BYTES
+_JSON_BYTES = MAX_JSON_BYTES
 _CATALOG_BATCH = 199
+MAX_CATALOG_RECORDS = 10_000
+MAX_CATALOG_PAGES = (MAX_CATALOG_RECORDS + _CATALOG_BATCH - 1) // _CATALOG_BATCH
+
+
+def catalog_offset(url: str) -> int | None:
+    """Return the virtual batch offset for one exact official catalogue URL."""
+    if purpose(url) != "catalog":
+        return None
+    values = _query(url) or {}
+    return int(values.get("aitea_offset", ["0"])[0])
 
 
 def _query(url: str) -> dict[str, list[str]] | None:
@@ -175,11 +187,12 @@ def _catalog_result(url: str, content: bytes, mime: str, rules):
     heading = " ".join(page.headings[:3])
     if (
         page.challenge
+        or page.truncated
         or _ERROR_HEADING.search(title)
         or _ERROR_HEADING.search(heading)
         or (len(visible) < 1500 and _ERROR_BODY.search(visible))
     ):
-        return _result(reason="央行 JDIH 返回验证、登录或错误页面，未登记候选。")
+        return _result(reason="央行 JDIH 返回错误页面或超出 10,000 条目录读取上限，未登记候选。")
 
     query = _query(url) or {}
     offset = int(query.get("aitea_offset", ["0"])[0]) if query else 0
@@ -205,6 +218,11 @@ def _catalog_result(url: str, content: bytes, mime: str, rules):
     if not identifiers:
         return _result(reason="央行 JDIH 目录没有可核验的法规详情链接。")
     total = len(identifiers)
+    max_records = getattr(rules, "max_catalog_records", MAX_CATALOG_RECORDS)
+    if total > max_records:
+        return _result(reason="央行 JDIH 目录超过配置的 10,000 条记录上限。")
+    if offset >= total:
+        return _result(reason="央行 JDIH 虚拟分页偏移超出当前目录记录范围。")
     batch = identifiers[offset : offset + _CATALOG_BATCH]
     links = [
         {

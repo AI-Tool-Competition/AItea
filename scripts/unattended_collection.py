@@ -38,7 +38,10 @@ from app.contexts.ingestion.application.source_catalog import (  # noqa: E402
     active_sources,
 )
 from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host  # noqa: E402
-from app.contexts.ingestion.infrastructure.source_adapters import bi_official_discovery  # noqa: E402
+from app.contexts.ingestion.infrastructure.source_adapters import (  # noqa: E402
+    bi_jdih_discovery,
+    bi_official_discovery,
+)
 from app.contexts.ingestion.infrastructure.source_adapters.link_discovery import (  # noqa: E402
     discover_page,
     page_body_limit,
@@ -242,6 +245,19 @@ def recipe(source):
                 "exclude_terms": [],
                 "max_links": 100,
             }
+        if discovery.get("adapter") == "bi_jdih":
+            return {
+                "adapter": "bi_jdih",
+                "allowed_hosts": source["allowed_hosts"],
+                "catalog_patterns": [],
+                "detail_patterns": [],
+                "document_patterns": [],
+                "html_document_patterns": [],
+                "include_terms": [],
+                "exclude_terms": [],
+                "max_links": 200,
+                "max_catalog_records": discovery["max_records"],
+            }
         category = discovery["category"]
         page_size = discovery["page_size"]
         return {
@@ -355,6 +371,10 @@ def request_url(source, url):
         if bi_official_discovery.page_number(url) is not None:
             return bi_official_discovery.network_catalog_url(url)
         return url
+    if discovery and discovery.get("adapter") == "bi_jdih":
+        if bi_jdih_discovery.purpose(url) == "catalog":
+            return source["url"]
+        return url
     if discovery is None or url != source["url"]:
         return url
     query = urlencode(
@@ -441,6 +461,74 @@ def source_reference_fields(source, link, parent_hash, parent_url=None):
         ):
             raise ValueError("Bank Indonesia attachment source record is invalid or detached")
         return {"source_record": copy.deepcopy(record)}
+    if discovery.get("adapter") == "bi_jdih":
+        record = link.get("source_record")
+        if record is None:
+            return {}
+        if not isinstance(record, dict):
+            raise ValueError("Bank Indonesia JDIH source record is invalid")
+        fields = record.get("fields")
+        structure = record.get("structure")
+        identity = link.get("identity_key")
+        match = re.fullmatch(r"bi:([1-9][0-9]{0,11})", identity) if isinstance(identity, str) else None
+        identifier = match.group(1) if match else None
+        expected_fields = {
+            "number",
+            "title",
+            "instrument_type",
+            "issuer",
+            "established_date",
+            "promulgated_date",
+            "effective_date",
+            "status",
+            "official_source",
+            "legal_basis",
+            "amends",
+            "repeals",
+            "amended_by",
+            "repealed_by",
+            "related_regulations",
+        }
+        if (
+            record.get("provider") != "bi_jdih"
+            or record.get("interpretation") != "unreviewed_source_values"
+            or not isinstance(fields, dict)
+            or not fields
+            or len(fields) > len(expected_fields)
+            or not set(fields).issubset(expected_fields)
+            or not isinstance(structure, dict)
+            or set(structure)
+            != {
+                "unit_type",
+                "number",
+                "title",
+                "instrument_type",
+                "parent_titles",
+                "file_name",
+                "anchor_class",
+                "link_mechanism",
+            }
+            or not identifier
+            or link.get("purpose") != "document"
+            or link.get("url") != f"https://jdih.bi.go.id/api/WebJDIH/GetFilePeraturan/{identifier}"
+            or not isinstance(parent_url, str)
+            or parent_url
+            != "https://jdih.bi.go.id/api/WebJDIH/GetDataWebPeraturan?"
+            + urlencode({"PeraturanID": identifier})
+            or not isinstance(parent_hash, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", parent_hash)
+            or structure.get("unit_type") != "official_regulation_metadata_candidate"
+            or structure.get("number") != fields.get("number")
+            or structure.get("title") != fields.get("title")
+            or structure.get("file_name") != f"BI-JDIH-{identifier}.pdf"
+            or structure.get("link_mechanism") != "read_only_official_metadata_api"
+            or link.get("title") != fields.get("title")
+        ):
+            raise ValueError("Bank Indonesia JDIH source record is invalid or detached")
+        return {
+            "identity_key": identity,
+            "source_record": copy.deepcopy(record),
+        }
     if discovery.get("adapter") != "sso_catalog_2026":
         return {}
     if link.get("purpose") == "catalog":
@@ -800,12 +888,18 @@ class Collector:
 
     def fetch(self, source, url, cached=None, *, parent_cached=None):
         collection_limits = source.get("collection_limits", {})
-        is_document = page_purpose(url, recipe(source)) == "document"
+        adapter = source.get("discovery", {}).get("adapter")
+        purpose = page_purpose(url, recipe(source))
+        is_document = purpose == "document"
         response_limit = (
             collection_limits.get("max_document_bytes", self.limits["max_response_bytes"])
             if is_document
             else self.limits["max_response_bytes"]
         )
+        if adapter == "bi_jdih" and purpose == "catalog":
+            response_limit = bi_jdih_discovery.MAX_HTML_BYTES
+        elif adapter == "bi_jdih" and purpose == "detail":
+            response_limit = bi_jdih_discovery.MAX_JSON_BYTES
         timeout_seconds = (
             collection_limits.get("timeout_seconds", self.limits["timeout_seconds"])
             if is_document
@@ -818,7 +912,8 @@ class Collector:
         try:
             validators = {}
             cached_request_url = (cached or {}).get("requested_url", (cached or {}).get("url"))
-            is_bi_official = source.get("discovery", {}).get("adapter") == "bi_official"
+            is_bi_official = adapter == "bi_official"
+            is_bi_jdih = adapter == "bi_jdih"
             page = bi_official_discovery.page_number(url) if is_bi_official else None
             if (
                 valid_cached(self.root, cached)
@@ -872,6 +967,14 @@ class Collector:
                         "queued_url": url,
                         "network_url": network_url,
                     }
+            elif is_bi_jdih:
+                if purpose == "catalog":
+                    request_options["max_compressed_html_bytes"] = bi_jdih_discovery.MAX_HTML_BYTES
+                receipt["request_evidence"] = {
+                    "method": "GET",
+                    "queued_url": url,
+                    "network_url": network_url,
+                }
             if request_options.get("json_body"):
                 validators = {}
             fetched = _download(
@@ -899,7 +1002,7 @@ class Collector:
                 }
                 receipt["charged_bytes"] = 0
             else:
-                if is_bi_official and fetched["url"] != network_url:
+                if (is_bi_official or is_bi_jdih) and fetched["url"] != network_url:
                     raise DownloadError("央行官方目录请求重定向到了未核验页面。")
                 if receipt.get("request_evidence") is not None:
                     receipt["request_evidence"].update(
@@ -908,10 +1011,10 @@ class Collector:
                     )
                 blob = fetched["blob"]
                 with blob.path.open("rb") as stream:
-                    inspection_url = url if is_bi_official else fetched["url"]
+                    inspection_url = url if is_bi_official or is_bi_jdih else fetched["url"]
                     inspection_limit = (
                         page_body_limit(inspection_url, fetched["mime_type"], recipe(source))
-                        if is_bi_official
+                        if is_bi_official or is_bi_jdih
                         else 4 * 1024**2
                     )
                     content = stream.read(inspection_limit + 1)
@@ -1132,15 +1235,21 @@ class Collector:
         adapter = source.get("discovery", {}).get("adapter")
         is_sso = adapter == "sso_catalog_2026"
         is_bi_official = adapter == "bi_official"
-        is_catalog_adapter = is_sso or is_bi_official
+        is_bi_jdih = adapter == "bi_jdih"
+        is_catalog_adapter = is_sso or is_bi_official or is_bi_jdih
         frontier_limit = (
             source["discovery"]["max_records"] + source["discovery"]["max_pages"]
             if is_bi_official
+            else source["discovery"]["max_records"] + bi_jdih_discovery.MAX_CATALOG_PAGES
+            if is_bi_jdih
             else self.limits["max_frontier"]
         )
         parent_url = url
         if is_sso and url == source["url"]:
             parent_url = asset.get("requested_url", url)
+        source_catalog_offset = bi_jdih_discovery.catalog_offset(url) if is_bi_jdih else None
+        if is_bi_jdih and source_catalog_offset is None:
+            source_catalog_offset = frontier.get(url, {}).get("catalog_offset")
         links = asset.get("discovery", {}).get("links", [])
         if is_catalog_adapter:
             links = sorted(links, key=lambda link: link.get("purpose") != "catalog")
@@ -1157,6 +1266,11 @@ class Collector:
                 or bi_official_discovery.page_number(parent_url)
                 or asset.get("catalog_page_number")
             ) if is_bi_official else None
+            link_catalog_offset = (
+                bi_jdih_discovery.catalog_offset(candidate)
+                if is_bi_jdih and link["purpose"] == "catalog"
+                else source_catalog_offset
+            ) if is_bi_jdih else None
             cached_target = cache.get(candidate)
             if (
                 is_bi_official
@@ -1213,6 +1327,11 @@ class Collector:
                         link_catalog_page,
                         item.get("catalog_page_number", link_catalog_page),
                     )
+                if is_bi_jdih and link_catalog_offset is not None:
+                    item["catalog_offset"] = min(
+                        link_catalog_offset,
+                        item.get("catalog_offset", link_catalog_offset),
+                    )
                 # A changed known parent version invalidates its target.
                 # A first reference from a different page only adds a
                 # mapping: shared navigation must not repeatedly consume
@@ -1227,21 +1346,33 @@ class Collector:
                     key for key, value in frontier.items() if value.get("purpose") != "catalog"
                 ]
                 if deferred_details:
-                    victim = min(
-                        deferred_details,
-                        key=lambda key: (
-                            frontier[key].get("attempt_count", 0),
-                            frontier[key].get("discovered_at", 0),
-                            key,
-                        ),
-                    ) if is_sso else max(
-                        deferred_details,
-                        key=lambda key: (
-                            frontier[key].get("catalog_page_number", 0),
-                            frontier[key].get("discovered_at", 0),
-                            key,
-                        ),
-                    )
+                    if is_sso:
+                        victim = min(
+                            deferred_details,
+                            key=lambda key: (
+                                frontier[key].get("attempt_count", 0),
+                                frontier[key].get("discovered_at", 0),
+                                key,
+                            ),
+                        )
+                    elif is_bi_jdih:
+                        victim = max(
+                            deferred_details,
+                            key=lambda key: (
+                                frontier[key].get("catalog_offset", 0),
+                                frontier[key].get("discovered_at", 0),
+                                key,
+                            ),
+                        )
+                    else:
+                        victim = max(
+                            deferred_details,
+                            key=lambda key: (
+                                frontier[key].get("catalog_page_number", 0),
+                                frontier[key].get("discovered_at", 0),
+                                key,
+                            ),
+                        )
                     self.event(
                         "frontier_archived",
                         source_id=source["id"],
@@ -1250,6 +1381,8 @@ class Collector:
                         reason=(
                             "sso_catalogue_pagination_priority"
                             if is_sso
+                            else "bi_jdih_catalogue_pagination_priority"
+                            if is_bi_jdih
                             else "bi_official_catalogue_pagination_priority"
                         ),
                     )
@@ -1260,7 +1393,7 @@ class Collector:
                     continue
                 candidates = (
                     [key for key, value in frontier.items() if value.get("purpose") != "catalog"]
-                    if is_bi_official
+                    if is_bi_official or is_bi_jdih
                     else list(frontier)
                 )
                 if not candidates:
@@ -1277,6 +1410,18 @@ class Collector:
                     victim_page = frontier[victim].get("catalog_page_number", 0)
                     if link_catalog_page is None or link_catalog_page > victim_page:
                         continue
+                elif is_bi_jdih:
+                    victim = max(
+                        candidates,
+                        key=lambda key: (
+                            frontier[key].get("catalog_offset", 0),
+                            frontier[key].get("discovered_at", 0),
+                            key,
+                        ),
+                    )
+                    victim_offset = frontier[victim].get("catalog_offset")
+                    if link_catalog_offset is None or link_catalog_offset > (victim_offset or 0):
+                        continue
                 else:
                     victim = min(
                         candidates,
@@ -1291,7 +1436,13 @@ class Collector:
                     source_id=source["id"],
                     url=victim,
                     mapping=frontier.pop(victim),
-                    **({"reason": "bi_official_frontier_rotation"} if is_bi_official else {}),
+                    **(
+                        {"reason": "bi_official_frontier_rotation"}
+                        if is_bi_official
+                        else {"reason": "bi_jdih_frontier_rotation"}
+                        if is_bi_jdih
+                        else {}
+                    ),
                 )
             frontier[candidate] = {
                 "parent_url": parent_url,
@@ -1302,6 +1453,7 @@ class Collector:
                 "attempt_count": 0,
                 "discovered_at": time.time(),
                 **({"catalog_page_number": link_catalog_page} if is_bi_official else {}),
+                **({"catalog_offset": link_catalog_offset} if is_bi_jdih and link_catalog_offset is not None else {}),
                 **reference_fields,
             }
             self.event(
@@ -1343,7 +1495,8 @@ class Collector:
         adapter = source.get("discovery", {}).get("adapter")
         is_sso = adapter == "sso_catalog_2026"
         is_bi_official = adapter == "bi_official"
-        is_catalog_adapter = is_sso or is_bi_official
+        is_bi_jdih = adapter == "bi_jdih"
+        is_catalog_adapter = is_sso or is_bi_official or is_bi_jdih
         if is_bi_official:
             latest_catalog_drift = max(
                 (
@@ -1364,9 +1517,14 @@ class Collector:
             or current.get("force_root_refresh") is True
         )
         urls = deque()
-        cached_detail_replay = is_bi_official and len(frontier) < (
+        frontier_limit = (
             source["discovery"]["max_records"] + source["discovery"]["max_pages"]
+            if is_bi_official
+            else source["discovery"]["max_records"] + bi_jdih_discovery.MAX_CATALOG_PAGES
+            if is_bi_jdih
+            else self.limits["max_frontier"]
         )
+        cached_detail_replay = (is_bi_official or is_bi_jdih) and len(frontier) < frontier_limit
         if is_catalog_adapter:
             def catalogue_index(entry):
                 if is_bi_official:
@@ -1375,6 +1533,12 @@ class Collector:
                     return (
                         page or asset.get("catalog_page_number") or 0,
                         0 if asset.get("discovery", {}).get("purpose") == "catalog" else 1,
+                    )
+                if is_bi_jdih:
+                    offset = bi_jdih_discovery.catalog_offset(entry[0])
+                    return (
+                        offset or 0,
+                        0 if entry[1].get("discovery", {}).get("purpose") == "catalog" else 1,
                     )
                 match = re.search(r"/All(?:/(\d+))?$", urlsplit(entry[0]).path)
                 return int(match.group(1) or 0) if match else 0
@@ -1402,7 +1566,7 @@ class Collector:
                 for url, item in sorted(
                     frontier.items(),
                     key=lambda pair: (
-                        -int(is_bi_official and pair[1].get("purpose") == "catalog"),
+                        -int((is_bi_official or is_bi_jdih) and pair[1].get("purpose") == "catalog"),
                         pair[1].get("attempt_count", 0),
                         -int(pair[1].get("purpose") == "document"),
                         pair[0],
@@ -1524,6 +1688,12 @@ class Collector:
                     cache_limit = (
                         2 * source["discovery"]["max_records"]
                         + source["discovery"]["max_pages"]
+                        + 1
+                    )
+                elif is_bi_jdih:
+                    cache_limit = (
+                        2 * source["discovery"]["max_records"]
+                        + bi_jdih_discovery.MAX_CATALOG_PAGES
                         + 1
                     )
                 if url not in cache and len(cache) >= cache_limit:

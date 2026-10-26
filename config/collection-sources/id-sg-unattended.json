@@ -1508,6 +1508,54 @@
       "status": "active",
       "transport": "proxy",
       "group_id": "id-central-bank-regulations"
+    },
+    {
+      "id": "id-bi-jdih-regulations",
+      "country": "ID",
+      "topics": [
+        "banking",
+        "monetary_policy",
+        "financial_services"
+      ],
+      "title": "印度尼西亚央行法律资料与信息网络（JDIH BI）法规目录",
+      "url": "https://jdih.bi.go.id/Web/DaftarPeraturan",
+      "priority": 94,
+      "kind": "catalogue",
+      "interval_seconds": 86400,
+      "allowed_hosts": [
+        "jdih.bi.go.id"
+      ],
+      "discovery_keywords": [],
+      "discovery": {
+        "adapter": "bi_jdih",
+        "max_records": 10000
+      },
+      "verification": {
+        "official_evidence_url": "https://jdih.bi.go.id/Web/DaftarPeraturan",
+        "checked_at": "2026-10-26T00:19:50.532379+00:00",
+        "official_identity": "印度尼西亚银行官方法律资料与信息网络（JDIH BI），本次通过项目代理验证了法规目录、只读详情 JSON 接口和具有 PDF 文件签名的官方原件。",
+        "business_use": "补充核验央行法规编号、主管机关、公布和生效日期、状态、修订关系及 PDF 原件，供 ID-4.6 交叉检索；结构化字段只作为未审核来源值。",
+        "checklist_items": [
+          "ID-4.6"
+        ],
+        "server_status": "reachable_content",
+        "server_receipt_path": ".dev/aitea-bi-jdih-probe-20261026-01/collector/events/2026-10-26/1792973990524969082-5b740e1dc5b041d7ba5168464797a4cb.json",
+        "server_receipt_sha256": "6d20f3a9a74f7bfb4f8f1d9525c6b29282eee2693a2b50006277cd723b5381c3",
+        "body_sha256": "fda5f1caf3134187a0993f6fbe75c7c0b4a6ecffd71d06cc726855721c215079",
+        "limitations": [
+          "本次通过代理读取目录、一个详情 JSON 和一份 PDF；根目录报告 1,558 条记录，单次探测和首页结果不构成全量覆盖证明。",
+          "详情字段保留为未审核来源值；PDF 签名只确认文件格式，法规效力、版本、修订适用和与其他规范的关系仍需单独审核。",
+          "分页按同一官方目录根页生成 199 条一批的受限虚拟偏移，目录记录上限 10,000；请求仍受采集器日请求/字节额度、主机并发和官方响应退避约束。"
+        ]
+      },
+      "status": "active",
+      "transport": "proxy",
+      "group_id": "id-central-bank-regulations",
+      "collection_limits": {
+        "max_document_bytes": 134217728,
+        "daily_bytes": 268435456,
+        "timeout_seconds": 900
+      }
     }
   ],
   "schema_version": 2,
@@ -1644,7 +1692,8 @@
             "ID-4.6"
           ],
           "source_ids": [
-            "id-bi-regulations"
+            "id-bi-regulations",
+            "id-bi-jdih-regulations"
           ],
           "children": []
         }
@@ -1966,6 +2015,13 @@
       "type": "cross_checks",
       "checklist_items": [],
       "reason": "央行官网法规目录与国家法规发布平台并列核对规范文本及发布身份；来源关联不推定两类规范具有相同层级或效力。"
+    },
+    {
+      "source_id": "id-bi-jdih-regulations",
+      "related_source_id": "id-bi-regulations",
+      "type": "cross_checks",
+      "checklist_items": [],
+      "reason": "JDIH BI 结构化法规元数据与央行官网法规目录并列比对编号、标题和原件入口；差异作为核查线索，不推断文本效力、版本或优先级。"
     }
   ]
 }

@@ -1,6 +1,6 @@
 # 无人值守官方来源池
 
-配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 28 个稳定来源节点：印度尼西亚 17 个（12 个活动、5 个归档），新加坡 11 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
+配置为 [`config/collection-sources/id-sg-unattended.json`](../config/collection-sources/id-sg-unattended.json)，当前共 29 个稳定来源节点：印度尼西亚 18 个（13 个活动、5 个归档），新加坡 11 个（全部活动）。`priority` 数值越大越优先，范围 1–100；默认复查间隔为 24 小时。BPJPH 历史首页为空并已归档，当前 `/cari` 法规目录处于活动状态。每条固定国家、主题、资料性质、精确 HTTPS 主机和发现关键词，运行时根据来源健康状态选择下一个有业务价值的入口。抓取不得跳出这些来源所允许的主机，也不得把新闻、验证码、错误页面或商业整理作为法规正文。
 
 配置采用 `aitea-official-source-pool-v2`：`groups` 是国家根节点及主题子节点，子节点列出来源 ID 和对应核验清单项；来源自身保留正式入口、访问证据、主题、发现策略、优先级、轮询间隔和 `active` 状态。活动源须留有官方身份、业务用途、清单范围、近期开页回执与正文 SHA-256；空目录单独标记并低频复查。`source_relations` 是有方向的关系边，区分 `complements`（互补）、`cross_checks`（交叉核验）、`implements`（实施规则）与 `publishes_original`（正式原件发布），并说明适用清单项和关系理由。所有活动源都明确使用 `transport: proxy`；watchdog 将其精确允许主机并入代理白名单。归档用 `status: archived` 移出运行队列，原节点、关系和所有历史账本均保留；新增来源必须经有界代理抓取取得有效正文后才能登记。
 
@@ -173,6 +173,12 @@ JDIHN 是成员 JDIH 文书的聚合目录，文件来源仍须回到发布机�
 
 来源 `sg-sfa-commercial-import` 纳入 `sg-food-trade`，对应 SG-3.1/SG-3.2，并分别与 SFA 标签指南、Singapore Customs 建立互补关系：SFA 指引负责食品类别、登记和许可证要求，海关来源覆盖进口申报；不能相互替代。来源池摘要迁移保留了原轮询历史，SG 采集任务现已按新摘要恢复。该页是行政指引，不是产品准入结论，也不代替法规原文、HS 分类及产品配方的适用性复核。
 
+### 2026-10-26 印尼 OJK 官方目录代理复核
+
+[OJK 官方新闻稿](https://ojk.go.id/id/berita-dan-kegiatan/siaran-pers/Pages/OJK-Luncurkan-Aplikasi-Jaringan-Dokumentasi-dan-Informasi-Hukum-%28JDIH%29-OJK.aspx)确认 `jdih.ojk.go.id` 是其法律文献入口，可提供 OJK 规定及相关法律资料。为补足金融监管来源，项目采集器经既有代理对 JDIH 首页和 OJK 官网法规目录各执行 1 次有界 GET（单主机并发 1、20 秒超时、8 MiB 响应上限）。两个精确入口均返回 HTTP 200，但分别只有 244 和 245 字节，解析结果都是 `UnverifiedOrChallengeContent`；JDIH 响应显示 “Request Rejected”，没有可验证目录或法规链接。
+
+两次原始响应及请求回执分别保存在忽略目录 `.dev/aitea-ojk-jdih-probe/isolated-run/` 与 `.dev/aitea-ojk-jdih-probe/isolated-regulations-run/`；正文 SHA-256 分别为 `cc9b5d09f34e61f5e85a6371107d720324f355ce2e614281d577bbeef819a48c` 和 `1f28bec2bbc462c89668e348afb1c04e3c97e78fb112f8c6dd9ce0a27417e698`。两个候选均不进入正式来源池，也不绕过拒绝页。该结果只说明本次项目代理无法从这两个精确入口取得可验证内容，不推断 OJK 其他页面或整个域名不可访问；金融监管覆盖缺口继续记录，待找到可访问的官方原文入口后再评估接入。
+
 ### 2026-10-26 当前来源池清单快照
 
-仓库中的 `aitea-official-source-pool-v2` 配置现有 28 个来源节点：印尼 12 个活动、5 个归档；新加坡 11 个活动；两国分属 2 个主题组，共记录 23 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 28 个节点内。
+仓库中的 `aitea-official-source-pool-v2` 配置现有 29 个来源节点：印尼 13 个活动、5 个归档；新加坡 11 个活动；两国分属 2 个主题组，共记录 24 条来源关系。归档节点保留历史与关系，不参与当前轮询。该计数描述清单配置，不表示各来源此刻都可访问、已取得法规原件、解析完成或法律审核通过；尚未取得原件的 Barantin 候选不在这 29 个节点内。

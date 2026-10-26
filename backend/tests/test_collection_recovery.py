@@ -2577,7 +2577,7 @@ def test_backup_restore_preserves_recovery_events_and_due_queue(service, tmp_pat
     before = rows(service, "collection_recovery_events")
     backup = tmp_path / "backup"
     create_backup(service.db.data_dir, backup)
-    assert verify_backup(backup)["schema_version"] == 25
+    assert verify_backup(backup)["schema_version"] == 26
     restore_backup(backup, tmp_path / "restored")
     restored = Service(tmp_path / "restored")
     assert rows(restored, "collection_recovery_events") == before

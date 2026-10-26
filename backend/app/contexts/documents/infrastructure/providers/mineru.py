@@ -115,7 +115,7 @@ def parse_profile_hash(profile, retry_generation=None):
 class MinerUWait(ValueError):
     def __init__(self, code="rate_wait", retry_after=15):
         super().__init__("MinerU 正在等待远端容量，任务和原件已保留。")
-        self.code, self.retry_after = str(code), max(1, retry_after)
+        self.code, self.retry_after = str(code), max(0.05, float(retry_after))
 
 
 class MinerUError(ValueError):
@@ -132,7 +132,9 @@ class Admission:
         if self.directory.is_symlink():
             raise ValueError("MinerU 运行目录不能使用符号链接。")
         self.directory.mkdir(mode=0o700, exist_ok=True)
-        self.interval = _number("MINERU_REQUEST_INTERVAL_SECONDS", 1, 0.25, 60)
+        legacy_interval = _number("MINERU_REQUEST_INTERVAL_SECONDS", 0.21, 0.001, 60)
+        self.submit_interval = _number("MINERU_SUBMIT_INTERVAL_SECONDS", legacy_interval, 0.001, 60)
+        self.result_interval = _number("MINERU_RESULT_INTERVAL_SECONDS", 0.062, 0.001, 60)
 
     @contextmanager
     def state(self):
@@ -156,9 +158,11 @@ class Admission:
 
     def take(self, *, submission=False):
         with self.state() as state:
+            bucket = "submission_next_at" if submission else "result_next_at"
+            interval = self.submit_interval if submission else self.result_interval
             delay = (
                 max(
-                    state.get("next_at", 0),
+                    state.get(bucket, 0),
                     state.get("blocked_until", 0),
                     state.get("quota_until", 0) if submission else 0,
                 )
@@ -166,12 +170,12 @@ class Admission:
             )
             if delay > 0:
                 raise MinerUWait(retry_after=delay)
-            state["next_at"] = time.time() + self.interval
+            state[bucket] = time.time() + interval
 
     def _capacity(self, state):
         initial = int(_number("MINERU_MAX_ACTIVE_TASKS", 8, 1, 256))
         enabled = os.getenv("MINERU_AUTO_CONCURRENCY", "false").lower() == "true"
-        ceiling = max(initial, int(_number("MINERU_CONCURRENCY_CEILING", 128, 1, 256)))
+        ceiling = max(initial, int(_number("MINERU_CONCURRENCY_CEILING", 256, 1, 256)))
         window = _number("MINERU_CONCURRENCY_WINDOW_SECONDS", 180, 60, 3600)
         signature = [enabled, initial, ceiling, window]
         tuning = state.get("capacity")
@@ -833,6 +837,7 @@ def manifest_valid(manifest):
             EMPTY_PAGE_PROTOCOL,
             PROTOCOL as TABLE_PROTOCOL,
         )
+
         if (
             remote["state"] != "done"
             or remote["source_hash"] != source
@@ -972,9 +977,7 @@ def manifest_valid(manifest):
                         for element in elements
                         if isinstance(element, dict)
                         and isinstance(element.get("locator"), dict)
-                        and element["locator"].get(
-                            "physical_page", element["locator"].get("page")
-                        ) == number
+                        and element["locator"].get("physical_page", element["locator"].get("page")) == number
                         and (element.get("metadata_json") or {}).get("fallback_protocol")
                         == EMPTY_PAGE_PROTOCOL
                     ]

@@ -18,10 +18,12 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.shared.domain.values import dump, now
+from app.shared.domain.values import dump, now, uid
 from app.shared.infrastructure.persistence.blob_store import _verify_existing
 
 SCHEMA_VERSION = 21
+DATASET_COORDINATION_SCHEMA_VERSION = 26
+DATASET_INITIALIZATION_LEASE_SECONDS = 180
 RECIPE = "mineru-ragflow-structured-v1"
 MAX_DATASET_DOCUMENT_UPLOAD_BYTES = 128 * 1024 * 1024
 _ID = re.compile(r"[a-zA-Z0-9_-]{1,128}\Z")
@@ -69,6 +71,8 @@ class RAGFlowError(ValueError):
             or self.code.startswith("http_5")
             or self.code
             in {
+                "dataset_initializing",
+                "dataset_claim_changed",
                 "api_500",
                 "ReadTimeout",
                 "WriteTimeout",
@@ -184,7 +188,21 @@ class RAGFlowIndex:
                     PRIMARY KEY(generation,local_id))""")
                 conn.execute("CREATE INDEX ragflow_chunk_remote ON ragflow_chunks(remote_id,generation)")
                 conn.execute("INSERT INTO schema_migrations VALUES(?,?)", (SCHEMA_VERSION, now()))
+            if not conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=?",
+                (DATASET_COORDINATION_SCHEMA_VERSION,),
+            ).fetchone():
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(ragflow_datasets)")}
+                if "initialization_token" not in columns:
+                    conn.execute("ALTER TABLE ragflow_datasets ADD COLUMN initialization_token TEXT")
+                if "initialization_until" not in columns:
+                    conn.execute("ALTER TABLE ragflow_datasets ADD COLUMN initialization_until REAL")
+                conn.execute(
+                    "INSERT INTO schema_migrations VALUES(?,?)",
+                    (DATASET_COORDINATION_SCHEMA_VERSION, now()),
+                )
             conn.execute("SELECT owner_id,profile,name,remote_id FROM ragflow_datasets LIMIT 0")
+            conn.execute("SELECT initialization_token,initialization_until FROM ragflow_datasets LIMIT 0")
             conn.execute(
                 "SELECT generation,document_id,source_hash,source_version,index_revision,state,remote_id FROM ragflow_documents LIMIT 0"
             )
@@ -347,6 +365,8 @@ class RAGFlowIndex:
 
     def _dataset(self, client, doc, claim, generation, fingerprint):
         name = "aitea-" + _digest([str(self.db.data_dir.resolve()), doc["owner_id"], fingerprint])[:48]
+        token = uid()
+        timestamp = time.time()
         with self.db.transaction() as conn:
             self._guard(conn, doc, claim, generation, fingerprint)
             conn.execute(
@@ -357,37 +377,67 @@ class RAGFlowIndex:
                 "SELECT * FROM ragflow_datasets WHERE owner_id=? AND profile=?",
                 (doc["owner_id"], fingerprint),
             ).fetchone()
-        if row["remote_id"]:
-            return _identifier(row["remote_id"])
-        found = client.call("GET", "/datasets", params={"name": name, "page_size": 2})
-        found = found if isinstance(found, list) else found.get("datasets", [])
-        found = [item for item in found if item.get("name") == name]
-        if len(found) > 1:
-            raise RAGFlowError("ambiguous_dataset")
-        result = (
-            found[0]
-            if found
-            else client.call(
-                "POST",
-                "/datasets",
-                payload={
-                    "name": name,
-                    "embedding_model": os.environ["RAGFLOW_EMBEDDING_MODEL"],
-                    "permission": "me",
-                    "parse_type": 1,
-                    "parser_id": "general",
-                    "language": "English",
-                },
+            if row["remote_id"]:
+                return _identifier(row["remote_id"])
+            if row["initialization_token"] and row["initialization_until"]:
+                remaining = row["initialization_until"] - timestamp
+                if remaining > 0:
+                    raise RAGFlowError("dataset_initializing", retry_after=max(1, min(30, int(remaining))))
+            updated = conn.execute(
+                """UPDATE ragflow_datasets SET initialization_token=?,initialization_until=?
+                WHERE owner_id=? AND profile=? AND
+                    (initialization_token IS NULL OR initialization_until IS NULL OR initialization_until<=?)""",
+                (
+                    token,
+                    timestamp + DATASET_INITIALIZATION_LEASE_SECONDS,
+                    doc["owner_id"],
+                    fingerprint,
+                    timestamp,
+                ),
             )
-        )
-        remote_id = _identifier(result["id"])
-        with self.db.transaction() as conn:
-            self._guard(conn, doc, claim, generation, fingerprint)
-            conn.execute(
-                "UPDATE ragflow_datasets SET remote_id=? WHERE owner_id=? AND profile=?",
-                (remote_id, doc["owner_id"], fingerprint),
+            if updated.rowcount != 1:
+                raise RAGFlowError("dataset_initializing", retry_after=2)
+        try:
+            found = client.call("GET", "/datasets", params={"name": name, "page_size": 2})
+            found = found if isinstance(found, list) else found.get("datasets", [])
+            found = [item for item in found if item.get("name") == name]
+            if len(found) > 1:
+                raise RAGFlowError("ambiguous_dataset")
+            result = (
+                found[0]
+                if found
+                else client.call(
+                    "POST",
+                    "/datasets",
+                    payload={
+                        "name": name,
+                        "embedding_model": os.environ["RAGFLOW_EMBEDDING_MODEL"],
+                        "permission": "me",
+                        "parse_type": 1,
+                        "parser_id": "general",
+                        "language": "English",
+                    },
+                )
             )
-        return remote_id
+            remote_id = _identifier(result["id"])
+            with self.db.transaction() as conn:
+                self._guard(conn, doc, claim, generation, fingerprint)
+                updated = conn.execute(
+                    """UPDATE ragflow_datasets SET remote_id=?,initialization_token=NULL,
+                    initialization_until=NULL WHERE owner_id=? AND profile=? AND initialization_token=?""",
+                    (remote_id, doc["owner_id"], fingerprint, token),
+                )
+                if updated.rowcount != 1:
+                    raise RAGFlowError("dataset_claim_changed", retry_after=2)
+            return remote_id
+        except Exception:
+            with self.db.transaction() as conn:
+                conn.execute(
+                    """UPDATE ragflow_datasets SET initialization_token=NULL,initialization_until=NULL
+                    WHERE owner_id=? AND profile=? AND initialization_token=?""",
+                    (doc["owner_id"], fingerprint, token),
+                )
+            raise
 
     def step(self, doc, claim):
         fingerprint = profile()

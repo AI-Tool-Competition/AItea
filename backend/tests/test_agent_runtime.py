@@ -481,7 +481,7 @@ def test_existing_database_migration_preserves_messages(workspace):
     Database(service.db.data_dir, require_existing=True)
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == count
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 25
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 26
 
 
 def test_image_recognition_uses_scoped_original_and_keeps_it_unverified(workspace, monkeypatch):

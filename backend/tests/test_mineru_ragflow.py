@@ -5,10 +5,11 @@ import io
 import json
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from copy import deepcopy
 from datetime import date
-from threading import Lock
+from threading import Barrier, BrokenBarrierError, Lock
 
 import pytest
 from app.bootstrap import Service
@@ -27,7 +28,13 @@ from app.contexts.documents.infrastructure.providers.mineru_results import (
     resolve_reference,
 )
 from app.contexts.documents.infrastructure.providers.native_asset_ocr import assets
-from app.contexts.documents.infrastructure.providers.ragflow import RAGFlowError, chunk_content
+from app.contexts.documents.infrastructure.providers.ragflow import (
+    DATASET_COORDINATION_SCHEMA_VERSION,
+    RAGFlowError,
+    RAGFlowIndex,
+    chunk_content,
+    profile,
+)
 from app.shared.domain.values import dump, now
 from test_retrieval_index import body, seed
 
@@ -94,6 +101,33 @@ class Remote:
             raise AssertionError((method, path))
 
 
+class DatasetInitializationRemote:
+    def __init__(self):
+        self.calls = []
+        self.dataset_name = None
+        self.lock = Lock()
+        self.get_barrier = Barrier(2)
+
+    def call(self, method, path, *, payload=None, params=None, files=None, timeout=None):
+        with self.lock:
+            self.calls.append((method, path))
+        if path != "/datasets":
+            raise AssertionError((method, path))
+        if method == "GET":
+            try:
+                self.get_barrier.wait(timeout=0.1)
+            except BrokenBarrierError:
+                pass
+            time.sleep(0.05)
+            with self.lock:
+                return [{"name": self.dataset_name, "id": "dataset-owner"}] if self.dataset_name else []
+        with self.lock:
+            if self.dataset_name:
+                raise RAGFlowError("api_102")
+            self.dataset_name = payload["name"]
+            return {"id": "dataset-owner"}
+
+
 def prepared(service, monkeypatch, *, count=1, source_bytes=b"lawful tea clause"):
     remote = Remote()
     monkeypatch.setattr(
@@ -114,6 +148,66 @@ def prepared(service, monkeypatch, *, count=1, source_bytes=b"lawful tea clause"
     with closing(service.db.connect()) as conn:
         document = dict(service.own_document(conn, "owner", "target"))
     return remote, document, claim
+
+
+def test_parallel_first_documents_share_one_durable_ragflow_dataset(workspace, monkeypatch):
+    _, document, claim = prepared(workspace, monkeypatch)
+    remote = DatasetInitializationRemote()
+    monkeypatch.setattr(
+        "app.contexts.documents.infrastructure.providers.ragflow.RAGFlowClient", lambda: remote
+    )
+    fingerprint = profile()
+    with closing(workspace.db.connect()) as conn:
+        _, _, generation = workspace.ragflow.binding(conn, document["id"], fingerprint)
+    start = Barrier(2)
+
+    def ensure_dataset():
+        start.wait(timeout=1)
+        return workspace.ragflow._dataset(remote, document, claim, generation, fingerprint)
+
+    resolved, failures = [], []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(ensure_dataset) for _ in range(2)]
+        for future in futures:
+            try:
+                resolved.append(future.result(timeout=3))
+            except RAGFlowError as error:
+                failures.append(error.code)
+    assert failures == ["dataset_initializing"]
+    assert resolved == ["dataset-owner"]
+    resolved.append(workspace.ragflow._dataset(remote, document, claim, generation, fingerprint))
+    assert resolved == ["dataset-owner"] * 2
+    assert remote.calls.count(("POST", "/datasets")) == 1
+    assert remote.calls.count(("GET", "/datasets")) == 1
+    with closing(workspace.db.connect()) as conn:
+        row = conn.execute(
+            "SELECT remote_id,initialization_token,initialization_until FROM ragflow_datasets"
+        ).fetchone()
+        assert tuple(row) == ("dataset-owner", None, None)
+
+
+def test_ragflow_dataset_initialization_migrates_existing_row(workspace):
+    with workspace.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO ragflow_datasets(owner_id,profile,name,remote_id,created_at) VALUES(?,?,?,?,?)",
+            ("owner", "legacy-profile", "retained-dataset", "retained-id", now()),
+        )
+        conn.execute("ALTER TABLE ragflow_datasets DROP COLUMN initialization_token")
+        conn.execute("ALTER TABLE ragflow_datasets DROP COLUMN initialization_until")
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version=?",
+            (DATASET_COORDINATION_SCHEMA_VERSION,),
+        )
+    RAGFlowIndex(workspace)
+    with closing(workspace.db.connect()) as conn:
+        row = conn.execute(
+            "SELECT remote_id,initialization_token,initialization_until FROM ragflow_datasets WHERE profile='legacy-profile'"
+        ).fetchone()
+        assert tuple(row) == ("retained-id", None, None)
+        assert conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?",
+            (DATASET_COORDINATION_SCHEMA_VERSION,),
+        ).fetchone()
 
 
 def test_processing_queue_finishes_started_ragflow_index_before_new_uploads(workspace):
@@ -304,7 +398,9 @@ def test_unknown_paid_index_auto_retries_after_receipt_audit_error_with_backoff(
     assert result["receipt_audit_errors"] == 1 and result["requeued"] == 1
     with closing(workspace.db.connect()) as conn:
         recovery = conn.execute("SELECT status,reason,available_at FROM collection_recovery_jobs").fetchone()
-        job = conn.execute("SELECT status,available_at FROM processing_jobs WHERE document_id='target'").fetchone()
+        job = conn.execute(
+            "SELECT status,available_at FROM processing_jobs WHERE document_id='target'"
+        ).fetchone()
         chunk = conn.execute("SELECT state,next_at FROM ragflow_chunks").fetchone()
         event = conn.execute(
             "SELECT event,detail FROM collection_recovery_events ORDER BY rowid DESC LIMIT 1"
@@ -447,9 +543,10 @@ def test_recent_unmatched_intent_is_retried_after_exact_remote_check(workspace, 
     posts_after = len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")])
     assert posts_after == posts_before + 1
     with closing(workspace.db.connect()) as conn:
-        assert conn.execute(
-            "SELECT state FROM ragflow_chunks WHERE generation=?", (generation,)
-        ).fetchone()[0] == "done"
+        assert (
+            conn.execute("SELECT state FROM ragflow_chunks WHERE generation=?", (generation,)).fetchone()[0]
+            == "done"
+        )
 
 
 def test_queue_recovers_lost_embedding_response_without_repeating_the_write(workspace, monkeypatch):
@@ -494,9 +591,10 @@ def test_local_index_completion_keeps_multibatch_ragflow_work_queued(workspace, 
         workspace.collection.process_item(claim)
 
     with closing(workspace.db.connect()) as conn:
-        assert conn.execute(
-            "SELECT status FROM processing_jobs WHERE document_id='target'"
-        ).fetchone()[0] == "completed"
+        assert (
+            conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
+            == "completed"
+        )
         assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 9
 
@@ -514,9 +612,7 @@ def test_recovery_requeues_completed_job_with_incomplete_ragflow_generation(work
 
     assert result["requeued"] == 1
     with closing(workspace.db.connect()) as conn:
-        job = conn.execute(
-            "SELECT phase,status FROM processing_jobs WHERE document_id='target'"
-        ).fetchone()
+        job = conn.execute("SELECT phase,status FROM processing_jobs WHERE document_id='target'").fetchone()
         recovery = conn.execute(
             "SELECT status,reason FROM collection_recovery_jobs WHERE item_id='target'"
         ).fetchone()
@@ -533,9 +629,10 @@ def test_recovery_requeues_completed_job_with_incomplete_ragflow_generation(work
     workspace.collection.process_item(claim)
     with closing(workspace.db.connect()) as conn:
         assert conn.execute("SELECT state FROM ragflow_documents").fetchone()[0] == "ready"
-        assert conn.execute(
-            "SELECT status FROM processing_jobs WHERE document_id='target'"
-        ).fetchone()[0] == "completed"
+        assert (
+            conn.execute("SELECT status FROM processing_jobs WHERE document_id='target'").fetchone()[0]
+            == "completed"
+        )
     assert len([call for call in remote.calls if call[0] == "POST" and call[1].endswith("/chunks")]) == 1
 
 
@@ -913,13 +1010,21 @@ def test_mineru_limit_and_retry_after_are_shared(tmp_path, monkeypatch):
     from app.contexts.documents.infrastructure.providers import mineru as mineru
 
     monkeypatch.setattr(mineru.time, "time", lambda: 1000)
+    monkeypatch.delenv("MINERU_REQUEST_INTERVAL_SECONDS", raising=False)
+    monkeypatch.setenv("MINERU_SUBMIT_INTERVAL_SECONDS", "0.21")
+    monkeypatch.setenv("MINERU_RESULT_INTERVAL_SECONDS", "0.062")
     first, second = Admission(tmp_path), Admission(tmp_path)
+    first.take(submission=True)
     first.take()
-    with pytest.raises(MinerUWait):
+    with pytest.raises(MinerUWait) as submit_wait:
+        second.take(submission=True)
+    with pytest.raises(MinerUWait) as result_wait:
         second.take()
+    assert submit_wait.value.retry_after == pytest.approx(0.21)
+    assert result_wait.value.retry_after == pytest.approx(0.062)
     first.backoff(429, 120)
     with pytest.raises(MinerUWait) as waiting:
-        second.take()
+        second.take(submission=True)
     assert waiting.value.retry_after >= 120
 
 

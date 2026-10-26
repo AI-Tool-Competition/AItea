@@ -292,10 +292,19 @@ def run_verification(plan, output, models_env):
                 if originals_only:
                     continue
                 job = conn.execute(
-                    "SELECT status,error FROM processing_jobs WHERE document_id=?",
+                    "SELECT status,error,phase FROM processing_jobs WHERE document_id=?",
                     (state["document_id"],),
                 ).fetchone()
-                if job and job["status"] not in TERMINAL:
+                recovery_pending = bool(
+                    job
+                    and conn.execute(
+                        """SELECT 1 FROM collection_recovery_jobs WHERE owner_id=?
+                        AND queue_kind='processing' AND item_id=? AND phase=?
+                        AND status IN ('queued','waiting') LIMIT 1""",
+                        (owner, state["document_id"], job["phase"]),
+                    ).fetchone()
+                )
+                if job and (job["status"] not in TERMINAL or recovery_pending):
                     pending = True
                 elif "completed_seconds" not in state:
                     state["completed_seconds"] = round(time.monotonic() - started, 3)
@@ -314,7 +323,11 @@ def run_verification(plan, output, models_env):
         for sample in plan["samples"]:
             if sample["level"] == "secondary":
                 queue(sample)
+        next_recovery_at = 0
         while observe():
+            if time.monotonic() >= next_recovery_at:
+                service.collection.recovery.run_due(limit=10)
+                next_recovery_at = time.monotonic() + 1
             time.sleep(0.2)
     finally:
         workers.stop()

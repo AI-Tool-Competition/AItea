@@ -28,7 +28,7 @@ from app.shared.infrastructure.operations.system_corpus_migration import (
 )
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 25
+SUPPORTED_SCHEMA_VERSION = 26
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024

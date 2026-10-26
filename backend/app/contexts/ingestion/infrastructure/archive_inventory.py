@@ -1,4 +1,4 @@
-"""Export a private, read-only inventory of schema 7–25 without opening originals.
+"""Export a private, read-only inventory of schema 7–26 without opening originals.
 
 SQLite rows share one read transaction. Original paths are checked separately
 with no-follow stat calls; stored hashes are reported, never recomputed. This
@@ -34,7 +34,7 @@ from app.configuration.paths import InstancePaths
 from app.shared.infrastructure.persistence.blob_store import _sync_directory
 
 BATCH_SIZE = 200
-SUPPORTED_SCHEMA_VERSIONS = tuple(range(7, 26))
+SUPPORTED_SCHEMA_VERSIONS = tuple(range(7, 27))
 FILES = (
     "documents.jsonl",
     "discovery-pages.jsonl",
@@ -111,7 +111,7 @@ def _validate_schema(conn):
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise InventoryError(
-                "archive inventory requires schema 7–25; use the matching application version"
+                "archive inventory requires schema 7–26; use the matching application version"
             )
         # Check required columns before creating an output directory. A version
         # marker alone cannot make a partial migration usable.
@@ -168,7 +168,7 @@ def _validate_schema(conn):
             conn.execute("SELECT context_hash FROM agent_session_summaries LIMIT 0")
         return version
     except sqlite3.DatabaseError as exc:
-        raise InventoryError("archive inventory requires a complete schema 7–25 database") from exc
+        raise InventoryError("archive inventory requires a complete schema 7–26 database") from exc
 
 
 class _Originals:
@@ -572,7 +572,9 @@ def _index_queue_summary(conn, owner, country):
     filter_sql = "d.owner_id=?"
     parameters = [owner]
     if country:
-        filter_sql += " AND (EXISTS(SELECT 1 FROM document_countries c WHERE c.document_id=d.id AND c.country=?)"
+        filter_sql += (
+            " AND (EXISTS(SELECT 1 FROM document_countries c WHERE c.document_id=d.id AND c.country=?)"
+        )
         filter_sql += " OR (d.role='secondary' AND EXISTS(SELECT 1 FROM document_countries c WHERE c.document_id=d.parent_id AND c.country=?)))"
         parameters.extend((country, country))
     generations = {
@@ -2396,7 +2398,7 @@ def export_inventory(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Export a read-only catalog of stored originals (schema 7–25)"
+        description="Export a read-only catalog of stored originals (schema 7–26)"
     )
     parser.add_argument("--data-dir", default=str(InstancePaths.resolve().data))
     parser.add_argument("--country", default=os.getenv("TEA_INVENTORY_COUNTRY") or None)

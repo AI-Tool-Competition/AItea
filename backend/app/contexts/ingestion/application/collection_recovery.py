@@ -1,11 +1,10 @@
 """Durable OCR and indexing recovery with preserved evidence and delayed retries.
 
-Each processing attempt remains bounded. Eligible uncertain or incomplete OCR
-results can start another attempt after backoff. Confirmed terminal MinerU failures
-start a fresh generation after backoff, reusing successful and live part receipts.
-OCR provider failures, including HTTP rejection responses, remain eligible for
-automatic retry after backoff. Source-bound legacy OCR failures with unknown
-provider outcomes also retry automatically. Source/checkpoint changes stay held. Unknown
+Eligible incomplete OCR results have at most three durable recovery rounds.
+Unknown paid outcomes and non-transient HTTP rejections stay held; restart and
+discovery cannot reset their budget. Confirmed terminal MinerU failures start a
+fresh generation after backoff, reusing successful and live part receipts.
+Source/checkpoint changes stay held. Unknown
 RAGFlow writes are checked by exact receipt before they are automatically repeated;
 unmatched writes resume after the provider backoff expires. If text completeness fails,
 the worker returns to the source-bound OCR recovery queue before indexing resumes.
@@ -37,6 +36,7 @@ MAX_BATCH = 32
 MAX_AUTOMATIC_OCR_TARGETS = 20
 MAX_AUTOMATIC_OCR_CHECKPOINT_BYTES = 8 * 1024 * 1024
 MAX_AUTOMATIC_OCR_INLINE_CYCLES = 8
+MAX_AUTOMATIC_OCR_RECOVERIES = 3
 MAX_HTML_PARSER_REFRESH_ATTEMPTS = 3
 MAX_MDB_PARSER_REFRESH_ATTEMPTS = 1
 PROCESSING_QUEUE_LIMIT = 200
@@ -79,6 +79,12 @@ class Decision:
     asset_keys: tuple[str, ...] = ()
 
 
+def bounded_ocr_recovery(decision, recovery_count):
+    if decision.reason in OCR_AUTOMATIC_RETRY_REASONS and recovery_count >= MAX_AUTOMATIC_OCR_RECOVERIES:
+        return Decision("ocr_retry_budget_review")
+    return decision
+
+
 def _unknown(record):
     metadata = record.get("ocr", {})
     if request_outcome_unknown(metadata):
@@ -98,7 +104,7 @@ def _unknown(record):
 
 
 def _unreceipted_vision_failure(page, source_hash):
-    """Allow a source-bound legacy OCR failure to retry without a provider receipt."""
+    """Identify a source-bound legacy failure whose paid outcome remains unknown."""
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import (
         EMPTY_PAGE_PROTOCOL,
         PROTOCOL,
@@ -480,6 +486,10 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
         images = assets(manifest)
     except (ValueError, TypeError, AttributeError):
         return Decision("invalid_checkpoint")
+    for record in [*pages, *images]:
+        status = (record.get("ocr") or {}).get("http_status")
+        if type(status) is int and 400 <= status < 500 and status not in {408, 429}:
+            return Decision("ocr_provider_rejected")
     if phase == "parse" and _legacy_mineru_chart_refresh(manifest):
         return Decision("mineru_chart_refresh", True)
 
@@ -517,9 +527,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             metadata = page.get("ocr") or {}
             status = page.get("status")
             unknown = _unknown(page)
-            unreceipted_vision_failure = _unreceipted_vision_failure(
-                page, manifest.get("source_hash")
-            )
+            unreceipted_vision_failure = _unreceipted_vision_failure(page, manifest.get("source_hash"))
             unknown |= unreceipted_vision_failure
             unknown_outcome |= unknown
             try:
@@ -542,11 +550,7 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 and all(character in "0123456789abcdef" for character in source_result_hash)
             )
             failed_empty_visual_retry = failed_visual_retry and is_empty_page_visual_fallback_page(page)
-            pending_visual_retry = (
-                vision_ready
-                and visual_fallback
-                and status == "pending_ocr"
-            )
+            pending_visual_retry = vision_ready and visual_fallback and status == "pending_ocr"
             visual_table_quality_retry = (
                 vision_ready
                 and is_table_visual_fallback_page(page)
@@ -564,36 +568,40 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
             # Provider failures and still-ambiguous visual results both remain
             # eligible for durable retry. Source-bound checkpoints and queue
             # backoff keep each repeated paid attempt auditable.
-            vision_page = (
-                metadata.get("provider") != "mineru"
-                and bool(metadata.get("prompt_version") or metadata.get("request_id"))
+            vision_page = metadata.get("provider") != "mineru" and bool(
+                metadata.get("prompt_version") or metadata.get("request_id")
             )
             eligible = (
-                status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
-                or visual_table_quality_retry
-                or empty_page_retry
-                or failed_visual_retry
-            ) and (
-                mineru_table_retry
-                or empty_page_retry
-                or failed_visual_retry
-                or unknown
-                or pending_visual_retry
-                or visual_table_quality_retry
-                or (
-                    vision_page
-                    and (
-                        metadata.get("complete") is False
-                        or status == "ocr_uncertain"
-                        or (
-                            status == "ocr_failed"
-                            and isinstance(metadata.get("error_response"), dict)
-                            and isinstance(metadata["error_response"].get("blob"), dict)
+                (
+                    status in {"ocr_failed", "ocr_uncertain", "pending_ocr"}
+                    or visual_table_quality_retry
+                    or empty_page_retry
+                    or failed_visual_retry
+                )
+                and (
+                    mineru_table_retry
+                    or empty_page_retry
+                    or failed_visual_retry
+                    or unknown
+                    or pending_visual_retry
+                    or visual_table_quality_retry
+                    or (
+                        vision_page
+                        and (
+                            metadata.get("complete") is False
+                            or status == "ocr_uncertain"
+                            or (
+                                status == "ocr_failed"
+                                and isinstance(metadata.get("error_response"), dict)
+                                and isinstance(metadata["error_response"].get("blob"), dict)
+                            )
+                            or unreceipted_vision_failure
                         )
-                        or unreceipted_vision_failure
                     )
                 )
-            ) and type(page.get("page")) is int and page["page"] > 0
+                and type(page.get("page")) is int
+                and page["page"] > 0
+            )
             if not eligible:
                 continue
             cycles = page.get("ocr_retry_cycles", [])
@@ -633,6 +641,8 @@ def classify_processing(manifest, *, phase, error=None, retryable=False, interru
                 retry_assets.append(asset["asset_key"])
                 retry_not_before = max(retry_not_before, _timestamp(metadata.get("retry_not_before")))
 
+        if unknown_outcome:
+            return Decision("paid_result_unknown")
         if retry_pages or retry_assets:
             reason = (
                 "paid_ocr_retry"
@@ -1232,6 +1242,10 @@ class CollectionRecovery:
         if row["binding_sha256"] != fingerprint:
             decision = Decision("source_changed")
             exhausted = True
+        if processing:
+            decision = bounded_ocr_recovery(decision, row["recovery_count"])
+            if not decision.retryable:
+                exhausted = True
         delay = _recovery_delay(decision, row["recovery_count"])
         available = (
             max(timestamp + delay, _timestamp(ready_at), decision.not_before)
@@ -1333,12 +1347,8 @@ class CollectionRecovery:
             if page.get("source_hash") != document["content_hash"]:
                 raise ValueError("retry_page_source_mismatch")
             metadata = page.get("ocr") or {}
-            unreceipted_vision_failure = _unreceipted_vision_failure(
-                page, document["content_hash"]
-            )
-            legacy_render_mismatch = _legacy_mineru_render_source_proof_mismatch(
-                manifest, page
-            )
+            unreceipted_vision_failure = _unreceipted_vision_failure(page, document["content_hash"])
+            legacy_render_mismatch = _legacy_mineru_render_source_proof_mismatch(manifest, page)
             previous_failure = (
                 _saved_visual_provider_retry(page) if page.get("status") == "pending_ocr" else None
             )
@@ -1385,10 +1395,11 @@ class CollectionRecovery:
                     "ocr_quality_retry",
                 }
                 visual_fallback = is_visual_fallback_page(page)
-                mineru_empty_fallback = (
-                    decision.reason in {"mineru_empty_page_retry", "ocr_quality_retry", "paid_ocr_retry"}
-                    and is_mineru_empty_page_review(page)
-                )
+                mineru_empty_fallback = decision.reason in {
+                    "mineru_empty_page_retry",
+                    "ocr_quality_retry",
+                    "paid_ocr_retry",
+                } and is_mineru_empty_page_review(page)
                 try:
                     fallback_attempts(page)
                     retryable_visual = visual_fallback
@@ -1570,11 +1581,7 @@ class CollectionRecovery:
                     self._block(conn, row, "mdb_parser_retry_plan_invalid")
                     return "blocked"
                 expected = _mdb_parser_refresh_plan(dict(document), document["content_hash"])
-                if (
-                    document["owner_id"] != SYSTEM_OWNER_ID
-                    or expected is None
-                    or plan != expected
-                ):
+                if document["owner_id"] != SYSTEM_OWNER_ID or expected is None or plan != expected:
                     self._block(conn, row, "mdb_parser_checkpoint_changed")
                     return "blocked"
                 decision = Decision("mdb_parser_refresh", True)
@@ -1629,6 +1636,7 @@ class CollectionRecovery:
                 decision = Decision("mineru_quality_retry", True)
             else:
                 decision = classify_processing(manifest, phase=row["phase"], retryable=True)
+            decision = bounded_ocr_recovery(decision, row["recovery_count"])
             if not decision.retryable:
                 self._block(conn, row, decision.reason)
                 return "blocked"
@@ -2283,10 +2291,7 @@ class CollectionRecovery:
                     "SELECT * FROM collection_recovery_jobs WHERE id=? AND status='blocked' AND reason='quality_review'",
                     (identifier,),
                 ).fetchone()
-                if (
-                    recovery is None
-                    or not worker_scope.allows(recovery["owner_id"])
-                ):
+                if recovery is None or not worker_scope.allows(recovery["owner_id"]):
                     continue
                 owner, document_id = recovery["owner_id"], recovery["item_id"]
                 binding = self._binding(conn, owner, "processing", document_id, "parse")
@@ -2380,8 +2385,7 @@ class CollectionRecovery:
                     JOIN processing_jobs j ON j.document_id=r.item_id AND j.owner_id=r.owner_id
                     WHERE r.queue_kind='processing' AND r.phase='parse' AND r.status='blocked'
                         AND r.reason IN ('quality_review','processing_review','paid_result_unknown',
-                            'ocr_failure_review','image_failure_review','ocr_retry_scope_review',
-                            'ocr_retry_budget_review')
+                            'ocr_failure_review','image_failure_review','ocr_retry_scope_review')
                         AND j.phase='parse' AND j.status='failed'"""
                     + scope
                     + " ORDER BY r.updated_at,r.id LIMIT ?",
@@ -2416,8 +2420,18 @@ class CollectionRecovery:
                 except (TypeError, ValueError):
                     self._block(conn, row, "invalid_checkpoint")
                     continue
-                decision = classify_processing(manifest, phase="parse")
+                decision = bounded_ocr_recovery(
+                    classify_processing(manifest, phase="parse"), row["recovery_count"]
+                )
+                if decision.reason == "ocr_retry_budget_review":
+                    self._block(conn, row, decision.reason)
+                    continue
                 if not decision.retryable or not (decision.pages or decision.asset_keys):
+                    if (
+                        decision.reason in {"paid_result_unknown", "ocr_provider_rejected"}
+                        and row["reason"] != decision.reason
+                    ):
+                        self._block(conn, row, decision.reason)
                     continue
                 retry_plan = [
                     {"page": page["page"], "checkpoint_sha256": _digest(page)}
@@ -2489,12 +2503,7 @@ class CollectionRecovery:
                     "SELECT content_hash,manifest FROM documents WHERE id=? AND owner_id=?",
                     (document_id, owner),
                 ).fetchone()
-                if (
-                    job is None
-                    or job["phase"] != "embed"
-                    or job["status"] != "failed"
-                    or document is None
-                ):
+                if job is None or job["phase"] != "embed" or job["status"] != "failed" or document is None:
                     continue
                 try:
                     manifest = json.loads(document["manifest"])
@@ -3156,9 +3165,7 @@ class CollectionRecovery:
                     >= PROCESSING_QUEUE_LIMIT
                 ):
                     break
-                available = time.time() + self.service.ragflow.retry_delay(
-                    conn, document_id, fingerprint
-                )
+                available = time.time() + self.service.ragflow.retry_delay(conn, document_id, fingerprint)
                 conn.execute(
                     """UPDATE processing_jobs SET status='queued',attempts=0,available_at=?,
                     lease_token=NULL,lease_until=NULL,error=NULL,updated_at=?

@@ -10,8 +10,8 @@ import base64
 import hashlib
 import io
 import json
-import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 
@@ -710,6 +710,7 @@ def _one(
         OCRResponseError,
         transcribe_chart_image,
         transcribe_image,
+        vision_ocr_model,
     )
 
     updated = deepcopy(value)
@@ -724,6 +725,16 @@ def _one(
         checkpoint()
         return updated
 
+    from app.contexts.documents.infrastructure.recovery.ocr_error_evidence import request_outcome_unknown
+
+    previous = value.get("ocr") or {}
+    if request_outcome_unknown(previous):
+        updated["asset_status"] = "ocr_failed"
+        checkpoint()
+        return updated
+    retry_at = previous.get("retry_not_before", 0)
+    if isinstance(retry_at, (int, float)) and retry_at > time.time():
+        return defer("provider_retry")
     if not _OCR_SLOTS.acquire(timeout=5):
         return defer("ocr_capacity")
     try:
@@ -734,7 +745,7 @@ def _one(
         metadata = {
             "protocol": PROTOCOL,
             "prompt_version": IMAGE_PROMPT_VERSION,
-            "requested_model": os.getenv("LLM_MODEL", "")[:200],
+            "requested_model": vision_ocr_model()[:200],
             "source_hash": value["source_hash"],
             "asset_key": value["asset_key"],
             "mapping_path": value["mapping_path"],
@@ -747,7 +758,25 @@ def _one(
                 metadata["attempts"] = attempts
                 updated.update(ocr=metadata)
                 return defer("ocr_capacity")
-            retryable = isinstance(exc, OCRResponseError) and exc.retryable and metadata["attempts"] < 3
+            unknown = isinstance(exc, OCRResponseError) and (
+                exc.request_outcome_unknown
+                or exc.http_status == 408
+                or (exc.http_status is not None and exc.http_status >= 500)
+            )
+            if isinstance(exc, OCRResponseError):
+                if unknown:
+                    metadata["request_outcome"] = "unknown_transport_result"
+                if exc.http_status is not None:
+                    metadata["http_status"] = exc.http_status
+                if exc.retry_after is not None:
+                    metadata["retry_after_seconds"] = exc.retry_after
+                    metadata["retry_not_before"] = time.time() + exc.retry_after
+            retryable = (
+                isinstance(exc, OCRResponseError)
+                and exc.retryable
+                and not unknown
+                and metadata["attempts"] < 3
+            )
             metadata["finish_reason"] = getattr(exc, "finish_reason", None)
             updated.update(
                 asset_status="pending_vision" if retryable else "ocr_failed",

@@ -1759,6 +1759,29 @@ class CollectionService:
                 doc = self.service.own_document(conn, claim["owner_id"], claim["document_id"])
                 should_index = self.service.archive.can_index(conn, doc["id"])
             manifest = json.loads(doc["manifest"])
+            if claim["phase"] == "parse":
+                from app.contexts.ingestion.application.collection_recovery import (
+                    MAX_AUTOMATIC_OCR_RECOVERIES,
+                    OCR_AUTOMATIC_RETRY_REASONS,
+                )
+
+                with closing(self.db.connect()) as conn:
+                    recovery = conn.execute(
+                        "SELECT recovery_count,reason FROM collection_recovery_jobs WHERE queue_kind='processing' AND item_id=? AND owner_id=? AND phase='parse'",
+                        (doc["id"], claim["owner_id"]),
+                    ).fetchone()
+                if recovery and (
+                    recovery["reason"] in {"paid_result_unknown", "ocr_provider_rejected"}
+                    or (
+                        recovery["reason"] == "ocr_retry_budget_review"
+                        and recovery["recovery_count"] >= MAX_AUTOMATIC_OCR_RECOVERIES
+                    )
+                    or (
+                        recovery["reason"] in OCR_AUTOMATIC_RETRY_REASONS
+                        and recovery["recovery_count"] > MAX_AUTOMATIC_OCR_RECOVERIES
+                    )
+                ):
+                    raise ValueError("自动识图恢复已暂停；原件和检查点已保留，未发出新请求。")
             provenance_keys = (
                 "collection_import",
                 "collection_evidence",
@@ -2041,9 +2064,7 @@ class CollectionService:
                     and text_complete(manifest)
                     and (
                         self.service.index.pending(conn, doc["id"], current_fingerprint, limit=1)
-                        or self.service.ragflow.pending(
-                            conn, doc["id"], current_fingerprint, limit=1
-                        )
+                        or self.service.ragflow.pending(conn, doc["id"], current_fingerprint, limit=1)
                     )
                 )
                 needs_parse = manifest.get("remote_parse", {}).get("state") in {"planned", "pending"}

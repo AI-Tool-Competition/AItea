@@ -20,6 +20,7 @@ from uuid import uuid4
 from app.contexts.documents.infrastructure.parsers.pdf_limits import ARCHIVE_MAX_PAGES
 from app.contexts.documents.infrastructure.providers.vision import (
     vision_ocr_adaptive_enabled,
+    vision_ocr_model,
     vision_ocr_request_worker_limit,
     vision_ocr_worker_limit,
 )
@@ -617,7 +618,7 @@ def _ocr_one_page(
     previous_attempts = previous_metadata.get("attempts", 0)
     metadata = {
         "prompt_version": PROMPT_VERSION,
-        "requested_model": os.getenv("LLM_MODEL", "").strip()[:200],
+        "requested_model": vision_ocr_model()[:200],
         "source_hash": page["source_hash"],
         "page": page["page"],
         "attempts": previous_attempts,
@@ -829,8 +830,7 @@ def _mineru_page_index_state(manifest: dict) -> tuple:
             page.get("text"),
             page.get("printed_page"),
             is_visual_fallback_page(page),
-            isinstance(page.get("ocr_fallback"), dict)
-            and page["ocr_fallback"].get("accepted") is True,
+            isinstance(page.get("ocr_fallback"), dict) and page["ocr_fallback"].get("accepted") is True,
         )
         for page in manifest.get("pages", [])
     )
@@ -929,8 +929,7 @@ def ocr_bounded(
 
     if (
         not pages
-        or len(pages)
-        > (ARCHIVE_MAX_PAGES if content is None else 300)
+        or len(pages) > (ARCHIVE_MAX_PAGES if content is None else 300)
         or [page.get("page") for page in pages] != list(range(1, len(pages) + 1))
         or any(page.get("source_hash") != result["source_hash"] for page in pages)
     ):
@@ -959,9 +958,7 @@ def ocr_bounded(
         if set(render_sources) - set(pending_by_number):
             raise ValueError("页面渲染来源包含当前批次以外的页码。")
         for number, source in render_sources.items():
-            validated_render_sources[number] = _validated_mineru_render_source(
-                result, number, source
-            )
+            validated_render_sources[number] = _validated_mineru_render_source(result, number, source)
     if pending and vision_ocr_configured():
 
         def process_page(page):

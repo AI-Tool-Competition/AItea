@@ -47,19 +47,21 @@ def _json_hash(value) -> str:
 
 def current_profile() -> dict | None:
     """Record the actual page-provider recipe, without API keys or inferred legacy identity."""
-    import os
-
     from app.contexts.documents.infrastructure.providers import vision as vision
 
     if not vision.vision_ocr_configured():
         return None
     value = {
         "version": 1,
-        "base_url": os.environ["LLM_BASE_URL"].strip().rstrip("/"),
-        "requested_model": os.environ["LLM_MODEL"].strip(),
+        "base_url": vision.vision_ocr_endpoint()
+        if vision.vision_ocr_provider() == "sub2api"
+        else vision.vision_ocr_endpoint().removesuffix("/chat/completions"),
+        "requested_model": vision.vision_ocr_model(),
         "prompt_version": vision.PROMPT_VERSION,
         "prompt_sha256": _hash(vision._PROMPT.encode()),
-        "request_recipe": vision.PAGE_REQUEST_RECIPE,
+        "request_recipe": "sub2api-multipart-image-prompt-json-v1"
+        if vision.vision_ocr_provider() == "sub2api"
+        else vision.PAGE_REQUEST_RECIPE,
     }
     return value | {"fingerprint": _json_hash(value)}
 

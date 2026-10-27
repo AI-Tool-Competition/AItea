@@ -47,9 +47,11 @@ Nemotron 和 Gemini 把接口实际返回的 `delta.reasoning_content`（兼容 
 | `AGENT_REASONING_EFFORT` | 接口思考强度；当前实例和示例为 `high`。未设置时 Nemotron 默认 `high`、Gemini 默认 `low`，其他模型不额外发送强度；支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`auto`，具体可选值仍取决于模型 |
 | `AGENT_BASE_URL` | 模型 Chat Completions 地址；空值继承 `LLM_BASE_URL` |
 | `AGENT_API_KEY` | 模型及独立工具使用的后端密钥；空值继承 `LLM_API_KEY` |
-| `AGENT_TOOLS_BASE_URL` | 搜索与识图网关；空值继承 Agent 地址，必须使用 HTTPS |
+| `AGENT_TOOLS_BASE_URL` | 搜索与兼容识图网关；空值继承 Agent 地址，必须使用 HTTPS。选择独立 Sub2API 识图后使用 `VISION_OCR_URL` |
 
 本实例采用用户指定的 [Aerisun 接入指南](https://aerisun.top/sub2api/api-guide.html)：模型请求发送到 `/chat/completions`，独立工具发送到 `/v1/tools/web_search` 和 `/v1/tools/image_recognition`。不自动补 `/v1` 到模型基础地址。Gemini 工具参数分片与可选签名元数据会保留；截断、拒绝、缺失结束标志、重复调用编号或畸形响应不能被当成完成结果。
+
+`VISION_OCR_PROVIDER=sub2api` 时，聊天识图与文档识图都通过 multipart 单图和 `prompt` 调用独立识图地址、继承独立识图密钥优先级，并按同一数据根共享请求名额；当前实例为 48。调用不携带 `LLM_MODEL` 或失败回退。配置与恢复预算统一见 [文档处理](INGESTION.md)。聊天观察仍不写回正文或索引。
 
 识图结果只属于当前对话的未审核观察，不写回文件正文、解析状态或 RAG 索引；原件正文仍走 MinerU。原图最大 8 MB，仅接受 PNG、JPEG、WebP，页面图复用既有受限渲染。识图工具输入文档编号和版本，不接受模型给出的本地路径或任意图片 URL。联网结果只作为待审核线索，不能冒充已入库、已审核且适用的法规；RAGFlow 未配置或无合格索引时返回真实的未就绪/空结果。
 

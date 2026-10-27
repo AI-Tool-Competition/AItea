@@ -1,4 +1,4 @@
-"""Opt-in full-page transcription over the existing OpenAI-compatible provider.
+"""Opt-in transcription through Sub2API image tools or a legacy provider.
 
 This module performs no PDF parsing, file writes, or legal validity decisions.
 The caller binds source/page identity; model output is untrusted transcription.
@@ -123,8 +123,11 @@ def _response_error(
     captured = raw[:MAX_ERROR_RESPONSE_BYTES]
     # A misconfigured provider may echo its credential in a nominally 2xx
     # response. Do not persist that response, including in diagnostic storage.
-    credential = os.getenv("LLM_API_KEY", "").strip().encode()
-    if credential and credential in raw:
+    credentials = [
+        os.getenv(name, "").strip().encode()
+        for name in ("VISION_OCR_API_KEY", "SUB2API_API_KEY", "AGENT_API_KEY", "LLM_API_KEY")
+    ]
+    if any(credential and credential in raw for credential in credentials):
         return OCRResponseError(
             message,
             finish_reason=finish_reason,
@@ -176,19 +179,46 @@ def _reasoning_parameters(model: str, *, fallback_effort: str | None = None) -> 
     return {"reasoning_effort": fallback_effort} if fallback_effort else {}
 
 
-class _DeepSeekImageSlot:
+def vision_ocr_provider() -> str:
+    return os.getenv("VISION_OCR_PROVIDER", "openai").strip().lower()
+
+
+def vision_ocr_model() -> str:
+    return (
+        "sub2api/image_recognition"
+        if vision_ocr_provider() == "sub2api"
+        else os.getenv("LLM_MODEL", "").strip()
+    )
+
+
+def vision_ocr_endpoint() -> str:
+    if vision_ocr_provider() == "sub2api":
+        return os.getenv("VISION_OCR_URL", "https://aerisun.top/sub2api/v1/tools/image_recognition").strip()
+    return os.getenv("LLM_BASE_URL", "").strip().rstrip("/") + "/chat/completions"
+
+
+def _vision_api_key() -> str:
+    names = (
+        ("VISION_OCR_API_KEY", "SUB2API_API_KEY", "AGENT_API_KEY", "LLM_API_KEY")
+        if vision_ocr_provider() == "sub2api"
+        else ("LLM_API_KEY",)
+    )
+    return next((os.environ[name].strip() for name in names if os.getenv(name, "").strip()), "")
+
+
+class _VisionRequestSlot:
     """Bound image requests per canonical data root, including worker processes."""
 
     def __init__(self):
         self._threads = threading.BoundedSemaphore(64)
         self._owned = threading.local()
 
-    def acquire(self, *, timeout):
+    def acquire(self, *, timeout, data_root=None):
         if getattr(self._owned, "depth", 0):
             self._owned.depth += 1
             return True
         try:
-            limit = int(os.getenv("VISION_OCR_REQUEST_WORKERS", "1"))
+            limit = vision_ocr_request_worker_limit()
         except ValueError as exc:
             raise ValueError("VISION_OCR_REQUEST_WORKERS must be between 1 and 64") from exc
         if not 1 <= limit <= 64:
@@ -197,7 +227,9 @@ class _DeepSeekImageSlot:
         if not self._threads.acquire(timeout=max(0, timeout)):
             return False
         try:
-            data = Path(InstancePaths.resolve().data).resolve(strict=True)
+            data = Path(data_root if data_root is not None else InstancePaths.resolve().data).resolve(
+                strict=True
+            )
             runtime = data / ".runtime"
             if runtime.is_symlink():
                 raise ValueError("图片识别运行目录不能使用符号链接。")
@@ -205,7 +237,7 @@ class _DeepSeekImageSlot:
             while True:
                 for index in range(limit):
                     fd = os.open(
-                        runtime / f"deepseek-vision-{index:02d}.lock",
+                        runtime / f"vision-request-{index:02d}.lock",
                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
                         0o600,
                     )
@@ -239,7 +271,7 @@ class _DeepSeekImageSlot:
                 self._threads.release()
 
 
-_DEEPSEEK_IMAGE_SLOT = _DeepSeekImageSlot()
+_VISION_REQUEST_SLOT = _VisionRequestSlot()
 
 
 class OCRCapacityDeferred(OCRResponseError):
@@ -248,7 +280,7 @@ class OCRCapacityDeferred(OCRResponseError):
     request_sent = False
 
     def __init__(self):
-        super().__init__("图片识别正在等待单槽容量。", retryable=True, retry_after=5)
+        super().__init__("图片识别正在等待请求名额。", retryable=True, retry_after=5)
 
 
 def vision_ocr_worker_limit() -> int:
@@ -312,9 +344,15 @@ def _report_provider_result(
 def vision_ocr_unavailable_reason() -> str | None:
     if os.getenv("VISION_OCR_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return "图片识别未启用。"
-    if not all(os.getenv(key, "").strip() for key in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")):
+    if vision_ocr_provider() not in {"openai", "sub2api"}:
+        return "VISION_OCR_PROVIDER 必须为 openai 或 sub2api。"
+    if vision_ocr_provider() == "sub2api" and not _vision_api_key():
+        return "识图接口需要配置 VISION_OCR_API_KEY 或已有的 Sub2API 密钥。"
+    if vision_ocr_provider() == "openai" and not all(
+        os.getenv(key, "").strip() for key in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    ):
         return "图片识别需要配置 LLM_BASE_URL、LLM_API_KEY 和 LLM_MODEL。"
-    parsed = urlsplit(os.environ["LLM_BASE_URL"].strip())
+    parsed = urlsplit(vision_ocr_endpoint())
     if (
         parsed.scheme not in {"https", "http"}
         or not parsed.hostname
@@ -325,7 +363,7 @@ def vision_ocr_unavailable_reason() -> str | None:
         or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"})
     ):
         return "图片识别服务地址无效，远程服务必须使用 HTTPS。"
-    if len(os.environ["LLM_MODEL"].strip()) > 200:
+    if len(vision_ocr_model()) > 200:
         return "图片识别模型名称过长。"
     return None
 
@@ -337,8 +375,8 @@ def vision_ocr_configured() -> bool:
 def _invoke(body: dict) -> tuple[dict, str, str]:
     from app.contexts.documents.infrastructure.parsers.document_parser import _MODEL_REQUEST_SLOTS
 
-    shared = deepseek_vision_model(body.get("model"))
-    if shared and not _DEEPSEEK_IMAGE_SLOT.acquire(timeout=300):
+    shared = vision_ocr_provider() == "sub2api" or deepseek_vision_model(body.get("model"))
+    if shared and not _VISION_REQUEST_SLOT.acquire(timeout=5):
         raise OCRCapacityDeferred()
     try:
         if not _MODEL_REQUEST_SLOTS.acquire(timeout=300):
@@ -349,10 +387,41 @@ def _invoke(body: dict) -> tuple[dict, str, str]:
             _MODEL_REQUEST_SLOTS.release()
     finally:
         if shared:
-            _DEEPSEEK_IMAGE_SLOT.release()
+            _VISION_REQUEST_SLOT.release()
+
+
+def _multipart_transcription(body):
+    """One image per billed tool call; retain the existing strict OCR prompts."""
+    images, prompts = [], []
+    for message in body.get("messages", []):
+        content = message.get("content")
+        if isinstance(content, str):
+            prompts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if part.get("type") == "text":
+                    prompts.append(part["text"])
+                elif part.get("type") == "image_url":
+                    images.append(part["image_url"]["url"])
+    if len(images) != 1 or not images[0].startswith("data:image/png;base64,"):
+        raise OCRResponseError("识图接口每次只接收一张已绑定的 PNG 图片。")
+    try:
+        content = base64.b64decode(images[0].split(",", 1)[1], validate=True)
+    except ValueError as exc:
+        raise OCRResponseError("识图图片编码无效。") from exc
+    if not 0 < len(content) <= 8 * 1024 * 1024:
+        raise OCRResponseError("识图图片必须大于零且不超过 8 MB。")
+    return {"files": {"image": ("image.png", content, "image/png")}, "data": {"prompt": "\n\n".join(prompts)}}
+
+
+def _provider_text(payload):
+    if payload.get("name") == "image_recognition" or "output" in payload:
+        return payload["output"]["text"]
+    return payload["choices"][0]["message"]["content"]
 
 
 def _invoke_provider(body: dict) -> tuple[dict, str, str]:
+    request = _multipart_transcription(body) if vision_ocr_provider() == "sub2api" else {"json": body}
     request_timeout = vision_ocr_request_timeout()
     deadline = time.monotonic() + request_timeout + 5
     data = bytearray()
@@ -365,9 +434,9 @@ def _invoke_provider(body: dict) -> tuple[dict, str, str]:
         ) as client:
             with client.stream(
                 "POST",
-                os.environ["LLM_BASE_URL"].strip().rstrip("/") + "/chat/completions",
-                json=body,
-                headers={"Authorization": "Bearer " + os.environ["LLM_API_KEY"].strip()},
+                vision_ocr_endpoint(),
+                **request,
+                headers={"Authorization": "Bearer " + _vision_api_key()},
             ) as response:
                 received_status = response.status_code
                 if not response.is_success:
@@ -448,6 +517,29 @@ def _invoke_provider(body: dict) -> tuple[dict, str, str]:
             error_code="invalid_provider_json",
             payload_kind="provider_response",
         ) from exc
+    if vision_ocr_provider() == "sub2api":
+        if (
+            not isinstance(payload, dict)
+            or payload.get("name") not in (None, "image_recognition")
+            or payload.get("status") != "completed"
+            or payload.get("error")
+            or payload.get("isError")
+            or not isinstance(payload.get("output"), dict)
+            or not isinstance(payload["output"].get("text"), str)
+            or not payload["output"]["text"].strip()
+        ):
+            error = _response_error(
+                "识图工具未返回已完成的有效转录。",
+                body,
+                bytes(data),
+                error_code="invalid_tool_result",
+                payload_kind="provider_response",
+            )
+            error.request_outcome_unknown = True
+            raise error
+        raw = payload["output"]["text"]
+        fence = re.fullmatch(r"\s*```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```\s*", raw)
+        return payload, fence[1] if fence else raw, "stop"
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
         raise _response_error(
@@ -495,7 +587,7 @@ def transcribe_page(rendered: dict) -> dict:
     unavailable = vision_ocr_unavailable_reason()
     if unavailable:
         raise OCRResponseError(unavailable)
-    model = os.environ["LLM_MODEL"].strip()
+    model = vision_ocr_model()
     native_hint = str(rendered.get("native_text", ""))[:20_000]
     user_text = (
         "Transcribe the complete page, without omission. "
@@ -533,7 +625,7 @@ def transcribe_page(rendered: dict) -> dict:
 
 def decode_page_response(body, payload, raw, finish, *, model, native_hint):
     """Strictly decode a returned page; this pure step performs no HTTP calls."""
-    original_response = payload["choices"][0]["message"]["content"]
+    original_response = _provider_text(payload)
     try:
         value = json.loads(raw)
     except (ValueError, RecursionError) as exc:
@@ -664,7 +756,7 @@ def _transcribe_asset(rendered: dict, *, prompt: str, prompt_version: str, instr
     unavailable = vision_ocr_unavailable_reason()
     if unavailable:
         raise OCRResponseError(unavailable)
-    model = os.environ["LLM_MODEL"].strip()
+    model = vision_ocr_model()
     payload, raw, finish = _invoke(
         {
             "model": model,
@@ -785,7 +877,7 @@ def transcribe_region(rendered: dict) -> dict:
     unavailable = vision_ocr_unavailable_reason()
     if unavailable:
         raise OCRResponseError(unavailable)
-    model = os.environ["LLM_MODEL"].strip()
+    model = vision_ocr_model()
     body = {
         "model": model,
         **_reasoning_parameters(model, fallback_effort="low"),
@@ -814,7 +906,7 @@ def transcribe_region(rendered: dict) -> dict:
         if exc.finish_reason == "length":
             exc.retryable = True
         raise
-    original_response = payload["choices"][0]["message"]["content"]
+    original_response = _provider_text(payload)
     try:
         value = json.loads(raw)
     except (ValueError, RecursionError) as exc:

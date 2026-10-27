@@ -31,6 +31,10 @@ def isolated_providers(monkeypatch):
     ):
         monkeypatch.setenv(key, "")
     monkeypatch.setenv("VISION_OCR_ENABLED", "false")
+    monkeypatch.setenv("VISION_OCR_PROVIDER", "openai")
+    monkeypatch.setenv("VISION_OCR_URL", "")
+    monkeypatch.setenv("VISION_OCR_API_KEY", "")
+    monkeypatch.setenv("SUB2API_API_KEY", "")
     monkeypatch.setenv("VISION_OCR_WORKERS", "2")
     monkeypatch.setenv("VISION_OCR_REQUEST_TIMEOUT_SECONDS", "180")
     monkeypatch.delenv("VISION_OCR_REQUEST_WORKERS", raising=False)

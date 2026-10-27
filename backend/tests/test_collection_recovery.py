@@ -15,6 +15,8 @@ from app.contexts.ingestion.application.collection_recovery import (
     CollectionRecovery,
     Decision,
     MAX_AUTOMATIC_OCR_INLINE_CYCLES,
+    MAX_AUTOMATIC_OCR_RECOVERIES,
+    OCR_AUTOMATIC_RETRY_REASONS,
     MAX_PAID_OCR_RETRY_SECONDS,
     PAID_OCR_RETRY_SECONDS,
     classify_processing,
@@ -275,6 +277,10 @@ def test_ocr_retry_backoff_stays_automatic_and_preserves_provider_delay(
         )
 
     recovery = rows(service, "collection_recovery_jobs")[0]
+    if reason in OCR_AUTOMATIC_RETRY_REASONS and recovery_count >= MAX_AUTOMATIC_OCR_RECOVERIES:
+        assert recovery["status"] == "blocked"
+        assert recovery["reason"] == "ocr_retry_budget_review"
+        return
     assert recovery["status"] == "waiting"
     assert recovery["available_at"] >= before + expected_delay - 3
     assert recovery["available_at"] <= before + expected_delay + 3
@@ -289,14 +295,14 @@ def test_ocr_retry_backoff_stays_automatic_and_preserves_provider_delay(
         {"attempts": 1, "http_status": 408},
     ],
 )
-def test_processing_unknown_ocr_outcomes_are_retried_with_paid_attempt_history(metadata):
+def test_processing_unknown_ocr_outcomes_stay_held_without_replaying_paid_requests(metadata):
     manifest = {"pages": [{"page": 1, "status": "pending_ocr", "ocr": metadata}]}
     decision = classify_processing(manifest, phase="parse", retryable=True)
-    assert decision.reason == "paid_ocr_retry"
-    assert decision.retryable and decision.pages == (1,)
+    assert decision.reason == "paid_result_unknown"
+    assert not decision.retryable and not decision.pages
 
 
-def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
+def test_unknown_ocr_outcome_stays_held_after_three_preserved_cycles():
     manifest = {
         "pages": [
             {
@@ -308,11 +314,11 @@ def test_unknown_ocr_outcome_keeps_retrying_after_three_preserved_cycles():
         ]
     }
     decision = classify_processing(manifest, phase="parse")
-    assert decision.reason == "paid_ocr_retry"
-    assert decision.retryable and decision.pages == (1,)
+    assert decision.reason == "paid_result_unknown"
+    assert not decision.retryable and not decision.pages
 
 
-def test_legacy_mineru_office_render_proof_is_automatically_retried(monkeypatch):
+def test_legacy_mineru_office_render_proof_stays_held_without_paid_receipt(monkeypatch):
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import PROTOCOL
 
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
@@ -380,12 +386,12 @@ def test_legacy_mineru_office_render_proof_is_automatically_retried(monkeypatch)
 
     decision = classify_processing(manifest, phase="parse")
 
-    assert decision.reason == "paid_ocr_retry"
-    assert decision.retryable and decision.pages == (1,)
+    assert decision.reason == "paid_result_unknown"
+    assert not decision.retryable and not decision.pages
 
 
 @pytest.mark.parametrize("fallback_attempts", [None, PREVIOUS_VISUAL_RETRY_LIMIT])
-def test_unreceipted_source_bound_vision_failure_is_automatically_retried(service, fallback_attempts):
+def test_unreceipted_source_bound_vision_failure_stays_held_without_paid_receipt(service, fallback_attempts):
     content = make_pdf([("source page", False)])
     document = register(service, content, key="unreceipted-vision-failure")
     manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
@@ -420,8 +426,8 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
         "parts": [],
     }
     decision = classify_processing(manifest, phase="parse")
-    assert decision.reason == "paid_ocr_retry"
-    assert decision.retryable and decision.pages == (page["page"],)
+    assert decision.reason == "paid_result_unknown"
+    assert not decision.retryable and not decision.pages
 
     with service.db.transaction() as conn:
         conn.execute(
@@ -446,7 +452,7 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
             error_type="incomplete_checkpoint",
         )
 
-    assert service.collection.recovery.run_due(limit=32)["requeued"] == 1
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 0
     with closing(service.db.connect()) as conn:
         saved = json.loads(
             conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
@@ -458,16 +464,9 @@ def test_unreceipted_source_bound_vision_failure_is_automatically_retried(servic
             "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
         ).fetchone()
 
-    assert tuple(job) == ("parse", "queued")
-    assert tuple(recovery) == ("queued", "paid_ocr_retry")
-    assert saved["pages"][0]["status"] == "pending_ocr"
-    assert len(saved["pages"][0]["ocr_retry_cycles"]) == MAX_AUTOMATIC_OCR_INLINE_CYCLES
-    assert (
-        saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["ocr"]["source_hash"]
-        == document["content_hash"]
-    )
-    if fallback_attempts is not None:
-        assert saved["pages"][0]["ocr_fallback"]["attempts"] == PREVIOUS_VISUAL_RETRY_LIMIT + 1
+    assert tuple(job) == ("parse", "failed")
+    assert tuple(recovery) == ("blocked", "paid_result_unknown")
+    assert saved == manifest
 
 
 def test_incomplete_embed_retry_routes_to_ocr_before_reconciling(service, monkeypatch):
@@ -1113,7 +1112,7 @@ def test_pending_mineru_visual_fallback_retries_past_quality_cap(monkeypatch):
     assert decision.retryable and decision.pages == (4,)
 
 
-def test_pending_mineru_visual_fallback_retries_archived_unknown_request(monkeypatch):
+def test_pending_mineru_visual_fallback_holds_archived_unknown_request(monkeypatch):
     from app.contexts.documents.infrastructure.providers import vision
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import PROTOCOL
     from app.contexts.ingestion.application.collection_recovery import _digest
@@ -1153,9 +1152,8 @@ def test_pending_mineru_visual_fallback_retries_archived_unknown_request(monkeyp
     }
 
     decision = classify_processing({"pages": [page]}, phase="parse")
-    assert decision.reason == "paid_ocr_retry"
-    assert decision.retryable and decision.pages == (8,)
-    assert decision.not_before == retry_not_before
+    assert decision.reason == "paid_result_unknown"
+    assert not decision.retryable and not decision.pages
 
 
 @pytest.mark.parametrize(
@@ -1453,7 +1451,7 @@ def test_blocked_mineru_table_review_is_automatically_queued_for_visual_fallback
     assert saved["pages"][0]["ocr_fallback"]["attempts"] == 2
 
 
-def test_failed_bound_mineru_visual_page_is_automatically_retried(service, monkeypatch):
+def test_failed_bound_mineru_visual_page_stays_held_without_paid_receipt(service, monkeypatch):
     from app.contexts.documents.infrastructure.providers import vision
     from app.contexts.documents.infrastructure.providers.mineru_visual_page_retry import EMPTY_PAGE_PROTOCOL
 
@@ -1515,7 +1513,7 @@ def test_failed_bound_mineru_visual_page_is_automatically_retried(service, monke
             error_type="OCRResponseError",
         )
 
-    assert service.collection.recovery.run_due(limit=32)["requeued"] == 1
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 0
     with closing(service.db.connect()) as conn:
         saved = json.loads(
             conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
@@ -1527,11 +1525,9 @@ def test_failed_bound_mineru_visual_page_is_automatically_retried(service, monke
             "SELECT status,reason FROM collection_recovery_jobs WHERE item_id=?", (document["id"],)
         ).fetchone()
 
-    assert tuple(job) == ("parse", "queued")
-    assert tuple(recovery) == ("queued", "paid_ocr_retry")
-    assert saved["pages"][0]["status"] == "pending_ocr"
-    assert saved["pages"][0]["ocr_fallback"]["attempts"] == 2
-    assert saved["pages"][0]["ocr_retry_cycles"][-1]["previous_page"]["status"] == "ocr_failed"
+    assert tuple(job) == ("parse", "failed")
+    assert tuple(recovery) == ("blocked", "paid_result_unknown")
+    assert saved == manifest
 
 
 def test_saved_provider_error_requeues_pending_visual_page_after_quality_cap(service, monkeypatch):
@@ -2113,7 +2109,7 @@ def test_mineru_keeps_confirmed_remote_failure_distinct_from_local_block(monkeyp
 
 
 @pytest.mark.parametrize("status", [400, 401, 403])
-def test_ocr_http_rejections_are_automatically_retried_after_backoff(status):
+def test_ocr_http_rejections_stay_held_without_repeated_paid_requests(status):
     page = {
         "page": 1,
         "status": "ocr_failed",
@@ -2125,13 +2121,11 @@ def test_ocr_http_rejections_are_automatically_retried_after_backoff(status):
         },
     }
     decision = classify_processing({"pages": [page]}, phase="parse")
-    assert decision.reason == "ocr_quality_retry"
-    assert decision.retryable and decision.pages == (1,)
+    assert decision.reason == "ocr_provider_rejected"
+    assert not decision.retryable and not decision.pages
 
 
-def test_budget_review_incomplete_image_is_automatically_retried_with_its_old_result_preserved(
-    service, monkeypatch
-):
+def test_budget_review_incomplete_image_stays_held_with_its_old_result_preserved(service, monkeypatch):
     monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
     body = b'<main><p>Official terms.</p><img src="/figure.png"></main>'
     raw = raster()
@@ -2203,18 +2197,16 @@ def test_budget_review_incomplete_image_is_automatically_retried_with_its_old_re
         )
 
     result = service.collection.recovery.run_due(limit=32)
-    assert result["requeued"] == 1
-    assert rows(service, "collection_recovery_events")[-2]["event"] == "automatic_ocr_retry_scheduled"
+    assert result["requeued"] == 0
     with closing(service.db.connect()) as conn:
         row = conn.execute("SELECT manifest,status FROM documents WHERE id=?", (doc["id"],)).fetchone()
         job = conn.execute(
             "SELECT phase,status FROM processing_jobs WHERE document_id=?", (doc["id"],)
         ).fetchone()
     retried = native_asset_ocr.assets(json.loads(row["manifest"]))[0]
-    assert row["status"] == "processing" and tuple(job) == ("parse", "queued")
-    assert retried["asset_status"] == "pending_vision" and "ocr" not in retried
-    assert retried["ocr_attempt_history"][0]["previous_asset"] == previous
-    assert retried["ocr_attempt_history"][0]["previous_asset"]["ocr"]["text"] == previous["ocr"]["text"]
+    assert row["status"] == "failed" and tuple(job) == ("parse", "failed")
+    assert retried == previous
+    assert service.collection.recovery.run_due(limit=32)["requeued"] == 0
 
 
 def test_failed_legacy_official_html_reparse_retries_are_automatic_and_bounded(service):
@@ -2621,3 +2613,144 @@ def test_scheduler_does_not_grant_conditional_permission_or_spin_on_409(service)
     assert service.due_sources() == [] and rows(service, "collection_runs") == []
     source = next(row for row in rows(service, "sources") if row["id"] == binding["source_id"])
     assert source["last_attempt_at"] and source["last_error"]
+
+
+@pytest.mark.parametrize("recovery_count", [3, 133])
+def test_persisted_ocr_budget_survives_restart_and_cannot_be_promoted_again(service, recovery_count):
+    content = make_pdf([("Original source", False)])
+    document = register(service, content, key="bounded-ocr-history")
+    manifest = _parsed_result(_parse_pdf(content), document["content_hash"], "law")
+    manifest["pages"][0].update(
+        status="ocr_uncertain",
+        ocr={
+            "provider": "vision",
+            "prompt_version": "ocr-v1",
+            "attempts": 3,
+            "complete": False,
+            "finish_reason": "stop",
+        },
+    )
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET manifest=?,status='failed' WHERE id=?", (dump(manifest), document["id"])
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='failed',attempts=3,available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision("ocr_quality_retry", True, pages=(1,)),
+            exhausted=True,
+        )
+        conn.execute(
+            "UPDATE collection_recovery_jobs SET recovery_count=?,available_at=0 WHERE item_id=?",
+            (recovery_count, document["id"]),
+        )
+    assert service.collection.recovery.run_due()["requeued"] == 0
+    restarted = Service(service.db.data_dir)
+    assert restarted.collection.recovery.run_due()["requeued"] == 0
+    with closing(service.db.connect()) as conn:
+        recovery = conn.execute(
+            "SELECT status,reason,recovery_count FROM collection_recovery_jobs WHERE item_id=?",
+            (document["id"],),
+        ).fetchone()
+        saved = json.loads(
+            conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+        )
+    assert tuple(recovery) == ("blocked", "ocr_retry_budget_review", recovery_count)
+    assert saved == manifest
+
+
+@pytest.mark.parametrize(
+    "reason,count", [("paid_ocr_retry", 133), ("ocr_retry_budget_review", 3), ("paid_result_unknown", 0)]
+)
+def test_previously_queued_ocr_holds_are_fenced_before_parsing_or_model_requests(
+    service, monkeypatch, reason, count
+):
+    from app.contexts.documents.infrastructure.parsers import document_parser
+
+    content = make_pdf([("Preserve source", False)])
+    document = register(service, content, key="legacy-queued-ocr")
+    with service.db.transaction() as conn:
+        service.collection.recovery.record_failure(
+            conn,
+            {"document_id": document["id"], "owner_id": "owner", "phase": "parse", "attempts": 3},
+            processing=True,
+            decision=Decision(reason, False),
+            exhausted=True,
+        )
+        conn.execute(
+            "UPDATE collection_recovery_jobs SET reason=?,recovery_count=? WHERE item_id=?",
+            (reason, count, document["id"]),
+        )
+        conn.execute(
+            "UPDATE processing_jobs SET phase='parse',status='queued',available_at=0 WHERE document_id=?",
+            (document["id"],),
+        )
+        previous = conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+    calls = []
+    monkeypatch.setattr(document_parser, "parse_bounded", lambda *a, **kw: calls.append("unexpected parse"))
+    claim = service.collection.claim_processing(owner_id="owner", document_ids=[document["id"]])
+    assert claim is not None
+    service.collection.process_item(claim)
+    assert calls == []
+    with closing(service.db.connect()) as conn:
+        job = conn.execute(
+            "SELECT status FROM processing_jobs WHERE document_id=?", (document["id"],)
+        ).fetchone()
+        saved = conn.execute("SELECT manifest FROM documents WHERE id=?", (document["id"],)).fetchone()[0]
+    assert job[0] == "failed"
+    assert saved == previous
+
+
+@pytest.mark.parametrize("status", [None, 429, 500])
+def test_native_image_preserves_outcome_and_provider_delay_before_any_resubmission(
+    service, monkeypatch, status
+):
+    monkeypatch.setattr(vision, "vision_ocr_configured", lambda: True)
+    body = b'<main><p>Official terms.</p><img src="/figure.png"></main>'
+    raw = raster()
+    manifest = parse_file("law.html", body)
+    blob = service.archive.blobs.put_bytes("owner", raw)
+    manifest = bind_linked_image_bounded(
+        body,
+        manifest,
+        object_key=manifest["html_source"]["objects"][0]["object_key"],
+        source_url="https://official.invalid/law",
+        image=raw,
+        image_blob={
+            "content_hash": blob.digest,
+            "size": blob.size,
+            "storage_path": str(blob.path.relative_to(service.db.data_dir)),
+        },
+    )
+    calls = []
+
+    def fail(_):
+        calls.append("sent")
+        error = vision.OCRResponseError(
+            "provider unavailable", retryable=True, retry_after=60, http_status=status
+        )
+        error.request_outcome_unknown = status is None
+        raise error
+
+    monkeypatch.setattr(vision, "transcribe_image", fail)
+    key = native_asset_ocr.assets(manifest)[0]["asset_key"]
+    first = native_asset_ocr.ocr_native_assets_bounded(body, manifest, image_contents={key: raw})
+    image = native_asset_ocr.assets(first)[0]
+    assert (
+        image["ocr"]["http_status"] == status
+        if status is not None
+        else image["ocr"]["request_outcome"] == "unknown_transport_result"
+    )
+    if status == 429:
+        assert image["asset_status"] == "pending_vision"
+        assert image["ocr"]["retry_not_before"] > time.time() + 50
+    else:
+        assert image["asset_status"] == "ocr_failed"
+        assert classify_processing(first, phase="parse").reason == "paid_result_unknown"
+    native_asset_ocr.ocr_native_assets_bounded(body, first, image_contents={key: raw})
+    assert calls == ["sent"]

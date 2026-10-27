@@ -255,7 +255,33 @@ async def agent_turn(
 async def gateway_tool(name, payload, check, *, timeout):
     settings = provider_settings()
     base = (os.getenv("AGENT_TOOLS_BASE_URL") or settings["base"]).rstrip("/")
-    parsed = urlsplit(base)
+    endpoint, key, request = base + "/v1/tools/" + name, settings["key"], {"json": payload}
+    if name == "image_recognition":
+        from app.contexts.documents.infrastructure.providers.vision import (
+            _vision_api_key,
+            vision_ocr_endpoint,
+            vision_ocr_provider,
+        )
+
+        if vision_ocr_provider() == "sub2api":
+            import base64
+
+            try:
+                header, encoded = payload["image"].split(",", 1)
+                mime = header.removeprefix("data:").removesuffix(";base64")
+                if mime not in {"image/png", "image/jpeg", "image/webp"} or not header.endswith(";base64"):
+                    raise ValueError("invalid image")
+                content = base64.b64decode(encoded, validate=True)
+                if not 0 < len(content) <= 8 * 1024 * 1024:
+                    raise ValueError("invalid image size")
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ToolFailure("invalid_input", "识图输入必须是已绑定的有效图片。") from exc
+            endpoint, key = vision_ocr_endpoint(), _vision_api_key()
+            request = {
+                "files": {"image": ("image." + mime.split("/")[1], content, mime)},
+                "data": {"prompt": payload["prompt"]},
+            }
+    parsed = urlsplit(endpoint)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ToolFailure("not_configured", "联网与识图服务需要配置 HTTPS 地址。")
     if name not in ("web_search", "image_recognition"):
@@ -268,9 +294,9 @@ async def gateway_tool(name, payload, check, *, timeout):
         ):
             async with client.stream(
                 "POST",
-                base + "/v1/tools/" + name,
-                json=payload,
-                headers={"Authorization": "Bearer " + settings["key"]},
+                endpoint,
+                **request,
+                headers={"Authorization": "Bearer " + key},
             ) as response:
                 response.raise_for_status()
                 raw = bytearray()

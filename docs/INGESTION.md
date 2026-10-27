@@ -210,7 +210,7 @@ JDIH Kemenkeu 的 `structure.related_links` 保留详情页“Produk Hukum Terka
 
 OCR 共享槽通过条件变量维护当前占用与目标，原生解析继续使用固定信号量；运行中改变 `VISION_OCR_WORKERS` 或 `VISION_OCR_ADAPTIVE` 均拒绝新领取，需重启所属 worker。`app.contexts.documents.infrastructure.providers.vision.vision_ocr_capacity_state()` 只读返回最大值、当前目标、占用及峰值、成功响应和容量失败数、升降次数及冷却剩余秒数；读取不初始化额度、不读取密钥。默认 `VISION_OCR_ADAPTIVE=false` 保持固定额度，不进行健康升降。
 
-DeepSeek 图片识别仅作为必要的补读，默认不开启，不对完整原生正文或成功识别缓存重复调用。其图片请求额外通过 canonical `TEA_DATA_DIR/.runtime/deepseek-vision-XX.lock` 的线程锁与文件锁共享 `VISION_OCR_REQUEST_WORKERS` 并发额度，所有进程必须使用相同数据根；通用模型请求还受各服务进程的模型请求槽限制。PDF、原生图及直接区域补读在登记请求意图前领取，等待超过 5 秒按容量延后，不消耗模型尝试次数；直接图片调用也经过同一可重入入口。进程退出由操作系统释放文件锁，不能删除或替换运行中的锁文件。运行配置修改后须重启所属 worker。普通主站资料队列中的视觉 OCR 页和图片由持久恢复器自动重排；请求结果未知时也会重跑并保留旧检查点，因此可能重复计费。固定范围识别 CLI 的独立策略见 [OCR 运维](OCR_OPERATIONS.md)。此限制不修改普通文本 LLM 或独立的 embedding 并发 64。当前能力及请求格式参照 [DeepSeek 官方图像文档](https://api-docs.deepseek.com/guides/vision/)，网关别名能力仍需实际验证，不能根据名称认定识别成功。
+文档识图使用独立供应商配置。`VISION_OCR_PROVIDER=sub2api` 时，通过 [Aerisun 识图接口](https://aerisun.top/sub2api/api-guide.html) 向 `VISION_OCR_URL` 发送 multipart 的单张 `image` 和 `prompt`，不发送 `LLM_MODEL`，失败也不回退到聊天模型。只有工具明确返回 `status=completed`、有效文字且通过原有转录结构和完整性检查，才保存为识图结果；识图不改变审核或法规效力。页面、原生图、区域补读与聊天识图共用 canonical `TEA_DATA_DIR/.runtime/vision-request-XX.lock` 的线程和文件锁名额；当前实例为 48，所有进程须使用同一数据根。等待名额超过 5 秒按本地容量延后，不新增付费请求；退出由系统释放锁，不得删除运行中的锁文件。普通队列的恢复边界见 [持久恢复](COLLECTION_RECOVERY.md)，固定范围 CLI 见 [OCR 运维](OCR_OPERATIONS.md)。
 
 | 配置/限制                    | 默认与边界                                                                                            |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -219,8 +219,11 @@ DeepSeek 图片识别仅作为必要的补读，默认不开启，不对完整�
 | `TEA_COLLECT_PER_HOST`       | 每域 2 个真实连接，范围 1–4，且不超过下载数                                                           |
 | `TEA_PROCESS_WORKERS`        | 2 个处理任务，范围 1–128；默认同库有效处理租约共同占用此额度；`external` 主站按非系统账号计数         |
 | `TEA_PARSE_WORKERS`          | 每个服务进程 2 个受限解析子进程，范围 1–128；正文解析、归档 PDF 窗口、渲染、校验和重组装共同限流      |
+| `VISION_OCR_PROVIDER` | `sub2api` 使用单图工具；未配置的旧实例兼容 `openai`，当前实例与示例使用 `sub2api` |
+| `VISION_OCR_URL` | Sub2API 完整识图地址，默认 `https://aerisun.top/sub2api/v1/tools/image_recognition` |
+| `VISION_OCR_API_KEY` | 独立后端密钥；未提供时依次继承 `SUB2API_API_KEY`、`AGENT_API_KEY`、`LLM_API_KEY`，不回传前端 |
 | `VISION_OCR_WORKERS`         | 每进程页面处理额度，默认 2、范围 1–128；每个采集 PDF 单批最多处理 20 页                               |
-| `VISION_OCR_REQUEST_WORKERS` | 模型请求额度，默认 `min(VISION_OCR_WORKERS,64)`、范围 1–64；DeepSeek 同一数据根跨进程共享该上限       |
+| `VISION_OCR_REQUEST_WORKERS` | 请求额度，默认 `min(VISION_OCR_WORKERS,64)`、范围 1–64；当前实例为 48，文档与聊天识图按同一数据根跨进程共享 |
 | `VISION_OCR_REQUEST_TIMEOUT_SECONDS` | 单次视觉模型请求等待上限，默认 180 秒、范围 10–600 秒                                      |
 | `VISION_OCR_ADAPTIVE`        | 默认 `false` 固定额度；显式 `true` 开启共享目标的健康升降，最大值仍为 `VISION_OCR_WORKERS`            |
 | 下载待处理队列               | 全库最多 2000 项、单账号最多 1000 项，提交/重试/附件发现均检查                                        |
@@ -240,9 +243,9 @@ SQLite `BEGIN IMMEDIATE` 保护领取和状态转移；下载/解析/模型调�
 
 原生解析共享槽使用线程安全的 [BoundedSemaphore](https://docs.python.org/3/library/threading.html#threading.BoundedSemaphore)，实际解析继续使用独立的 [spawn 子进程](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods)。本管线全部受限子进程的启动与回收共用生命周期锁，避免当前 [CPython 的 waitpid 轮询](https://github.com/python/cpython/blob/v3.14.7/Lib/multiprocessing/popen_fork.py)在多线程 start/cleanup 与 join/close 之间竞争；正文计算和管道等待位于锁外。该锁不保证第三方另行创建的子进程封装或 `multiprocessing.active_children()` 线程安全。超时或进程中断只清理本次创建的子进程，确认回收后才归还槽；无法确认退出时保留所占额度，防止超发。暂时满额沿用 `ProcessingDeferred` 与 5 秒后重试。
 
-单次限定账号及文档的处理范围仍最多 20 个文档 ID；32 的本机容量不扩大这一授权边界。默认全库模式下，各账号共享 `TEA_PROCESS_WORKERS` 与 `TEA_EMBED_WORKERS` 容量；当固定系统法规库存在已到期的 embedding 任务时，私有任务最多占用总 embedding 槽位减一，为系统库保留一个可领取槽位；没有系统库到期任务时，私有任务可使用全部槽位。已领取任务不会被抢占；空位仍优先补齐缺失的 parse/embed 阶段，不设置固定阶段比例。32 个任务可能同时持有各自的结果和 manifest，40 MiB 单结果上限不是父进程结果总量上限。OCR 页面槽最高 128、模型请求单独最高 32 时，采集管线每份 PDF 最多并行处理 20 页；至少 7 份资料同时具有待识别页，且 `TEA_PROCESS_WORKERS` 与 `TEA_PARSE_WORKERS` 允许并行时，页面处理槽才可能达到 128，模型调用仍不会超过 32。普通主站队列会对有明确视觉 OCR 请求凭据的未知结果页、不完整/低置信页、具有原件绑定响应收据的视觉服务失败页及图片资产自动重排：每个恢复计划最多包含 20 个物理页和 20 个图片资产；OCR 质量、MinerU 图表/空白页恢复的本地基础退避为 15 分钟，已授权的付费 OCR 失败/结果未知重试的基础退避为 60 秒，并始终等待服务端指定的更长 `Retry-After`；其他处理恢复仍指数退避至最长 24 小时。OCR 重试没有固定轮数上限，直至成功或证据、原件绑定等完整性守卫阻止。视觉服务返回 4xx 也不会因可能计费而停止重试。每次重跑只重置精确失败目标，成功页不重做，并保留旧请求及响应证据；结果未知的请求可能已经收费，自动恢复不按费用阻止重跑。MinerU 页级图表警告不会直接转成视觉页重试，需依其绑定图片资产处理。RAGFlow 未知 embedding 结果先核对远端回执，只有确认没有对应写入时才重排；若文本完整性门禁失败，恢复器先转回原件绑定的 OCR 队列，识别完成后再续建索引。识别最大额度与自适应开关首次使用后固定，运行中变更或无效值会拒绝新工作，释放已取得的槽不重读配置；满额仍延后且不消耗模型尝试次数。此额度覆盖渲染、模型请求和结果校验整个识别步骤；更高上限不保证实际占满或吞吐线性增加，embedding 使用独立的 HTTP 额度，默认 2、可显式配置为 1–64；实际容量与续跑操作见 [向量处理](EMBEDDING_OPERATIONS.md)。
+单次限定账号及文档的处理范围仍最多 20 个文档 ID。各账号共享 `TEA_PROCESS_WORKERS` 与 `TEA_EMBED_WORKERS` 容量，保留既有系统库槽位及阶段分配规则；页面处理和外部识图请求分别限流，48 个请求名额不保证始终占满。每个恢复计划最多 20 个物理页和 20 个图片资产，成功结果不会为重试重复执行。OCR 自动恢复累计最多 3 轮，计数持久保存，重启或恢复发现不会重置；未知付费结果及非临时 4xx 停在待核，429 遵守 Retry-After。耗尽或已持有的旧预算阻断不会被发现器重新放行。详细规则统一维护在 [持久恢复](COLLECTION_RECOVERY.md)。向量处理仍使用独立额度，见 [向量处理](EMBEDDING_OPERATIONS.md)。
 
-专用于 MinerU 表格结构歧义的视觉回退，对成功但仍未通过质量校验的结果持续自动重试；保持原始表格及每轮识别证据，未通过质量门禁的正文不会进入索引。完整但列数不一致的 Markdown 表格也进入此恢复路径。视觉提示会逐表核对表头、分隔线和数据行列数；再次读取时只传递上轮失败类别，不传旧转录，要求从图像重新核对具体行列，并要求完整返回 `complete`、`printed_page`、`text`、`uncertain_spans`、`is_blank` 五个字段。若服务漏掉 `is_blank` 但返回了非空正文，解析器按字段定义补为 `false`；空正文缺少该字段仍拒绝。若视觉服务请求失败或解析中断，且历史回执与原件哈希、物理页绑定，系统会遵守退避及 Retry-After 自动重试。重复的付费识别可能重复计费，但不设付费识别次数上限。旧检查点缺少服务回执时，只要原件哈希、物理页、模型、提示版本以及（适用时）视觉回退标记中的 MinerU 结果哈希均绑定有效，也会按结果未知自动重试；缺少这些来源绑定信息时仍待复核。MinerU 大文档的最终正文重建使用 768 MiB 内存、90 秒 CPU 与 120 秒墙钟上限；该步骤仅重用已保存检查点，不调用模型。每次重试只重置目标页，不覆盖已完成页面和历史证据。
+MinerU 表格歧义和空白页的视觉补读同样遵守上述累计恢复预算，不通过质量门禁的正文保持不可检索。提示逐表核对列数并只传上一轮失败类别，不传旧转录；必须通过 `complete`、`printed_page`、`text`、`uncertain_spans`、`is_blank` 校验。仅非空转录可按定义补缺失的 `is_blank=false`，不能据此补造完整性。旧检查点没有有效服务回执或结果未知时保留待核，不重新请求以猜测结果。大文档本地重建的 768 MiB、90 秒 CPU 和 120 秒墙钟限制保持不变。
 
 2026-10-14 的本机对照复用同 32 份原件的 499 页原生窗口：8、16、32 并发分别用时 3.295、1.982、2.198 秒，实际子进程峰值分别为 8、16、32，正文、chunks 和完整 manifest 哈希均一致。该组单次测量以 16 最快，32 比 16 慢约 10.9%；父进程及所属解析子进程的 RSS 采样峰值约 462、808、1307 MiB。96 个解析子进程均保持 768 MiB/35 秒 CPU 限制且完成回收。该结果只覆盖所测原生 PDF 窗口，不代表 OCR、模型服务或所有格式的吞吐。
 

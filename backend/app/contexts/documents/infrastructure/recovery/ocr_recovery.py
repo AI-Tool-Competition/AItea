@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import time
 from collections.abc import Callable
@@ -715,6 +714,7 @@ def _recover_page_step(
         OCRCapacityDeferred,
         OCRResponseError,
         transcribe_region,
+        vision_ocr_model,
     )
 
     if content is None:
@@ -825,7 +825,7 @@ def _recover_page_step(
             attempts=task["attempts"][pass_number],
             request_id=uuid4().hex,
             prompt_version=REGION_PROMPT_VERSION,
-            requested_model=os.getenv("LLM_MODEL", "").strip()[:200],
+            requested_model=vision_ocr_model()[:200],
         )
         for key in (
             "error",

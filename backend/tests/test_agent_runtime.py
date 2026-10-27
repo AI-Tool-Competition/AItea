@@ -507,7 +507,12 @@ def test_existing_database_migration_preserves_messages(workspace):
         assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 27
 
 
-def test_image_recognition_uses_scoped_original_and_keeps_it_unverified(workspace, monkeypatch):
+@pytest.mark.parametrize("image_provider", ["openai", "sub2api"])
+def test_image_recognition_uses_scoped_original_and_keeps_it_unverified(
+    workspace, monkeypatch, image_provider
+):
+    monkeypatch.setenv("VISION_OCR_PROVIDER", image_provider)
+    monkeypatch.setenv("VISION_OCR_REQUEST_WORKERS", "48")
     _, service, owner, case, payload = workspace
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII="

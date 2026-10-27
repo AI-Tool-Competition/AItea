@@ -531,18 +531,33 @@ class AgentTools:
                 fail(409, "image_changed", "原件校验不一致")
         if len(content) > 8 * 1024 * 1024 or mime not in ("image/png", "image/jpeg", "image/webp"):
             fail(422, "image_limit", "图片超过识别限制")
-        result = asyncio.run(
-            gateway_tool(
-                "image_recognition",
-                {
-                    "image": f"data:{mime};base64," + base64.b64encode(content).decode(),
-                    "prompt": args.prompt,
-                    "max_output_tokens": 2048,
-                },
-                attempt.check,
-                timeout=attempt.remaining,
-            )
+        from app.contexts.documents.infrastructure.providers.vision import (
+            OCRCapacityDeferred,
+            _VISION_REQUEST_SLOT,
+            vision_ocr_provider,
         )
+
+        shared = vision_ocr_provider() == "sub2api"
+        if shared and not _VISION_REQUEST_SLOT.acquire(
+            timeout=min(5, attempt.remaining), data_root=self.service.db.data_dir
+        ):
+            raise OCRCapacityDeferred()
+        try:
+            result = asyncio.run(
+                gateway_tool(
+                    "image_recognition",
+                    {
+                        "image": f"data:{mime};base64," + base64.b64encode(content).decode(),
+                        "prompt": args.prompt,
+                        "max_output_tokens": 2048,
+                    },
+                    attempt.check,
+                    timeout=attempt.remaining,
+                )
+            )
+        finally:
+            if shared:
+                _VISION_REQUEST_SLOT.release()
         return {
             "document_id": doc["id"],
             "document_version": doc["version"],

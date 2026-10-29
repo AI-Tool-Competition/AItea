@@ -2,57 +2,100 @@
 
 from dataclasses import dataclass
 
+from app.configuration.paths import InstancePaths
+
+
+def read_skill(name):
+    if name not in SKILLS:
+        raise ValueError("未找到该技能")
+    path = InstancePaths.resolve().catalogs / "agent-skills" / name / "SKILL.md"
+    if path.stat().st_size > 24000:
+        raise ValueError("技能文档超过读取上限")
+    return path.read_text(encoding="utf-8")
+
 
 @dataclass(frozen=True)
 class AgentSkill:
     label: str
     description: str
     tools: tuple[str, ...]
-    instructions: str
 
 
 SKILLS = {
     "guidance": AgentSkill(
         "办理指导",
-        "解释当前节点要求并给出下一步建议。",
-        ("guide_business", "recall_memory"),
-        "先读当前节点、任务状态和用户问题，需要时回忆讨论、检索资料。建议应引用实际结果，不把建议说成已办理。",
+        "用茶商能理解的话说明下一步，询问影响建议的信息并填写业务卡。",
+        ("guide_business", "recall_memory", "update_business_card"),
     ),
     "materials": AgentSkill(
         "资料核对",
         "找出材料缺口与事实冲突。",
-        ("check_materials", "list_documents", "read_document", "search_documents"),
-        "结合规则检查和原文核对；需要看包装图时直接调用 inspect_image。未指定任务时核对整个节点；聊天已提供的信息注明待填写或核验，不重复索要，不自行核验通过。",
+        ("check_materials", "list_documents", "read_document", "search_documents", "update_business_card"),
     ),
     "legal": AgentSkill(
         "法律分析",
-        "使用已配置的法域和证据门禁进行分析。",
-        ("analyze_legal", "search_legal_evidence"),
-        "法律结论交由 analyze_legal 的既有分析引擎；需要近期信息可组合 web_search，但网页线索不是已审核法规。明确依据不足、适用期与复核状态。",
+        "采用china-lawyer-analyst的规则解释、请求权和事实对应方法；按问题深度给判断与行动。",
+        ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions"),
     ),
     "draft": AgentSkill(
-        "文稿起草",
-        "结合事实和依据生成可编辑文稿。",
-        ("draft_document", "guide_business", "recall_memory"),
-        "先收集已知信息和目标任务编号；涉及法律要求可组合法律分析。用户提供但未核验的信息注明来源，未知信息标待补充；不把已口述的信息丢弃或写成已确认。组织完整 Markdown 正文后调用 draft_document，返回保存结果前不声称文稿已经创建。",
+        "法律文书起草与改写",
+        "按legal-writing方法起草完整法律与业务文书、改写原稿或提供写作反馈；结合事实和原文依据交付可用正文。",
+        (
+            "draft_document",
+            "list_documents",
+            "read_document",
+            "search_documents",
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "guide_business",
+            "recall_memory",
+        ),
     ),
     "handoff": AgentSkill(
         "节点交接",
         "回顾前序节点成果、待办和复核要求。",
         ("get_handoff", "recall_memory", "guide_business"),
-        "读取服务端节点进度，区分已完成、待核对和历史讨论。指出当前可做的下一步，不通过聊天改变进度。",
     ),
     "research": AgentSkill(
         "联网调研",
         "实时搜索外部来源并与业务法规交叉核对。",
         ("web_search", "search_legal_evidence"),
-        "搜索词不要包含个人身份信息或未公开商业秘密。保留网页链接和抓取时间，优先官方原文；不把搜索摘要当作已审核的法规证据。",
     ),
     "vision": AgentSkill(
         "图片核对",
         "查看当前业务上传的图片并与材料核对。",
         ("list_documents", "inspect_image", "check_materials"),
-        "从资料清单选择图片及不可变版本；原始图片省略 image_id，页面图使用 read_document 返回的真实编号。解析失败不影响尝试原图识别；识别失败时明确无法观察，不能用历史对话猜测图中文字。图片分析只是本轮观察，不替代 MinerU 入库解析和审核。",
+    ),
+    "business": AgentSkill(
+        "商业模式决策", "比较渠道、收入、投入和交易风险，形成有理由的建议。", ("web_search",)
+    ),
+    "export_planning": AgentSkill(
+        "跨境交易准备",
+        "识别交易主体，组织商业选择、合规依据及办理顺序。",
+        ("search_legal_evidence", "read_law", "web_search"),
+    ),
+    "legal_lookup": AgentSkill(
+        "法规原文查询",
+        "采用chinese-law-verifier的全称与条号查询；取得原文、位置和实际来源。",
+        ("lookup_chinese_law", "search_legal_evidence", "read_law"),
+    ),
+    "contract_review": AgentSkill(
+        "合同审查",
+        "按用户立场审查合同及条款，对照谈判底线，说明交易风险并给出可直接替换的条文与备选方案。",
+        (
+            "list_documents",
+            "read_document",
+            "search_documents",
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "draft_document",
+        ),
     ),
 }
 
@@ -73,7 +116,7 @@ COMPOSITION_HINTS = [
     {
         "label": "联网 + 法律分析",
         "skills": ["research", "legal"],
-        "description": "查找近期官方信息，再与已审核法规交叉核对。",
+        "description": "查找近期官方原文，与内部法规的版本和适用期间交叉核对。",
     },
     {
         "label": "法律分析 + 文稿",

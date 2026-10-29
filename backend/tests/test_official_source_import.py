@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+import os
 import time
+
+import pytest
 
 from app.bootstrap import Service
 from app.contexts.ingestion.application.official_source_import import (
@@ -75,6 +78,32 @@ def _importer(data_dir):
         )
     )
     return Service(data_dir), config
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_importer_only_expands_proxy_hosts_when_endpoint_is_configured(tmp_path, monkeypatch, configured):
+    for key in ("COLLECTION_PROXY_URL", "COLLECTION_PROXY_HOSTS", "COLLECTION_DOH_HOSTS"):
+        monkeypatch.delenv(key, raising=False)
+    if configured:
+        monkeypatch.setenv("COLLECTION_PROXY_URL", "http://127.0.0.1:8030")
+        monkeypatch.setenv("COLLECTION_PROXY_HOSTS", "www.ccs.gov.sg")
+    service, config = _importer(tmp_path)
+    pool = json.loads(config.read_text())
+    pool["sources"][0].update(transport="proxy", html_asset_hosts=["isomer-user-content.by.gov.sg"])
+    config.write_text(json.dumps(pool))
+    OfficialSourceImporter(service, config_path=config)
+    if configured:
+        assert set(os.environ["COLLECTION_PROXY_HOSTS"].split(",")) == {
+            "www.ccs.gov.sg",
+            "isomer-user-content.by.gov.sg",
+        }
+    else:
+        # Merely loading the catalogue must not enable proxy-only transport
+        # for every ordinary official-page read in the running API process.
+        assert "COLLECTION_PROXY_HOSTS" not in os.environ
+        from app.contexts.ingestion.infrastructure.collection_proxy import proxy_for_host
+
+        assert proxy_for_host("www.sfa.gov.sg") is None
 
 
 def test_new_official_html_version_is_saved_once_and_queued_for_bounded_parse(tmp_path):
@@ -150,7 +179,9 @@ def test_official_html_image_parse_continues_across_bounded_asset_batches(tmp_pa
 
     service, config = _importer(tmp_path)
     OfficialSourceImporter(service, config_path=config)
-    source_url = "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/"
+    source_url = (
+        "https://www.ccs.gov.sg/consumer-protection/fair-trading-practices/about-fair-trading-practices/"
+    )
     asset_host = "isomer-user-content.by.gov.sg"
     body = (
         "<main><h1>Official image guidance</h1><p>Review each example.</p>"
@@ -237,9 +268,7 @@ def test_official_html_image_parse_continues_across_bounded_asset_batches(tmp_pa
         assert job["status"] == ("queued" if index < 2 else "completed")
 
     with closing(service.db.connect()) as conn:
-        parsed = conn.execute(
-            "SELECT status,manifest FROM documents WHERE id=?", (doc["id"],)
-        ).fetchone()
+        parsed = conn.execute("SELECT status,manifest FROM documents WHERE id=?", (doc["id"],)).fetchone()
     manifest = json.loads(parsed["manifest"])
     assert parsed["status"] == "ready"
     assert len(downloads) == 5 and len(manifest["html_source"]["linked_images"]) == 5
@@ -413,7 +442,9 @@ def test_source_size_limit_increase_retries_saved_original_without_refetching(tm
             "SELECT status,reason,document_id FROM official_source_imports WHERE event_key=?",
             (event_path.relative_to(tmp_path).as_posix(),),
         ).fetchone()
-        document = conn.execute("SELECT mime_type,status FROM documents WHERE id=?", (imported["document_id"],)).fetchone()
+        document = conn.execute(
+            "SELECT mime_type,status FROM documents WHERE id=?", (imported["document_id"],)
+        ).fetchone()
     assert tuple(imported[:2]) == ("stored", None)
     assert tuple(document) == ("application/pdf", "processing")
 
@@ -533,9 +564,7 @@ def test_sso_catalogue_pages_are_not_reported_as_invalid_document_evidence(tmp_p
         state = {
             "updated_at": at + 1,
             "sources": {
-                source["id"]: {
-                    "cache": {url: {"discovery": {"matched": True, "purpose": "catalog"}}}
-                }
+                source["id"]: {"cache": {url: {"discovery": {"matched": True, "purpose": "catalog"}}}}
             },
         }
         assert importer._eligible("SG", source, event, state, verified_mime_type="text/html") == (
@@ -709,9 +738,7 @@ def test_treaty_room_original_versions_keep_stable_identity_and_full_catalogue_m
     (country_root / "files").mkdir(parents=True)
     first_event_ns = time.time_ns()
     cache = {}
-    for index, original in enumerate(
-        [b"%PDF-1.4\nfirst version", b"%PDF-1.4\nrevised version"], start=1
-    ):
+    for index, original in enumerate([b"%PDF-1.4\nfirst version", b"%PDF-1.4\nrevised version"], start=1):
         digest = hashlib.sha256(original).hexdigest()
         relative = f"files/rcep-version-{index}.pdf"
         (country_root / relative).write_bytes(original)
@@ -820,9 +847,7 @@ def test_automatically_rechecks_previously_skipped_approved_html_detail(tmp_path
     importer = OfficialSourceImporter(service, config_path=config)
     assert importer.run_once()["skipped"] == 1
     with service.db.connect() as conn:
-        conn.execute(
-            "UPDATE official_source_import_cursor SET event_ns=? WHERE country='ID'", (at_ns + 1,)
-        )
+        conn.execute("UPDATE official_source_import_cursor SET event_ns=? WHERE country='ID'", (at_ns + 1,))
     pool = json.loads(config.read_text())
     pool["sources"][0].update(kind="guidance", html_document_paths=["/document/approved-guidance"])
     config.write_text(json.dumps(pool))
@@ -833,7 +858,9 @@ def test_automatically_rechecks_previously_skipped_approved_html_detail(tmp_path
             "SELECT status,reason,document_id FROM official_source_imports WHERE event_key=?",
             (event_path.relative_to(tmp_path).as_posix(),),
         ).fetchone()
-        count = conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)
+        ).fetchone()[0]
     assert tuple(receipt[:2]) == ("stored", None)
     assert receipt["document_id"] is not None
     assert count == 1
@@ -855,7 +882,10 @@ def test_unknown_html_path_remains_skipped_when_neighbor_is_approved(tmp_path):
 
     assert OfficialSourceImporter(service, config_path=config).run_once()["skipped"] == 1
     with service.db.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM documents WHERE owner_id=?", (SYSTEM_OWNER_ID,)).fetchone()[0]
+            == 0
+        )
 
 
 def test_rechecks_older_skipped_detail_when_verified_mime_is_a_document(tmp_path):

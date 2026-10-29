@@ -17,6 +17,15 @@ const tool: ToolCall = {
   duration_ms: 0,
 };
 
+it("shows exact Chinese article lookup as a readable activity", () => {
+  render(
+    <ToolActivity tools={[{ ...tool, name: "lookup_chinese_law" }]} running />,
+  );
+  expect(
+    screen.getByRole("button", { name: "查询中国法条 · 进行中" }),
+  ).toBeTruthy();
+});
+
 it("closes preparation on the first answer and closes a reopened panel on completion or stop", () => {
   const view = render(<MessageActivity steps={[]} running />);
   const trigger = screen.getByRole("button", { name: /处理进度/ });
@@ -310,6 +319,7 @@ const hiddenNames: ToolCall["name"][] = [
   "recall_memory",
   "remember_memory",
   "update_plan",
+  "update_task_brief",
   "read_tool_result",
   "compact_context",
 ];
@@ -426,9 +436,11 @@ it("flattens real calls and hides memory and legal substeps even when expanded",
   );
   expect(screen.getAllByRole("button")).toHaveLength(3);
   expect(screen.getAllByRole("listitem")).toHaveLength(2);
-  expect(screen.getByText("核对适用依据")).toBeTruthy();
   expect(
-    screen.queryByText(/记忆|法律分析|智能工具协作|内部|raw-data|技术记录/),
+    screen.getByRole("button", { name: "法律分析 · 进行中" }),
+  ).toBeTruthy();
+  expect(
+    screen.queryByText(/记忆|智能工具协作|内部|raw-data|技术记录/),
   ).toBeNull();
 });
 
@@ -500,4 +512,28 @@ it("displays the entire bounded output with exactly one disclosure and no closed
   fireEvent.click(screen.getByRole("button", { name: "查找资料 · 已完成" }));
   expect(screen.queryByText(text)).toBeNull();
   expect(screen.queryByText("不安全来源")).toBeNull();
+});
+
+it("shows business card preparation without claiming the pending transaction is saved", () => {
+  render(
+    <ToolActivity
+      tools={[
+        {
+          ...tool,
+          name: "update_business_card",
+          output_preview: {
+            text: "",
+            items: [],
+            notice: "答复成功后写入，供茶商核对。",
+            truncated: false,
+          },
+        },
+      ]}
+      running
+    />,
+  );
+  expect(
+    screen.getByRole("button", { name: "整理业务卡 · 进行中" }),
+  ).toBeTruthy();
+  expect(screen.getByText("答复成功后写入，供茶商核对。")).toBeTruthy();
 });

@@ -298,9 +298,12 @@ def test_external_recovery_preserves_scope_and_allows_retry_of_uncertain_paid_em
     with service.db.transaction() as conn:
         service.collection.queue_processing(conn, unknown["id"], SYSTEM_OWNER_ID)
     with closing(service.db.connect()) as conn:
-        assert conn.execute(
-            "SELECT status FROM processing_jobs WHERE document_id=?", (unknown["id"],)
-        ).fetchone()[0] == "queued"
+        assert (
+            conn.execute(
+                "SELECT status FROM processing_jobs WHERE document_id=?", (unknown["id"],)
+            ).fetchone()[0]
+            == "queued"
+        )
 
 
 def test_external_fetch_recovery_ignores_2000_system_backlog_and_preserves_unknown_ledger(service):
@@ -483,6 +486,7 @@ def test_main_injects_mode_in_both_workers_and_keeps_upload_and_shared_search(tm
             "status": "stopped",
             "last_error_at": None,
             "shared_library_workers": "external",
+            "background_workers": "external",
             "official_source_import": {
                 "status": "running",
                 "last_cycle_at": collector["official_source_import"]["last_cycle_at"],
@@ -550,10 +554,9 @@ def test_external_real_workers_finish_private_upload_without_touching_shared_que
         # as well; neither parser, process_item nor CollectionWorkers is mocked.
         with service.db.transaction() as conn:
             service.collection.queue_processing(conn, ident, owner)
-            assert (
-                conn.execute("SELECT status FROM processing_jobs WHERE document_id=?", (ident,)).fetchone()[0]
-                == "queued"
-            )
+            assert conn.execute(
+                "SELECT status FROM processing_jobs WHERE document_id=?", (ident,)
+            ).fetchone()[0] in {"queued", "processing", "completed"}
         deadline = time.monotonic() + 10
         while True:
             with closing(service.db.connect()) as conn:

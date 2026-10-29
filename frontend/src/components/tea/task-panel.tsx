@@ -176,58 +176,69 @@ export function TaskPanel({
       )}
       <div className="tea-form-fields">
         {task.fields.map((field) => (
-          <label key={field.key} className="tea-field">
-            <span>
-              {field.label}
-              {field.required && <b> *</b>}
-            </span>
-            {field.type === "select" ? (
-              <select
-                value={values[field.key] ?? ""}
-                disabled={locked || !!busy}
-                onChange={(e) => {
-                  setValues({ ...values, [field.key]: e.target.value });
-                  setConfirmed(false);
-                }}
-              >
-                <option value="">请选择</option>
-                {field.options?.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            ) : field.type === "textarea" ? (
-              <Textarea
-                value={values[field.key] ?? ""}
-                disabled={locked || !!busy}
-                placeholder={field.placeholder}
-                onChange={(e) => {
-                  setValues({ ...values, [field.key]: e.target.value });
-                  setConfirmed(false);
-                }}
-              />
-            ) : (
-              <Input
-                type={field.type}
-                min={field.min}
-                step={field.type === "number" ? "any" : undefined}
-                value={values[field.key] ?? ""}
-                disabled={locked || !!busy}
-                placeholder={field.placeholder}
-                onChange={(e) => {
-                  setValues({
-                    ...values,
-                    [field.key]:
-                      field.type === "number" && e.target.value !== ""
-                        ? Number(e.target.value)
-                        : e.target.value,
-                  });
-                  setConfirmed(false);
-                }}
-              />
-            )}
-          </label>
+          <div key={field.key}>
+            <label className="tea-field">
+              <span>
+                {field.label}
+                {field.required && <b> *</b>}
+              </span>
+              {field.type === "select" ? (
+                <select
+                  value={values[field.key] ?? ""}
+                  disabled={locked || !!busy}
+                  onChange={(e) => {
+                    setValues({ ...values, [field.key]: e.target.value });
+                    setConfirmed(false);
+                  }}
+                >
+                  <option value="">请选择</option>
+                  {field.options?.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "textarea" ? (
+                <Textarea
+                  value={values[field.key] ?? ""}
+                  disabled={locked || !!busy}
+                  placeholder={field.placeholder}
+                  onChange={(e) => {
+                    setValues({ ...values, [field.key]: e.target.value });
+                    setConfirmed(false);
+                  }}
+                />
+              ) : (
+                <Input
+                  type={field.type}
+                  min={field.min}
+                  step={field.type === "number" ? "any" : undefined}
+                  value={values[field.key] ?? ""}
+                  disabled={locked || !!busy}
+                  placeholder={field.placeholder}
+                  onChange={(e) => {
+                    setValues({
+                      ...values,
+                      [field.key]:
+                        field.type === "number" && e.target.value !== ""
+                          ? Number(e.target.value)
+                          : e.target.value,
+                    });
+                    setConfirmed(false);
+                  }}
+                />
+              )}
+            </label>
+            {task.field_sources?.[field.key] &&
+              values[field.key] === task.values[field.key] && (
+                <details className="tea-small-note">
+                  <summary>
+                    茶渡根据对话填写 · {task.confirmed ? "已确认" : "待核对"}
+                  </summary>
+                  <p>来源：{task.field_sources[field.key]!.quote}</p>
+                </details>
+              )}
+          </div>
         ))}
       </div>
       <div className="tea-evidence-heading">

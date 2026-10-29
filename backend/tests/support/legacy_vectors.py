@@ -29,4 +29,5 @@ def schema19_snapshot(service):
         ):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
             conn.execute(f"DROP TABLE {table}")
+        conn.execute("ALTER TABLE task_states DROP COLUMN field_sources_json")
         conn.execute("DELETE FROM schema_migrations WHERE version>19")

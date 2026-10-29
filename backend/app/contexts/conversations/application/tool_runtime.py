@@ -7,6 +7,8 @@ select an account, grant permission, or dispatch arbitrary Python functions.
 import copy
 import logging
 import random
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -27,6 +29,14 @@ ShortID = Annotated[str, Field(min_length=1, max_length=100)]
 
 class ToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    purpose: str = Field(
+        default="",
+        max_length=500,
+        description="内部记录：本次调用解决哪个用户需求，以及预期取得什么；不写私有思考。",
+    )
+    objective_ids: list[str] = Field(
+        default_factory=list, max_length=8, description="关联内部任务说明中的交付目标id；不改变业务任务状态。"
+    )
 
 
 class SearchInput(ToolInput):
@@ -61,6 +71,10 @@ class ToolSpec:
     attempts: int = 1
     timeout_seconds: float = 45
     concurrency_safe: bool = False
+    capability: str = "operations"
+    entry_condition: str = "该能力直接服务于当前用户要求，且所需输入已具备。"
+    result_contract: str = "返回实际结果及具体缺口；调用成功不表示业务任务完成。"
+    cost_class: str = "local"
 
 
 SEARCH_DOCUMENTS = ToolSpec(
@@ -115,14 +129,28 @@ def retry_delay(error, attempt):
         header = error.response.headers.get("Retry-After")
         if header:
             try:
-                # A long server delay is returned to the user instead of retrying early.
                 delay = float(header)
-                if not 0 <= delay <= 10:
-                    return None
-                return max(0.1, delay)
             except ValueError:
+                try:
+                    when = parsedate_to_datetime(header)
+                    if when.tzinfo is None:
+                        when = when.replace(tzinfo=timezone.utc)
+                    delay = (when - datetime.now(timezone.utc)).total_seconds()
+                except (ValueError, TypeError, OverflowError):
+                    return None
+            # Never retry earlier than Retry-After. ToolRun also verifies that
+            # this delay fits the request's remaining deadline.
+            if not 0 <= delay <= 900:
                 return None
-    elif not isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return max(0.1, delay)
+    elif not (
+        isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout))
+        or (
+            isinstance(error, ToolFailure)
+            and error.code == "upstream_error"
+            and getattr(error, "retryable", False)
+        )
+    ):
         return None
     return min(2, 0.25 * 2 ** (attempt - 1)) + random.uniform(0, 0.15)
 
@@ -243,7 +271,10 @@ class ToolRun:
                 if not fragment:
                     return
                 output["text"] += fragment
-                context.output_started = True
+                # Main-model reasoning is progress, not an answer. The model
+                # content callback marks actual answer text separately.
+                if spec.name != "agent_turn":
+                    context.output_started = True
                 for start in range(0, len(fragment), 3500):
                     self.sequence += 1
                     trace.update(run_id=self.run_id, sequence=self.sequence)
@@ -271,14 +302,24 @@ class ToolRun:
                     publish("running", f"正在重新调用，第 {attempt} 次尝试。")
                 try:
                     result = operation(args, context)
-                    context.check()
+                    failed_result = isinstance(result, dict) and bool(result.get("error"))
+                    if failed_result:
+                        # A handler may return preserved evidence while reporting
+                        # its own deadline failure. Keep that receipt and cause;
+                        # the result is still failed and cannot extend execution.
+                        self.check_cancelled()
+                    else:
+                        context.check()
                     if preview:
                         output = preview(result)
                         if output is not None:
                             with self._lock:
                                 record["output_preview"] = output
                     summary = summarize(result) if summarize else "已完成。"
-                    publish("completed", summary)
+                    if failed_result:
+                        publish("failed", result.get("message") or summary, result["error"])
+                    else:
+                        publish("completed", summary)
                     return result
                 except StreamCancelled:
                     raise

@@ -4,11 +4,17 @@
 
 `TEA_CONFIG_DIR` 可指定唯一活动配置根；完整实例恢复默认使用其 `data/config/catalogs/` 快照。修改前运行 `make instance-paths` 查看生效位置，详见 [实例管理](../docs/INSTANCE_MANAGEMENT.md)。
 
+`legal-source-metadata.json` 保存已核对原文的资料身份修正及跨法域版本关系，按国家和资料包文献标识匹配，可用原件哈希限定修正范围。每项关系保留原文记录、条号、日期和哈希；不记录问答结论，也不改变资料审核状态。资料包索引与该文件共同决定运行时的来源身份及适用时期，验收指纹需包含两者。
+
 管理员可在“系统管理 → API 配置”（`/tea/admin/api`）维护实例的模型与解析凭据，保存、生效与覆盖规则见 [后台 API 配置](../docs/INSTANCE_MANAGEMENT.md#后台-api-配置)。本目录不保存这些私有值。
 
 ## Agent 调度与记忆
 
-节点会话在配置生成密钥后使用模型自主选择工具，五项业务工具和 RAG、识图、联网搜索可组合调用；后台配置的分析流程继续约束证据、法域及核验。`AGENT_MODEL` 示例为 `Nemotron-3.5`，`AGENT_REASONING_EFFORT=high` 启用高思考；模型地址和密钥可继承 `LLM_*`。识图可独立选择 Sub2API 工具接口，并与聊天识图共享请求额度，参数与恢复边界见 [文档处理](../docs/INGESTION.md)。其余私有设置、工具扩展方法、调用预算、记忆有效性及迁移说明统一维护在 [Agent 调度与记忆](../docs/AGENT_RUNTIME.md)。
+节点会话使用一个主 Agent，直接取证、分析并回答，常用工具参数直接提供，短方法文档按需读取。普通聊天移除强制 Task Brief、法律子报告和第二次润色。`agent-skills/<id>/SKILL.md` 保存方法，`agent_skills.py` 登记简介与关联工具。`AGENT_MODEL` 示例为 `Nemotron-3.5`，地址和密钥可继承 `LLM_*`。调用预算、证据快照、MCP、记忆和 `TEA_BACKGROUND_WORKERS=external` 独立后台进程统一维护在 [Agent 运行机制](../docs/AGENT_RUNTIME.md)。识图的 Sub2API 配置和额度见 [文档处理](../docs/INGESTION.md)。
+
+合同审查使用 [`contract_review`](agent-skills/contract_review/SKILL.md) 技能，按用户立场提供条款风险、替换文字和谈判备选方案。技能由主 Agent 按需加载，资料读取、法律取证和文稿保存复用现有工具，调用与权限说明见 [Agent 运行机制](../docs/AGENT_RUNTIME.md#法律证据操作与按需方法)。
+
+[`draft`](agent-skills/draft/SKILL.md) 技能采用用户提供的 /legal-writing 方法，支持完整文书起草、原稿改写、写作反馈和依据核对，保留原文稿入口。技能全文按需加载，正文交付与在工作台保存分别处理，详细规则见同一运行机制文档。
 
 ## 流程配置
 

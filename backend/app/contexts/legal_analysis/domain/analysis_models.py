@@ -179,7 +179,7 @@ class LegalCitation(LegalModel):
     locator: dict[str, JsonValue] = Field(default_factory=dict, max_length=30)
     source_url: str | None = Field(default=None, max_length=2000)
     document_version: int = Field(ge=1)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict, max_length=30)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict, max_length=50)
     metadata_revision: int = Field(default=0, ge=0)
     country: Country | None = None
     chunk_id: str | None = Field(default=None, max_length=200)
@@ -190,8 +190,80 @@ class LegalCondition(LegalModel):
     label: str = Field(min_length=1, max_length=300)
     state: Literal["met", "not_met", "unknown", "not_applicable"]
     fact_keys: list[LegalID] = Field(default_factory=list, max_length=50)
+    fact_sources: list[ShortText] = Field(default_factory=list, max_length=10)
     citation_ids: list[LegalID] = Field(default_factory=list, max_length=30)
     reason: str = Field(default="", max_length=2000)
+
+
+class BusinessActor(LegalModel):
+    id: LegalID
+    name: ShortText = Field(
+        description="主体短名称，如用户茶商、甲工厂、乙进口商；业务角色另列，不在名称中堆叠。"
+    )
+    entity_type: str = Field(default="未知", max_length=100)
+    jurisdiction: Country | None = None
+    roles: list[ShortText] = Field(
+        default_factory=list,
+        max_length=12,
+        description="依据事实识别实际角色。安排生产、采购或发货不能证明亲自生产；未知生产者等角色可用待确认主体表示，不预设与用户相同或独立。",
+    )
+    identity_status: Literal["identified", "unknown"] = "unknown"
+    sources: list[ShortText] = Field(default_factory=list, max_length=8)
+
+
+class BusinessRelationship(LegalModel):
+    from_actor_id: LegalID
+    to_actor_id: LegalID
+    relationship: ShortText
+    sources: list[ShortText] = Field(default_factory=list, max_length=8)
+
+
+class BusinessCredential(LegalModel):
+    id: LegalID
+    actor_id: LegalID
+    credential_type: ShortText
+    scope: str = Field(default="", max_length=1000)
+    proof: str = Field(default="", max_length=1000)
+    status: Literal["reported_completed", "documented", "unknown"] = "unknown"
+    sources: list[ShortText] = Field(default_factory=list, max_length=8)
+
+
+class BusinessContext(LegalModel):
+    actors: list[BusinessActor] = Field(default_factory=list, max_length=20)
+    relationships: list[BusinessRelationship] = Field(default_factory=list, max_length=40)
+    credentials: list[BusinessCredential] = Field(default_factory=list, max_length=40)
+
+
+class LegalObligation(LegalModel):
+    id: LegalID
+    matter: ShortText
+    kind: Literal["statutory", "contractual", "right"] = "statutory"
+    legal_actor_id: LegalID | None = Field(
+        default=None, description="法律直接规定的义务承担者或权利人；委托及费用约定不改变此身份。"
+    )
+    performer_id: LegalID | None = Field(
+        default=None, description="实际提交材料或操作系统的主体，可与法定义务人不同。"
+    )
+    registrant_id: LegalID | None = Field(
+        default=None, description="申请、备案、许可或证书登记在其名下的主体。"
+    )
+    business_responsible_id: LegalID | None = Field(
+        default=None, description="现有合同明确约定负责该事项或费用的主体；无约定用null。"
+    )
+    trigger: str = Field(min_length=1, max_length=1000)
+    citation_ids: list[LegalID] = Field(default_factory=list, max_length=20)
+    prerequisites: list[ShortText] = Field(default_factory=list, max_length=10)
+    completion_proof: list[ShortText] = Field(default_factory=list, max_length=10)
+    status: Literal["completed", "pending", "not_applicable", "unconfirmed"] = "unconfirmed"
+    credential_ids: list[LegalID] = Field(default_factory=list, max_length=10)
+    fact_sources: list[ShortText] = Field(default_factory=list, max_length=10)
+    validity_status: Literal["reference_checked", "unconfirmed", "historical"] = "unconfirmed"
+    fact_status: Literal["sourced", "unknown"] = "unknown"
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description="说明所引规则规定谁承担责任，哪项事实使该主体满足身份条件；身份未知时分别说明不同身份下的分配，不以办理或费用约定代替法定身份。",
+    )
 
 
 class LegalAction(LegalModel):
@@ -199,6 +271,14 @@ class LegalAction(LegalModel):
     title: str = Field(min_length=1, max_length=300)
     nature: Literal["mandatory", "conditional", "recommended", "commercial", "unverified"]
     details: str = Field(default="", max_length=3000)
+    obligation_ids: list[LegalID] = Field(default_factory=list, max_length=20)
+    responsible_actor_id: LegalID | None = Field(
+        default=None,
+        description="实际执行本动作的主体。向对方索取证照由索取方执行，申请进口许可由进口申请方执行；不得因关联了进口义务就把索取动作分给进口商。",
+    )
+    timing: str = Field(default="", max_length=300)
+    prerequisites: list[ShortText] = Field(default_factory=list, max_length=10)
+    completion_proof: list[ShortText] = Field(default_factory=list, max_length=10)
 
 
 class DeadlineRequest(LegalModel):
@@ -249,6 +329,9 @@ class LegalIssue(LegalModel):
     status: Literal["supported", "unsupported", "conditional", "undetermined"] = "undetermined"
     conclusion: str = Field(default="", max_length=4000)
     explanation: str = Field(default="", max_length=8000)
+    rule_interpretation: str = Field(default="", max_length=3000)
+    exceptions: list[ShortText] = Field(default_factory=list, max_length=10)
+    obligations: list[LegalObligation] = Field(default_factory=list, max_length=20)
     citations: list[LegalCitation] = Field(default_factory=list, max_length=80)
     deadlines: list[DeadlineResult] = Field(default_factory=list, max_length=10)
     actions: list[LegalAction] = Field(default_factory=list, max_length=20)
@@ -265,6 +348,10 @@ class LegalSection(LegalModel):
 
 class LegalResult(LegalModel):
     question: str = Field(max_length=20000)
+    task_type: Literal["lookup", "consultation", "dispute", "contract_review", "business_plan"] = (
+        "consultation"
+    )
+    business_context: BusinessContext = Field(default_factory=BusinessContext)
     issues: list[LegalIssue] = Field(default_factory=list, max_length=8)
     facts: list[LegalFact] = Field(default_factory=list, max_length=MAX_ANALYSIS_FACTS)
     followups: list[FactRequirement] = Field(default_factory=list, max_length=5)
@@ -334,6 +421,9 @@ class IssueAssessment(LegalModel):
     status: Literal["supported", "unsupported", "conditional", "undetermined"]
     conclusion: str = Field(min_length=1, max_length=4000)
     explanation: str = Field(default="", max_length=8000)
+    rule_interpretation: str = Field(default="", max_length=3000)
+    exceptions: list[ShortText] = Field(default_factory=list, max_length=10)
+    obligations: list[LegalObligation] = Field(default_factory=list, max_length=20)
     citation_ids: list[LegalID] = Field(default_factory=list, max_length=80)
     conditions: list[LegalCondition] = Field(default_factory=list, max_length=40)
     deadlines: list[DeadlineRequest] = Field(default_factory=list, max_length=10)

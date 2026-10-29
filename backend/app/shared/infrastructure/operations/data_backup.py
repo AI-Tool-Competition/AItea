@@ -15,6 +15,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import sys
 import tempfile
 import time
 from contextlib import closing
@@ -28,7 +29,7 @@ from app.shared.infrastructure.operations.system_corpus_migration import (
 )
 
 PROTOCOL = "aitea-data-backup-v1"
-SUPPORTED_SCHEMA_VERSION = 27
+SUPPORTED_SCHEMA_VERSION = 28
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
 MAX_FILES = 1_000_000
 _CHUNK = 1024 * 1024
@@ -244,6 +245,11 @@ def _database_check(path, *, primary=False):
                     )
                 except sqlite3.DatabaseError as exc:
                     raise DataBackupError("agent_context_schema_incomplete") from exc
+            if 28 in applied:
+                try:
+                    conn.execute("SELECT field_sources_json FROM task_states LIMIT 0")
+                except sqlite3.DatabaseError as exc:
+                    raise DataBackupError("business_card_schema_incomplete") from exc
         counts = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in ("users", "sessions", "cases", "documents", "legal_relations", "retrieval_vectors")
@@ -451,13 +457,19 @@ def _publish(stage, destination):
     for directory, _, _ in os.walk(stage, topdown=False):
         _sync_directory(Path(directory))
     # The final directory is never visible without its verified COMPLETE file.
-    # Linux renameat2(RENAME_NOREPLACE) also refuses an empty directory created
-    # by another operator between the preflight and publication.
-    rename = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    # Both native operations refuse even an empty destination created after
+    # preflight; existence-check + os.rename would allow an overwrite race.
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(library, "renamex_np" if sys.platform == "darwin" else "renameat2", None)
     _require(rename is not None, "atomic_noreplace_unavailable")
-    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     rename.restype = ctypes.c_int
-    if rename(-100, os.fsencode(stage), -100, os.fsencode(destination), 1) != 0:
+    if sys.platform == "darwin":
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        result = rename(os.fsencode(stage), os.fsencode(destination), 0x4)  # RENAME_EXCL
+    else:
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        result = rename(-100, os.fsencode(stage), -100, os.fsencode(destination), 1)  # RENAME_NOREPLACE
+    if result != 0:
         code = ctypes.get_errno()
         if code in {errno.EEXIST, errno.ENOTEMPTY}:
             raise DataBackupError("new_destination_required")

@@ -53,6 +53,7 @@ class WorkspaceService:
                         "needs_review": bool(state["needs_review"]),
                         "revision": state["revision"],
                         "values": json.loads(state["values_json"]),
+                        "field_sources": json.loads(state["field_sources_json"]),
                         "evidence_ids": json.loads(state["evidence_ids"]),
                         "confirmed": bool(state["confirmed"]),
                         "verification": json.loads(state["verification"]) if state["verification"] else None,
@@ -268,44 +269,53 @@ class WorkspaceService:
     def normalize_values(self, task, supplied):
         return rules.normalize_values(task, supplied)
 
-    def patch_task(self, owner, case_id, task_id, payload):
-        with self.app.db.transaction() as conn:
-            case = self.app.case_detail(owner, case_id, conn)
-            _, task = self.app.get_task(case, task_id)
-            self.app.check_revision(task, payload["expected_revision"])
-            definitions = {f["key"]: f for f in task["fields"]}
-            values = self.app.normalize_values(task, payload["values"])
-            evidence = payload.get("evidence_ids")
-            if evidence is None:
-                evidence = task["evidence_ids"]
-            evidence = list(dict.fromkeys(evidence))
-            for doc_id in evidence:
-                doc = self.app.own_document(conn, owner, doc_id)
-                if doc["case_id"] != case_id or doc["role"] != "primary" or doc["status"] != "ready":
-                    fail(422, "invalid_evidence", "核验材料必须是本业务中解析成功的主文件")
-            if values == task["values"] and evidence == task["evidence_ids"]:
-                return case
-            self.app.invalidate_task(
-                conn, case_id, task_id, reason=f"「{task['title']}」的资料已修改，旧确认不再适用。"
-            )
+    def patch_task(self, owner, case_id, task_id, payload, *, conn=None, field_sources=None):
+        if conn is None:
+            with self.app.db.transaction() as db:
+                return self.patch_task(owner, case_id, task_id, payload, conn=db, field_sources=field_sources)
+        field_sources = field_sources or {}
+        case = self.app.case_detail(owner, case_id, conn)
+        _, task = self.app.get_task(case, task_id)
+        self.app.check_revision(task, payload["expected_revision"])
+        definitions = {f["key"]: f for f in task["fields"]}
+        values = self.app.normalize_values(task, payload["values"])
+        evidence = payload.get("evidence_ids")
+        if evidence is None:
+            evidence = task["evidence_ids"]
+        evidence = list(dict.fromkeys(evidence))
+        for doc_id in evidence:
+            doc = self.app.own_document(conn, owner, doc_id)
+            if doc["case_id"] != case_id or doc["role"] != "primary" or doc["status"] != "ready":
+                fail(422, "invalid_evidence", "核验材料必须是本业务中解析成功的主文件")
+        if values == task["values"] and evidence == task["evidence_ids"]:
+            return case
+        self.app.invalidate_task(
+            conn, case_id, task_id, reason=f"「{task['title']}」的资料已修改，旧确认不再适用。"
+        )
+        provenance = dict(task["field_sources"])
+        for key, value in values.items():
+            if value != task["values"].get(key):
+                provenance.pop(key, None)
+                if key in field_sources:
+                    provenance[key] = field_sources[key]
+        conn.execute(
+            "UPDATE task_states SET values_json=?,evidence_ids=?,field_sources_json=? WHERE case_id=? AND task_id=?",
+            (dump(values), dump(evidence), dump(provenance), case_id, task_id),
+        )
+        for key, value in values.items():
             conn.execute(
-                "UPDATE task_states SET values_json=?,evidence_ids=? WHERE case_id=? AND task_id=?",
-                (dump(values), dump(evidence), case_id, task_id),
+                "INSERT INTO facts VALUES (?,?,?,?,?,?,?) ON CONFLICT(case_id,key) DO UPDATE SET label=excluded.label,value=excluded.value,source=excluded.source,confirmed=0,updated_at=excluded.updated_at",
+                (case_id, key, definitions[key]["label"], dump(value), f"task:{task_id}", 0, now()),
             )
-            for key, value in values.items():
-                conn.execute(
-                    "INSERT INTO facts VALUES (?,?,?,?,?,?,?) ON CONFLICT(case_id,key) DO UPDATE SET label=excluded.label,value=excluded.value,source=excluded.source,confirmed=0,updated_at=excluded.updated_at",
-                    (case_id, key, definitions[key]["label"], dump(value), f"task:{task_id}", 0, now()),
-                )
-            self.app.touch(conn, case_id)
-            self.app.event(
-                conn,
-                case_id,
-                "task_updated",
-                "更新任务资料",
-                f"已保存「{task['title']}」的当前资料，等待核验。",
-            )
-            return self.app.case_detail(owner, case_id, conn)
+        self.app.touch(conn, case_id)
+        self.app.event(
+            conn,
+            case_id,
+            "task_updated",
+            "更新任务资料",
+            f"已保存「{task['title']}」的当前资料，等待核验。",
+        )
+        return self.app.case_detail(owner, case_id, conn)
 
     def checks(self, conn, task, confirm=False):
         checks = []

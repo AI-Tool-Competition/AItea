@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 def create_app(data_dir=None, *, enable_scheduler=None):
     is_test = data_dir is not None
     worker_scope = BackgroundWorkerScope(os.getenv("TEA_SHARED_LIBRARY_WORKERS", "internal").strip().lower())
+    background_workers = os.getenv("TEA_BACKGROUND_WORKERS", "external").strip().lower()
+    if background_workers not in {"internal", "external"}:
+        raise ValueError("TEA_BACKGROUND_WORKERS 必须为 internal 或 external。")
     existing_data = os.getenv("TEA_REQUIRE_EXISTING_DATA", "false").strip().lower()
     if existing_data not in {"true", "false"}:
         raise ValueError("TEA_REQUIRE_EXISTING_DATA 必须为 true 或 false。")
@@ -30,6 +33,7 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     )
     auth = Auth(service)
     service.collection.worker_health["shared_library_workers"] = worker_scope.shared_library_workers
+    service.collection.worker_health["background_workers"] = background_workers
     if not is_test:
         auth.ensure_default_admin()
 
@@ -44,7 +48,11 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         from app.contexts.ingestion.application.official_source_import import OfficialSourceImporter
         from app.shared.infrastructure.operations.scheduler import start_scheduler, stop_scheduler
 
-        enabled = enable_scheduler if enable_scheduler is not None else not is_test
+        enabled = (
+            enable_scheduler
+            if enable_scheduler is not None
+            else not is_test and background_workers == "internal"
+        )
         handle = start_scheduler(service, enabled=enabled, **worker_scope.kwargs())
         workers = CollectionWorkers(service.collection, **worker_scope.kwargs()).start() if enabled else None
         official_importer = None
@@ -87,10 +95,13 @@ def create_app(data_dir=None, *, enable_scheduler=None):
     @app.get("/api/tea/health")
     def health():
         service.db.check_available()
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+
         return {
             "status": "ok",
             "version": "0.1.0",
             **service.capabilities,
+            "legal_libraries": CountryPacks(service.db.data_dir).status(),
             "collector": dict(service.collection.worker_health),
         }
 
@@ -107,10 +118,21 @@ def create_app(data_dir=None, *, enable_scheduler=None):
         identity,
         knowledge,
         legal,
+        mcp,
         workspace,
     )
 
     install(app)
-    for routes in (identity, administration, workspace, legal, conversation, knowledge, drafting, collection):
+    for routes in (
+        identity,
+        administration,
+        workspace,
+        legal,
+        conversation,
+        knowledge,
+        drafting,
+        collection,
+        mcp,
+    ):
         routes.register(app, service, auth, user, admin_user)
     return app

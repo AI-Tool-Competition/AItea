@@ -13,9 +13,21 @@ class MessageInput(StrictModel):
     task_id: str | None = Field(default=None, max_length=64)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
     mode: Literal["auto", "legal"] = "auto"
-    skills: list[Literal["guidance", "materials", "legal", "draft", "handoff", "research", "vision"]] = Field(
-        default_factory=list, max_length=7
-    )
+    skills: list[
+        Literal[
+            "guidance",
+            "materials",
+            "legal",
+            "draft",
+            "handoff",
+            "research",
+            "vision",
+            "business",
+            "export_planning",
+            "legal_lookup",
+            "contract_review",
+        ]
+    ] = Field(default_factory=list, max_length=11)
     content: str = Field(min_length=1, max_length=20000)
     client_message_id: str = Field(min_length=1, max_length=100)
 
@@ -50,8 +62,12 @@ class ToolCallSnapshot(StrictModel):
 
     id: str = Field(min_length=1, max_length=100)
     name: Literal[
+        "update_business_card",
         "search_documents",
         "search_legal_evidence",
+        "lookup_chinese_law",
+        "read_law",
+        "get_law_versions",
         "check_materials",
         "generate_guidance",
         "guide_business",
@@ -59,6 +75,7 @@ class ToolCallSnapshot(StrictModel):
         "draft_document",
         "get_handoff",
         "discover_tools",
+        "tool_search",
         "load_skill",
         "list_documents",
         "read_document",
@@ -67,6 +84,7 @@ class ToolCallSnapshot(StrictModel):
         "recall_memory",
         "remember_memory",
         "update_plan",
+        "update_task_brief",
         "agent_turn",
         "compact_context",
         "read_tool_result",
@@ -162,6 +180,11 @@ class AgentToolInfo(StrictModel):
     label: str
     description: str
     parallel: bool
+    capability: str = "operations"
+    entry_condition: str = ""
+    result_contract: str = ""
+    cost_class: str = "local"
+    timeout_seconds: float = 45
 
 
 class AgentSkillInfo(StrictModel):

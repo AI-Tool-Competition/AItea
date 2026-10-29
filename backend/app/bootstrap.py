@@ -80,7 +80,7 @@ class Service:
         identity = [self.embedding_fingerprint(), model]
         if os.getenv("RERANK_BASE_URL") or os.getenv("RERANK_MODEL"):
             identity.extend([os.getenv("RERANK_BASE_URL"), os.getenv("RERANK_MODEL")])
-        return hashlib.sha256(dump(identity).encode()).hexdigest() if model else None
+        return hashlib.sha256(dump(identity).encode()).hexdigest() if model or any(identity[2:]) else None
 
     def template(self, owner, template_id, conn=None):
         return self.configurations.template(owner, template_id, conn)

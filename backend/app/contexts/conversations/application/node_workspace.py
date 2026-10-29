@@ -208,11 +208,9 @@ class NodeWorkspace:
                 "SELECT 1 FROM conversation_messages WHERE conversation_id=? LIMIT 1", (conversation["id"],)
             ).fetchone():
                 content = (
-                    f"我们一起开始 **{stage['name']}**。先把情况说明白，再整理分析报告；之后也可以随时继续补充和讨论。\n\n"
-                    "1. 这个节点你目前已经办理到哪一步？最希望先解决什么问题？\n"
-                    "2. 实际参与的企业、产品和交易安排有哪些已确定，哪些还不清楚？\n"
-                    "3. 如有相关证照、产品说明、合同或办理凭证，可以先上传。**暂时没有材料也可以直接说明，不会阻止继续分析。**\n\n"
-                    "你可以分几次回答；准备好后告诉我“开始分析”，我会结合共享进度和已有资料分析，并把报告保存在这里。"
+                    f"我是茶渡，会陪你梳理 **{stage['name']}**，把需要办的事、负责的人和要准备的材料讲清楚。\n\n"
+                    "先说说目前最想解决什么问题，或者已经办到哪一步？不用一次讲全，也不用先备齐材料。\n\n"
+                    "你说到的企业、产品和交易安排，我会填进右侧业务卡，方便你查看、修改和核对；不清楚的地方再逐项确认。"
                 )
                 message = self.service.insert_message(
                     conn, case_id, stage_id, None, "assistant", content, [], []

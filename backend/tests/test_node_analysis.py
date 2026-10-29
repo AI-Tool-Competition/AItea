@@ -43,6 +43,65 @@ def test_node_entry_streams_six_steps_and_persists_editable_result(client):
     assert current["stages"] == case["stages"]
 
 
+def test_internal_conversation_can_retain_sources_after_analysis_failure(client, monkeypatch):
+    from app.shared.domain.errors import AppError
+    from app.contexts.legal_analysis.domain.analysis_models import LegalResult
+
+    case, _ = entry(client)
+    service = client.app.state.service
+    owner = client.get("/api/tea/auth/me").json()["id"]
+    citation = {
+        "id": "source-1",
+        "document_id": "document-1",
+        "document_version": 1,
+        "title": "原文",
+        "excerpt": "本条要求依法履行义务。",
+        "country": "CN",
+        "source_url": "https://www.gov.cn/law",
+        "locator": {},
+    }
+
+    def engine(*args, **options):
+        partial = LegalResult(question=args[3], assistant_mode="live", citations=[citation]).model_dump(
+            mode="json"
+        )
+        options["on_checkpoint"]("retrieve", partial, {"result": partial})
+        raise TimeoutError("provider timeout")
+
+    monkeypatch.setattr(service.legal, "execute_engine", engine)
+    payload = {
+        "stage_id": case["stages"][0]["id"],
+        "question": "本次义务有哪些？",
+        "client_request_id": "partial-internal",
+    }
+    result = service.legal.analyze(owner, case["id"], payload, allow_partial=True)
+    assert result["status"] == "failed"
+    assert result["result"]["citations"][0]["excerpt"] == citation["excerpt"]
+    assert result["result"]["issues"] == []
+    assert "模型分析未完成" in result["result"]["gaps"][-1]
+    with pytest.raises(AppError) as error:
+        service.legal.analyze(owner, case["id"], {**payload, "client_request_id": "partial-public"})
+    assert error.value.code == "legal_analysis_failed"
+
+
+@pytest.mark.parametrize("mode", ["local_pack", "local_pack_vector"])
+def test_node_report_retains_pack_retrieval_mode_and_reviewed_workflow_on_refresh(client, monkeypatch, mode):
+    case, route = entry(client)
+    service = client.app.state.service
+    monkeypatch.setattr(service.legal, "search", lambda *a, **kw: {"items": [], "mode": mode})
+    first = client.post(route, json={"expected_revision": case["revision"]})
+    assert first.status_code == 200, first.text
+    assert first.json()["retrieval_mode"] == mode
+    url = f"/api/tea/cases/{case['id']}/legal/analyses/{first.json()['legal_analysis_id']}"
+    report = client.get(url).json()
+    refreshed = client.post(
+        url + "/refresh",
+        json={"expected_revision": report["revision"], "client_request_id": "node-report-refresh"},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert [step["id"] for step in refreshed.json()["result"]["trace"]] == [f"qa0{i}" for i in range(1, 7)]
+
+
 def test_material_change_refreshes_same_node_report_and_preserves_manual_edit(client):
     case, route = entry(client)
     first = client.post(route, json={"expected_revision": case["revision"]}).json()

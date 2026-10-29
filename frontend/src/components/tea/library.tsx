@@ -58,6 +58,7 @@ import {
 
 export function CitationCard({ citation }: { citation: Citation }) {
   const url = safeSourceUrl(citation.source_url);
+  const isPack = citation.metadata?.evidence_store === "country_pack";
   const locator = citation.locator ?? {};
   const page = locator.page ?? locator.page_number ?? locator.page_no;
   const lineStart = locator.line_start;
@@ -66,6 +67,7 @@ export function CitationCard({ citation }: { citation: Citation }) {
   const readable = (value: unknown) =>
     typeof value === "string" || typeof value === "number" ? String(value) : "";
   const locations = [
+    readable(locator.article) ? `条款 ${readable(locator.article)}` : "",
     readable(page) ? `第 ${readable(page)} 页` : "",
     readable(lineStart)
       ? `第 ${readable(lineStart)}${readable(lineEnd) && lineEnd !== lineStart ? `–${readable(lineEnd)}` : ""} 行`
@@ -87,10 +89,16 @@ export function CitationCard({ citation }: { citation: Citation }) {
       <div>
         <BookOpen size={16} />
         <strong>{citation.title}</strong>
-        {citation.document_version && <span>v{citation.document_version}</span>}
+        {citation.document_version && (
+          <span>{isPack ? "资料包" : `v${citation.document_version}`}</span>
+        )}
       </div>
       <small>
-        {kind ? kinds[kind] : "参考资料"}
+        {isPack
+          ? (citation.metadata?.source_type ?? "资料包摘录")
+          : kind
+            ? kinds[kind]
+            : "参考资料"}
         {locations.length ? ` · ${locations.join(" · ")}` : ""}
       </small>
       <p>{citation.excerpt}</p>
@@ -104,10 +112,12 @@ export function CitationCard({ citation }: { citation: Citation }) {
         </small>
       )}
       <footer>
-        <a href={downloadUrl(citation.document_id)}>
-          <ArrowDownToLine size={13} />
-          原始文件
-        </a>
+        {!isPack && (
+          <a href={downloadUrl(citation.document_id)}>
+            <ArrowDownToLine size={13} />
+            原始文件
+          </a>
+        )}
         {url && (
           <a href={url} target="_blank" rel="noreferrer">
             <Link2 size={13} />

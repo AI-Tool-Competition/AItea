@@ -405,8 +405,21 @@ export function useStageChat({
     moreBusy,
     historyError,
     send,
+    retryMessage: (message: Message) => {
+      const index = history.items.findIndex((item) => item.id === message.id);
+      const question = history.items[index - 1];
+      if (question?.role !== "user") return;
+      void submit({
+        stage_id: stageId,
+        ...(question.task_id ? { task_id: question.task_id } : {}),
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+        content: question.content,
+        client_message_id: crypto.randomUUID(),
+      });
+    },
     retry: (turn: ChatTurn) => {
       if (
+        turn.state === "stopped" ||
         [
           "agent_request_not_replayable",
           "agent_context_changed",

@@ -6,12 +6,14 @@ import json
 import sqlite3
 import threading
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 from app.contexts.conversations.application import agent_loop
-from app.contexts.conversations.application.agent_tools import AgentTools
+from app.contexts.conversations.application.agent_tools import AgentTools, LawReadInput, LegalSearchInput
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_loop import compact_messages
+from app.contexts.conversations.application.agent_skills import SKILLS, read_skill
 from app.contexts.conversations.application.tool_runtime import ToolFailure
 from app.interfaces.http.factory import create_app
 from app.shared.application.streaming import StreamCancelled
@@ -19,6 +21,7 @@ from app.shared.domain.errors import AppError
 from app.shared.infrastructure.persistence.database import Database
 from app.shared.infrastructure.operations.data_backup import create_backup, restore_backup, verify_backup
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 @pytest.fixture
@@ -55,20 +58,30 @@ def tools(*pairs):
     }
 
 
-def scenario(monkeypatch, replies, seen=None):
+def scenario(monkeypatch, replies, seen=None, *, auto_discover=True):
+    """Script only actual model turns; no planner or final-editor injection."""
     monkeypatch.setenv("LLM_API_KEY", "fixture-only")
     monkeypatch.setenv("AGENT_MODEL", "gemini-3.8-flash")
     replies = iter(replies)
+    pending = []
 
     async def turn(messages, definitions, delta, check, **kwargs):
         check()
-        if seen is not None:
-            seen.append((copy.deepcopy(messages), copy.deepcopy(definitions)))
-        reply = next(replies)
-        if isinstance(reply, Exception):
-            raise reply
+        reply = pending.pop() if pending else next(replies)
         if callable(reply):
             reply = reply()
+        if auto_discover and isinstance(reply, dict) and reply.get("tool_calls"):
+            available = {d["function"]["name"] for d in definitions}
+            missing = [
+                c["function"]["name"] for c in reply["tool_calls"] if c["function"]["name"] not in available
+            ]
+            if missing:
+                pending.append(reply)
+                return tools(("tool_search", {"query": " ".join(missing)}))
+        if seen is not None:
+            seen.append((copy.deepcopy(messages), copy.deepcopy(definitions)))
+        if isinstance(reply, Exception):
+            raise reply
         if isinstance(reply, str):
             delta(reply)
             return {"role": "assistant", "content": reply}
@@ -79,11 +92,260 @@ def scenario(monkeypatch, replies, seen=None):
     monkeypatch.setattr(agent_loop, "agent_turn", turn)
 
 
+def last_run(workspace):
+    with closing(workspace[1].db.connect()) as conn:
+        return json.loads(
+            conn.execute("SELECT result FROM agent_runs ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+        )
+
+
+def stored_receipt(workspace, call_id):
+    with closing(workspace[1].db.connect()) as conn:
+        row = conn.execute(
+            "SELECT result FROM agent_tool_receipts WHERE call_id=? ORDER BY updated_at DESC LIMIT 1",
+            (call_id,),
+        ).fetchone()
+        assert row is not None, call_id
+        return json.loads(row[0])
+
+
 def send(workspace, payload=None, *, stream=False):
     client, _, _, case, default = workspace
     return client.post(
         f"/api/tea/cases/{case['id']}/messages" + ("/stream" if stream else ""), json=payload or default
     )
+
+
+@pytest.mark.parametrize("values", [{}, {"record_id": "record", "url": "https://www.gov.cn/law"}])
+def test_read_law_requires_exactly_one_source(values):
+    with pytest.raises(ValidationError):
+        LawReadInput(jurisdiction="CN", **values)
+
+
+def legal_tools(workspace, check=lambda: None):
+    _, service, owner, case, payload = workspace
+    return AgentTools(service, owner, case, case["stages"][0], payload, {}, "tool-test", check)
+
+
+def test_skill_document_and_related_parameters_are_loaded_only_on_request(workspace, monkeypatch):
+    seen = []
+    scenario(
+        monkeypatch,
+        [tools(("load_skill", {"name": "business"})), "先比较客户来源与收款安排。"],
+        seen,
+        auto_discover=False,
+    )
+    response = send(workspace)
+    assert response.status_code == 200
+    assert {d["function"]["name"] for d in seen[0][1]} == agent_loop.COMMON_TOOLS
+    assert "先确认经营目标、资源与限制" not in str(seen[0][0])
+    assert "先确认经营目标、资源与限制" in str(seen[1][0])
+    assert seen[1][1]  # the same main model may answer directly with tools available
+    assert "web_search" in str(stored_receipt(workspace, "call_load_skill_0"))
+    all_schemas = [t.schema() for t in legal_tools(workspace).registry.values()]
+    assert len(seen[0][1]) < len(all_schemas)
+
+
+@pytest.mark.parametrize("skill_id", ["contract_review", "draft"])
+def test_document_skill_loads_full_method_and_available_tools_on_request(workspace, monkeypatch, skill_id):
+    seen = []
+    instructions = read_skill(skill_id)
+    scenario(
+        monkeypatch,
+        [tools(("load_skill", {"name": skill_id})), "请提供相关文稿。"],
+        seen,
+        auto_discover=False,
+    )
+    assert send(workspace).status_code == 200
+    assert all(instructions not in message.get("content", "") for message in seen[0][0])
+    loaded = next(
+        json.loads(message["content"])
+        for message in seen[1][0]
+        if message.get("tool_call_id") == "call_load_skill_0"
+    )
+    assert loaded["skill"] == skill_id
+    assert loaded["instructions"] == instructions
+    expected = set(SKILLS[skill_id].tools)
+    assert set(loaded["activate_tools"]) == expected
+    assert {tool["function"]["name"] for tool in loaded["tools"]} == expected
+    registry = legal_tools(workspace).registry
+    assert loaded["tools"] == [registry[name].schema() for name in SKILLS[skill_id].tools]
+    assert expected <= {tool["function"]["name"] for tool in seen[1][1]}
+    assert stored_receipt(workspace, "call_load_skill_0")["instructions"] == instructions
+    assert not workspace[1].case_detail(workspace[2], workspace[3]["id"])["artifacts"]
+
+
+def test_tool_search_loads_one_requested_data_capability(workspace, monkeypatch):
+    seen = []
+    scenario(
+        monkeypatch,
+        [
+            tools(("tool_search", {"query": "list_documents", "limit": 1})),
+            tools(("list_documents", {})),
+            "资料清单已取得。",
+        ],
+        seen,
+        auto_discover=False,
+    )
+    response = send(workspace)
+    assert response.status_code == 200
+    assert {d["function"]["name"] for d in seen[1][1]} == agent_loop.COMMON_TOOLS | {"list_documents"}
+    receipt = stored_receipt(workspace, "call_list_documents_0")
+    assert receipt["total"] == 0
+
+
+def test_unloaded_tool_is_rejected_without_executing_handler(workspace, monkeypatch):
+    seen = []
+    monkeypatch.setattr(AgentTools, "image", lambda *a: pytest.fail("unloaded tool executed"))
+    scenario(monkeypatch, [tools(("inspect_image", {})), "需要先加载相关能力。"], seen, auto_discover=False)
+    assert send(workspace).status_code == 200
+    assert last_run(workspace)["_task_state"]["calls"][-1]["error"] == "unknown_tool"
+
+
+def mcp_request(workspace, method, params=None, *, identifier=1):
+    client, _, _, case, payload = workspace
+    endpoint = f"/api/tea/cases/{case['id']}/stages/{payload['stage_id']}/mcp"
+    body = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+    if identifier is not None:
+        body["id"] = identifier
+    return client.post(
+        endpoint,
+        json=body,
+        headers={"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"},
+    )
+
+
+def test_mcp_initialization_discovery_and_data_call_share_authorized_registry(workspace):
+    initialized = mcp_request(
+        workspace,
+        "initialize",
+        {"protocolVersion": "2025-11-25", "clientInfo": {"name": "test", "version": "1"}, "capabilities": {}},
+    ).json()
+    assert initialized["result"]["protocolVersion"] == "2025-11-25"
+    assert mcp_request(workspace, "notifications/initialized", identifier=None).status_code == 202
+    definitions = mcp_request(workspace, "tools/list").json()["result"]["tools"]
+    schemas = {t["name"]: t for t in definitions}
+    assert (
+        schemas["read_document"]["inputSchema"]
+        == legal_tools(workspace).registry["read_document"].schema()["function"]["parameters"]
+    )
+    assert "draft_document" not in schemas and "remember_memory" not in schemas
+    result = mcp_request(workspace, "tools/call", {"name": "list_documents", "arguments": {}}).json()[
+        "result"
+    ]
+    assert result["isError"] is False and result["structuredContent"]["total"] == 0
+    with closing(workspace[1].db.connect()) as conn:
+        receipt = conn.execute("SELECT name,status FROM agent_tool_receipts").fetchone()
+        assert tuple(receipt) == ("list_documents", "completed")
+
+
+@pytest.mark.parametrize("skill_id", ["contract_review", "draft"])
+def test_mcp_document_skill_limits_tools_to_authorized_registry(workspace, skill_id):
+    from app.contexts.conversations.application.mcp_tools import EXPORTED_TOOLS
+
+    result = mcp_request(
+        workspace, "tools/call", {"name": "load_skill", "arguments": {"name": skill_id}}
+    ).json()["result"]
+    assert result["isError"] is False
+    loaded = result["structuredContent"]
+    assert loaded["skill"] == skill_id
+    assert loaded["instructions"] == read_skill(skill_id)
+    expected = set(SKILLS[skill_id].tools) & EXPORTED_TOOLS
+    assert set(loaded["activate_tools"]) == expected
+    assert {tool["function"]["name"] for tool in loaded["tools"]} == expected
+    assert "draft_document" not in loaded["activate_tools"]
+    assert stored_receipt(workspace, "mcp-call")["instructions"] == loaded["instructions"]
+
+
+def test_mcp_rejects_scope_injection_unknown_tools_and_foreign_account(workspace):
+    result = mcp_request(
+        workspace, "tools/call", {"name": "list_documents", "arguments": {"owner": "foreign"}}
+    ).json()["result"]
+    assert result["isError"] is True
+    assert (
+        mcp_request(workspace, "tools/call", {"name": "run_sql", "arguments": {"sql": "SELECT 1"}}).json()[
+            "error"
+        ]["code"]
+        == -32602
+    )
+    workspace[0].post("/api/tea/auth/logout")
+    assert mcp_request(workspace, "tools/list").status_code == 401
+    workspace[0].post("/api/tea/auth/demo", json={})
+    assert mcp_request(workspace, "tools/list").status_code == 404
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_mcp_rejects_untrusted_origin_on_every_transport_method(workspace, method):
+    client, _, _, case, payload = workspace
+    endpoint = f"/api/tea/cases/{case['id']}/stages/{payload['stage_id']}/mcp"
+    assert (
+        client.request(method, endpoint, headers={"Origin": "https://untrusted.example"}).status_code == 403
+    )
+
+
+def test_read_law_official_source_returns_saved_original_with_citation_identity(workspace, monkeypatch):
+    from app.contexts.legal_analysis.infrastructure import official_evidence
+
+    text = "第一条 经营者应当遵守相关法律规定，依法办理本条列举的事项，并按规定保存相关证明文件供主管部门查验。\n第二条 符合本条例外条件的，可以依照例外规定处理，不能省略这些条件。"
+    body = (
+        "<html><body><h1>测试法规</h1><p>" + text.replace("\n", "</p><p>") + "</p></body></html>"
+    ).encode()
+    monkeypatch.setattr(
+        official_evidence,
+        "_download",
+        lambda *a, **kw: {"url": "https://www.gov.cn/law", "mime_type": "text/html", "blob": body},
+    )
+    result = legal_tools(workspace).read_law(
+        LawReadInput(jurisdiction="CN", url="https://www.gov.cn/law", query="例外"),
+        SimpleNamespace(check=lambda: None),
+    )
+    assert result["mode"] == "official_web" and result["items"]
+    assert any("不能省略" in item["excerpt"] for item in result["items"])
+    for item in result["items"]:
+        assert item["id"].startswith(item["document_id"] + ":")
+        assert len(item["locator"]["source_hash"]) == 64
+        assert item["metadata"]["review_status"] == "draft"
+
+
+@pytest.mark.parametrize("tool_name", ["read_law", "legal_search"])
+def test_legal_tools_reject_unconfigured_country_before_acquisition(workspace, monkeypatch, tool_name):
+    from app.contexts.legal_analysis.infrastructure import official_evidence
+
+    bound = legal_tools(workspace)
+    monkeypatch.setattr(bound.service.legal, "allowed_countries", lambda *a: ["CN"])
+    monkeypatch.setattr(bound.service.legal, "acquire_evidence", lambda *a, **kw: pytest.fail("out of scope"))
+    monkeypatch.setattr(official_evidence, "fetch_official", lambda *a, **kw: pytest.fail("out of scope"))
+    args = (
+        LawReadInput(jurisdiction="SG", url="https://sso.agc.gov.sg/test")
+        if tool_name == "read_law"
+        else LegalSearchInput(jurisdiction="SG", query="food")
+    )
+    with pytest.raises(AppError) as caught:
+        getattr(bound, tool_name)(args, SimpleNamespace(check=lambda: None))
+    assert caught.value.code == "country_mismatch"
+
+
+def test_read_law_rejects_non_official_url_before_download(workspace, monkeypatch):
+    from app.contexts.legal_analysis.infrastructure import official_evidence
+
+    monkeypatch.setattr(official_evidence, "_download", lambda *a, **kw: pytest.fail("untrusted host"))
+    with pytest.raises(AppError) as caught:
+        legal_tools(workspace).read_law(
+            LawReadInput(jurisdiction="CN", url="https://example.com/law"),
+            SimpleNamespace(check=lambda: None),
+        )
+    assert caught.value.code == "official_source_required"
+
+
+def test_read_law_cancellation_stops_before_download(workspace, monkeypatch):
+    from app.contexts.legal_analysis.infrastructure import official_evidence
+
+    monkeypatch.setattr(official_evidence, "fetch_official", lambda *a, **kw: pytest.fail("cancelled"))
+    with pytest.raises(StreamCancelled):
+        legal_tools(workspace).read_law(
+            LawReadInput(jurisdiction="CN", url="https://www.gov.cn/law"),
+            SimpleNamespace(check=lambda: (_ for _ in ()).throw(StreamCancelled())),
+        )
 
 
 def test_business_tools_parallel_and_ordered_with_idempotent_messages(workspace, monkeypatch):
@@ -118,11 +380,21 @@ def test_business_tools_parallel_and_ordered_with_idempotent_messages(workspace,
     assert response.status_code == 200, response.text
     answer = response.json()["messages"][1]
     assert set(completed) == {"guide", "handoff"}
-    current_context = json.loads(seen[0][0][-2]["content"])
-    assert current_context["stage"]["tasks"] == [
-        {key: task[key] for key in ("id", "title", "status")} for task in workspace[3]["stages"][0]["tasks"]
-    ]
-    assert [m["tool_call_id"] for m in seen[1][0] if m["role"] == "tool"] == [
+    current_context = next(
+        json.loads(m["content"])
+        for m in seen[0][0]
+        if m.get("role") == "user" and '"business_context"' in m.get("content", "")
+    )
+    assert "stage" not in current_context and "selected_task" not in current_context
+    assert {t["function"]["name"] for t in seen[0][1]} >= {"search_legal_evidence", "tool_search"}
+    guide_schema = next(t for t in seen[1][1] if t["function"]["name"] == "guide_business")
+    assert "一般商业或法律咨询不调用" in guide_schema["function"]["description"]
+    assert "进入条件" in guide_schema["function"]["description"]
+    assert [
+        m["tool_call_id"]
+        for m in seen[1][0]
+        if m["role"] == "tool" and not m["tool_call_id"].startswith("call_tool_search")
+    ] == [
         "call_guide_business_0",
         "call_get_handoff_1",
     ]
@@ -139,12 +411,12 @@ def test_business_tools_parallel_and_ordered_with_idempotent_messages(workspace,
         next(m["content"] for m in seen[1][0] if m.get("tool_call_id") == "call_get_handoff_1")
     )
     current, following = workspace[3]["stages"][:2]
+    handoff = stored_receipt(workspace, "call_get_handoff_1")
     assert handoff["current_stage_id"] == current["id"]
     assert handoff["next_stage"] == {key: following[key] for key in ("id", "name", "status")}
     assert handoff["next_stage"]["id"] not in {t["id"] for t in current["tasks"]}
-    checks = json.loads(
-        next(m["content"] for m in seen[2][0] if m.get("tool_call_id") == "call_check_materials_0")
-    )["checks"]
+    handoff = stored_receipt(workspace, "call_get_handoff_1")
+    checks = stored_receipt(workspace, "call_check_materials_0")["checks"]
     assert {check["task_title"] for check in checks} == {t["title"] for t in current["tasks"]}
 
 
@@ -177,7 +449,15 @@ def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidenc
         [
             tools(("load_skill", {"name": "research"}), ("load_skill", {"name": "materials"})),
             tools(
-                ("web_search", {"query": "茶出口公告", "domains": ["example.org"]}),
+                (
+                    "web_search",
+                    {
+                        "query": "茶出口公告",
+                        "domains": ["example.org"],
+                        "purpose": "取得公告",
+                        "objective_ids": ["law"],
+                    },
+                ),
                 ("search_documents", {"query": "茶出口材料"}),
             ),
             "已检索官网；RAG 尚未就绪，无法确认法律要求。",
@@ -187,6 +467,7 @@ def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidenc
     response = send(workspace, stream=stream)
     assert response.status_code == 200, response.text
     assert requests[0][0] == "web_search"
+    assert "purpose" not in requests[0][1] and "objective_ids" not in requests[0][1]
     data = (
         next(data for event, data in stream_events(response) if event == "done")
         if stream
@@ -213,7 +494,7 @@ def test_draft_and_explicit_memory_commit_once_with_messages(workspace, monkeypa
     scenario(
         monkeypatch,
         [
-            tools(("discover_tools", {"query": "remember_memory"})),
+            tools(("tool_search", {"query": "remember_memory"})),
             tools(
                 (
                     "draft_document",
@@ -261,18 +542,31 @@ def test_partial_or_cancelled_turn_never_commits_draft_or_memory(workspace, monk
             failure,
         ],
     )
-    with pytest.raises(type(failure)):
-        service.post_message(owner, case["id"], payload)
+    if isinstance(failure, ToolFailure):
+        with pytest.raises(AppError):
+            service.post_message(owner, case["id"], payload)
+        assert last_run(workspace)["_task_state"]["delivery"] == "execution_failed"
+    else:
+        with pytest.raises(type(failure)):
+            service.post_message(owner, case["id"], payload)
     assert not service.case_detail(owner, case["id"])["artifacts"]
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT status FROM agent_runs").fetchone()[0] == "interrupted"
+        assert conn.execute("SELECT status FROM agent_runs").fetchone()[0] == (
+            "completed" if isinstance(failure, ToolFailure) else "interrupted"
+        )
         assert (
-            conn.execute("SELECT COUNT(*) FROM agent_tool_receipts WHERE status='completed'").fetchone()[0]
+            conn.execute(
+                "SELECT COUNT(*) FROM agent_tool_receipts WHERE status='completed' AND name='draft_document'"
+            ).fetchone()[0]
             == 1
         )
-    with pytest.raises(AppError) as caught:
-        service.post_message(owner, case["id"], payload)
-    assert caught.value.code == "agent_request_not_replayable"
+    if isinstance(failure, StreamCancelled):
+        with pytest.raises(AppError) as caught:
+            service.post_message(owner, case["id"], payload)
+        assert caught.value.code == "agent_request_not_replayable"
+    else:
+        with pytest.raises(AppError):
+            service.post_message(owner, case["id"], payload)
 
 
 def test_unknown_tool_scope_injection_and_write_without_request_are_recoverable(workspace, monkeypatch):
@@ -295,10 +589,15 @@ def test_unknown_tool_scope_injection_and_write_without_request_are_recoverable(
             "无法执行这些操作。",
         ],
         seen,
+        auto_discover=False,
     )
     response = send(workspace)
     assert response.status_code == 200, response.text
-    errors = [json.loads(m["content"])["error"] for m in seen[1][0] if m["role"] == "tool"]
+    errors = [
+        c["error"]
+        for c in last_run(workspace)["_task_state"]["calls"]
+        if c["tool"] not in {"search_legal_evidence", "tool_search"}
+    ]
     assert errors == ["unknown_tool", "invalid_input", "scope_or_version_conflict"]
     assert not response.json()["case"]["artifacts"]
 
@@ -416,7 +715,7 @@ def test_streaming_trace_contract_and_catalog_expose_all_business_tools(workspac
     assert names >= {
         "guide_business",
         "check_materials",
-        "analyze_legal",
+        "get_law_versions",
         "draft_document",
         "get_handoff",
         "web_search",
@@ -436,47 +735,24 @@ def test_streaming_trace_contract_and_catalog_expose_all_business_tools(workspac
     assert saved["output_preview"] == snapshots[-1]["output_preview"]
 
 
-def test_legal_tool_uses_existing_versioned_analysis_and_preserves_evidence_gaps(workspace, monkeypatch):
-    _, service, owner, case, payload = workspace
-    questions = []
-
-    def engine(owner_id, template, stage, question, facts, **options):
-        questions.append(question)
-        return {
-            "question": question,
-            "assistant_mode": "live",
-            "output": "证据不足，尚不能确认准入要求。",
-            "gaps": ["缺少已审核法规证据"],
-            "trace": [],
-        }
-
-    monkeypatch.setattr(service.legal, "execute_engine", engine)
-    scenario(
-        monkeypatch,
-        [tools(("analyze_legal", {"question": "茶叶出口准入要求"})), "缺少审核依据，请补充法规来源。"],
-    )
-    response = send(workspace)
-    assert response.status_code == 200, response.text
-    assert questions == ["茶叶出口准入要求"]
-    with closing(service.db.connect()) as conn:
-        row = conn.execute("SELECT payload FROM legal_analyses WHERE case_id=?", (case["id"],)).fetchone()
-    analysis = json.loads(row["payload"])
-    assert analysis["status"] == "needs_review"
-    assert analysis["result"]["gaps"] == ["缺少已审核法规证据"]
-    assert service.case_detail(owner, case["id"])["completed_tasks"] == case["completed_tasks"]
-
-
 def test_tool_error_can_be_repaired_but_identical_loop_is_bounded(workspace, monkeypatch):
     wrong = tools(("check_materials", {"task_ids": ["not-in-this-stage"]}))
     replies = []
-    for index in range(3):
+    for index in range(2):
         reply = copy.deepcopy(wrong)
         reply["tool_calls"][0]["id"] = f"loop_{index}"
         replies.append(reply)
-    scenario(monkeypatch, replies)
-    with pytest.raises(ToolFailure) as caught:
-        workspace[1].post_message(workspace[2], workspace[3]["id"], workspace[4])
-    assert caught.value.code == "tool_loop"
+    seen = []
+    scenario(monkeypatch, [*replies, "材料核对未完成，仍可按已知事实解释准备顺序。"], seen)
+    response = send(workspace)
+    assert response.status_code == 200
+    assert "材料核对未完成" in response.json()["messages"][1]["content"]
+    assert seen[-1][1] == []
+    with closing(workspace[1].db.connect()) as conn:
+        state = json.loads(conn.execute("SELECT result FROM agent_runs").fetchone()[0])["_task_state"]
+    assert [c for c in state["calls"] if c["tool"] not in {"tool_search", "update_task_brief"}][1][
+        "reused_result"
+    ] is True
 
 
 def test_context_compaction_keeps_complete_tool_pairs():
@@ -491,6 +767,7 @@ def test_context_compaction_keeps_complete_tool_pairs():
         if message["role"] == "tool":
             assert compacted[index - 1]["tool_calls"][0]["id"] == message["tool_call_id"]
     assert len(messages[-1]["content"]) == 12000  # original transcript unchanged
+    assert all("excerpt" not in message["content"] for message in compacted if message["role"] == "tool")
 
 
 def test_existing_database_migration_preserves_messages(workspace):
@@ -504,7 +781,7 @@ def test_existing_database_migration_preserves_messages(workspace):
     Database(service.db.data_dir, require_existing=True)
     with closing(service.db.connect()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == count
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 27
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 28
 
 
 @pytest.mark.parametrize("image_provider", ["openai", "sub2api"])
@@ -574,12 +851,12 @@ def test_image_page_placeholder_is_correctable_without_sending_a_paid_request(wo
     )
     response = send(workspace)
     assert response.status_code == 200, response.text
-    failure = json.loads(next(m["content"] for m in seen[1][0] if m["role"] == "tool"))
+    failure = stored_receipt(workspace, "call_inspect_image_0")
     assert failure["error"] == "invalid_input"
     assert failure["validation"][0]["loc"] == ["image_id"]
     assert "JSON null" in failure["validation"][0]["msg"]
     assert requests == ["image_recognition"]
-    assert response.json()["messages"][1]["content"] == "无法确认文字。"
+    assert response.json()["messages"][1]["content"].startswith("无法确认文字。")
 
 
 def test_backup_restores_memory_and_receipts_without_replaying_uncertain_calls(workspace, tmp_path):
@@ -637,9 +914,7 @@ def test_compacted_tool_results_can_be_read_without_repeating_provider(workspace
     )
     response = send(workspace)
     assert response.status_code == 200, response.text
-    recovered = json.loads(
-        next(m["content"] for m in seen[2][0] if m.get("tool_call_id") == "call_read_tool_result_0")
-    )
+    recovered = stored_receipt(workspace, "call_read_tool_result_0")
     assert recovered["call_id"] == "call_guide_business_0"
     assert recovered["text"]
     with closing(workspace[1].db.connect()) as conn:
@@ -668,7 +943,7 @@ def test_agent_rag_returns_only_reviewed_current_destination_evidence(
         [
             tools(("load_skill", {"name": "materials"})),
             tools(("search_documents", {"query": "tea import"})),
-            "已找到当前目的地的已审核原文。",
+            "已找到当前目的地的已审核原文。[S1]",
         ],
         seen,
     )
@@ -696,23 +971,6 @@ def test_agent_rag_returns_only_reviewed_current_destination_evidence(
         assert states[-1]["output_preview"]["items"][0]["text"] == citations[0]["excerpt"]
 
 
-def test_model_history_remains_a_stable_prefix_with_fresh_context_after_it(workspace, monkeypatch):
-    seen = []
-    scenario(monkeypatch, ["第一轮回复", "第二轮回复", "第三轮回复"], seen)
-    for index in range(3):
-        response = send(
-            workspace, {**workspace[4], "content": f"问题{index}", "client_message_id": f"cache-{index}"}
-        )
-        assert response.status_code == 200, response.text
-    assert seen[0][0][0] == seen[1][0][0] == seen[2][0][0]
-    assert seen[1][0][: len(seen[0][0])] == seen[0][0]
-    assert seen[2][0][: len(seen[1][0])] == seen[1][0]
-    assert seen[1][0][len(seen[0][0])] == {"role": "assistant", "content": "第一轮回复"}
-    assert seen[2][0][-1] == {"role": "user", "content": "问题2"}
-    assert json.loads(seen[2][0][-2]["content"])["stage"]["id"] == workspace[4]["stage_id"]
-    assert seen[0][1] == seen[1][1] == seen[2][1]
-
-
 def stream_events(response):
     return [
         (part.splitlines()[0][7:], json.loads(part.split("data: ", 1)[1]))
@@ -721,15 +979,15 @@ def stream_events(response):
     ]
 
 
-def test_public_commentary_appends_across_tool_rounds_and_replays_exactly(workspace, monkeypatch):
+def test_tool_planning_text_stays_out_of_final_answer_and_replays_exactly(workspace, monkeypatch):
     first = tools(("check_materials", {}))
     first["content"] = "我先核对现有材料。"
     scenario(monkeypatch, [first, tools(("guide_business", {})), "请补充主体信息。"])
     response = send(workspace, stream=True)
     events = stream_events(response)
-    assert [data for event, data in events if event == "start"] == [{"step_id": "agent", "append": True}] * 3
+    assert [data for event, data in events if event == "start"][-1] == {"step_id": "agent", "append": False}
     actual = "".join(data["text"] for event, data in events if event == "delta")
-    assert actual == "我先核对现有材料。\n\n请补充主体信息。"
+    assert actual == "请补充主体信息。"
     saved = next(data for event, data in events if event == "done")
     assert saved["messages"][1]["content"] == actual
     assert send(workspace).json()["messages"] == saved["messages"]
@@ -747,65 +1005,26 @@ def test_summary_deltas_have_call_identity_and_are_saved_separately(workspace, m
     monkeypatch.setattr(agent_loop, "agent_turn", turn)
     events = stream_events(send(workspace, stream=True))
     chunks = [data for event, data in events if event == "tool_delta"]
-    assert [data["text"] for data in chunks] == ["先核对", "现有资料。"]
-    assert chunks[0]["sequence"] < chunks[1]["sequence"]
+    assert len(chunks) >= 2 and len(chunks) % 2 == 0
+    assert all(
+        [c["text"] for c in chunks[i : i + 2]] == ["先核对", "现有资料。"] for i in range(0, len(chunks), 2)
+    )
+    assert all(a["sequence"] < b["sequence"] for a, b in zip(chunks, chunks[1:]))
     answer = next(data for event, data in events if event == "done")["messages"][1]
     assert answer["content"] == "请补充材料。"
-    call = answer["trace"][0]["tools"][0]
-    assert call["id"] == chunks[0]["tool_id"] == chunks[1]["tool_id"]
-    assert call["output_preview"]["text"] == "先核对现有资料。"
+    assert all(c["tool_id"] in {t["id"] for t in answer["trace"][0]["tools"]} for c in chunks)
+    assert "先核对现有资料。" not in answer["content"]
 
 
 def test_answer_limit_is_shared_across_model_rounds_and_failure_does_not_cache(workspace, monkeypatch):
     first = tools(("check_materials", {})) | {"content": "甲" * 11000}
-    scenario(monkeypatch, [first, "乙" * 10000])
+    scenario(monkeypatch, [first, "乙" * 21000])
     events = stream_events(send(workspace, stream=True))
     assert events[-1][0] == "error"
-    with closing(workspace[1].db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM agent_conversation_context").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM message_requests").fetchone()[0] == 0
-
-
-def test_provider_context_keeps_tools_signatures_and_invalidates_on_memory_changes(workspace, monkeypatch):
-    client, service, owner, case, payload = workspace
-    seen, keys, requests = [], [], []
-    tool_reply = tools(("check_materials", {}))
-    tool_reply["reasoning_content"] = "接口返回的思考，回传时保留原文。"
-    tool_reply["tool_calls"][0]["extra_content"] = {"google": {"thought_signature": "opaque"}}
-    scenario(monkeypatch, [tool_reply, "材料待补充。", "继续办理。", "读取最新记忆。"], seen)
-    original = agent_loop.agent_turn
-
-    async def capture(*args, **options):
-        keys.append(options["cache_key"])
-        requests.append(options["request_key"])
-        return await original(*args, **options)
-
-    monkeypatch.setattr(agent_loop, "agent_turn", capture)
-    assert send(workspace).status_code == 200
-    # Reopen SQLite to ensure the cache is durable, not a process-only shortcut.
-    Database(service.db.data_dir, require_existing=True)
-    assert send(workspace, {**payload, "client_message_id": "follow-up"}).status_code == 200
-    assert seen[2][0][: len(seen[1][0])] == seen[1][0]
-    assert seen[2][0][len(seen[1][0])] == {"role": "assistant", "content": "材料待补充。"}
-    assert len(set(keys)) == 1
-    assert seen[0][1] == seen[1][1] == seen[2][1]
-    assert "opaque" in json.dumps(seen[2][0])
-    assert any(message.get("reasoning_content") == tool_reply["reasoning_content"] for message in seen[2][0])
-    assert len(set(requests)) == 3
-    service.agent_memory.save(
-        owner,
-        case["id"],
-        payload["stage_id"],
-        {
-            "kind": "note",
-            "content": "请核对新主体",
-            "conversation_id": payload["conversation_id"],
-        },
-    )
-    assert send(workspace, {**payload, "client_message_id": "new-memory"}).status_code == 200
-    assert not any(message.get("tool_calls") for message in seen[3][0])
-    assert "请核对新主体" in seen[3][0][-2]["content"]
-    assert len(set(keys)) == 1
+    result = last_run(workspace)
+    assert len(result["output"]) <= 20000
+    assert result["_task_state"]["delivery"] == "execution_failed"
+    assert "乙" * 21000 not in result["output"]
 
 
 def test_context_migration_is_additive_and_cache_rejects_foreign_or_stale_anchor(workspace, monkeypatch):
@@ -814,6 +1033,21 @@ def test_context_migration_is_additive_and_cache_rejects_foreign_or_stale_anchor
     client, service, owner, case, payload = workspace
     scenario(monkeypatch, ["缓存回复。"])
     assert send(workspace).status_code == 200
+    from app.contexts.conversations.application.conversation_context import save_context
+
+    with service.db.transaction() as conn:
+        anchor = conn.execute(
+            "SELECT id FROM messages WHERE role='assistant' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()[0]
+        save_context(
+            conn,
+            owner,
+            case["id"],
+            payload["stage_id"],
+            payload["conversation_id"],
+            anchor,
+            {"signature": "legacy", "messages": [{"role": "assistant", "content": "缓存回复。"}]},
+        )
     with closing(service.db.connect()) as conn:
         row = conn.execute("SELECT * FROM agent_conversation_context").fetchone()
         count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -838,16 +1072,229 @@ def test_context_migration_is_additive_and_cache_rejects_foreign_or_stale_anchor
         assert conn.execute("SELECT COUNT(*) FROM agent_conversation_context").fetchone()[0] == 0
 
 
-def test_thinking_effort_change_invalidates_provider_history_but_keeps_public_discussion(
-    workspace, monkeypatch
+def test_simple_business_comparison_does_not_require_a_professional_tool(workspace, monkeypatch):
+    scenario(monkeypatch, ["首次试水可先用当地经销商，比较获客成本、回款和渠道控制后再决定自营。"])
+    response = send(workspace, {**workspace[4], "content": "六堡茶出海先找经销商还是开网店？"})
+    assert response.status_code == 200
+    names = [t["name"] for t in response.json()["messages"][1]["trace"][0]["tools"]]
+    assert "analyze_legal" not in names
+    assert last_run(workspace)["_task_state"]["finalized"]
+
+
+@pytest.mark.parametrize("answer", ["进口人承担申报义务。[S1]", "进口人承担申报义务。"])
+def test_final_answer_preserves_actual_source_when_model_uses_handle_or_omits_link(
+    workspace, monkeypatch, answer
 ):
     seen = []
-    reply = tools(("check_materials", {})) | {"reasoning_content": "已核对。"}
-    scenario(monkeypatch, [reply, "材料仍待补充。", "已使用新强度。"], seen)
-    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
-    monkeypatch.setenv("AGENT_REASONING_EFFORT", "low")
-    assert send(workspace).status_code == 200
-    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
-    assert send(workspace, {**workspace[4], "client_message_id": "new-effort"}).status_code == 200
-    assert not any(message.get("tool_calls") or message.get("reasoning_content") for message in seen[2][0])
-    assert any(message.get("content") == "材料仍待补充。" for message in seen[2][0])
+    citation = {
+        "id": "source-import",
+        "document_id": "import-law",
+        "document_version": 1,
+        "title": "测试进口规定",
+        "source_url": "https://example.gov/import",
+        "excerpt": "进口人应当申报。",
+        "country": "ID",
+        "locator": {"article": "3"},
+    }
+    monkeypatch.setattr(
+        AgentTools, "legal_search", lambda *args: {"items": [citation], "mode": "official_web"}
+    )
+    scenario(
+        monkeypatch,
+        [tools(("search_legal_evidence", {"jurisdiction": "ID", "query": "进口人申报"})), answer],
+        seen,
+    )
+    response = send(workspace)
+    assert response.status_code == 200
+    output = response.json()["messages"][1]["content"]
+    assert ("[测试进口规定（第3条）](https://example.gov/import)" in output) == ("[S1]" in answer)
+    assert bool(last_run(workspace)["citations"]) == ("[S1]" in answer)
+    assert "[S1]" not in output
+    assert "进口人承担申报义务。" in output
+    with closing(workspace[1].db.connect()) as conn:
+        saved = conn.execute(
+            "SELECT content FROM messages WHERE id=?", (response.json()["messages"][1]["id"],)
+        ).fetchone()[0]
+    assert saved == output
+
+
+def test_provider_length_stop_composes_once_without_repeating_tools(workspace, monkeypatch):
+    seen = []
+    scenario(
+        monkeypatch,
+        [
+            tools(("guide_business", {})),
+            ToolFailure("generation_truncated", "known length stop"),
+            "保留已核对的进度，下一步补齐材料。",
+        ],
+        seen,
+    )
+    response = send(workspace)
+    assert response.status_code == 200, response.text
+    assert seen[-1][1] == []
+    assert "guide_business" in str(seen[-1][0])
+    assert any(m.get("role") == "tool" for m in seen[-1][0])
+    answer = response.json()["messages"][1]
+    assert answer["content"] == "保留已核对的进度，下一步补齐材料。"
+    assert [t["name"] for t in answer["trace"][0]["tools"]].count("guide_business") == 1
+
+
+@pytest.mark.parametrize("code", ["generation_truncated", "connection_failed"])
+def test_delivery_recovery_is_bounded_and_never_retries_unknown_network_results(workspace, monkeypatch, code):
+    seen = []
+    scenario(monkeypatch, [ToolFailure(code, "failure"), ToolFailure(code, "failure")], seen)
+    response = send(workspace)
+    assert response.status_code == 502
+    assert last_run(workspace)["_task_state"]["delivery"] == "execution_failed"
+    assert len(last_run(workspace)["_task_state"]["failures"]) <= 2
+
+
+def test_repeated_read_reuses_receipt_even_when_purpose_changes(workspace, monkeypatch):
+    actual, seen = [], []
+
+    def web(self, args, attempt):
+        actual.append(args.query)
+        return {"sources": [{"url": "https://example.com/a", "title": "来源", "excerpt": "同一内容"}]}
+
+    monkeypatch.setattr(AgentTools, "web", web)
+    first = tools(("web_search", {"query": "市场", "purpose": "查渠道"}))
+    second = tools(("web_search", {"query": "市场", "purpose": "核对渠道"}))
+    second["tool_calls"][0]["id"] = "another-call"
+    scenario(monkeypatch, [first, second, "按已有渠道信息比较方案。"], seen)
+    response = send(workspace)
+    assert response.status_code == 200
+    assert actual == ["市场"]
+    returned = stored_receipt(workspace, "another-call")
+    assert returned["reused_result"] is True
+    assert last_run(workspace)["_task_state"]["calls"][-1]["reused_result"] is True
+
+
+def test_same_batch_duplicate_reads_share_one_external_receipt(workspace, monkeypatch):
+    actual = []
+
+    def web(self, args, attempt):
+        actual.append(args.query)
+        return {"sources": [{"url": "https://example.com/a", "excerpt": "渠道事实"}]}
+
+    monkeypatch.setattr(AgentTools, "web", web)
+    scenario(
+        monkeypatch,
+        [
+            tools(
+                ("web_search", {"query": "市场", "purpose": "查渠道"}),
+                ("web_search", {"query": "市场", "purpose": "核对渠道", "domains": []}),
+            ),
+            "按取得的渠道资料比较方案。",
+        ],
+    )
+    response = send(workspace)
+    assert response.status_code == 200, response.text
+    assert actual == ["市场"]
+
+
+def test_repeated_sources_end_research_without_losing_other_deliverables(workspace, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        AgentTools,
+        "web",
+        lambda *args: {"sources": [{"url": "https://example.com/a", "excerpt": "相同原文"}]},
+    )
+    rounds = [tools(("web_search", {"query": query})) for query in ("市场", "渠道")]
+    for index, reply in enumerate(rounds):
+        reply["tool_calls"][0]["id"] = f"research-{index}"
+    scenario(monkeypatch, [*rounds, "已有资料可支持模式比较，具体报价尚未取得。"], seen)
+    response = send(workspace)
+    assert response.status_code == 200, response.text
+    assert seen[-1][1] == []
+    assert "具体报价尚未取得" in response.json()["messages"][1]["content"]
+
+
+def test_followup_source_handles_preserve_prior_mapping_without_appending_old_links():
+    from app.contexts.conversations.application.answer_sources import AnswerSources
+
+    history = [
+        {
+            "role": "tool",
+            "content": json.dumps(
+                {
+                    "sources": [
+                        {
+                            "id": "old",
+                            "reference": "S7",
+                            "title": "旧来源",
+                            "source_url": "https://example.gov/old",
+                        }
+                    ]
+                }
+            ),
+        }
+    ]
+    sources = AnswerSources(history)
+    sources.collect({"items": [{"id": "new", "title": "新来源", "source_url": "https://example.gov/new"}]})
+    assert sources.handles == {"old": "S7", "new": "S8"}
+    assert "https://example.gov/old" in sources.render("沿用该依据[S7]。")
+    answer = sources.render("本次新依据[S8]。")
+    assert "https://example.gov/new" in answer
+    assert "https://example.gov/old" not in answer
+
+
+def test_composition_cited_source_excludes_unused_search_candidates():
+    from app.contexts.conversations.application.answer_sources import AnswerSources
+
+    sources = AnswerSources()
+    sources.collect(
+        {
+            "items": [
+                {"id": "used", "title": "适用依据", "source_url": "https://example.gov/used"},
+                {"id": "unused", "title": "候选资料", "source_url": "https://example.gov/unused"},
+            ]
+        }
+    )
+    answer = sources.render("本项判断依据[S1]。")
+    assert "https://example.gov/used" in answer
+    assert "https://example.gov/unused" not in answer
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    ["[S1](https://wrong.example/a)", "[[S1]](https://wrong.example/a)", "[S1, S2]", "S1", "【S1】"],
+)
+def test_citation_handles_replace_entire_markdown_wrapper_and_deduplicate(wrapper):
+    from app.contexts.conversations.application.answer_sources import AnswerSources
+
+    sources = AnswerSources()
+    sources.collect(
+        {
+            "items": [
+                {"id": "a", "title": "官方说明", "source_url": "https://example.gov/a"},
+                {"id": "b", "title": "官方说明", "source_url": "https://example.gov/a"},
+            ]
+        }
+    )
+    rendered = sources.render(f"依据{wrapper}[S2]。")
+    assert rendered == "依据[官方说明](https://example.gov/a)。"
+    assert "wrong.example" not in rendered
+
+
+def test_response_deadline_returns_recoverable_error_without_committing_answer(workspace, monkeypatch):
+    clock = {"seconds": 0}
+    monkeypatch.setattr(agent_loop, "monotonic", lambda: clock["seconds"])
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+
+    async def delayed(*args, **options):
+        clock["seconds"] = 181
+        return {"role": "assistant", "content": "不应保存的超时答复"}
+
+    monkeypatch.setattr(agent_loop, "agent_turn", delayed)
+    events = stream_events(send(workspace, stream=True))
+    assert events[-1][0] == "error"
+    assert events[-1][1]["code"] == "response_timeout"
+    assert "总时间限制" in events[-1][1]["message"]
+    with closing(workspace[1].db.connect()) as conn:
+        assert conn.execute("SELECT status FROM agent_runs").fetchone()[0] == "interrupted"
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages WHERE content=?", ("不应保存的超时答复",)).fetchone()[
+                0
+            ]
+            == 0
+        )

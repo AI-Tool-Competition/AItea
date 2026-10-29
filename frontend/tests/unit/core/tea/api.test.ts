@@ -147,6 +147,53 @@ describe("Tea API transport", () => {
   });
 });
 
+it.each([
+  "read_law",
+  "update_business_card",
+  "lookup_chinese_law",
+  "get_law_versions",
+  "update_task_brief",
+])("accepts registered runtime tool snapshots (%s)", async (name) => {
+  const step = {
+    id: "agent",
+    label: "协作",
+    status: "running",
+    detail: "",
+    tools: [
+      {
+        id: "call",
+        name,
+        label: "处理",
+        position: 1,
+        status: "completed",
+        attempt: 1,
+        max_attempts: 1,
+        detail: "",
+        duration_ms: 1,
+      },
+    ],
+  };
+  const done = { messages: [], case: { id: "one" } };
+  rs.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(
+      `event: step\ndata: ${JSON.stringify(step)}\n\nevent: done\ndata: ${JSON.stringify(done)}\n\n`,
+      {
+        headers: { "Content-Type": "text/event-stream" },
+      },
+    ),
+  );
+  const received = rs.fn();
+  await expect(
+    streamMessage(
+      "one",
+      { stage_id: "stage", content: "问题", client_message_id: "id" },
+      { onEvent: received },
+    ),
+  ).resolves.toEqual(done);
+  expect(received).toHaveBeenCalledWith({ event: "step", data: step });
+  rs.restoreAllMocks();
+});
+
 it.each(["valid", "oversized", "unicode", "thinking", "thinking-oversized"])(
   "validates streamed tool output bounds (%s)",
   async (mode) => {

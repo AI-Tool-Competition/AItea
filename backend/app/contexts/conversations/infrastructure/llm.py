@@ -40,7 +40,7 @@ def provider_choice(payload, *, allow_usage=False):
     choice = choices[0]
     # Explicit truncation, refusal or a tool request is never a finished answer.
     if choice.get("finish_reason") not in (None, "stop"):
-        raise ValueError("provider did not finish the answer")
+        raise ValueError(f"provider did not finish the answer: finish_reason={choice.get('finish_reason')}")
     return choice
 
 

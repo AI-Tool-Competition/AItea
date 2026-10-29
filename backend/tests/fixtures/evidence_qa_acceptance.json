@@ -1,0 +1,332 @@
+[
+  {
+    "id": "Q01",
+    "country_template": "ID",
+    "group": "Q01",
+    "suite": "runtime",
+    "question": "我是广西梧州的六堡茶商，之前只做国内生意，现在想尝试出海。你觉得我应该找当地经销商、自己开跨境网店，还是先参加海外展会？帮我比较一下。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "Q02",
+    "country_template": "ID",
+    "group": "Q02",
+    "suite": "runtime",
+    "question": "帮我查一下中国进出口货物收发货人办理海关备案的现行法律依据，具体是哪几部规定、哪几条？给我官方原文来源就行。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "M01",
+    "country_template": "ID",
+    "group": "M01",
+    "suite": "runtime",
+    "question": "我现在想出口六堡茶去印尼，我该怎么做？有哪些商业模式可以给我参考啊？我的茶叶要出口的话需要达到什么标准？",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "Q03",
+    "country_template": "ID",
+    "question": "我是广西的个体工商户，2026年11月准备出口一批六堡茶到印尼。我已经办理了中国海关的进出口货物收发货人备案。\n\n现在我还需要去商务部门办理对外贸易经营者备案登记吗？为什么？\n\n我只想了解中国这边的手续，印尼进口手续暂时不用分析。",
+    "group": "Q03",
+    "suite": "frozen",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "Q04",
+    "country_template": "ID",
+    "question": "假设我和买方签订了一份有效的中国国内茶叶买卖合同，约定货到后30天内付款。\n\n现在我已经按照约定交货，对方也收到了全部茶叶，付款期限已经过去20天，但对方一直不付款。假设不存在质量争议、合同变更或者其他正当抗辩。\n\n我可以要求对方支付货款并承担违约责任吗？具体法律依据是什么？我应该怎么做？",
+    "group": "Q04",
+    "suite": "frozen",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "Q05",
+    "country_template": "SG",
+    "question": "我是中国六堡茶商，准备在2026年11月出口200盒预包装六堡茶到新加坡，由一家当地合作公司负责进口清关，再通过当地实体店销售。\n\n对方已经注册公司，但以前没有进口过食品。我只负责中国这边的生产和发货，包装目前只有中文。\n\n这种模式下，双方各自需要负责哪些手续？新加坡进口和销售环节有什么要求？我们应该先做什么？",
+    "group": "Q05",
+    "suite": "frozen",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "Q08",
+    "country_template": "SG",
+    "question": "我准备在2026年12月正式开始向新加坡销售六堡茶，采用B2B模式，由当地经销商进口后销售。\n\n我已经有国内个体工商户营业执照和中国海关备案，但还没有签订外贸合同，也不清楚新加坡进口商准备得怎么样。\n\n你帮我从现在开始规划一下，应该按什么顺序准备这笔交易？哪些事情由我负责，哪些由对方负责？",
+    "group": "Q08",
+    "suite": "frozen",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "Q09",
+    "country_template": "SG",
+    "group": "Q08",
+    "suite": "context",
+    "question": "现在计划变了。新加坡经销商暂时不愿意大批量进货，我准备先寄10公斤茶叶过去，让他们参加当地展会，只免费给客人试喝，先不销售。\n\n那我们之前规划的流程有哪些需要改变？哪些原来的准备工作还能保留？",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "H04",
+    "country_template": "ID",
+    "question": "中国境内甲茶叶贸易商是卖方，乙饮料公司是买方，丙是独立生产工厂。合同拟写：‘丙负责生产检验。甲交付的茶叶不合格时，乙只能向丙索赔，甲不负责。’请站在乙方审查。假设甲乙买卖合同有效，丙未签合同，也未对乙作出任何保证或债务加入。能否仅凭这一条要求丙承担甲的全部卖方责任？如何修改？",
+    "group": "H04",
+    "suite": "holdout",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "W01",
+    "country_template": "SG",
+    "group": "W01",
+    "suite": "official_read",
+    "question": "请只读取这份新加坡SFA官方网页，告诉我仅销售预包装食品的零售店在什么条件下无需食品零售许可，附官方链接即可，不需要分析中国出口手续：https://www.sfa.gov.sg/food-retail/licence-permit/businesses-that-need-licence-permit-for-food-retail",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "H01",
+    "country_template": "ID",
+    "question": "2026年11月，我是一家中国食品工厂的负责人，委托咨询公司通过网上系统提交工厂食品生产许可申请，申请人仍写工厂、许可证发给工厂。咨询合同约定服务费由工厂支付。咨询公司说，代提交后申请材料真实性和日后生产合规责任都归它承担，工厂无须负责。这个说法对吗？只分析中国法。请区分申请人、实际办理者、费用承担者和法定责任，说明目前能判断什么。",
+    "group": "H01",
+    "suite": "holdout",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "H02",
+    "country_template": "ID",
+    "question": "我是广西茶叶加工厂职工，与甲工厂存在有效劳动关系，已按约工作。甲无争议确认拖欠两个月工资，各5000元，均已届付款日。不存在已经支付、抵销或工资扣减争议。劳动合同与工资条都是甲工厂名义。人事外包公司乙仅替甲做考勤和发薪操作，乙称要等甲给钱才支付。谁应对我支付10000元工资？可以怎么处理？只讨论中国法。",
+    "group": "H02",
+    "suite": "holdout",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "H03",
+    "country_template": "ID",
+    "question": "在中国境内茶展，乙公司的工作人员在执行搬运工作时因疏忽打碎了我（甲茶商）展台上一件茶具。假设乙是用人单位、工作人员确在执行工作任务、过错与损害及因果关系明确、茶具实际损失3000元无争议，且我方无过错。我能向谁请求赔偿3000元？不讨论刑事责任，请给具体法律依据和行动。",
+    "group": "H03",
+    "suite": "holdout",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "S01",
+    "country_template": "ID",
+    "question": "我是中国六堡茶贸易商，也是外贸合同卖方和出口货物收发货人，已经以本店名义办妥海关收发货人备案。茶叶由独立的甲食品工厂生产，工厂表示已办理出口食品生产企业备案。2026年11月由印尼乙公司进口并销售。我是否还要以本店名义再办一份生产企业备案？这些备案和出货准备应当分别由谁负责？",
+    "group": "S01",
+    "suite": "subjects",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "S02",
+    "country_template": "ID",
+    "question": "2026年11月我作为中国茶叶贸易商出口六堡茶到印尼。实际生产是独立的甲厂，我店是外贸合同卖方和海关出口收发货人，受托报关企业是乙公司。合同约定我店承担出口手续费用，乙公司提交报关材料。是否因为委托了乙公司，就由乙公司承担我店全部海关法定义务？应当分别核实和准备什么？只分析中国手续。",
+    "group": "S02",
+    "suite": "subjects",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "S03",
+    "country_template": "SG",
+    "question": "2026年12月中国甲茶商向新加坡乙公司出口预包装六堡茶，乙公司负责进口清关，随后将茶卖给独立经营的丙零售店。甲乙丙是三家企业，乙已经注册公司但没有进口过食品，丙只在本地进货。包装只有中文。食品进口注册、批次进口许可、英文标签和零售销售环节的事项，分别由谁负责？不要假定丙也是进口商。",
+    "group": "S03",
+    "suite": "subjects",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "S04",
+    "country_template": "SG",
+    "question": "我是中国六堡茶商，已经办好中国海关收发货人备案，计划2026年12月通过新加坡进口商做B2B销售，但茶叶是自己生产还是向另一家工厂采购，目前还没决定。请先分析已经确定的交易手续和责任，再说明哪些结论会因生产安排不同而改变。",
+    "group": "S04",
+    "suite": "subjects",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "S05",
+    "country_template": "SG",
+    "question": "请站在中国卖方甲茶叶贸易商的立场审查这段外贸合同，交易在2026年12月进行，由独立工厂生产，新加坡买方乙公司负责进口：\"甲负责出口生产、出口报关、乙在新加坡的食品进口注册、全部进口许可和零售标签；即使乙不配合提供资料，甲仍承担全部行政责任。乙可指定独立零售商销售。\"哪些约定需要修改？请区分双方可约定的合同责任与当地法律直接规定的责任，并给出可执行的修改建议。",
+    "group": "S05",
+    "suite": "subjects",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "N01",
+    "group": "N01",
+    "country_template": "ID",
+    "question": "我和买方签了中国国内茶叶买卖合同，已交货，货款已逾期20天，无质量争议且无其他抗辩。合同没约定违约金。能直接要求每日千分之五的违约金吗？请解释货款、违约金和逾期付款损失的区别及法律依据。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "N02",
+    "group": "N02",
+    "country_template": "ID",
+    "question": "我想在国内买卖合同里写“由第三方工厂交货，工厂未交货时卖方不承担任何责任”。我代表买方。请按中国法审查这句话，给出风险及可直接使用的修改文字；不需要保存文稿。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "N03",
+    "group": "N03",
+    "country_template": "ID",
+    "question": "只查中国法的官方原文：《民法典》第579、626、628条分别怎么规定金钱债务和买受人付款？给出条文和官方出处即可。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "N04",
+    "group": "N04",
+    "country_template": "ID",
+    "question": "我作为中国贸易商已有海关收发货人备案，另有一家独立工厂生产茶叶，报关由受托报关公司操作。2026年12月准备出口六堡茶。只分析中国端：已有备案能否覆盖工厂？代理报关会转移我的全部法定责任吗？请给出有依据的分工，不假设工厂已经办妥手续。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "N05",
+    "group": "N05",
+    "country_template": "ID",
+    "question": "只分析中国出口手续。一份旧文件说要先取得对外贸易经营者备案再向海关备案。我在2026年12月申请海关收发货人备案时还需要先办商务备案吗？请结合后续修法解释，区分旧文件文字和现行适用义务。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  },
+  {
+    "id": "N06",
+    "group": "N06",
+    "country_template": "ID",
+    "question": "请解释中国法律中“允许委托他人办理”与“转移法定责任”的区别。我是茶叶贸易商，工厂生产、报关公司受托申报，合同责任分工尚未约定。分别说明已知结论和还要确认的条件，不能替我补写合同安排。",
+    "acceptance_dimensions": [
+      "请求覆盖",
+      "条件保留",
+      "主体分配",
+      "引用支持"
+    ],
+    "review_status": "pending_independent_review"
+  }
+]

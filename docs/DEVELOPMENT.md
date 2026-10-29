@@ -10,11 +10,13 @@
 make dev
 ```
 
-前提是 Linux 环境已提供 uv、Python 3、Node.js 22+ 和 npm。若系统 Node.js 较旧，可将官方 Node.js 22.23.0 Linux x64 二进制解压到当前工作树忽略目录 `.dev/toolchain/node-v22.23.0-linux-x64/`；Makefile 会优先使用该本地运行时，不需要 sudo 或全局安装。Python 3 仅用于运行标准库开发管理脚本；后端和 Python 测试统一使用 uv 管理的 Python 3.12+ 环境。无需 `source activate`，也不使用全局 pip、Conda 或 Poetry。
+前提是 Linux 或 macOS 环境已提供 uv、Python 3、Node.js 22+ 和 npm。macOS 启动器使用原生进程接口核验服务归属与启动身份。Linux 系统 Node.js 较旧时，可将官方 Node.js 22.23.0 Linux x64 二进制解压到当前工作树忽略目录 `.dev/toolchain/node-v22.23.0-linux-x64/`；Makefile 会优先使用该本地运行时，不需要 sudo 或全局安装。Python 3 仅用于运行标准库开发管理脚本；后端和 Python 测试统一使用 uv 管理的 Python 3.12+ 环境。无需 `source activate`，也不使用全局 pip、Conda 或 Poetry。
+
+macOS 的监督、实例占用检查使用原生进程开始时间、命令参数及有界文件读取，不依赖 Linux `/proc`。旧官方采集任务恢复存在一项限制：无法从 macOS 原生接口确认 `flock` 持有人时，离线恢复保留正在运行的消费者，等待其退出后再恢复，不推定锁归属，也不终止未知进程。
 
 启动器会检查端口、同步锁定依赖、启动后端热更新与 Next.js 开发服务，并等待 API 与页面就绪。安装期间会显示最新进度；暂无新日志时也会提示安装仍在进行及日志位置。健康检查完成后输出访问地址并返回终端。默认入口为 <http://127.0.0.1:3000/tea>，API 监听本机 8000 端口。
 
-开发前端使用 Node.js 的 [`process.availableMemory()`](https://nodejs.org/docs/latest-v22.x/api/process.html#processavailablememory) 读取启动时系统可用内存，并据此设置堆容量，取消默认约 4GB 的上限；系统或容器约束仍生效。已有 `NODE_OPTIONS` 参数保留，显式设置 `--max-old-space-size`、`--max-old-space-size-percentage` 或 `--max-heap-size` 时沿用该设置。此默认策略只作用于开发前端，不改变后端、生产预览或构建环境。
+Linux 开发前端使用 Node.js 的 [`process.availableMemory()`](https://nodejs.org/docs/latest-v22.x/api/process.html#processavailablememory) 读取启动时系统可用内存，并据此设置堆容量，取消默认约 4GB 的上限；系统或容器约束仍生效。macOS 使用物理内存的一半作为默认堆预算，避免将不含可回收文件缓存的瞬时空闲内存误作堆上限。已有 `NODE_OPTIONS` 参数保留，显式设置 `--max-old-space-size`、`--max-old-space-size-percentage` 或 `--max-heap-size` 时沿用该设置。此默认策略只作用于开发前端，不改变后端、生产预览或构建环境。
 
 前端默认每 1000 毫秒轮询文件变化，保留已有 `WATCHPACK_POLLING` 设置；可用 `WATCHPACK_POLLING=500 make dev` 调整间隔。检测到文件监听 `ENOSPC` 时，启动器保留诊断日志并停止本次所属进程。就绪检查同时覆盖后端健康接口、`/tea` 页面及经前端转发的 API，避免页面可见但业务请求尚不可用。
 
@@ -87,6 +89,10 @@ make worktree NAME=feature/example
 - `.dev/setup-api.log`、`.dev/setup-web.log`：依赖同步日志。
 
 启动失败会显示错误及相关日志位置，并回收本次已启动的服务。端口被其他服务占用时，启动器报错，不会接管或关闭那个服务。
+
+若本机端口监听返回 `Operation not permitted`，应检查执行环境是否允许监听端口；更换端口无法解除环境权限限制。向量与模型服务还需要允许对外 HTTPS 连接。启动器会区分端口占用与权限拒绝，服务就绪前不报告启动成功。
+
+macOS 的文档解析工作进程由父进程每 50 毫秒检查常驻内存，并在超额或无法核实运行中子进程的内存时终止该子进程；采样间隔内可能短暂超出预算。CPU 时间与总运行时间继续受限。Linux 保留地址空间资源上限。本文的 macOS 支持范围为开发启动器及应用使用的进程、解析、向量请求配额和备份发布接口；独立采集监督脚本和整套实例迁移仍须各自核对平台要求。
 
 如果后台某个服务意外退出，管理进程会停止同次启动的其他服务；先读日志，再重新 `make dev`。锁文件与依赖声明不一致时先确认依赖变更，再用 uv 更新并提交锁文件，不用删除锁文件绕过错误。
 

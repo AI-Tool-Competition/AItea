@@ -318,6 +318,11 @@ export function Workspace({
                               : item.status === "in_progress"
                                 ? "进行中"
                                 : "待办理"}
+                        {Object.values(item.values).some(
+                          (value) => value !== "" && value != null,
+                        ) && item.status !== "completed"
+                          ? ` · 已填写 ${Object.values(item.values).filter((value) => value !== "" && value != null).length} 项，待核对`
+                          : ""}
                       </small>
                     </span>
                     <ChevronRight size={14} />

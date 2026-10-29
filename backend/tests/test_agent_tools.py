@@ -90,6 +90,28 @@ def test_partial_output_is_never_retried():
     assert [event["tools"][0]["status"] for event in events] == ["running", "failed"]
 
 
+def test_model_progress_allows_one_retry_of_an_explicit_upstream_failure(monkeypatch):
+    from app.contexts.conversations.application.agent_tools import EmptyInput
+
+    monkeypatch.setattr(runtime.ToolAttempt, "wait", lambda self, _: self.check())
+    spec = runtime.ToolSpec("agent_turn", "模型", "模型请求", EmptyInput, attempts=2)
+    run, trace, _ = scope(catalog=[spec])
+    attempts = []
+
+    def operation(args, context):
+        attempts.append(1)
+        context.emit_text("progress fixture")
+        if len(attempts) == 1:
+            error = runtime.ToolFailure("upstream_error", "confirmed failure")
+            error.retryable = True
+            raise error
+        return "已找到网址。"
+
+    assert run.call(spec, {}, operation, trace) == "已找到网址。"
+    assert len(attempts) == 2
+    assert trace["tools"][0]["attempt"] == 2
+
+
 def test_scope_injection_and_coerced_parameters_never_reach_operation():
     run, trace, events = scope()
     for extra in ({"owner": "another-account"}, {"limit": True}):
@@ -138,10 +160,31 @@ def test_call_budget_and_context_do_not_leak_between_runs():
     assert len(trace["tools"]) == len(other["tools"]) == 1
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_expired_operation_preserves_explicit_failure_but_rejects_late_success(failed):
+    run, trace, _ = scope()
+    evidence = {"error": "analysis_budget", "result": {"citations": ["saved-source"]}}
+
+    def operation(args, context):
+        context.deadline = runtime.monotonic() - 1
+        return evidence if failed else {"output": "late success"}
+
+    if failed:
+        assert run.call(GENERATE_GUIDANCE, {"max_tokens": 10, "stream": False}, operation, trace) == evidence
+        assert trace["tools"][0]["error_code"] == "analysis_budget"
+    else:
+        with pytest.raises(runtime.ToolFailure, match="超过时间限制"):
+            run.call(GENERATE_GUIDANCE, {"max_tokens": 10, "stream": False}, operation, trace)
+    assert trace["tools"][0]["status"] == "failed"
+    assert trace["tools"][0]["attempt"] == 1
+
+
 def test_retry_after_budget_and_ambiguous_timeout_are_not_repeated():
     error = upstream_error(429)
     error.response.headers["Retry-After"] = "120"
-    assert runtime.retry_delay(error, 1) is None
+    # Preserve the server delay; ToolRun decides against retrying when it
+    # exceeds the actual remaining budget instead of shortening the delay.
+    assert runtime.retry_delay(error, 1) == 120
     assert runtime.retry_delay(httpx.ReadTimeout("ambiguous"), 1) is None
     error.response.headers["Retry-After"] = "1"
     assert runtime.retry_delay(error, 1) == 1

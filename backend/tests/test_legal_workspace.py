@@ -145,6 +145,36 @@ def fake_result(question, content="原始建议"):
     ).model_dump(mode="json")
 
 
+def test_ordinary_analysis_gaps_do_not_require_review_but_changed_facts_do(client, monkeypatch):
+    case, url = workspace(client)
+
+    def execute(owner, template, stage, question, facts, **options):
+        result = fake_result(question)
+        result.update(assistant_mode="live", gaps=["合同中的违约金标准尚未提供，金额另行计算。"])
+        result["issues"][0]["needs_review"] = False
+        return result
+
+    monkeypatch.setattr(client.app.state.service.legal, "execute_engine", execute, raising=False)
+    assert client.patch(url + "/facts/payment_due", json=fact_payload()).status_code == 200
+    response = client.post(
+        url + "/analyses",
+        json={
+            "stage_id": case["stages"][0]["id"],
+            "question": "付款义务如何判断？",
+            "client_request_id": "gaps-1",
+        },
+    )
+    assert response.status_code == 200, response.text
+    analysis = response.json()
+    assert analysis["status"] == "completed"
+    assert analysis["result"]["gaps"]
+    assert client.get(url + "/analyses/" + analysis["id"]).json()["status"] == "completed"
+    assert client.patch(url + "/facts/payment_due", json=fact_payload("2026-06-15", 1)).status_code == 200
+    stale = client.get(url + "/analyses/" + analysis["id"]).json()
+    assert stale["status"] == "needs_review"
+    assert stale["affected_issue_ids"] == ["payment"]
+
+
 def test_analysis_idempotency_manual_edits_partial_refresh_and_history(client, monkeypatch):
     case, url = workspace(client)
     runs = []
@@ -206,6 +236,66 @@ def test_analysis_idempotency_manual_edits_partial_refresh_and_history(client, m
     first = client.get(url + f"/analyses/{aid}/versions/{analysis['revision']}")
     assert first.status_code == 200
     assert first.json()["sections"][0]["content"] == "原始建议"
+
+
+def test_query_plan_and_country_survive_http_replay_and_refresh(client, monkeypatch):
+    case, url = workspace(client)
+    service, calls = client.app.state.service, []
+    queries = ["《中华人民共和国民法典》第五百七十九条", "《中华人民共和国民法典》第五百七十七条"]
+
+    def execute(owner, template, stage, question, facts, **options):
+        calls.append((question, options))
+        return fake_result(question)
+
+    monkeypatch.setattr(service.legal, "execute_engine", execute)
+    request = {
+        "stage_id": case["stages"][0]["id"],
+        "question": "假设合同有效且没有抗辩，能请求付款吗？",
+        "client_request_id": "planned-analysis",
+        "jurisdictions": ["CN"],
+        "search_queries": queries,
+    }
+    response = client.post(url + "/analyses", json=request)
+    assert response.status_code == 200, response.text
+    analysis = response.json()
+    assert calls[0][0] == request["question"]
+    assert calls[0][1]["search_queries"] == queries
+    assert calls[0][1]["jurisdictions"] == ["CN"]
+    assert client.post(url + "/analyses", json=request).json() == analysis
+    assert (
+        client.post(url + "/analyses", json={**request, "search_queries": ["另一个检索计划"]}).status_code
+        == 409
+    )
+    assert len(calls) == 1
+    with closing(service.db.connect()) as conn:
+        owner = conn.execute("SELECT owner_id FROM cases WHERE id=?", (case["id"],)).fetchone()[0]
+    internal = {key: value for key, value in request.items() if key != "jurisdictions"}
+    assert service.legal.analyze(owner, case["id"], internal, jurisdictions=["CN"])["id"] == analysis["id"]
+    refreshed = client.post(
+        url + f"/analyses/{analysis['id']}/refresh",
+        json={"expected_revision": analysis["revision"], "client_request_id": "planned-refresh"},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert calls[-1][1]["search_queries"] == queries
+    assert calls[-1][1]["jurisdictions"] == ["CN"]
+
+
+@pytest.mark.parametrize("query_plan", [["x"] * 5, ["x" * 501], [""]])
+def test_invalid_query_plan_is_rejected_before_analysis(client, monkeypatch, query_plan):
+    case, url = workspace(client)
+    monkeypatch.setattr(
+        client.app.state.service.legal, "execute_engine", lambda *a, **kw: pytest.fail("invalid plan")
+    )
+    response = client.post(
+        url + "/analyses",
+        json={
+            "stage_id": case["stages"][0]["id"],
+            "question": "付款责任",
+            "client_request_id": "invalid-plan",
+            "search_queries": query_plan,
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_changed_facts_during_generation_do_not_publish_stale_result(client, monkeypatch):
@@ -351,7 +441,7 @@ def test_demo_runs_real_engine_without_inventing_sources(client):
     assert response.status_code == 200, response.text
     analysis = response.json()
     assert analysis["result"]["assistant_mode"] == "demo"
-    assert len(analysis["result"]["trace"]) == 6
+    assert [step["id"] for step in analysis["result"]["trace"]] == ["scope", "retrieve", "analyze"]
     assert all(issue["status"] in ("conditional", "undetermined") for issue in analysis["result"]["issues"])
     assert analysis["result"]["citations"] == []
     assert analysis["status"] != "completed"

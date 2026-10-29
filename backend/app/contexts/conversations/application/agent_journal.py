@@ -12,6 +12,11 @@ class AgentJournal:
     def __init__(self, service, owner, case, payload, payload_hash):
         self.service, self.owner, self.case = service, owner, case
         self.id, self.cached = uid(), None
+        self.input_snapshot = {
+            "question": payload.get("content", ""),
+            "facts": case.get("facts", []),
+            "conversation_id": payload.get("conversation_id"),
+        }
         with service.db.transaction() as conn:
             service.own_case(conn, owner, case["id"])
             old = conn.execute(
@@ -99,18 +104,26 @@ class AgentJournal:
                 ("failed" if result.get("error") else "completed", dump(result), now(), self.id, call_id),
             )
 
-    def checkpoint(self, trace):
+    def checkpoint(self, trace, state=None, *, snapshot=None):
         with self.service.db.transaction() as conn:
             self.guard(conn)
             conn.execute(
                 "UPDATE agent_runs SET trace=?,updated_at=? WHERE id=?", (dump(trace), now(), self.id)
             )
+            if state is not None:
+                conn.execute(
+                    "UPDATE agent_runs SET result=? WHERE id=?",
+                    (
+                        dump({**(snapshot or {}), "_task_state": state, "_input": self.input_snapshot}),
+                        self.id,
+                    ),
+                )
 
     def finish(self, result=None):
         with self.service.db.transaction() as conn:
             self.guard(conn)
             conn.execute(
-                "UPDATE agent_runs SET status=?,result=?,updated_at=? WHERE id=?",
+                "UPDATE agent_runs SET status=?,result=COALESCE(?,result),updated_at=? WHERE id=?",
                 (
                     "completed" if result is not None else "interrupted",
                     dump(result) if result is not None else None,

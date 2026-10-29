@@ -61,7 +61,9 @@ def tool_output_preview(name, value):
             if item.label or item.text:
                 preview.items.append(item)
 
-    if name == "guide_business":
+    if name == "update_business_card":
+        items(value.get("card_updates"), text="title")
+    elif name == "guide_business":
         items(value.get("tasks"), status=True)
     elif name == "check_materials":
         items(value.get("checks"), label="label", text="reason", status=True)
@@ -69,7 +71,7 @@ def tool_output_preview(name, value):
         stages = value.get("stages", [])
         tasks = [task for stage in stages if isinstance(stage, dict) for task in stage.get("tasks", [])]
         items(tasks, status=True)
-    elif name in {"search_documents", "search_legal_evidence"}:
+    elif name in {"search_documents", "search_legal_evidence", "lookup_chinese_law", "read_law"}:
         items(value.get("items"), text="excerpt", source=True)
     elif name == "list_documents":
         items(value.get("items"))

@@ -315,7 +315,7 @@ class OfficialSourceImporter:
             if item.get("transport") == "proxy"
             for host in item.get("html_asset_hosts", [])
         }
-        if asset_hosts:
+        if asset_hosts and os.getenv("COLLECTION_PROXY_URL"):
             proxy_hosts = {
                 host.strip().lower()
                 for host in os.getenv("COLLECTION_PROXY_HOSTS", "").split(",")
@@ -832,7 +832,8 @@ class OfficialSourceImporter:
                             AND discovery_purpose='detail'""",
                         (country,),
                     )
-                    if row["mime_type"] in {
+                    if row["mime_type"]
+                    in {
                         "application/pdf",
                         "application/msword",
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

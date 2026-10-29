@@ -32,6 +32,20 @@ def provider(monkeypatch, body, status=200):
     return requests
 
 
+def test_followup_normalizes_empty_tool_calls_from_persisted_answers(monkeypatch):
+    body = (frame(delta({"content": "第二次回答"}, "stop")) + frame("[DONE]")).encode()
+    requests = provider(monkeypatch, body)
+    history = [
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答", "tool_calls": []},
+        {"role": "user", "content": "第二问"},
+    ]
+    result = asyncio.run(transport.agent_turn(history, [], lambda _: None, lambda: None))
+    assert "tool_calls" not in json.loads(requests[0].content)["messages"][1]
+    assert "tool_calls" not in result
+    assert history[1]["tool_calls"] == []
+
+
 def test_fragmented_tool_arguments_and_gemini_signatures_are_preserved(monkeypatch):
     monkeypatch.setenv("AGENT_MODEL", "gemini-3.8-flash")
     chunks = [
@@ -70,7 +84,6 @@ def test_fragmented_tool_arguments_and_gemini_signatures_are_preserved(monkeypat
     "chunks",
     [
         [delta({"content": "unfinished"}), "[DONE]"],
-        [delta({"content": "cut"}, "length"), "[DONE]"],
         [delta({"refusal": "no"}, "stop"), "[DONE]"],
         [delta({"tool_calls": [{"index": 9, "id": "x"}]}), "[DONE]"],
         [
@@ -91,10 +104,93 @@ def test_incomplete_streams_never_dispatch_tools_or_appear_complete(monkeypatch,
     with pytest.raises(ToolFailure) as caught:
         asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
     assert caught.value.code == "invalid_response"
+    assert caught.value.response_error
+    assert len(requests) == 1
+
+
+def test_protocol_failure_keeps_reported_usage_without_leaking_provider_body(monkeypatch):
+    body = (
+        frame({"choices": [], "usage": {"total_tokens": 23}})
+        + frame({"error": {"message": "private-provider-text"}})
+    ).encode()
+    provider(monkeypatch, body)
+    usages = []
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, on_usage=usages.append))
+    assert caught.value.code == "upstream_error"
+    assert caught.value.response_error == "provider_stream_error"
+    assert caught.value.retryable is True
+    assert "private-provider-text" not in str(caught.value)
+    assert usages == [{"total_tokens": 23}]
+
+
+def test_null_error_field_does_not_reject_a_valid_answer(monkeypatch):
+    value = {**delta({"content": "已找到网址。"}, "stop"), "error": None}
+    provider(monkeypatch, (frame(value) + frame("[DONE]")).encode())
+    result = asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert result["content"] == "已找到网址。"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "retryable"),
+    [
+        ({"reasoning_content": "progress fixture"}, True),
+        ({"content": "尚未完成的回答"}, False),
+        ({"tool_calls": [{"index": 0, "id": "pending", "function": {"name": "web_search"}}]}, False),
+    ],
+)
+def test_explicit_stream_failure_retries_only_before_answer_or_tool_request(monkeypatch, prefix, retryable):
+    body = frame(delta(prefix)) + frame({"error": {"message": "private-provider-text"}})
+    provider(monkeypatch, body.encode())
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert caught.value.code == "upstream_error"
+    assert caught.value.retryable is retryable
+    assert "private-provider-text" not in str(caught.value)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 429])
+def test_permanent_or_rate_limited_stream_errors_do_not_retry_without_admission(monkeypatch, status):
+    provider(monkeypatch, frame({"error": {"status": status}}).encode())
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert caught.value.retryable is False
+
+
+def test_confirmed_length_stop_retains_usage_and_never_dispatches_partial_calls(monkeypatch):
+    body = "".join(
+        frame(c)
+        for c in [
+            delta(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "partial",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": '{"query":"unfinished',
+                            },
+                        }
+                    ]
+                },
+                "length",
+            ),
+            {"choices": [], "usage": {"completion_tokens": 6000}},
+            "[DONE]",
+        ]
+    )
+    requests = provider(monkeypatch, body.encode())
+    usages = []
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, on_usage=usages.append))
+    assert caught.value.code == "generation_truncated"
+    assert usages == [{"completion_tokens": 6000}]
     assert len(requests) == 1
 
 
 def test_reasoning_and_gateway_events_are_not_rendered_as_user_answer(monkeypatch):
+    monkeypatch.setenv("AGENT_MODEL", "deepseek-flash")
     body = (
         'event: aerisun.tool\ndata: {"status":"running"}\n\n'
         + frame(delta({"reasoning_content": "private", "content": "公开回复"}, "stop"))
@@ -202,6 +298,43 @@ def test_explicit_thinking_effort_is_used_and_part_of_provider_identity(monkeypa
     asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
     assert json.loads(requests[0].content)["reasoning_effort"] == effort
     assert transport.provider_settings()["reasoning_effort"] == effort
+
+
+def test_legal_thinking_override_preserves_main_agent_effort_and_changes_identity(monkeypatch):
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "low")
+    monkeypatch.setenv("LEGAL_REASONING_EFFORT", "medium")
+    settings = transport.provider_settings()
+    assert settings["reasoning_effort"] == "low"
+    assert settings["legal_reasoning_effort"] == "medium"
+    assert transport.reasoning_effort(settings["model"], "medium") == "medium"
+
+
+@pytest.mark.parametrize("with_tools", [True, False])
+def test_deepseek_dispatch_disables_thinking_but_composition_keeps_effort(monkeypatch, with_tools):
+    requests = provider(monkeypatch, (frame(delta({"content": "answer"}, "stop")) + frame("[DONE]")).encode())
+    monkeypatch.setenv("AGENT_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("AGENT_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "low")
+    definitions = (
+        [{"type": "function", "function": {"name": "update_task_brief", "parameters": {"type": "object"}}}]
+        if with_tools
+        else []
+    )
+    asyncio.run(
+        transport.agent_turn(
+            [],
+            definitions,
+            lambda _: None,
+            lambda: None,
+            tool_choice={"type": "function", "function": {"name": "update_task_brief"}},
+        )
+    )
+    body = json.loads(requests[0].content)
+    assert body["reasoning_effort"] == ("none" if with_tools else "low")
+    if with_tools:
+        assert body["thinking"] == {"type": "disabled"}
+    else:
+        assert "tools" not in body
 
 
 @pytest.mark.parametrize("thinking", [60001 * "x", {"invalid": "not text"}])
@@ -327,3 +460,58 @@ def test_usage_uses_reported_cache_tokens_and_does_not_invent_a_hit(monkeypatch,
         assert "cached_tokens" not in observed[0]
     else:
         assert observed[0]["cached_tokens"] == cached
+
+
+def test_native_non_thinking_composition_explicitly_disables_provider_thinking(monkeypatch):
+    requests = provider(monkeypatch, (frame(delta({"content": "answer"}, "stop")) + frame("[DONE]")).encode())
+    monkeypatch.setenv("AGENT_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("AGENT_MODEL", "deepseek-flash")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "none")
+    asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    body = json.loads(requests[0].content)
+    assert body["thinking"] == {"type": "disabled"}
+    assert "tools" not in body
+
+
+def test_native_composition_enables_requested_reasoning(monkeypatch):
+    requests = provider(monkeypatch, (frame(delta({"content": "answer"}, "stop")) + frame("[DONE]")).encode())
+    monkeypatch.setenv("AGENT_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("AGENT_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "low")
+    asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    body = json.loads(requests[0].content)
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "low"
+
+
+def test_http_client_enforces_wall_clock_timeout_during_silent_stream(monkeypatch):
+    import time
+
+    class Silent(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(10)
+            yield b""
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        transport.httpx,
+        "AsyncClient",
+        lambda **kw: original(
+            **kw, transport=httpx.MockTransport(lambda r: httpx.Response(200, stream=Silent()))
+        ),
+    )
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=0.08))
+    assert time.monotonic() - started < 0.8
+
+
+def test_no_more_tools_sends_explicit_none_even_without_definitions(monkeypatch):
+    requests = provider(monkeypatch, (frame(delta({"content": "答复"}, "stop")) + frame("[DONE]")).encode())
+    asyncio.run(
+        transport.agent_turn(
+            [{"role": "user", "content": "完成答复"}], [], lambda _: None, lambda: None, tool_choice="none"
+        )
+    )
+    assert json.loads(requests[0].content)["tool_choice"] == "none"

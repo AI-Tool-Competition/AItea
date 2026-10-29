@@ -224,9 +224,9 @@ def test_route_journey_requires_evidence_and_unlocks_in_order(client):
         },
     )
     assert analysis.status_code == 200, analysis.text
-    # Rule-only analysis correctly asks for substantive legal review instead of
-    # declaring the fixture's business documents legally sufficient.
-    assert analysis.json()["status"] == "needs_input"
+    # An unconfigured model preserves all facts and remains non-final; existing
+    # evidence must not be discarded or treated as missing user input.
+    assert analysis.json()["status"] == "needs_review"
     assert analysis.json()["error"] is None
     assert set(keys) <= {fact["key"] for fact in analysis.json()["result"]["facts"]}
     if closeout:

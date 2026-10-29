@@ -2,21 +2,32 @@
 
 import asyncio
 import base64
+import copy
+import json
 import hashlib
 import re
 from contextlib import closing
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
+from time import monotonic
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
-from app.contexts.conversations.application.agent_skills import COMPOSITION_HINTS, SKILLS, skill_catalog
-from app.contexts.conversations.application.tool_runtime import ToolInput, ToolSpec
+from app.contexts.conversations.application.agent_skills import (
+    COMPOSITION_HINTS,
+    SKILLS,
+    read_skill,
+    skill_catalog,
+)
+from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolInput, ToolSpec
 from app.contexts.conversations.infrastructure.agent_transport import gateway_tool
 from app.shared.domain.countries import resolve_country
 from app.shared.domain.errors import fail
+from app.shared.domain.models import StrictModel
 from app.shared.domain.values import now
 
 
@@ -32,7 +43,7 @@ class QueryInput(ToolInput):
 
 
 class SkillInput(ToolInput):
-    name: Literal["guidance", "materials", "legal", "draft", "handoff", "research", "vision"]
+    name: str = Field(min_length=1, max_length=64, description="技能目录返回的真实id。")
 
 
 class TasksInput(ToolInput):
@@ -40,6 +51,40 @@ class TasksInput(ToolInput):
         default_factory=list,
         max_length=50,
         description="不传或 [] 核对当前节点全部任务；仅用户限定某任务时传服务端返回的任务 id，不推测编号。",
+    )
+
+
+class CardFieldInput(StrictModel):
+    key: str = Field(min_length=1, max_length=64)
+    value: StrictStr | StrictInt | StrictFloat = Field(
+        description="从茶商原话摘录的字段值；不填推测、建议或假设。"
+    )
+    source_quote: str = Field(min_length=1, max_length=20000, description="包含该值的逐字原话。")
+    source_message_id: str | None = Field(
+        default=None, max_length=100, description="当前发言省略；引用较早发言时传当前业务真实用户消息id。"
+    )
+    replace_existing: bool = Field(
+        default=False, description="仅原话明确改为、更正或调整时，才可替换已填值。"
+    )
+
+
+class CardUpdateInput(StrictModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    fields: list[CardFieldInput] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def unique_fields(self):
+        if len({f.key for f in self.fields}) != len(self.fields):
+            raise ValueError("同一业务卡字段只提供一次")
+        return self
+
+
+class CardEntryInput(ToolInput):
+    task_id: str = Field(min_length=1, max_length=64, description="业务卡的实际task_id。")
+    values_json: str = Field(
+        min_length=2,
+        max_length=12000,
+        description='同一张卡的全部已知字段，JSON对象字符串，例如 {"p01_owner":"李明","p01_stock":"200盒"}。只用实际key，值逐字摘录用户原话。',
     )
 
 
@@ -88,9 +133,101 @@ class WebInput(ToolInput):
     recency_days: int | None = Field(default=None, ge=1, le=3650)
     max_results: int = Field(default=5, ge=1, le=10)
 
+    @model_validator(mode="before")
+    @classmethod
+    def result_count(cls, value):
+        # Older tool examples used limit. Normalize only this harmless count;
+        # keep strict validation of scope, dates, extra fields and boundaries.
+        if isinstance(value, dict):
+            value = dict(value)
+            if "limit" in value:
+                if "max_results" in value:
+                    raise ValueError("仅传 max_results，不同时传 limit")
+                value["max_results"] = value.pop("limit")
+            count = value.get("max_results")
+            if isinstance(count, str) and re.fullmatch(r"[0-9]{1,2}", count):
+                value["max_results"] = int(count)
+        return value
 
-class LegalInput(ToolInput):
-    question: str = Field(min_length=1, max_length=4000)
+
+class LegalSearchInput(QueryInput):
+    limit: int = Field(default=4, ge=1, le=12)
+    as_of: str | None = Field(
+        default=None,
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="交易或法律适用日期；未知时省略，不推定所有入库资料现行有效。",
+    )
+    jurisdiction: Literal["CN", "ID", "SG"] = Field(
+        description="按本次法律问题选择单一法域，不根据贸易目的地追加国家。"
+    )
+
+    @field_validator("as_of")
+    @classmethod
+    def calendar_date(cls, value):
+        if value is not None:
+            date.fromisoformat(value)
+        return value
+
+
+class ChineseLawInput(ToolInput):
+    law: str = Field(
+        min_length=4,
+        max_length=150,
+        description="法规标准全称，例如中华人民共和国民法典，不使用简称；只发送法规名称，不传案件事实。",
+    )
+    articles: list[str] = Field(
+        min_length=1,
+        max_length=4,
+        description="具体条号，最多四条；例如第五百七十九条、579，程序转为中文条号。",
+    )
+    source: Literal["auto", "api"] = Field(
+        default="auto",
+        description="auto优先读取内置同名同条原文，缺项调用公益API；api直接核对公益API，失败时仍查内置原文。",
+    )
+
+    @field_validator("law")
+    @classmethod
+    def full_name(cls, value):
+        if not re.fullmatch(r"[\u3400-\u9fffA-Za-z0-9（）()〈〉·—\-〔〕]+", value):
+            raise ValueError("只传法规标准全称")
+        return value
+
+    @field_validator("articles")
+    @classmethod
+    def article_labels(cls, value):
+        from app.contexts.legal_analysis.infrastructure.chinese_law import article_number
+
+        return list(dict.fromkeys(article_number(label) for label in value))
+
+
+class LawReadInput(ToolInput):
+    jurisdiction: Literal["CN", "ID", "SG"]
+    record_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+        description="search_legal_evidence 返回的record_id（原始收据为metadata.source_record_id），不猜测条款编号。",
+    )
+    url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        description="用户提供或检索返回的本法域官方原文URL；与record_id二选一。",
+    )
+    query: str = Field(default="", max_length=500, description="读取官方页面时定位具体条款的关键词或条号。")
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if bool(self.record_id) == bool(self.url):
+            raise ValueError("请选择一个内部记录编号或官方原文URL。")
+        return self
+
+
+class LawVersionInput(ToolInput):
+    jurisdiction: Literal["CN", "ID", "SG"]
+    record_id: str = Field(
+        min_length=1, max_length=300, description="检索或读取原文返回的真实 source_record_id。"
+    )
 
 
 class DraftInput(ToolInput):
@@ -132,13 +269,49 @@ class BoundTool:
     handler: object
 
     def schema(self):
+        schema = self.spec.input_model.model_json_schema()
+        # Accept historical inputs without requiring a discarded task object.
+        schema.get("properties", {}).pop("objective_ids", None)
+        schema.get("properties", {}).pop("purpose", None)
+
+        def inline(value):
+            # Some OpenAI-compatible gateways discard $defs when translating
+            # function declarations. Send complete nested input types instead
+            # of leaving objectives/actors as unresolved references.
+            if isinstance(value, list):
+                return [inline(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            if "$ref" in value:
+                name = value["$ref"].removeprefix("#/$defs/")
+                return inline(
+                    {
+                        **copy.deepcopy(schema["$defs"][name]),
+                        **{k: v for k, v in value.items() if k != "$ref"},
+                    }
+                )
+            return {key: inline(item) for key, item in value.items() if key != "$defs"}
+
         return {
             "type": "function",
             "function": {
                 "name": self.spec.name,
-                "description": self.spec.description,
-                "parameters": self.spec.input_model.model_json_schema(),
+                "description": (
+                    f"{self.spec.description}\n进入条件：{self.spec.entry_condition}"
+                    f"\n返回内容：{self.spec.result_contract}"
+                    f"\n调用成本：{self.spec.cost_class}；超时上限：{self.spec.timeout_seconds}秒。"
+                ),
+                "parameters": inline(schema),
             },
+        }
+
+    def mcp_schema(self):
+        function = self.schema()["function"]
+        return {
+            "name": self.spec.name,
+            "title": self.spec.label,
+            "description": function["description"],
+            "inputSchema": function["parameters"],
         }
 
 
@@ -148,6 +321,15 @@ class AgentTools:
         self.payload, self.prepared, self.run_id = payload, prepared, run_id
         self.check_cancelled = check_cancelled
         definitions = [
+            (
+                "update_business_card",
+                "填写业务卡",
+                "茶商提供业务事实或更正时，主动一次填写同一卡片的全部已知字段；多张卡可在同轮分别调用。只用实际task_id和key，values_json是JSON对象字符串；程序自动关联真实用户发言。未知项留空，不填假设、建议或核验结果。答复成功后共同提交，供茶商核对。",
+                CardEntryInput,
+                self.fill_card,
+                False,
+                10,
+            ),
             (
                 "read_tool_result",
                 "回查工具结果",
@@ -160,7 +342,7 @@ class AgentTools:
             (
                 "guide_business",
                 "办理指导",
-                "读取当前节点的办理要求、任务字段和服务端进度，用于制定下一步建议。",
+                "仅在用户要求查看或填写工作台现有节点时，读取办理要求、任务字段和服务端进度；一般商业或法律咨询不调用。",
                 EmptyInput,
                 self.guide,
                 True,
@@ -174,15 +356,6 @@ class AgentTools:
                 self.materials,
                 True,
                 30,
-            ),
-            (
-                "analyze_legal",
-                "法律分析",
-                "运行已配置的法律分析引擎，保留法域、版本、审核与证据门禁；涉及法律结论时调用。",
-                LegalInput,
-                self.legal,
-                False,
-                720,
             ),
             (
                 "draft_document",
@@ -203,9 +376,18 @@ class AgentTools:
                 30,
             ),
             (
+                "tool_search",
+                "搜索工具",
+                "按能力、任务或名称搜索工具，并加载命中工具的参数。只加载本次需要的能力，可直接搜索已知工具名称。",
+                QueryInput,
+                self.discover,
+                False,
+                10,
+            ),
+            (
                 "discover_tools",
                 "发现工具",
-                "按名称或需求查询工具用法。登记工具均可直接调用，不需要先发现或激活；仅不清楚用法时查询。",
+                "tool_search的兼容名称：搜索并加载本次所需工具。",
                 QueryInput,
                 self.discover,
                 False,
@@ -214,7 +396,7 @@ class AgentTools:
             (
                 "load_skill",
                 "加载组合技能",
-                "读取指定技能的组合提示；登记工具均已可用，不需要先加载技能，提示不强制固定调用顺序。",
+                "按技能id读取SKILL.md中的业务SOP，并加载该技能相关工具参数。按需组合，不强制固定调用顺序。",
                 SkillInput,
                 self.skill,
                 False,
@@ -232,7 +414,7 @@ class AgentTools:
             (
                 "read_document",
                 "读取资料原文",
-                "分页读取已有解析结果。未解析的材料返回真实状态，不能伪造正文。",
+                "分页读取当前业务上传文档的已有解析结果。法规库的pack/web记录应使用read_law及其record_id，不传入此工具。未解析材料返回真实状态。",
                 DocumentInput,
                 self.document,
                 True,
@@ -248,13 +430,40 @@ class AgentTools:
                 150,
             ),
             (
+                "lookup_chinese_law",
+                "精确查询中国法条",
+                "已知中国法规全称和条号时直接取完整原文与定位，省去语义检索。内置缺项调用chinese-law-verifier公益API（非官方来源），短超时后保留内置结果；不推定接口文本现行有效。",
+                ChineseLawInput,
+                self.chinese_law,
+                True,
+                10,
+            ),
+            (
                 "search_legal_evidence",
                 "检索法律依据",
-                "通过 RAGFlow 在当前业务允许的法域检索已审核且适用的法规依据。",
-                QueryInput,
+                "按指定法域查询内部资料，返回原文、版本、来源与审核状态；草稿资料仍须标明效力限制。",
+                LegalSearchInput,
                 self.legal_search,
                 True,
                 120,
+            ),
+            (
+                "read_law",
+                "读取法律原文",
+                "按实际记录编号或本法域官方URL读取法律原文，保留例外和版本限制；官方PDF需先解析，搜索摘要不能作为原文。",
+                LawReadInput,
+                self.read_law,
+                True,
+                30,
+            ),
+            (
+                "get_law_versions",
+                "读取法规版本关系",
+                "按已返回的记录编号取得公布、施行、失效日期及已查明的修改替代关系；未知日期保持为空，不作法律适用结论。",
+                LawVersionInput,
+                self.law_versions,
+                True,
+                15,
             ),
             (
                 "inspect_image",
@@ -306,6 +515,65 @@ class AgentTools:
             name: BoundTool(ToolSpec(name, label, description, model, 1, timeout, safe), handler)
             for name, label, description, model, handler, safe, timeout in definitions
         }
+        capabilities = {
+            "guide_business": (
+                "operations",
+                "用户要求查看当前工作台节点、填写现有任务或核对办理进度；一般经营咨询无需读取。",
+                "实际节点、任务、填写情况及相关办理指导，不能扩展用户咨询范围。",
+                "local",
+            ),
+            "check_materials": (
+                "operations",
+                "用户要求核对已建立业务中的字段、上传材料或任务。",
+                "服务端材料检查结果及具体缺项，不改变核验状态。",
+                "local",
+            ),
+            "get_handoff": (
+                "operations",
+                "用户要求核对工作台节点进度或办理交接；连续咨询沿用会话事实，无需读取节点。",
+                "实际节点进度与交接要求，不能将模板事项当作已经讨论或完成的事实。",
+                "local",
+            ),
+            "search_legal_evidence": (
+                "legal_lookup",
+                "需要查找法律依据、相关完整条文或版本线索。",
+                "规范原文、版本、定位和来源；未命中仅表示本次覆盖不足。",
+                "retrieval",
+            ),
+            "read_law": (
+                "legal_lookup",
+                "已取得记录编号或官方URL，须读取原文。",
+                "完整原文单元、定位、版本与官方链接。",
+                "local_or_network",
+            ),
+            "web_search": (
+                "research",
+                "需要市场、渠道或时效资料；敏感信息不得外发。",
+                "真实来源、摘要、链接及检索时间；官方法规须继续读取原文。",
+                "network",
+            ),
+            "draft_document": (
+                "document",
+                "用户要求文书，内容及真实任务编号已具备。",
+                "完整文稿及待提交状态。",
+                "local_write",
+            ),
+        }
+        for name, metadata in capabilities.items():
+            tool = self.registry[name]
+            self.registry[name] = BoundTool(
+                replace(
+                    tool.spec,
+                    **dict(
+                        zip(
+                            ("capability", "entry_condition", "result_contract", "cost_class"),
+                            metadata,
+                            strict=True,
+                        )
+                    ),
+                ),
+                tool.handler,
+            )
 
     def current(self):
         with closing(self.service.db.connect()) as conn:
@@ -327,8 +595,52 @@ class AgentTools:
             "stage": stage["name"],
             "tasks": stage["tasks"],
             "facts": case["facts"],
+            "workflow_guidance": (stage.get("analysis") or case["template"]["agent"]).get("instructions", "")[
+                :8000
+            ],
             "notice": "这是服务端当前办理要求；聊天建议不能替代任务核验。",
         }
+
+    def fill_card(self, args, attempt):
+        from app.contexts.workflows.application.card_updates import prepare_card_updates
+
+        case, _ = self.current()
+        attempt.check()
+        try:
+            values = json.loads(args.values_json)
+        except ValueError:
+            fail(422, "invalid_card_values", "values_json需为JSON对象字符串，字段值使用字符串。")
+        if (
+            not isinstance(values, dict)
+            or not 1 <= len(values) <= 20
+            or any(not isinstance(value, str) for value in values.values())
+        ):
+            fail(422, "invalid_card_values", "每次填写同一卡片1至20个已有字段，值使用原话字符串。")
+        fields = []
+        with closing(self.service.db.connect()) as conn:
+            for key, value in values.items():
+                if not value.strip():
+                    continue
+                text, message_id = self.payload["content"], None
+                if value and value not in text:
+                    row = conn.execute(
+                        "SELECT id,content FROM messages WHERE case_id=? AND role='user' "
+                        "AND instr(content,?)>0 ORDER BY created_at DESC,id DESC LIMIT 1",
+                        (case["id"], value),
+                    ).fetchone()
+                    if row:
+                        text, message_id = row["content"], row["id"]
+                fields.append(
+                    CardFieldInput(
+                        key=key,
+                        value=value,
+                        source_quote=text,
+                        source_message_id=message_id,
+                        replace_existing=message_id is None,
+                    )
+                )
+        updates = [CardUpdateInput(task_id=args.task_id, fields=fields)] if fields else []
+        return prepare_card_updates(self.service, self.owner, case, self.payload["content"], updates)
 
     def materials(self, args, attempt):
         _, stage = self.current()
@@ -347,7 +659,7 @@ class AgentTools:
                 )
         return {
             "checks": checks,
-            "notice": "缺项针对尚未填写或核验的服务端记录；用户在聊天中说过的信息应注明已提供、待填写或核验，不要重复索要。检查不会改变任务完成状态。",
+            "notice": "缺项针对尚未填写或核验的服务端记录；聊天中已明确提供的信息应主动填写对应业务卡，不重复索要。检查不会改变任务完成状态。",
         }
 
     def handoff(self, args, attempt):
@@ -377,26 +689,55 @@ class AgentTools:
         }
 
     def discover(self, args, attempt):
-        words = args.query.lower().replace(",", " ").split()
+        words = set(re.findall(r"[a-z_][a-z0-9_]*|[\u3400-\u9fff]{2}", args.query.lower()))
+        for phrase in re.findall(r"[\u3400-\u9fff]{2,}", args.query):
+            words.update(phrase[i : i + 2] for i in range(len(phrase) - 1))
+
+        def text(tool):
+            return (
+                tool.spec.name
+                + tool.spec.description
+                + tool.spec.label
+                + tool.spec.entry_condition
+                + tool.spec.result_contract
+                + tool.spec.capability
+            ).lower()
+
         ranked = sorted(
-            self.registry.values(),
+            [
+                t
+                for t in self.registry.values()
+                if t.spec.name not in {"tool_search", "discover_tools", "load_skill"}
+            ],
             key=lambda tool: (
-                -sum(
-                    word in (tool.spec.name + tool.spec.description + tool.spec.label).lower()
-                    for word in words
-                )
+                -(100 if tool.spec.name in args.query else 0) - sum(word in text(tool) for word in words)
             ),
         )
-        names = [tool.spec.name for tool in ranked[: min(args.limit, 8)]]
-        return {"activate_tools": names, "tools": [self.registry[name].schema() for name in names]}
+        matched = [t for t in ranked if any(w in text(t) for w in words)]
+        names = [tool.spec.name for tool in matched[: min(args.limit, 5)]]
+        return {
+            "kind": "capability_discovery",
+            "business_progress": False,
+            "activate_tools": names,
+            "tools": [self.registry[name].schema() for name in names],
+            "notice": "仅返回可执行工具的定义，未检索法规或业务资料；须实际执行对应工具才能取得依据。",
+        }
 
     def skill(self, args, attempt):
+        if args.name not in SKILLS:
+            raise ToolFailure("unknown_skill", "未找到该技能，请使用技能目录中的id。")
         skill = SKILLS[args.name]
+        try:
+            instructions = read_skill(args.name)
+        except (OSError, ValueError):
+            raise ToolFailure(
+                "skill_unavailable", "该技能文档暂时无法读取；可搜索独立工具完成已有条件支持的任务。"
+            ) from None
         return {
             "skill": args.name,
-            "instructions": skill.instructions,
-            "activate_tools": list(skill.tools),
-            "combinations": COMPOSITION_HINTS,
+            "instructions": instructions,
+            "activate_tools": [name for name in skill.tools if name in self.registry],
+            "tools": [self.registry[name].schema() for name in skill.tools if name in self.registry],
         }
 
     def documents(self, args, attempt):
@@ -459,37 +800,210 @@ class AgentTools:
             country=resolve_country(self.case["template"]["destination"]) or "unassigned",
         )
 
+    def chinese_law(self, args, attempt):
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+        from app.contexts.legal_analysis.infrastructure.chinese_law import article_index, fetch_article
+
+        self.current()
+        if "CN" not in self.service.legal.allowed_countries(self.case["template"], self.stage):
+            fail(422, "country_mismatch", "中国法不在当前业务允许范围内")
+        attempt.check()
+        packs = CountryPacks(self.service.db.data_dir)
+        local = packs.lookup_chinese_articles(args.law, [article_index(a) for a in args.articles])
+        local = [self.identify_law(item) for item in local]
+        found = {str(item.get("locator", {}).get("article")) for item in local}
+        needed = [a for a in args.articles if args.source == "api" or article_index(a) not in found]
+        deadline = monotonic() + min(6, attempt.remaining)
+
+        def obtain(article):
+            try:
+                return article, fetch_article(args.law, article, deadline=deadline, check=attempt.check)
+            except (ValueError, OSError):
+                return article, None
+
+        remote = []
+        if needed:
+            with ThreadPoolExecutor(max_workers=min(4, len(needed)), thread_name_prefix="tea-cn-law") as pool:
+                remote = list(pool.map(obtain, needed))
+        attempt.check()
+        items = [item for _, item in remote if item]
+        remote_found = {article_index(a) for a, item in remote if item}
+        items.extend(
+            item for item in local if str(item.get("locator", {}).get("article")) not in remote_found
+        )
+        missing = [
+            a
+            for a in args.articles
+            if not any(str(item.get("locator", {}).get("article")) in {a, article_index(a)} for item in items)
+        ]
+        return {
+            "items": items,
+            "mode": "exact_article",
+            "missing_articles": missing,
+            "api_status": "unavailable_or_unmatched"
+            if any(item is None for _, item in remote)
+            else "retrieved"
+            if remote
+            else "not_needed",
+            "notice": "原文来源、条号与版本随每条返回；公益API为第三方文本，未提供的施行日期及修订关系仍未知。接口失败只影响缺项，已有内置原文可继续分析；引用现行或历史义务时仍须核对适用时间。",
+        }
+
     def legal_search(self, args, attempt):
         self.current()
-        return self.service.legal.search(
+        if args.jurisdiction not in self.service.legal.allowed_countries(self.case["template"], self.stage):
+            fail(422, "country_mismatch", "该法域不在当前业务允许范围内")
+        attempt.check()
+        result = self.service.legal.search(
             self.owner,
             args.query,
             self.case["id"],
             self.case["template"],
-            [],
+            [args.jurisdiction],
             args.limit,
+            as_of=args.as_of,
             check_cancelled=attempt.check,
         )
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
 
-    def legal(self, args, attempt):
-        self.current()
-        # The existing analysis service owns leases, evidence checks and version conflicts.
-        key = hashlib.sha256(args.question.encode()).hexdigest()[:20]
-        analysis = self.service.legal.analyze(
-            self.owner,
-            self.case["id"],
-            {
-                "stage_id": self.stage["id"],
-                "question": args.question,
-                "client_request_id": f"agent:{self.run_id}:{key}",
-            },
-            check_cancelled=attempt.check,
-        )
+        packs = CountryPacks(self.service.db.data_dir)
+        primary, context = {}, {}
+        for candidate in result["items"]:
+            attempt.check()
+            record = candidate.get("metadata", {}).get("source_record_id")
+            original = packs.read(args.jurisdiction, record) if record else None
+            if original:
+                original["id"] = candidate["id"]
+                # Completing the text must not erase how this unit was found.
+                # Source/version fields still come from the original record.
+                original["metadata"].update(
+                    {
+                        key: candidate["metadata"][key]
+                        for key in (
+                            "semantic_document_score",
+                            "semantic_clause_match",
+                            "retrieval_date_state",
+                            "exact_match",
+                            "retrieval_relation",
+                        )
+                        if key in candidate.get("metadata", {})
+                    }
+                )
+            primary[candidate["id"]] = original or candidate
+            related_units = (
+                [
+                    *packs.referenced_articles(args.jurisdiction, record, limit=3),
+                    *packs.neighboring_records(args.jurisdiction, record),
+                ]
+                if record
+                else []
+            )
+            for related in related_units:
+                related = self.identify_law(related)
+                context[related["id"]] = related
+        # Preserve the search order before adding context. A neighbour of the
+        # first hit must not displace a better-ranked primary provision, or
+        # overwrite its provenance when it is reached again through a reference.
+        items = {**primary, **{key: value for key, value in context.items() if key not in primary}}
+        return {**result, "items": list(items.values()), "as_of": args.as_of}
+
+    @staticmethod
+    def identify_law(citation):
+        from app.contexts.legal_analysis.application.analysis_service import digest
+
         return {
-            "analysis_id": analysis["id"],
-            "revision": analysis["revision"],
-            "status": analysis["status"],
-            "result": analysis["result"],
+            **citation,
+            "id": f"{citation['document_id']}:{citation['document_version']}:{digest(citation['chunk_id'])[:16]}",
+        }
+
+    def law_versions(self, args, attempt):
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+
+        self.current()
+        if args.jurisdiction not in self.service.legal.allowed_countries(self.case["template"], self.stage):
+            fail(422, "country_mismatch", "该法域不在当前业务允许范围内")
+        attempt.check()
+        item = CountryPacks(self.service.db.data_dir).read(args.jurisdiction, args.record_id)
+        if not item:
+            fail(404, "not_found", "未找到该法域的法规版本记录")
+        meta = item.get("metadata", {})
+        return {
+            "record_id": args.record_id,
+            "title": item["title"],
+            "source_url": item.get("source_url"),
+            "document_version": item["document_version"],
+            "dates": {
+                key: meta.get(key)
+                for key in (
+                    "published_at",
+                    "declared_version_date",
+                    "effective_from",
+                    "effective_to",
+                    "superseded_at",
+                )
+            },
+            "relations": meta.get("version_relations", []),
+            "superseded_by": meta.get("superseded_by"),
+            "date_evidence": meta.get("date_evidence", []),
+            "notice": "仅返回已有来源记录；空值表示尚未查明，资料入库不证明当前有效。",
+        }
+
+    def read_law(self, args, attempt):
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+        from app.contexts.legal_analysis.application.analysis_service import digest
+
+        self.current()
+        allowed = self.service.legal.allowed_countries(self.case["template"], self.stage)
+        if args.jurisdiction not in allowed:
+            fail(422, "country_mismatch", "该法域不在当前业务允许范围内")
+        attempt.check()
+        if args.url:
+            from app.contexts.legal_analysis.infrastructure.official_evidence import (
+                citations_from_text,
+                fetch_official,
+                official_url,
+            )
+
+            if not official_url(args.url, args.jurisdiction):
+                fail(422, "official_source_required", "请使用指定法域的官方HTTPS原文地址")
+            try:
+                record = fetch_official(
+                    self.service.db.data_dir,
+                    args.url,
+                    args.jurisdiction,
+                    deadline=monotonic() + 20,
+                    check_cancelled=attempt.check,
+                )
+            except ValueError as error:
+                # The source reader emits bounded public-source diagnostics,
+                # never provider bodies, credentials or private account data.
+                raise ToolFailure("official_source_unavailable", str(error)[:300]) from None
+            items = citations_from_text(record, args.query, 5)
+            if not items:
+                raise ToolFailure(
+                    "source_section_unavailable",
+                    "已取得官方页面，但未识别出可完整引用的条文或章节；不能以搜索摘要代替原文。",
+                )
+            for citation in items:
+                citation["id"] = (
+                    f"{citation['document_id']}:{citation['document_version']}:{digest(citation['chunk_id'])[:16]}"
+                )
+            attempt.check()
+            return {
+                "items": items,
+                "mode": "official_web",
+                "warning": "已读取官方正文；相关日期的适用版本仍需核对。",
+            }
+        citation = CountryPacks(self.service.db.data_dir).read(args.jurisdiction, args.record_id)
+        if not citation:
+            fail(404, "not_found", "未找到该法域的法律原文记录，请重新检索")
+        citation["id"] = (
+            f"{citation['document_id']}:{citation['document_version']}:{digest(citation['chunk_id'])[:16]}"
+        )
+        attempt.check()
+        return {
+            "items": [citation],
+            "mode": "local_pack",
+            "warning": "原文与中文整理已区分；适用版本以来源及修法信息为准。",
         }
 
     def draft(self, args, attempt):
@@ -503,7 +1017,7 @@ class AgentTools:
         if args.task_id not in {t["id"] for t in stage["tasks"]}:
             fail(422, "task_scope", "文稿必须属于当前节点任务")
         return {
-            "draft": args.model_dump(),
+            "draft": args.model_dump(exclude={"purpose", "objective_ids"}),
             "status": "pending_commit",
             "notice": "正文已准备，本轮回复成功后与消息一起保存。",
         }
@@ -573,7 +1087,8 @@ class AgentTools:
         result = asyncio.run(
             gateway_tool(
                 "web_search",
-                args.model_dump(exclude_none=True) | {"response_length": "short"},
+                args.model_dump(exclude_none=True, exclude={"purpose", "objective_ids"})
+                | {"response_length": "short"},
                 attempt.check,
                 timeout=attempt.remaining,
             )
@@ -598,7 +1113,7 @@ class AgentTools:
             "summary": str(output.get("summary", ""))[:1200],
             "retrieved_at": now(),
             "status": "unreviewed_web",
-            "notice": "网页信息尚未作为法规入库审核。",
+            "notice": "这些内容是搜索摘要，用于定位来源；法律判断须用read_law读取官方原文。商业信息可引用并注明摘要身份。",
         }
 
     def recall(self, args, attempt):
@@ -643,6 +1158,11 @@ class AgentTools:
                     "label": t.spec.label,
                     "description": t.spec.description,
                     "parallel": t.spec.concurrency_safe,
+                    "capability": t.spec.capability,
+                    "entry_condition": t.spec.entry_condition,
+                    "result_contract": t.spec.result_contract,
+                    "cost_class": t.spec.cost_class,
+                    "timeout_seconds": t.spec.timeout_seconds,
                 }
                 for t in self.registry.values()
             ],

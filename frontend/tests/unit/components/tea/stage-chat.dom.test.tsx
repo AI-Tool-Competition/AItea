@@ -489,6 +489,23 @@ describe("stage chat experience", () => {
     );
   });
 
+  it("starts a fresh request only when the user retries an explicitly stopped turn", async () => {
+    const stream = transport();
+    render(<StageChat {...props} />);
+    await send("请核对货款请求");
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "停止回复" }));
+    await screen.findByRole("button", { name: "重试回复" });
+    expect(stream.fetcher).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "重试回复" }));
+    await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(3));
+    const before = JSON.parse(stream.fetcher.mock.calls[1]![1]!.body as string);
+    const after = JSON.parse(stream.fetcher.mock.calls[2]![1]!.body as string);
+    expect(after.client_message_id).not.toBe(before.client_message_id);
+    expect(after.content).toBe(before.content);
+    expect(screen.getAllByText("请核对货款请求")).toHaveLength(1);
+  });
+
   it("does not send during history loading or IME composition and preserves scoped drafts", async () => {
     transport();
     const first = render(<StageChat {...props} />);
@@ -726,5 +743,147 @@ describe("stage chat experience", () => {
       expect(screen.getByText("第一条部分回复")).toBeTruthy(),
     );
     expect(screen.getByRole("button", { name: "重试回复" })).toBeTruthy();
+  });
+});
+
+it.each([
+  ["partially_answered", "部分完成 · 请查看尚未确认的事项"],
+  ["needs_user_input", "需要补充信息"],
+  ["execution_failed", "执行未完成 · 请查看具体原因后重试"],
+  ["unsupported_jurisdiction", "当前专业资料能力尚未覆盖所问法域"],
+])(
+  "shows persisted delivery state %s without treating it as success",
+  async (delivery, label) => {
+    rs.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "delivery-test",
+                role: "assistant",
+                content: "已保留可以核对的材料。",
+                stage_id: "stage",
+                task_id: null,
+                created_at: "2026-10-29T00:00:00Z",
+                citations: [],
+                trace: [
+                  {
+                    id: "agent",
+                    label: "智能工具协作",
+                    status: "completed",
+                    detail: "",
+                    delivery_status: delivery,
+                  },
+                ],
+              },
+            ],
+            total: 1,
+          }),
+        ),
+    );
+    render(<StageChat {...props} />);
+    await waitFor(() => expect(screen.getByText(label)).toBeTruthy());
+    expect(screen.getByText("已保留可以核对的材料。")).toBeTruthy();
+  },
+);
+
+it("renders the integrated agent answer when an older guide snapshot is also attached", async () => {
+  rs.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        items: [
+          {
+            id: "integrated-answer",
+            role: "assistant",
+            content: "已整合的业务建议和责任清单。",
+            stage_id: "stage",
+            task_id: null,
+            created_at: "2026-10-29T00:00:00Z",
+            citations: [],
+            guide_result: {
+              assistant_mode: "live",
+              output: "工具内部报告",
+              issues: [],
+              citations: [],
+              trace: [],
+            },
+            trace: [
+              {
+                id: "agent",
+                label: "智能工具协作",
+                status: "completed",
+                detail: "",
+                delivery_status: "answered",
+              },
+            ],
+          },
+        ],
+        total: 1,
+      }),
+    ),
+  );
+  render(<StageChat {...props} />);
+  expect(await screen.findByText("已整合的业务建议和责任清单。")).toBeTruthy();
+  expect(screen.queryByText("工具内部报告")).toBeNull();
+  expect(screen.queryByText("分析结论与下一步")).toBeNull();
+});
+
+it("retries a persisted failed delivery with a new request and keeps the input draft", async () => {
+  const stream = transport();
+  stream.fetcher.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        items: [
+          {
+            id: "old-question",
+            role: "user",
+            content: "原来的法律问题",
+            stage_id: "stage",
+            task_id: null,
+            created_at: "2026-10-29T00:00:00Z",
+            citations: [],
+            trace: [],
+          },
+          {
+            id: "old-answer",
+            role: "assistant",
+            content: "本次模型超时。",
+            stage_id: "stage",
+            task_id: null,
+            created_at: "2026-10-29T00:00:01Z",
+            citations: [],
+            trace: [
+              {
+                id: "agent",
+                label: "智能工具协作",
+                status: "completed",
+                detail: "",
+                delivery_status: "execution_failed",
+              },
+            ],
+          },
+        ],
+        total: 2,
+      }),
+    ),
+  );
+  render(<StageChat {...props} />);
+  const retry = await screen.findByRole("button", { name: "重试回复" });
+  const input = screen.getByRole<HTMLTextAreaElement>("textbox", {
+    name: "向茶渡助手提问",
+  });
+  fireEvent.change(input, { target: { value: "保留的下一条草稿" } });
+  fireEvent.click(retry);
+  await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+  const body = stream.fetcher.mock.calls[1]?.[1]?.body;
+  if (typeof body !== "string") throw new Error("Expected a JSON request body");
+  const request = JSON.parse(body);
+  expect(request.content).toBe("原来的法律问题");
+  expect(request.client_message_id).toBeTruthy();
+  expect(input.value).toBe("保留的下一条草稿");
+  await act(async () => {
+    stream.event("error", { code: "timeout", message: "请求超时" });
+    stream.close();
   });
 });

@@ -362,3 +362,38 @@ def test_unknown_empty_values_do_not_erase_saved_fields_or_create_provenance(wor
     task = response.json()["case"]["stages"][0]["tasks"][0]
     assert task["values"] == {"product_name": "六堡茶"}
     assert task["field_sources"] == {}
+
+
+@pytest.mark.parametrize("corrected", [False, True])
+def test_unwritten_card_fields_remain_partial_until_supported_value_is_provided(
+    workspace, monkeypatch, corrected
+):
+    _, _, _, _, payload = workspace
+    steps = [
+        tools(
+            (
+                "update_business_card",
+                {"task_id": "product_profile", "values_json": '{"product_name":"六堡茶，纯茶"}'},
+            )
+        )
+    ]
+    if corrected:
+        repair = tools(
+            (
+                "update_business_card",
+                {"task_id": "product_profile", "values_json": '{"product_name":"六堡茶"}'},
+            )
+        )
+        repair["tool_calls"][0]["id"] = "correct-card"
+        steps.append(repair)
+    steps.append("先确认计划销售的国家。")
+    seen = []
+    scenario(monkeypatch, steps, seen)
+    response = send(workspace, {**payload, "content": "现有六堡茶，请填写产品信息，未知项留空。"})
+    assert response.status_code == 200
+    result = last_run(workspace)
+    assert result["_task_state"]["model_calls"] == (3 if corrected else 2)
+    assert result["_task_state"]["delivery"] == ("answered" if corrected else "partially_answered")
+    assert ("部分业务信息尚未写入" in result["output"]) is (not corrected)
+    task = response.json()["case"]["stages"][0]["tasks"][0]
+    assert task["values"] == ({"product_name": "六堡茶"} if corrected else {})

@@ -10,7 +10,7 @@ from app.shared.domain.values import now
 def prepare_card_updates(service, owner, case, question, updates):
     if re.search(r"(?:不要|不必|别).{0,8}(?:记录|记下|保存|填入|填写|录入)", question):
         fail(403, "card_fill_declined", "本轮已要求不记录业务信息，未填写业务卡")
-    prepared, conflicts, rejected = [], [], []
+    prepared, conflicts, rejected, accepted = [], [], [], []
     with closing(service.db.connect()) as conn:
         service.own_case(conn, owner, case["id"])
         for update in updates:
@@ -46,6 +46,8 @@ def prepare_card_updates(service, owner, case, question, updates):
                 if quote not in text or str(field.value).strip() not in quote:
                     rejected.append(
                         {
+                            "task_id": task["id"],
+                            "key": field.key,
                             "field": definition["label"],
                             "code": "unsupported_card_value",
                             "reason": "用户原话未支持这个填写值，已留空；请只摘录原文，不加说明或推断。",
@@ -63,14 +65,23 @@ def prepare_card_updates(service, owner, case, question, updates):
                     )
                 old = task["values"].get(field.key)
                 if old == value:
+                    accepted.append({"task_id": task["id"], "key": field.key})
                     continue
                 if old not in (None, "") and not (
                     field.replace_existing and re.search(r"改为|改成|更正|改到|调整为|以.{0,80}为准", quote)
                 ):
                     conflicts.append(
-                        {"task": task["title"], "field": definition["label"], "saved": old, "new": value}
+                        {
+                            "task_id": task["id"],
+                            "key": field.key,
+                            "task": task["title"],
+                            "field": definition["label"],
+                            "saved": old,
+                            "new": value,
+                        }
                     )
                     continue
+                accepted.append({"task_id": task["id"], "key": field.key})
                 values[field.key] = value
                 sources[field.key] = {
                     "kind": "user_statement",
@@ -90,6 +101,7 @@ def prepare_card_updates(service, owner, case, question, updates):
                 )
     return {
         "card_updates": prepared,
+        "accepted_fields": accepted,
         "conflicts": conflicts,
         "rejected_fields": rejected,
         "status": "pending_commit" if prepared else "unchanged",

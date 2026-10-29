@@ -27,6 +27,7 @@ EXPORTED_TOOLS = frozenset(
         "get_handoff",
         "list_documents",
         "read_document",
+        "inspect_document_file",
         "search_documents",
         "search_legal_evidence",
         "lookup_chinese_law",

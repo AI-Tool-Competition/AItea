@@ -13,7 +13,12 @@ from app.contexts.conversations.application import agent_loop
 from app.contexts.conversations.application.agent_tools import AgentTools, LawReadInput, LegalSearchInput
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_loop import compact_messages
-from app.contexts.conversations.application.agent_skills import SKILLS, read_skill
+from app.contexts.conversations.application.agent_skills import (
+    SKILLS,
+    SKILL_ALIASES,
+    read_skill,
+    skill_catalog,
+)
 from app.contexts.conversations.application.tool_runtime import ToolFailure
 from app.interfaces.http.factory import create_app
 from app.shared.application.streaming import StreamCancelled
@@ -127,6 +132,174 @@ def legal_tools(workspace, check=lambda: None):
     return AgentTools(service, owner, case, case["stages"][0], payload, {}, "tool-test", check)
 
 
+@pytest.mark.parametrize("model_fails,stream", [(False, False), (False, True), (True, False), (True, True)])
+def test_document_files_commit_with_answer_and_have_authenticated_downloads(
+    workspace, monkeypatch, model_fails, stream
+):
+    import io
+    import re
+
+    from docx import Document
+    from pypdf import PdfReader
+
+    client, service, _, case, payload = workspace
+    text = "# 催款函\n请支付货款8000元。\n收款账号：[待补充]"
+    final = (
+        ToolFailure("timeout", "受控模型超时")
+        if model_fails
+        else "催款函已准备。[下载](/api/tea/documents/新文件ID/download)"
+    )
+    scenario(
+        monkeypatch,
+        [
+            tools(("load_skill", {"name": "document-operations"})),
+            tools(
+                ("create_document_file", {"filename": "催款函.docx", "format": "docx", "content": text}),
+                ("create_document_file", {"filename": "催款函.pdf", "format": "pdf", "content": text}),
+            ),
+            final,
+        ],
+        auto_discover=False,
+    )
+    response = send(workspace, {**payload, "content": "生成一份Word催款函并提供PDF副本"}, stream=stream)
+    assert response.status_code == 200, response.text
+    with closing(service.db.connect()) as conn:
+        files = conn.execute("SELECT * FROM documents WHERE case_id=?", (case["id"],)).fetchall()
+        assert not conn.execute("SELECT 1 FROM processing_jobs").fetchone()
+    assert len(files) == 2
+    receipt = stored_receipt(workspace, "call_create_document_file_0")
+    assert (
+        receipt["validation"]["reopened"] and "storage_path" not in receipt and "file_base64" not in receipt
+    )
+    if model_fails:
+        state = last_run(workspace)["_task_state"]
+        assert state["delivery"] == "partially_answered"
+        assert state["delivery_recovery"] == "prepared_files"
+    saved = (
+        next(value for event, value in stream_events(response) if event == "done")
+        if stream
+        else response.json()
+    )
+    assert "新文件ID" not in saved["messages"][1]["content"]
+    urls = re.findall(r"\]\((/api/tea/documents/[^)]+/download)\)", saved["messages"][1]["content"])
+    assert len(urls) == 2
+    downloads = [client.get(url) for url in urls]
+    assert all(d.status_code == 200 for d in downloads)
+    assert Document(io.BytesIO(downloads[0].content)).paragraphs[1].text == "请支付货款8000元。"
+    assert "8000" in PdfReader(io.BytesIO(downloads[1].content)).pages[0].extract_text()
+    assert all(f["status"] == "stored" and f["version"] == 1 for f in files)
+    client.post("/api/tea/auth/logout")
+    client.post("/api/tea/auth/demo", json={})
+    assert all(client.get(url).status_code == 404 for url in urls)
+
+
+def test_document_edit_requires_inspection_and_preserves_original(workspace, monkeypatch):
+    from app.contexts.conversations.application.agent_tools import FileEditInput, FileInspectInput
+    from app.contexts.documents.application.document_files import commit_file, prepare_file
+
+    client, service, owner, case, payload = workspace
+    pending = prepare_file(
+        service,
+        owner,
+        "原报价.docx",
+        {"format": "docx", "content": "单价120元\n其余条款保持不变"},
+        timeout=20,
+    )
+    with service.db.transaction() as conn:
+        source = commit_file(service, conn, owner, case["id"], pending)
+    current_case = client.get(f"/api/tea/cases/{case['id']}").json()
+    scope = (
+        client,
+        service,
+        owner,
+        current_case,
+        {**payload, "content": "修改报价单价为125元，保留其他文字"},
+    )
+    bound = legal_tools(scope)
+    args = FileEditInput(
+        document_id=source["id"],
+        version=1,
+        filename="修改报价.docx",
+        replacements=[{"part": "word/document.xml", "old_text": "120元", "new_text": "125元"}],
+    )
+    attempt = SimpleNamespace(remaining=20, check=lambda: None)
+    with pytest.raises(AppError) as error:
+        bound.edit_file(args, attempt)
+    assert error.value.code == "file_inspection_required"
+    bound.inspect_file(FileInspectInput(document_id=source["id"], version=1), attempt)
+    assert bound.edit_file(args, attempt)["status"] == "pending_commit"
+    with pytest.raises(AppError) as error:
+        bound.inspect_file(FileInspectInput(document_id=source["id"], version=2), attempt)
+    assert error.value.code == "document_version_changed"
+    scenario(
+        monkeypatch,
+        [
+            tools(("load_skill", {"name": "document-operations"})),
+            tools(("inspect_document_file", {"document_id": source["id"], "version": 1})),
+            tools(("edit_document_file", args.model_dump(exclude={"purpose", "objective_ids"}))),
+            "报价已修改，其他文字保留。",
+        ],
+        auto_discover=False,
+    )
+    response = send(workspace, scope[-1])
+    assert response.status_code == 200, response.text
+    with closing(service.db.connect()) as conn:
+        files = conn.execute(
+            "SELECT * FROM documents WHERE case_id=? ORDER BY created_at", (case["id"],)
+        ).fetchall()
+    assert len(files) == 2 and files[0]["content_hash"] == pending["content_hash"]
+    download = client.get(f"/api/tea/documents/{files[1]['id']}/download")
+    from app.contexts.documents.infrastructure.document_files import inspect
+
+    texts = [e["text"] for e in inspect(download.content, "docx")["elements"]]
+    assert texts == ["单价125元", "其余条款保持不变"]
+
+
+def test_cancellation_does_not_commit_even_prepared_document_files(workspace, monkeypatch):
+    _, service, owner, case, payload = workspace
+    scenario(
+        monkeypatch,
+        [
+            tools(
+                ("create_document_file", {"filename": "取消.txt", "format": "txt", "content": "待保存正文"})
+            ),
+            StreamCancelled(),
+        ],
+    )
+    with pytest.raises(StreamCancelled):
+        service.post_message(owner, case["id"], {**payload, "content": "生成一个txt文件"})
+    with closing(service.db.connect()) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM documents WHERE case_id=?", (case["id"],)).fetchone()[0] == 0
+        )
+
+
+def test_document_commit_rechecks_source_version(workspace):
+    from app.contexts.documents.application.document_files import commit_file, prepare_file
+
+    _, service, owner, case, _ = workspace
+    source = prepare_file(service, owner, "原文.txt", {"format": "txt", "content": "原文"}, timeout=20)
+    with service.db.transaction() as conn:
+        commit_file(service, conn, owner, case["id"], source)
+    with closing(service.db.connect()) as conn:
+        doc = dict(conn.execute("SELECT * FROM documents WHERE id=?", (source["id"],)).fetchone())
+    pending = prepare_file(
+        service,
+        owner,
+        "副本.txt",
+        {"format": "txt", "replacements": [{"old_text": "原文", "new_text": "修改", "expected_count": 1}]},
+        source=doc,
+        timeout=20,
+    )
+    with service.db.transaction() as conn:
+        conn.execute("UPDATE documents SET version=2 WHERE id=?", (doc["id"],))
+    with pytest.raises(AppError) as error, service.db.transaction() as conn:
+        commit_file(service, conn, owner, case["id"], pending)
+    assert error.value.code == "file_context_changed"
+    with closing(service.db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+
+
 def test_skill_document_and_related_parameters_are_loaded_only_on_request(workspace, monkeypatch):
     seen = []
     scenario(
@@ -146,7 +319,10 @@ def test_skill_document_and_related_parameters_are_loaded_only_on_request(worksp
     assert len(seen[0][1]) < len(all_schemas)
 
 
-@pytest.mark.parametrize("skill_id", ["contract_review", "draft"])
+@pytest.mark.parametrize(
+    "skill_id",
+    ["contract_review", "draft", "litigation_analysis", "long_image_to_pdf", "document_operations"],
+)
 def test_document_skill_loads_full_method_and_available_tools_on_request(workspace, monkeypatch, skill_id):
     seen = []
     instructions = read_skill(skill_id)
@@ -239,7 +415,10 @@ def test_mcp_initialization_discovery_and_data_call_share_authorized_registry(wo
         assert tuple(receipt) == ("list_documents", "completed")
 
 
-@pytest.mark.parametrize("skill_id", ["contract_review", "draft"])
+@pytest.mark.parametrize(
+    "skill_id",
+    ["contract_review", "draft", "litigation_analysis", "long_image_to_pdf", "document_operations"],
+)
 def test_mcp_document_skill_limits_tools_to_authorized_registry(workspace, skill_id):
     from app.contexts.conversations.application.mcp_tools import EXPORTED_TOOLS
 
@@ -254,7 +433,128 @@ def test_mcp_document_skill_limits_tools_to_authorized_registry(workspace, skill
     assert set(loaded["activate_tools"]) == expected
     assert {tool["function"]["name"] for tool in loaded["tools"]} == expected
     assert "draft_document" not in loaded["activate_tools"]
+    assert "convert_long_image_to_pdf" not in loaded["activate_tools"]
     assert stored_receipt(workspace, "mcp-call")["instructions"] == loaded["instructions"]
+
+
+@pytest.mark.parametrize("alias,target", SKILL_ALIASES.items())
+def test_source_skill_alias_works_without_duplicate_catalog_or_writes(workspace, alias, target):
+    result = mcp_request(
+        workspace, "tools/call", {"name": "load_skill", "arguments": {"name": alias}}
+    ).json()["result"]
+    assert result["isError"] is False
+    loaded = result["structuredContent"]
+    assert loaded["skill"] == target
+    assert loaded["requested_name"] == alias
+    assert loaded["instructions"] == read_skill(target) == read_skill(alias)
+    catalog = skill_catalog()
+    assert len({s["id"] for s in catalog}) == len(SKILLS)
+    assert alias in next(s["aliases"] for s in catalog if s["id"] == target)
+    with closing(workspace[1].db.connect()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+
+
+def test_skill_reference_is_explicit_and_cannot_read_arbitrary_file(workspace):
+    def load(name, resource="SKILL.md"):
+        return mcp_request(
+            workspace,
+            "tools/call",
+            {"name": "load_skill", "arguments": {"name": name, "resource": resource}},
+        ).json()["result"]
+
+    entrance = load("litigation-analysis")["structuredContent"]
+    assert entrance["resources"] == ["references/materials.md"]
+    detail = load("litigation-analysis", entrance["resources"][0])["structuredContent"]
+    assert detail["instructions"] == read_skill("litigation_analysis", "references/materials.md")
+    assert detail["instructions"] not in entrance["instructions"]
+    for resource in ("../../NOTICE.md", "/etc/passwd", "references/../SKILL.md", "missing.md"):
+        assert load("litigation-analysis", resource)["isError"] is True
+    assert load("unknown")["isError"] is True
+
+
+@pytest.mark.parametrize("model_fails,stream", [(False, False), (False, True), (True, False), (True, True)])
+def test_image_pdf_is_downloadable_only_after_successful_chat_commit(
+    workspace, monkeypatch, model_fails, stream
+):
+    import hashlib
+    import io
+    import re
+
+    from PIL import Image
+    from pypdf import PdfReader
+
+    _, service, owner, case, payload = workspace
+    source = io.BytesIO()
+    Image.new("RGB", (120, 5100), "white").save(source, format="PNG")
+    original = source.getvalue()
+    doc = service.store_document(owner, "chat.png", original, "image/png", case_id=case["id"])
+    with closing(service.db.connect()) as conn:
+        before = dict(conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone())
+    reply = ToolFailure("timeout", "受控模型超时") if model_fails else "截图已按顺序分页。"
+    scenario(
+        monkeypatch,
+        [
+            tools(("load_skill", {"name": "long-image-to-pdf"})),
+            tools(("convert_long_image_to_pdf", {"document_id": doc["id"], "version": doc["version"]})),
+            reply,
+        ],
+        auto_discover=False,
+    )
+    response = send(workspace, {**payload, "content": "请把长截图转成 PDF"}, stream=stream)
+    assert response.status_code == 200, response.text
+    receipt = stored_receipt(workspace, "call_convert_long_image_to_pdf_0")
+    assert receipt["status"] == "pending_commit"
+    assert receipt["page_count"] == 1 and receipt["slice_count"] == 3
+    assert "storage_path" not in receipt and "pdf_base64" not in receipt
+    with closing(service.db.connect()) as conn:
+        after = dict(conn.execute("SELECT * FROM documents WHERE id=?", (doc["id"],)).fetchone())
+        children = conn.execute("SELECT * FROM documents WHERE parent_id=?", (doc["id"],)).fetchall()
+    assert before == after
+    assert hashlib.sha256(original).hexdigest() == after["content_hash"]
+    assert len(children) == 1
+    if model_fails:
+        state = last_run(workspace)["_task_state"]
+        assert state["delivery"] == "partially_answered"
+        assert state["delivery_recovery"] == "prepared_files"
+    if stream:
+        events = stream_events(response)
+        assert not [value for name, value in events if name == "error"]
+        saved = next(value for name, value in events if name == "done")
+        assert any(
+            tool["name"] == "convert_long_image_to_pdf"
+            for name, value in events
+            if name == "step"
+            for tool in value.get("tools", [])
+        )
+    else:
+        saved = response.json()
+    url = re.search(r"\]\((/api/tea/documents/[^)]+/download)\)", saved["messages"][1]["content"])[1]
+    download = workspace[0].get(url)
+    assert download.status_code == 200
+    assert len(PdfReader(io.BytesIO(download.content)).pages) == 1
+    assert children[0]["role"] == "secondary" and children[0]["status"] == "stored"
+    with closing(service.db.connect()) as conn:
+        assert not conn.execute(
+            "SELECT 1 FROM processing_jobs WHERE document_id=?", (children[0]["id"],)
+        ).fetchone()
+    workspace[0].post("/api/tea/auth/logout")
+    workspace[0].post("/api/tea/auth/demo", json={})
+    assert workspace[0].get(url).status_code == 404
+
+
+def test_image_pdf_rejects_other_business_and_unrequested_conversion(workspace):
+    from app.contexts.conversations.application.agent_tools import ImagePDFInput
+
+    bound = legal_tools(workspace)
+    args = ImagePDFInput(document_id="not-visible", version=1)
+    attempt = SimpleNamespace(remaining=20, check=lambda: None)
+    with pytest.raises(AppError) as error:
+        bound.image_pdf(args, attempt)
+    assert error.value.code == "conversion_not_requested"
+    bound.payload = {**bound.payload, "content": "转成 PDF"}
+    with pytest.raises(AppError) as error:
+        bound.image_pdf(args, attempt)
+    assert error.value.status == 404
 
 
 def test_mcp_rejects_scope_injection_unknown_tools_and_foreign_account(workspace):
@@ -473,9 +773,9 @@ def test_skill_discovery_rag_and_web_are_composable_and_web_is_not_legal_evidenc
         if stream
         else response.json()
     )
-    assert data["messages"][1]["citations"] == []
+    assert len(data["messages"][1]["citations"]) == 1
     assert "web_search" in {d["function"]["name"] for d in seen[1][1]}
-    assert "unreviewed_web" in str(seen[2][0])
+    assert "unreviewed_web" not in str(seen[2][0])
     assert "https://example.org/notice" in str(seen[2][0])
     previews = {t["name"]: t.get("output_preview") for t in data["messages"][1]["trace"][0]["tools"]}
     assert previews["web_search"]["text"] == "官方公告"
@@ -1131,7 +1431,7 @@ def test_provider_length_stop_composes_once_without_repeating_tools(workspace, m
     )
     response = send(workspace)
     assert response.status_code == 200, response.text
-    assert seen[-1][1] == []
+    assert any(tool["function"]["name"] == "lookup_chinese_law" for tool in seen[-1][1])
     assert "guide_business" in str(seen[-1][0])
     assert any(m.get("role") == "tool" for m in seen[-1][0])
     answer = response.json()["messages"][1]

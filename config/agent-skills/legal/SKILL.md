@@ -1,3 +1,10 @@
+---
+name: china-lawyer-analyst
+description: 结合相关原文解释法律条件、请求和责任，将用户事实对应规则，交付茶商能理解的判断与行动。
+metadata:
+  tea-skill-id: legal
+  source-author: 陈石律师
+---
 # 法律分析方法
 
 方法来源：用户提供的 china-lawyer-analyst（SKILL.md、core/frameworks-core.md、core/process.md），作者陈石律师。茶渡按普通咨询需要改编；方法说明和案例解读不能替代法规原文。
@@ -13,3 +20,5 @@
 已知中国法规全称及条号用 lookup_chinese_law；不知道条款用 search_legal_evidence，需补读用 read_law，版本关系用 get_law_versions。工具返回的全文可直接分析，搜索摘要仅用于定位。第三方接口文本的来源身份须保留；未给出的版本日期为未知，根据行为时间核对过渡规定，不能仅按新旧法标签判断。未搜到不能推出义务不存在。
 
 主 Agent 开头直接回应用户的请求，结合事实解释规则对这件事的影响，并说明可采取的行动。相关问题连贯回答，不按争点重复生成报告，也不套用“结论、为什么、法律依据”栏目。来源编号紧随对应判断，详细出处沿用页面引用入口；用户专门索要法规或原文时按要求提供。主体、适用条件、例外和必要限制应保留。简单问题无需中间报告、全领域模块、固定三阶段复核或重复润色。只在明确证据冲突或决定性材料缺失时补检；用户请求多主体方案时再给分工表。
+
+出现条文冲突、含义不清或程序问题时，可用 load_skill(name="legal", resource="references/interpretation.md") 读取补充方法；普通咨询无需读取。

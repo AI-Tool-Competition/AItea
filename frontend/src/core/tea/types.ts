@@ -245,15 +245,16 @@ export interface Citation {
   id?: string;
   chunk_id?: string;
   chunk_hash?: string;
-  metadata?: DocumentMetadata & {
+  metadata?: Partial<DocumentMetadata> & {
     evidence_store?: string;
     source_type?: string;
+    content_role?: string;
   };
   metadata_revision?: number;
-  document_id: string;
+  document_id?: string;
   title: string;
   excerpt: string;
-  locator: Record<string, unknown>;
+  locator?: Record<string, unknown>;
   source_url?: string;
   document_version?: number;
 }
@@ -285,6 +286,10 @@ export interface ToolCall {
     | "list_documents"
     | "read_document"
     | "inspect_image"
+    | "convert_long_image_to_pdf"
+    | "inspect_document_file"
+    | "create_document_file"
+    | "edit_document_file"
     | "web_search"
     | "recall_memory"
     | "remember_memory"
@@ -347,6 +352,16 @@ export type ChatSkill =
   | "export_planning"
   | "legal_lookup"
   | "contract_review"
+  | "litigation_analysis"
+  | "long_image_to_pdf"
+  | "document_operations"
+  | "china-lawyer-analyst"
+  | "chinese-law-verifier"
+  | "contract-review"
+  | "legal-writing"
+  | "litigation-analysis"
+  | "long-image-to-pdf"
+  | "document-operations"
   | "guidance"
   | "materials"
   | "legal"

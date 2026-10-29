@@ -153,6 +153,9 @@ it.each([
   "lookup_chinese_law",
   "get_law_versions",
   "update_task_brief",
+  "inspect_document_file",
+  "create_document_file",
+  "edit_document_file",
 ])("accepts registered runtime tool snapshots (%s)", async (name) => {
   const step = {
     id: "agent",
@@ -194,62 +197,70 @@ it.each([
   rs.restoreAllMocks();
 });
 
-it.each(["valid", "oversized", "unicode", "thinking", "thinking-oversized"])(
-  "validates streamed tool output bounds (%s)",
-  async (mode) => {
-    const oversized = mode === "oversized" || mode === "thinking-oversized";
-    const thinking = mode.startsWith("thinking");
-    const preview: ToolOutputPreview = {
-      text: "实际执行输出",
-      items: [],
-      notice: "",
-      truncated: false,
-    };
-    if (oversized) preview.text = "x".repeat(4001);
-    if (thinking) preview.text = "思".repeat(oversized ? 60001 : 16000);
-    if (mode === "unicode")
-      preview.items = [{ label: "😀".repeat(200), text: "😀".repeat(650) }];
-    const step = {
-      id: "agent",
-      label: "协作",
-      status: "running",
-      detail: "",
-      tools: [
-        {
-          id: "call",
-          name: thinking ? "agent_turn" : "inspect_image",
-          label: "识图",
-          position: 1,
-          status: "completed",
-          attempt: 1,
-          max_attempts: 1,
-          detail: "",
-          duration_ms: 50,
-          output_preview: preview,
-        },
-      ],
-    };
-    rs.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        `event: step\ndata: ${JSON.stringify(step)}\n\nevent: done\ndata: ${JSON.stringify({ messages: [], case: { id: "one" } })}\n\n`,
-        { headers: { "Content-Type": "text/event-stream" } },
-      ),
-    );
-    const received = rs.fn();
-    const promise = streamMessage(
-      "one",
-      { stage_id: "stage", content: "问题", client_message_id: "output" },
-      { onEvent: received },
-    );
-    if (oversized)
-      await expect(promise).rejects.toMatchObject({ code: "invalid_response" });
-    else {
-      await promise;
-      expect(received).toHaveBeenCalledWith({ event: "step", data: step });
-    }
-    rs.restoreAllMocks();
-  },
-);
+it.each([
+  "valid",
+  "oversized",
+  "unicode",
+  "thinking",
+  "thinking-oversized",
+  "image-pdf",
+])("validates streamed tool output bounds (%s)", async (mode) => {
+  const oversized = mode === "oversized" || mode === "thinking-oversized";
+  const thinking = mode.startsWith("thinking");
+  const preview: ToolOutputPreview = {
+    text: "实际执行输出",
+    items: [],
+    notice: "",
+    truncated: false,
+  };
+  if (oversized) preview.text = "x".repeat(4001);
+  if (thinking) preview.text = "思".repeat(oversized ? 60001 : 16000);
+  if (mode === "unicode")
+    preview.items = [{ label: "😀".repeat(200), text: "😀".repeat(650) }];
+  const step = {
+    id: "agent",
+    label: "协作",
+    status: "running",
+    detail: "",
+    tools: [
+      {
+        id: "call",
+        name: thinking
+          ? "agent_turn"
+          : mode === "image-pdf"
+            ? "convert_long_image_to_pdf"
+            : "inspect_image",
+        label: "识图",
+        position: 1,
+        status: "completed",
+        attempt: 1,
+        max_attempts: 1,
+        detail: "",
+        duration_ms: 50,
+        output_preview: preview,
+      },
+    ],
+  };
+  rs.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(
+      `event: step\ndata: ${JSON.stringify(step)}\n\nevent: done\ndata: ${JSON.stringify({ messages: [], case: { id: "one" } })}\n\n`,
+      { headers: { "Content-Type": "text/event-stream" } },
+    ),
+  );
+  const received = rs.fn();
+  const promise = streamMessage(
+    "one",
+    { stage_id: "stage", content: "问题", client_message_id: "output" },
+    { onEvent: received },
+  );
+  if (oversized)
+    await expect(promise).rejects.toMatchObject({ code: "invalid_response" });
+  else {
+    await promise;
+    expect(received).toHaveBeenCalledWith({ event: "step", data: step });
+  }
+  rs.restoreAllMocks();
+});
 
 it("accepts a long sequence of cumulative tool results within the bounded stream budget", async () => {
   const step = {

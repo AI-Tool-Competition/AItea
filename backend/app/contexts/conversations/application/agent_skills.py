@@ -5,10 +5,21 @@ from dataclasses import dataclass
 from app.configuration.paths import InstancePaths
 
 
-def read_skill(name):
+def resolve_skill(name):
+    name = SKILL_ALIASES.get(name, name)
     if name not in SKILLS:
         raise ValueError("未找到该技能")
-    path = InstancePaths.resolve().catalogs / "agent-skills" / name / "SKILL.md"
+    return name
+
+
+def read_skill(name, resource="SKILL.md"):
+    name = resolve_skill(name)
+    if resource not in ("SKILL.md", *SKILLS[name].resources):
+        raise ValueError("未找到该技能资源")
+    root = (InstancePaths.resolve().catalogs / "agent-skills" / name).resolve()
+    path = (root / resource).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("技能资源位置无效")
     if path.stat().st_size > 24000:
         raise ValueError("技能文档超过读取上限")
     return path.read_text(encoding="utf-8")
@@ -19,6 +30,7 @@ class AgentSkill:
     label: str
     description: str
     tools: tuple[str, ...]
+    resources: tuple[str, ...] = ()
 
 
 SKILLS = {
@@ -35,7 +47,8 @@ SKILLS = {
     "legal": AgentSkill(
         "法律分析",
         "采用china-lawyer-analyst的规则解释、请求权和事实对应方法；按问题深度给判断与行动。",
-        ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions"),
+        ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions", "web_search"),
+        ("references/interpretation.md",),
     ),
     "draft": AgentSkill(
         "法律文书起草与改写",
@@ -80,7 +93,7 @@ SKILLS = {
     "legal_lookup": AgentSkill(
         "法规原文查询",
         "采用chinese-law-verifier的全称与条号查询；取得原文、位置和实际来源。",
-        ("lookup_chinese_law", "search_legal_evidence", "read_law"),
+        ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions", "web_search"),
     ),
     "contract_review": AgentSkill(
         "合同审查",
@@ -97,12 +110,55 @@ SKILLS = {
             "draft_document",
         ),
     ),
+    "litigation_analysis": AgentSkill(
+        "诉讼材料与争议分析",
+        "读取起诉材料、证据、裁判和庭审记录，区分各方主张与法院认定，解释请求、证明缺口和后续行动。",
+        (
+            "list_documents",
+            "read_document",
+            "search_documents",
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "draft_document",
+        ),
+        ("references/materials.md",),
+    ),
+    "long_image_to_pdf": AgentSkill(
+        "长截图转 PDF",
+        "将本业务上传的长截图重叠分页，按行或列排成 A4 PDF，保留原图并提供下载；不进行 OCR。",
+        ("list_documents", "convert_long_image_to_pdf"),
+    ),
+    "document_operations": AgentSkill(
+        "文档生成与编辑",
+        "生成可下载的Word、PDF、Excel、PPT及文本文件；读取原件后定点修改文字或单元格，保留原件并检查保存结果。",
+        ("list_documents", "inspect_document_file", "create_document_file", "edit_document_file"),
+        ("references/formats.md",),
+    ),
+}
+
+SKILL_ALIASES = {
+    "china-lawyer-analyst": "legal",
+    "chinese-law-verifier": "legal_lookup",
+    "contract-review": "contract_review",
+    "legal-writing": "draft",
+    "litigation-analysis": "litigation_analysis",
+    "long-image-to-pdf": "long_image_to_pdf",
+    "document-operations": "document_operations",
 }
 
 
 def skill_catalog():
     return [
-        {"id": key, "label": value.label, "description": value.description, "tools": list(value.tools)}
+        {
+            "id": key,
+            "label": value.label,
+            "description": value.description,
+            "aliases": [alias for alias, target in SKILL_ALIASES.items() if target == key],
+            "tools": list(value.tools),
+        }
         for key, value in SKILLS.items()
     ]
 

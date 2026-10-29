@@ -26,8 +26,18 @@ class MessageInput(StrictModel):
             "export_planning",
             "legal_lookup",
             "contract_review",
+            "litigation_analysis",
+            "long_image_to_pdf",
+            "document_operations",
+            "china-lawyer-analyst",
+            "chinese-law-verifier",
+            "contract-review",
+            "legal-writing",
+            "litigation-analysis",
+            "long-image-to-pdf",
+            "document-operations",
         ]
-    ] = Field(default_factory=list, max_length=11)
+    ] = Field(default_factory=list, max_length=21)
     content: str = Field(min_length=1, max_length=20000)
     client_message_id: str = Field(min_length=1, max_length=100)
 
@@ -80,6 +90,10 @@ class ToolCallSnapshot(StrictModel):
         "list_documents",
         "read_document",
         "inspect_image",
+        "convert_long_image_to_pdf",
+        "inspect_document_file",
+        "create_document_file",
+        "edit_document_file",
         "web_search",
         "recall_memory",
         "remember_memory",
@@ -192,6 +206,7 @@ class AgentSkillInfo(StrictModel):
     label: str
     description: str
     tools: list[str]
+    aliases: list[str] = Field(default_factory=list)
 
 
 class AgentCombination(StrictModel):

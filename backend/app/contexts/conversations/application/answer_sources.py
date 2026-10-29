@@ -9,6 +9,8 @@ import hashlib
 import re
 from urllib.parse import quote, urlsplit
 
+from app.contexts.legal_analysis.infrastructure.chinese_law import article_number
+
 
 class AnswerSources:
     def __init__(self, messages=()):
@@ -65,6 +67,9 @@ class AnswerSources:
                 # Full provisions, locators and all legal/version metadata stay.
                 for key in ("chunk_hash", "metadata_revision"):
                     result.pop(key, None)
+                if str(row.get("document_id", "")).startswith("pack-"):
+                    # An immutable index snapshot is not a statutory revision.
+                    result["index_snapshot"] = result.pop("document_version", None)
                 meta = result.get("metadata", {})
                 result["record_id"] = meta.get("source_record_id")
                 for key in (
@@ -109,6 +114,8 @@ class AnswerSources:
 
     @staticmethod
     def identify(row):
+        if "index_snapshot" in row and str(row.get("document_id", "")).startswith("pack-"):
+            row = {**row, "document_version": row["index_snapshot"]}
         # Tool schemas may define url/document_id as property objects. Those
         # definitions are capabilities, not retrieved source records.
         if not row.get("id") and isinstance(row.get("url"), str) and row["url"]:
@@ -132,18 +139,45 @@ class AnswerSources:
             parsed = urlsplit(url)
         except ValueError:
             return None
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+        ):
             return None
         title = re.sub(r"\s+", " ", source.get("title") or "原文来源").strip()
         article = source.get("locator", {}).get("article")
         if article:
             title += f"（第{article}条）" if str(article).isdigit() else f"（{article}）"
-        if source.get("metadata", {}).get("content_role") == "search_snippet":
-            title += "（搜索摘要）"
-        elif source.get("metadata", {}).get("source_type") == "third_party_article_api":
+        if source.get("metadata", {}).get("source_type") == "third_party_article_api":
             title += "（第三方法条接口）"
         title = re.sub(r"([\\\[\]])", r"\\\1", title)
-        return f"[{title}]({quote(url, safe=':/?&=#%+@,;~._-')})"
+        address = quote(url, safe=":/?&=#%+@,;~._-")
+        if source.get("metadata", {}).get("content_role") == "search_snippet":
+            return f"{title}：[{address}]({address})"
+        return f"[{title}]({address})"
+
+    def with_web_links(self, text):
+        """Keep browsing links available even when composition omits handles."""
+        used = self.used(text)
+        candidates = [
+            (handle, source)
+            for handle, source in self.sources.items()
+            if handle in self.current
+            and source.get("metadata", {}).get("content_role") == "search_snippet"
+            and self.link(source)
+        ]
+        if used or any(source["source_url"] in text for _, source in candidates):
+            return text
+        selected, seen = [], set()
+        for handle, source in candidates:
+            if source["source_url"] not in seen:
+                selected.append(f"- [{handle}]")
+                seen.add(source["source_url"])
+            if len(selected) == 3:
+                break
+        return text + "\n\n相关网站：\n\n" + "\n".join(selected) if selected else text
 
     @staticmethod
     def normalize(text):
@@ -158,12 +192,62 @@ class AnswerSources:
         return re.sub(r"(?<![A-Za-z0-9_/\[])S\d+(?![A-Za-z0-9_\]])", lambda m: f"[{m[0]}]", text)
 
     def used(self, text):
-        return list(
+        selected = list(
             dict.fromkeys(h for h in re.findall(r"\[(S\d+)\]", self.normalize(text)) if h in self.sources)
         )
+        addresses = {
+            match.rstrip(".,;:!?)]}")
+            for match in re.findall(r"https?://[^\s<>\[\]\"'`，。；：！？、]+", text)
+        }
+        for handle, source in self.sources.items():
+            url = source.get("source_url")
+            if not url or not self.link(source):
+                continue
+            article = source.get("locator", {}).get("article")
+            title = source.get("title") or ""
+            explicit_url = bool({url, quote(url, safe=":/?&=#%+@,;~._-")} & addresses)
+            named_law = bool(
+                article
+                and title
+                and any(f"《{name}》" in text for name in {title, title.removeprefix("中华人民共和国")})
+            )
+            if not explicit_url and not named_law:
+                continue
+            if article:
+                try:
+                    label = article_number(article)
+                except ValueError:
+                    label = str(article)
+                # A statute title or URL alone cannot select all candidates.
+                if label not in text and not re.search(
+                    r"(?<!\d)第?\s*" + re.escape(str(article)) + r"\s*条", text
+                ):
+                    continue
+            if handle not in selected:
+                selected.append(handle)
+        return selected
 
     def unknown(self, text):
         return set(re.findall(r"\[(S\d+)\]", self.normalize(text))) - self.sources.keys()
+
+    def linkify_urls(self, text):
+        """Explicit links also work after punctuation that GFM will not autolink."""
+        known = {source.get("source_url") for source in self.sources.values() if self.link(source)}
+        protected = re.compile(
+            r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|!?\[(?:\\.|[^\]\\\n])*\]\([^\n]*?\)|<https?://[^>\n]+>)"
+        )
+
+        def replace(match):
+            address = match[0].rstrip(".,;:!?)]}")
+            if address not in known:
+                return match[0]
+            target = quote(address, safe=":/?&=#%+@,;~._-")
+            return f"[{address}]({target})" + match[0][len(address) :]
+
+        return "".join(
+            part if index % 2 else re.sub(r"https?://[^\s<>\[\]\"'`，。；：！？、]+", replace, part)
+            for index, part in enumerate(protected.split(text))
+        )
 
     def render(self, text):
         def reference(match):
@@ -185,4 +269,4 @@ class AnswerSources:
             return "".join(refs)
 
         text = re.sub(r"(?:\[S\d+\][ \t]*){2,}", unique, text)
-        return re.sub(r"\[(S\d+)\]", reference, text)
+        return self.linkify_urls(re.sub(r"\[(S\d+)\]", reference, text))

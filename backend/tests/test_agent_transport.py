@@ -96,7 +96,6 @@ def test_fragmented_tool_arguments_and_gemini_signatures_are_preserved(monkeypat
             ),
             "[DONE]",
         ],
-        [delta({"content": "closed without DONE"}, "stop")],
     ],
 )
 def test_incomplete_streams_never_dispatch_tools_or_appear_complete(monkeypatch, chunks):
@@ -106,6 +105,120 @@ def test_incomplete_streams_never_dispatch_tools_or_appear_complete(monkeypatch,
     assert caught.value.code == "invalid_response"
     assert caught.value.response_error
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize("tool", [False, True])
+def test_finished_stream_without_redundant_done_is_usable(monkeypatch, tool):
+    value = (
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call",
+                    "function": {"name": "web_search", "arguments": '{"query":"茶博会"}'},
+                }
+            ]
+        }
+        if tool
+        else {"content": "完整回答"}
+    )
+    provider(monkeypatch, frame(delta(value, "tool_calls" if tool else "stop")).encode())
+    result = asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert bool(result.get("tool_calls")) is tool
+    if not tool:
+        assert result["content"] == "完整回答"
+
+
+def test_finished_stream_with_truncated_trailing_frame_is_not_complete(monkeypatch):
+    provider(monkeypatch, (frame(delta({"content": "正文"}, "stop")) + 'data: {"usage":').encode())
+    with pytest.raises(ToolFailure) as error:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert error.value.response_error == "missing_done"
+
+
+@pytest.mark.parametrize("prefix", ["thinking", "answer", "tool"])
+def test_idle_heartbeats_do_not_keep_stalled_model_alive_and_only_empty_generations_retry(
+    monkeypatch, prefix
+):
+    import time
+
+    class Stalled(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            value = (
+                {"reasoning_content": "private"}
+                if prefix == "thinking"
+                else {"content": "已收到正文"}
+                if prefix == "answer"
+                else {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "pending",
+                            "function": {"name": "web_search", "arguments": '{"query":'},
+                        }
+                    ]
+                }
+            )
+            yield frame(delta(value)).encode()
+            while True:
+                await asyncio.sleep(0.01)
+                yield b": heartbeat\n\n"
+
+    original = httpx.AsyncClient
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_STREAM_IDLE_TIMEOUT", "0.06")
+    monkeypatch.setattr(
+        transport.httpx,
+        "AsyncClient",
+        lambda **kw: original(
+            **kw, transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Stalled()))
+        ),
+    )
+    started = time.monotonic()
+    with pytest.raises(Exception) as error:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=2))
+    assert time.monotonic() - started < 1
+    if prefix == "thinking":
+        assert isinstance(error.value, ToolFailure) and error.value.code == "model_stream_stalled"
+        assert error.value.retryable is True
+    else:
+        assert isinstance(error.value, TimeoutError)
+        assert not getattr(error.value, "retryable", False)
+        assert error.value.partial_content == ("已收到正文" if prefix == "answer" else "")
+
+
+def test_active_reasoning_can_take_longer_than_one_idle_window(monkeypatch):
+    class Active(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(6):
+                yield frame(delta({"reasoning_content": "检查资料"})).encode()
+                await asyncio.sleep(0.02)
+            yield frame(delta({"content": "已完成"}, "stop")).encode()
+            yield frame("[DONE]").encode()
+
+    original = httpx.AsyncClient
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_STREAM_IDLE_TIMEOUT", "0.06")
+    monkeypatch.setattr(
+        transport.httpx,
+        "AsyncClient",
+        lambda **kw: original(
+            **kw, transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Active()))
+        ),
+    )
+    result = asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=2))
+    assert result["content"] == "已完成"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "121", "bad"])
+def test_invalid_idle_timeout_does_not_call_provider(monkeypatch, value):
+    requests = provider(monkeypatch, b"")
+    monkeypatch.setenv("AGENT_STREAM_IDLE_TIMEOUT", value)
+    with pytest.raises(ToolFailure) as error:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert error.value.code == "not_configured" and not requests
 
 
 def test_protocol_failure_keeps_reported_usage_without_leaking_provider_body(monkeypatch):
@@ -185,8 +298,84 @@ def test_confirmed_length_stop_retains_usage_and_never_dispatches_partial_calls(
     with pytest.raises(ToolFailure) as caught:
         asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, on_usage=usages.append))
     assert caught.value.code == "generation_truncated"
+    assert caught.value.partial_content == ""
+    assert caught.value.generation["incomplete_tool_calls"] is True
     assert usages == [{"completion_tokens": 6000}]
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize("with_content", [False, True])
+def test_length_stop_retains_public_text_and_diagnostics_without_thinking(monkeypatch, with_content):
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    body = (
+        frame(
+            delta(
+                {"reasoning_content": "private-analysis", "content": "审查意见片段" if with_content else ""},
+                "length",
+            )
+        )
+        + frame(
+            {
+                "choices": [],
+                "usage": {
+                    "completion_tokens": 12000,
+                    "completion_tokens_details": {"reasoning_tokens": 11000},
+                },
+            }
+        )
+        + frame("[DONE]")
+    )
+    provider(monkeypatch, body.encode())
+    usage = []
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(
+            transport.agent_turn(
+                [], [], lambda _: None, lambda: None, on_usage=usage.append, max_tokens=12000
+            )
+        )
+    assert caught.value.partial_content == ("审查意见片段" if with_content else "")
+    assert caught.value.generation["max_tokens"] == 12000
+    assert caught.value.generation["finish_reason"] == "length"
+    assert "private-analysis" not in str(caught.value.__dict__)
+    assert usage[0]["reasoning_tokens"] == 11000
+
+
+def test_provider_failure_after_public_text_preserves_it_without_retry_permission(monkeypatch):
+    provider(
+        monkeypatch,
+        (frame(delta({"content": "已完成的一段审查意见。"})) + frame({"error": {"status": 502}})).encode(),
+    )
+    with pytest.raises(ToolFailure) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert caught.value.partial_content == "已完成的一段审查意见。"
+    assert caught.value.retryable is False
+
+
+def test_read_timeout_keeps_received_public_text_without_preserving_thinking(monkeypatch):
+    class InterruptedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield frame(
+                delta({"reasoning_content": "private-analysis", "content": "可保留的审查意见。"})
+            ).encode()
+            raise httpx.ReadTimeout("fixture timeout")
+
+    original = httpx.AsyncClient
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+    monkeypatch.setenv("AGENT_BASE_URL", "https://provider.invalid")
+    monkeypatch.setattr(
+        transport.httpx,
+        "AsyncClient",
+        lambda **kw: original(
+            **kw,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=InterruptedStream())),
+        ),
+    )
+    with pytest.raises(httpx.ReadTimeout) as caught:
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None))
+    assert caught.value.partial_content == "可保留的审查意见。"
+    assert caught.value.generation["reasoning_characters"] > 0
+    assert "private-analysis" not in str(caught.value.__dict__)
 
 
 def test_reasoning_and_gateway_events_are_not_rendered_as_user_answer(monkeypatch):

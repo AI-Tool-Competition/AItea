@@ -147,7 +147,7 @@ def retry_delay(error, attempt):
         isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout))
         or (
             isinstance(error, ToolFailure)
-            and error.code == "upstream_error"
+            and error.code in {"upstream_error", "model_stream_stalled"}
             and getattr(error, "retryable", False)
         )
     ):

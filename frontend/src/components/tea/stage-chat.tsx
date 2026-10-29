@@ -49,6 +49,7 @@ const Answer = memo(function Answer({
       isAnimating={streaming}
       animated={false}
       caret="circle"
+      linkSafety={{ enabled: false }}
       aria-busy={streaming}
       parseIncompleteMarkdown={streaming}
     >

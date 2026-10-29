@@ -1,3 +1,10 @@
+---
+name: chinese-law-verifier
+description: 用法规全称和条号取得中国法原文、定位及实际来源，按需要补查官方出处与适用版本。
+metadata:
+  tea-skill-id: legal_lookup
+  source-author: 李伯阳律师
+---
 # 中国法原文查询与一般法规定位
 
 中国法精确查询方法来自用户提供的 chinese-law-verifier/SKILL.md。通过 lookup_chinese_law 提供法规标准全称和条号，一次最多四条。阿拉伯条号由程序转换为中文条号；不要猜法规全称或伪造条文。

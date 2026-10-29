@@ -26,6 +26,19 @@ def test_web_result_count_keeps_strict_boundaries(count):
         WebInput.model_validate({"query": "茶叶", "limit": count})
 
 
+@pytest.mark.parametrize("recency", [None, "none", "NULL", " "])
+def test_web_optional_recency_accepts_an_empty_filter(recency):
+    assert WebInput.model_validate({"query": "展会网站", "recency_days": recency}).recency_days is None
+
+
+@pytest.mark.parametrize("recency", [0, -1, 3651, True, "7.5"])
+def test_web_optional_recency_keeps_numeric_boundaries(recency):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        WebInput.model_validate({"query": "展会网站", "recency_days": recency})
+
+
 def test_search_snippet_identity_survives_model_projection_and_citation():
     sources = AnswerSources()
     original = {"sources": [{"url": "https://www.gov.cn/example", "title": "公告", "excerpt": "摘要"}]}
@@ -34,8 +47,184 @@ def test_search_snippet_identity_survives_model_projection_and_citation():
     assert projected["id"] == sources.sources["S1"]["id"]
     assert projected["reference"] == "S1"
     assert projected["metadata"]["content_role"] == "search_snippet"
-    assert "搜索摘要" in sources.render("来源[S1]")
+    assert "公告：[https://www.gov.cn/example](https://www.gov.cn/example)" in sources.render("来源[S1]")
     assert "id" not in original["sources"][0]
+
+
+def test_current_web_links_remain_visible_without_model_citation_handles(workspace, monkeypatch):
+    monkeypatch.setattr(
+        AgentTools,
+        "web",
+        lambda *a: {
+            "sources": [{"url": "https://expo.example/apply", "title": "茶博会报名", "excerpt": "报名"}]
+        },
+    )
+    scenario(
+        monkeypatch,
+        [tools(("web_search", {"query": "茶博会网址"})), "可以在茶博会报名页面申请参展。"],
+    )
+    assert send(workspace).status_code == 200
+    result = last_run(workspace)
+    assert "茶博会报名：[https://expo.example/apply](https://expo.example/apply)" in result["output"]
+    assert result["_task_state"]["model_calls"] == 2
+    assert len(result["citations"]) == 1 and not result["citations"][0].get("document_id")
+    assert result["_task_state"]["delivery"] == "answered"
+
+
+def test_web_link_fallback_deduplicates_urls_and_ignores_history():
+    sources = AnswerSources()
+    sources.collect({"sources": [{"title": "旧网页", "url": "https://old.example/"}]}, historical=True)
+    sources.collect({"sources": [{"title": "公司网站", "url": "http://company.example/"}] * 2})
+    linked = sources.render(sources.with_web_links("可查看公司网站。"))
+    assert linked.count("公司网站：") == 1
+    assert "http://company.example/" in linked and "old.example" not in linked
+    direct = "公司网站：http://company.example/"
+    assert sources.with_web_links(direct) == direct
+    assert sources.with_web_links("公司网站[S2]") == "公司网站[S2]"
+
+
+def test_retrieved_plain_url_after_chinese_punctuation_becomes_clickable():
+    sources = AnswerSources()
+    sources.collect({"sources": [{"title": "展会报名", "url": "https://expo.example/apply"}]})
+    rendered = sources.render("报名入口：https://expo.example/apply。")
+    assert rendered == "报名入口：[https://expo.example/apply](https://expo.example/apply)。"
+    for protected in (
+        "[报名入口](https://expo.example/apply)",
+        "`https://expo.example/apply`",
+        "```text\nhttps://expo.example/apply\n```",
+        "<https://expo.example/apply>",
+        "相似地址：https://expo.example/apply/other",
+    ):
+        assert sources.render(protected) == protected
+
+
+def test_empty_tool_discovery_does_not_disable_actual_web_search(workspace, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        AgentTools,
+        "web",
+        lambda *a: {"sources": [{"url": "https://expo.example/", "title": "展会官网"}]},
+    )
+    scenario(
+        monkeypatch,
+        [
+            tools(("tool_search", {"query": "xyzzyunavailable"})),
+            tools(("web_search", {"query": "展会官网"})),
+            "展会官网[S1]。",
+        ],
+        seen,
+        auto_discover=False,
+    )
+    assert send(workspace).status_code == 200
+    assert "web_search" in {tool["function"]["name"] for tool in seen[1][1]}
+    calls = last_run(workspace)["_task_state"]["calls"]
+    assert [call["tool"] for call in calls] == ["tool_search", "web_search"]
+    assert "https://expo.example/" in last_run(workspace)["output"]
+
+
+@pytest.mark.parametrize("label", ["第五百七十九条", "第579条", "579条"])
+def test_exact_official_url_selects_only_the_named_provision(label):
+    sources = AnswerSources()
+    sources.collect(
+        {"items": [{**citation(str(n)), "locator": {"article": str(n)}} for n in (579, 580, 1579)]}
+    )
+    assert sources.used(f"民法典{label}规定可要求付款。https://www.gov.cn/test-rule") == ["S1"]
+    assert sources.used("见https://www.gov.cn/test-rule") == []
+    assert sources.used("第579条：https://www.gov.cn/test-rule/other") == []
+
+
+def test_projected_index_snapshot_survives_history_without_becoming_a_statutory_version():
+    import json
+
+    sources = AnswerSources()
+    material = {
+        "items": [
+            {
+                **citation("pack-row"),
+                "document_id": "pack-CN-law",
+                "document_version": 178678979,
+                "metadata": {"published_at": "2020-05-28", "effective_from": "2021-01-01"},
+            }
+        ]
+    }
+    sources.collect(material)
+    projected = sources.project(material)
+    row = projected["items"][0]
+    assert "document_version" not in row
+    assert row["index_snapshot"] == 178678979
+    assert row["metadata"]["effective_from"] == "2021-01-01"
+    historical = AnswerSources([{"role": "tool", "content": json.dumps(projected)}])
+    assert historical.sources["S1"]["document_version"] == 178678979
+    assert historical.sources["S1"]["id"] == "pack-row"
+    assert material["items"][0]["document_version"] == 178678979
+
+
+@pytest.mark.parametrize("name", ["民法典", "中华人民共和国民法典"])
+def test_natural_law_name_and_article_citation_selects_only_actual_retrieved_records(name):
+    sources = AnswerSources()
+    sources.collect(
+        {
+            "items": [
+                {**citation("payment"), "title": "中华人民共和国民法典", "locator": {"article": "579"}},
+                {**citation("other"), "title": "另一部法律", "locator": {"article": "579"}},
+                {**citation("unused"), "title": "中华人民共和国民法典", "locator": {"article": "580"}},
+            ]
+        }
+    )
+    assert sources.used(f"依据《{name}》第五百七十九条可以请求支付。") == ["S1"]
+    assert sources.used("参见《民法典》。") == []
+    assert sources.used("第五百七十九条") == []
+    assert sources.used("《不存在的法律》第579条") == []
+
+
+def test_discovery_budget_removes_discovery_but_keeps_web_available(workspace, monkeypatch):
+    seen = []
+    monkeypatch.setattr(AgentTools, "web", lambda *a: {"sources": []})
+    second = tools(("tool_search", {"query": "anotherunavailablecapability"}))
+    second["tool_calls"][0]["id"] = "second-discovery"
+    scenario(
+        monkeypatch,
+        [
+            tools(("tool_search", {"query": "xyzzyunavailable"})),
+            second,
+            tools(("web_search", {"query": "展会官网"})),
+            "本次搜索未找到对应页面。",
+        ],
+        seen,
+        auto_discover=False,
+    )
+    assert send(workspace).status_code == 200
+    available = {tool["function"]["name"] for tool in seen[2][1]}
+    assert "web_search" in available and not available & agent_loop.DISCOVERY
+    assert last_run(workspace)["_task_state"]["calls"][-1]["tool"] == "web_search"
+
+
+def test_business_web_results_accept_public_http_and_nonofficial_sites(workspace, monkeypatch):
+    async def gateway(*args, **kwargs):
+        return {
+            "output": {
+                "sources": [
+                    {"title": "行业公司", "url": "http://company.example/", "excerpt": "企业业务介绍"},
+                    {"title": "行业报道", "url": "https://media.example/news", "snippet": "市场信息"},
+                    {"title": "损坏地址", "url": "https://[broken"},
+                    {"title": "非网页协议", "url": "javascript:alert(1)"},
+                    {"title": "带凭据地址", "url": "https://user:secret@example.com/"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr("app.contexts.conversations.application.agent_tools.gateway_tool", gateway)
+    scenario(
+        monkeypatch,
+        [tools(("web_search", {"query": "茶叶行业网站"})), "可查看这些行业网站。"],
+    )
+    response = send(workspace)
+    assert response.status_code == 200
+    result = last_run(workspace)
+    assert "http://company.example/" in result["output"] and "https://media.example/news" in result["output"]
+    assert len(result["citations"]) == 2
+    assert result["citations"][0]["excerpt"] == "企业业务介绍"
+    assert "unreviewed_web" not in response.text and "javascript:" not in result["output"]
 
 
 def test_projection_keeps_all_provisions_and_shares_identical_version_evidence():
@@ -341,6 +530,122 @@ def test_invalid_time_budget_rejected(monkeypatch, value):
     monkeypatch.setenv("AGENT_BUDGET_TOTAL", value)
     with pytest.raises(ToolFailure):
         ExecutionBudget.configured()
+
+
+def test_empty_model_stall_has_one_bounded_retry_without_executing_tools(workspace, monkeypatch):
+    stalled = ToolFailure("model_stream_stalled", "受控无正文中断")
+    stalled.retryable = True
+    scenario(monkeypatch, [stalled, "可以先整理产品报价和目标客户名单。"])
+    response = send(workspace)
+    assert response.status_code == 200
+    result = last_run(workspace)
+    assert result["_task_state"]["model_calls"] == 2
+    assert not result["_task_state"]["calls"]
+    assert result["_task_state"]["delivery"] == "answered"
+    turn = result["trace"][0]["tools"][0]
+    assert turn["attempt"] == 2 and turn["status"] == "completed"
+
+
+def test_repeated_model_stall_is_bounded_and_never_claims_a_completed_task(workspace, monkeypatch):
+    def stalled():
+        error = ToolFailure("model_stream_stalled", "受控无正文中断")
+        error.retryable = True
+        return error
+
+    scenario(monkeypatch, [stalled(), stalled()])
+    response = send(workspace)
+    assert response.status_code == 502
+    result = last_run(workspace)
+    assert result["_task_state"]["model_calls"] == 2
+    assert result["_task_state"]["delivery"] == "execution_failed"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "100", "24001", "12000.5"])
+def test_generation_token_budget_is_bounded_and_integral(monkeypatch, value):
+    monkeypatch.setenv("AGENT_BUDGET_TOKENS", value)
+    with pytest.raises(ToolFailure):
+        ExecutionBudget.configured()
+
+
+def test_thinking_length_recovery_increases_tokens_and_still_reads_evidence(workspace, monkeypatch):
+    monkeypatch.setattr(AgentTools, "chinese_law", lambda *a: {"items": [citation("law")]})
+    scenario(
+        monkeypatch,
+        [
+            ToolFailure("generation_truncated", "known length stop"),
+            tools(("lookup_chinese_law", {"law": "中华人民共和国民法典", "articles": ["第五百七十七条"]})),
+            "依已读条文分析违约责任。[S1]",
+        ],
+    )
+    original = agent_loop.agent_turn
+    limits = []
+
+    async def observed(*args, **kwargs):
+        limits.append(kwargs["max_tokens"])
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(agent_loop, "agent_turn", observed)
+    assert send(workspace).status_code == 200
+    result = last_run(workspace)
+    assert limits[0] == 12000 and limits[1] == 24000
+    assert [c["tool"] for c in result["_task_state"]["calls"]] == ["lookup_chinese_law"]
+    assert result["_task_state"]["delivery"] == "answered"
+
+
+def test_truncated_public_answer_is_continued_without_losing_its_conditions(workspace, monkeypatch):
+    error = ToolFailure("generation_truncated", "known length stop")
+    error.partial_content = "仅在买方完成验收后支付尾款；如有质量争议，"
+    seen = []
+    scenario(monkeypatch, [error, "先按合同约定核对检验记录。"], seen)
+    assert send(workspace).status_code == 200
+    result = last_run(workspace)
+    assert result["output"] == error.partial_content + "先按合同约定核对检验记录。"
+    assert seen[-1][1] == []
+    assert any(m.get("content") == error.partial_content for m in seen[-1][0])
+    assert result["_task_state"]["length_recovery"]["continued_answer"] is True
+
+
+@pytest.mark.parametrize("code", ["timeout", "connection_failed", "upstream_error"])
+def test_failed_generation_preserves_public_answer_as_partial_without_retry(workspace, monkeypatch, code):
+    error = ToolFailure(code, "interrupted")
+    error.partial_content = "合同第六条约定由生产工厂提供检测报告，贸易商负责核对并提交。"
+    seen = []
+    scenario(monkeypatch, [error], seen)
+    response = send(workspace)
+    assert response.status_code == 200
+    result = last_run(workspace)
+    assert error.partial_content in result["output"] and "本次答复尚未完成" in result["output"]
+    assert result["_task_state"]["delivery"] == "partially_answered" and len(seen) == 1
+    assert not result["_drafts"] and not result["_card_updates"] and not result["_memories"]
+
+
+def test_second_length_stop_keeps_both_public_fragments_and_stops(workspace, monkeypatch):
+    first = ToolFailure("generation_truncated", "length")
+    first.partial_content = "请先修改付款条款。"
+    second = ToolFailure("generation_truncated", "length")
+    second.partial_content = "质量标准还需核对附件。"
+    seen = []
+    scenario(monkeypatch, [first, second], seen)
+    assert send(workspace).status_code == 200
+    result = last_run(workspace)
+    assert first.partial_content + second.partial_content in result["output"]
+    assert len(seen) == 2 and result["_task_state"]["delivery"] == "partially_answered"
+
+
+def test_partial_answer_is_saved_and_delivered_through_the_chat_stream(workspace, monkeypatch):
+    import json
+
+    error = ToolFailure("timeout", "interrupted")
+    error.partial_content = "第七条的验收期限与质量异议期限需要协调。"
+    scenario(monkeypatch, [error])
+    response = send(workspace, stream=True)
+    assert response.status_code == 200
+    events = [frame for frame in response.text.split("\n\n") if frame.startswith("event: done\n")]
+    assert len(events) == 1
+    answer = json.loads(events[0].split("data: ", 1)[1])["messages"][1]
+    assert error.partial_content in answer["content"]
+    assert answer["trace"][0]["delivery_status"] == "partially_answered"
+    assert last_run(workspace)["output"] == answer["content"]
 
 
 @pytest.mark.parametrize("status,retries", [(502, 2), (503, 2), (401, 1), (400, 1)])

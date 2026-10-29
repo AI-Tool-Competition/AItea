@@ -49,7 +49,7 @@ def tool_output_preview(name, value):
                 try:
                     parsed = urlsplit(url)
                     if (
-                        parsed.scheme == "https"
+                        parsed.scheme in {"http", "https"}
                         and parsed.hostname
                         and not parsed.username
                         and not parsed.password

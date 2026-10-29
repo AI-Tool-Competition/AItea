@@ -95,7 +95,7 @@ If the linked editable report is being refreshed, node reads return `analysis_in
 
 ## Conversation
 Message = `{id,role:'user'|'assistant',content,stage_id,task_id:string|null,created_at,citations:Citation[],trace:TraceStep[]}`.
-Citation = `{document_id,title,excerpt,locator:object,source_url?:string,document_version?:number,chunk_id?:string,chunk_hash?:string,source_scope?:'personal'|'system'}`. New retrieval hits bind both the immutable original version and the exact text chunk; legacy stored citations can omit chunk and scope fields.
+Citation = `{document_id?:string,title,excerpt,locator?:object,source_url?:string,document_version?:number,chunk_id?:string,chunk_hash?:string,source_scope?:'personal'|'system'}`. New document retrieval hits bind both the immutable original version and the exact text chunk; legacy stored citations can omit chunk and scope fields. Chat citations may also reference a public webpage with `metadata.content_role='search_snippet'`, a title, excerpt and HTTP/HTTPS source URL. These web entries have no uploaded document ID or download endpoint; the UI displays their full address. Legal report validation continues to require document identity and locator fields.
 TraceStep = `{id,label,status:'completed'|'skipped'|'failed'|'running'|'cached'|'cancelled',detail:string,input?:string,output?:string,type?:string,duration_ms?:number,input_data?:object,output_data?:object}`. Input/output strings are bounded public operation summaries, not private model reasoning. Detailed data/timing and live/cached/cancelled statuses are used by the debugger; normal chat/proactive analyses keep the lightweight trace. Skipped operations are never labelled completed.
 - GET `/cases/{id}/messages?stage_id=...` -> list.
 - POST `/cases/{id}/messages` {stage_id,task_id?:string,content,client_message_id:string} -> `{messages:Message[],case:CaseDetail}`. Message ID makes retries idempotent. Include relevant case facts and retrieved citations; demo assistant clearly labeled in capabilities and trace. Do not pretend to invoke a model when unconfigured. Grounded factual conflict handling and progress reporting should trigger questions, never trust free text as completed state. A live provider is optional via server environment, errors visible.
@@ -260,7 +260,7 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 - `POST /cases/{case_id}/stages/{stage_id}/conversations`：`{client_request_id, title?}`，幂等创建真实会话；每节点最多 100 个会话，未解锁节点拒绝创建。返回含 `id, stage_id, title, kind, created_at, updated_at`。
 - `POST /cases/{case_id}/stages/{stage_id}/guide-conversation`：确保节点唯一引导会话与首次提问消息，重复调用不重复提问；返回 `kind=guide`。
 - `GET /cases/{case_id}/messages` 新增可选 `conversation_id`；提供时只读取该会话，校验其业务与节点归属。未提供时保留旧版节点历史行为。
-- 消息 JSON 与流式接口新增可选 `conversation_id`、`mode: auto|legal`、`skills: (guidance|materials|legal|draft|handoff|research|vision)[]`。流式事件新增 `step`，数据为实际 TraceStep；最终响应格式不变，消息可含 `conversation_id`，引导报告消息附带 `guide_result` 快照（步骤仍由 `trace` 提供）。文稿起草与消息使用同一幂等请求保存，重复提交不重复创建文稿。
+- 消息 JSON 与流式接口保留可选 `conversation_id`、`mode: auto|legal`、`skills: string[]`（最多21项，限技能目录登记的id或别名）。流式事件包括 `step`，数据为实际 TraceStep；最终响应格式不变，消息可含 `conversation_id`，引导报告消息附带 `guide_result` 快照（步骤仍由 `trace` 提供）。文稿和派生附件与消息使用同一幂等请求保存，重复提交不重复创建。
 - `GET /cases/{case_id}/stages/{stage_id}/guides?limit=20&offset=0`：不可变分析快照列表，最新优先，limit 最大 100，含状态、真实步骤、结果及失败原因。
 - `POST /cases/{case_id}/stages/{stage_id}/guides/{guide_id}/retry`：`{client_request_id}`，新建重试记录并返回 `{id}`，保留旧记录。
 
@@ -275,7 +275,7 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 - `tools: ToolCall[]`：按首次调用顺序排列，最多 128 项；未提供时兼容历史记录。
 - `ToolCall = {id,name,label,position,status,attempt,max_attempts,detail,duration_ms,error_code?,output_preview?}`。
 - `output_preview = {text,items:[{label,text,status?,url?}],notice,truncated}`，可省略或为 `null`；仅从实际工具返回中选取字段。普通工具正文最多 4,000 字、整个预览另受 4 KiB 序列化字节预算约束；`agent_turn` 的接口思考正文契约上限为 60,000 字，运行时另限制每次 60,000 UTF-8 字节和整轮 120,000 字节。最多 8 项，每项名称/正文/状态/链接分别最多 200/1,200/64/2,000 字，notice 最多 400 字。来源只输出有效 HTTPS 链接，截取内容时 `truncated=true`。内部记忆和计划没有此字段；历史消息仍兼容未携带预览的记录。聊天 SSE 累计上限为 32 MiB，单帧限制沿用现有传输校验。
-- `name` 包括 `search_documents | check_materials | lookup_chinese_law | search_legal_evidence | get_law_versions | guide_business | read_law | draft_document | get_handoff | tool_search | discover_tools | load_skill | list_documents | read_document | inspect_image | web_search | recall_memory | remember_memory | update_plan | read_tool_result | agent_turn`。`generate_guidance | analyze_legal | update_task_brief | compact_context` 仅为历史轨迹或人工研究入口保留；普通问答不再执行这些模块。
+- `name` 包括 `search_documents | check_materials | lookup_chinese_law | search_legal_evidence | get_law_versions | guide_business | read_law | draft_document | get_handoff | tool_search | discover_tools | load_skill | list_documents | read_document | inspect_image | convert_long_image_to_pdf | inspect_document_file | create_document_file | edit_document_file | web_search | recall_memory | remember_memory | update_plan | read_tool_result | agent_turn`。`generate_guidance | analyze_legal | update_task_brief | compact_context` 仅为历史轨迹或人工研究入口保留；普通问答不再执行这些模块。
 - `status` 为 `running | retrying | completed | failed | cancelled`；`attempt` 为当前尝试次数，`max_attempts` 最大为 2，`duration_ms` 含重试等待。
 - 重试保持同一工具 `id`。每个 `step` 是完整快照；客户端在原位置更新，同一 `run_id` 下忽略小于等于已接收 `sequence` 的快照。
 - 普通聊天也推送实际步骤的开始、工具进度和结束；最终消息 `trace` 保存相同公开记录。工具成功不等于业务任务完成。
@@ -287,7 +287,13 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 
 以下兼容接口要求当前账号拥有指定业务与节点，路径相对 `/api/tea`。当前聊天界面不提供目录或记忆管理入口，也不主动请求这些列表：
 
-- `GET /cases/{case_id}/stages/{stage_id}/agent-tools` → `{tools:[{name,label,description,parallel}],skills:[{id,label,description,tools:string[]}],combinations:[{label,skills:string[],description}]}`。目录仅描述已登记工具，不执行工具。
+- `GET /cases/{case_id}/stages/{stage_id}/agent-tools` → `{tools:[{name,label,description,parallel}],skills:[{id,label,description,aliases:string[],tools:string[]}],combinations:[{label,skills:string[],description}]}`。目录仅描述已登记工具，不执行工具。
+- `load_skill` 接收 `name`（目录id或alias）和可选 `resource`（默认SKILL.md，仅限该技能返回的资源名），返回canonical `skill`、`requested_name`、`resource`、`resources`、`instructions`及有权使用的工具定义；加载不执行业务写入。技能来源名映射见 [Agent运行机制](AGENT_RUNTIME.md#法律证据操作与按需方法)。
+- `convert_long_image_to_pdf` 接收当前业务主文件图片 `document_id`、`version` 及可选 `slice_height=2000`、`overlap=200`、`cols=2`、`rows=2`、`layout=grid|column`；返回 `status=pending_commit`、文件名、实际页数、切片数和图片尺寸。本轮答复事务中保存secondary附件并在正文追加鉴权下载链接；不返回本机文件位置、不修改原图、不自动解析或索引，MCP不开放此写入工具。
+- `document_operations`（别名 `document-operations`）按需加载文件操作说明和 `references/formats.md`；不更改普通问答流程。`inspect_document_file(document_id, version, offset=0, limit=20)` 读取实际文件结构，返回正文部件、单元格或PDF页及检查限制，不进行OCR与索引。
+- `create_document_file(filename, format, content)` 支持 `docx|pdf|xlsx|pptx|md|txt|csv`，Excel与PPT内容为技能文档约定的JSON字符串。`edit_document_file(document_id, version, filename, replacements=[], cells=[])` 先要求读取原件；Word/PPT按part、原文与命中次数替换，Excel按sheet、cell、expected_value修改已存在的非公式单元格，文本保留UTF-8编码与原换行。编辑只接受当前账号本业务文件，不覆盖原件。
+- 文件工具每轮最多3份，文件20 MB、Office展开50 MB/2000项、本地处理20秒；返回 `pending_commit`、filename、size和validation，不返回字节或本机位置。生成结果在消息事务保存为当前业务 `primary/stored` 文件，下载复用 `/api/tea/documents/{id}/download`；原件版本变化使事务回滚。生成文件不自动进入OCR或检索队列。MCP开放读取检查，不开放生成和编辑写入工具。
+- 文件validation包含reopened、format、total、structure、warnings和 `visual_check=not_performed`，不表示法律内容或视觉排版已验收。PDF暂不支持原文改字或扫描转Word；Office域、修订、数字签名与复杂对象重排不自动修改。
 - `POST /cases/{case_id}/stages/{stage_id}/mcp`：使用账号Cookie认证的无会话状态MCP Streamable HTTP入口。请求头`Accept: application/json, text/event-stream`，可发送`MCP-Protocol-Version: 2025-11-25`；支持2025-03-26、2025-06-18及2025-11-25。请求体为单个JSON-RPC 2.0消息，支持`initialize`、`ping`、`tools/list`、`tools/call`。通知返回202空正文，普通请求返回JSON。`tools/call.params={name,arguments}`，结果包括`content`、`structuredContent`和`isError`；协议错误使用JSON-RPC错误对象，工具执行错误使用`isError:true`。初始化及发现检查账号与业务归属；GET、DELETE在授权后返回405。导出能力见[Agent运行机制](AGENT_RUNTIME.md#后台任务与-mcp)。
 - `GET /cases/{case_id}/stages/{stage_id}/memories?conversation_id=...&limit=50&offset=0` → `{items:MemoryEntry[],total}`，limit 为 1–100。返回节点共享记忆和指定会话的私有记忆；省略会话仅返回共享记忆。
 - `POST /cases/{case_id}/stages/{stage_id}/memories`：`{content,kind:'preference'|'note',conversation_id?:string|null}` → `MemoryEntry`。content 长度 1–2000，每节点最多 200 条活动记忆。
@@ -304,11 +310,11 @@ Schema 27 的 `agent_conversation_context` 保留历史供应商上下文读取�
 
 法律证据工具包括 `lookup_chinese_law`（`law` 为法规标准全称，`articles` 为1–4个条号，`source=auto|api` 默认auto；内置同名同条优先，缺项请求第三方公益API，共用六秒截止时间，失败保留内置结果，来源和未知版本状态随条文返回）、`search_legal_evidence`（指定 `jurisdiction`、`query`、可选 `as_of` 和 `limit`）、`read_law`（真实 `record_id` 或官方 `url` 二选一）、`get_law_versions`（`jurisdiction`、`record_id`）。日期缺失返回空值，来源和引用存在不表示法律判断已经核验。普通 MCP 目录移除报告工具，人工研究 HTTP 接口保持原协议。
 
-模型无工具请求的正文通过输出完整性与引用编号检查后直接保存，取消常规第二次改写。`agent_runs.result` 保存原问题与事实来源、实际进入分析的证据快照、正文及引用关联、调用与用量记录；聊天 API 不返回这些内部字段。`_task_state.model_calls` 记录实际模型请求次数，`executor=evidence_qa` 区分旧执行器。公开 `delivery_status` 继续兼容旧枚举；当前 `answered` 只说明生成及机械检查完成，`partially_answered` 记录工具失败或空检索，`execution_failed` 通过原 HTTP/SSE 错误机制返回。质量与完整性需独立验收，`done` 不表示法律质量合格。
+模型无工具请求的正文通过输出完整性与引用编号检查后直接保存，取消常规第二次改写。`agent_runs.result` 保存原问题与事实来源、实际进入分析的证据快照、正文及引用关联、调用与用量记录；聊天 API 不返回这些内部字段。`_task_state.model_calls` 记录实际模型请求次数，`executor=evidence_qa` 区分旧执行器。公开 `delivery_status` 继续兼容旧枚举；当前 `answered` 只说明生成及机械检查完成，`partially_answered` 记录工具失败或空检索，`execution_failed` 通过原 HTTP/SSE 错误机制返回。质量与完整性需独立验收，`done` 不表示法律质量合格。主模型后续失败时，已经重新检查通过的生成文件可由程序说明及真实下载链接部分交付，`delivery_recovery=prepared_files`；取消仍不提交。来源直接以实际URL或已取得的法规名称和条号引用时可关联引用卡，同一法规页面按答复中实际条号选择。模型视图的 `index_snapshot` 为法规索引不可变版本标识，历史来源恢复 `document_version`，不表示法定修订版次。
 
 完整预算、取消、重复请求、文稿事务、后台任务分离见 [Agent 运行机制](AGENT_RUNTIME.md)。
 
 
 Schema 28 为 `task_states` 增加 `field_sources_json`，原有任务值、消息及修订保持。任务响应新增 `field_sources`，以字段 key 映射 `{kind:"user_statement",quote,source_message_id,agent_run_id,updated_at}`；既有卡片初始为空。茶商 PATCH 接口仍只接受 values/evidence_ids/expected_revision，不接受伪造来源；修改字段时清除该字段的 Agent 来源。备份、归档清单和资料迁移兼容 schema 28。
 
-聊天常用工具新增 `update_business_card`，每次填写一张卡的多个字段，多张卡可在同轮分别调用；输入为实际 task_id、字段和值的 JSON 对象字符串 values_json。来源原话及消息关联由程序从本轮或同业务用户消息取得，不要求模型编写来源标识；只有本轮原话明确更正且包含新值才覆盖已有值，历史消息仅可补充空缺，不允许回写旧值。接口使用平面参数，服务端只解析完整 JSON 并校验已有字段，不自动修补来源或事实。它只暂存信息，由成功答复的消息事务统一提交，使用既有业务归属、阶段门禁、字段和修订校验。来源须为本业务真实用户发言，假设及举例不写入；已有内容冲突时保留原值，明确更正才替换。模型无权确认材料或推进办理状态。SSE 工具快照 name 增加该名称，预览只表示正在整理信息；最终 `done.case` 包含已提交字段与来源。详见 [Agent 运行机制](AGENT_RUNTIME.md)。
+聊天常用工具新增 `update_business_card`，每次填写一张卡的多个字段，多张卡可在同轮分别调用；输入为实际 task_id、字段和值的 JSON 对象字符串 values_json。来源原话及消息关联由程序从本轮或同业务用户消息取得，不要求模型编写来源标识；只有本轮原话明确更正且包含新值才覆盖已有值，历史消息仅可补充空缺，不允许回写旧值。接口使用平面参数，服务端只解析完整 JSON 并校验已有字段，不自动修补来源或事实。未被原话支持及冲突的字段逐项保留为未写入状态，整轮标记部分完成并列出字段；同轮纠正后可消除缺项。它只暂存信息，由成功答复的消息事务统一提交，使用既有业务归属、阶段门禁、字段和修订校验。来源须为本业务真实用户发言，假设及举例不写入；已有内容冲突时保留原值，明确更正才替换。模型无权确认材料或推进办理状态。SSE 工具快照 name 增加该名称，预览只表示正在整理信息；最终 `done.case` 包含已提交字段与来源。详见 [Agent 运行机制](AGENT_RUNTIME.md)。

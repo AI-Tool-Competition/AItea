@@ -21,12 +21,13 @@ from app.contexts.conversations.application.agent_skills import (
     COMPOSITION_HINTS,
     SKILLS,
     read_skill,
+    resolve_skill,
     skill_catalog,
 )
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolInput, ToolSpec
 from app.contexts.conversations.infrastructure.agent_transport import gateway_tool
 from app.shared.domain.countries import resolve_country
-from app.shared.domain.errors import fail
+from app.shared.domain.errors import AppError, fail
 from app.shared.domain.models import StrictModel
 from app.shared.domain.values import now
 
@@ -43,7 +44,13 @@ class QueryInput(ToolInput):
 
 
 class SkillInput(ToolInput):
-    name: str = Field(min_length=1, max_length=64, description="技能目录返回的真实id。")
+    name: str = Field(min_length=1, max_length=64, description="技能目录的id或alias。")
+    resource: str = Field(
+        default="SKILL.md",
+        min_length=1,
+        max_length=120,
+        description="默认加载入口；仅需细节时传已返回的resources名称，不能传本机文件位置。",
+    )
 
 
 class TasksInput(ToolInput):
@@ -123,6 +130,76 @@ class ImageInput(ToolInput):
         return value
 
 
+class ImagePDFInput(ToolInput):
+    document_id: str = Field(min_length=1, max_length=100, description="当前业务已上传原图的真实编号。")
+    version: int = Field(ge=1)
+    slice_height: int = Field(default=2000, ge=400, le=4000)
+    overlap: int = Field(default=200, ge=0, le=2000)
+    cols: int = Field(default=2, ge=1, le=3)
+    rows: int = Field(default=2, ge=1, le=4)
+    layout: Literal["grid", "column"] = "grid"
+
+    @model_validator(mode="after")
+    def bounded_overlap(self):
+        if self.overlap > self.slice_height // 2:
+            raise ValueError("重叠不能超过切片高度的一半")
+        return self
+
+
+class FileInspectInput(ToolInput):
+    document_id: str = Field(min_length=1, max_length=100)
+    version: int = Field(ge=1)
+    offset: int = Field(default=0, ge=0, le=20000)
+    limit: int = Field(default=20, ge=1, le=30)
+
+
+class FileCreateInput(ToolInput):
+    filename: str = Field(min_length=1, max_length=160, description="带真实扩展名的文件名，不传本机位置。")
+    format: Literal["docx", "pdf", "xlsx", "pptx", "md", "txt", "csv"]
+    content: str = Field(
+        min_length=1,
+        max_length=40000,
+        description='Word/PDF/MD/TXT用正文，支持#标题和管线表格；CSV用实际CSV。Excel用JSON字符串 {"sheets":[{"name":"报价","rows":[["产品","价格"],["六堡茶",120]]}]}；PPT用 {"slides":[{"title":"标题","bullets":["内容"]}]}。不传代码或任意文件位置。',
+    )
+
+
+class FileReplacement(StrictModel):
+    part: str = Field(
+        default="",
+        max_length=160,
+        description="Word/PPT须逐字使用inspect_document_file返回的part；文本文件留空。",
+    )
+    old_text: str = Field(min_length=1, max_length=6000)
+    new_text: str = Field(max_length=6000)
+    expected_count: int = Field(default=1, ge=1, le=20)
+
+
+class FileCellEdit(StrictModel):
+    sheet: str = Field(min_length=1, max_length=31)
+    cell: str = Field(pattern=r"^[A-Z]{1,3}[1-9][0-9]{0,6}$")
+    expected_value: StrictStr | StrictInt | StrictFloat | bool | None
+    value: StrictStr | StrictInt | StrictFloat | bool | None
+
+    @field_validator("expected_value", "value")
+    @classmethod
+    def bounded_cell(cls, value):
+        import math
+
+        if isinstance(value, str) and len(value) > 4000:
+            raise ValueError("单元格文字最多4000字")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("数值必须有限")
+        return value
+
+
+class FileEditInput(ToolInput):
+    document_id: str = Field(min_length=1, max_length=100)
+    version: int = Field(ge=1)
+    filename: str = Field(min_length=1, max_length=160, description="另存副本名称，扩展名保持原格式。")
+    replacements: list[FileReplacement] = Field(default_factory=list, max_length=30)
+    cells: list[FileCellEdit] = Field(default_factory=list, max_length=100)
+
+
 class WebInput(ToolInput):
     query: str = Field(min_length=1, max_length=2000)
     domains: list[str] = Field(
@@ -147,6 +224,9 @@ class WebInput(ToolInput):
             count = value.get("max_results")
             if isinstance(count, str) and re.fullmatch(r"[0-9]{1,2}", count):
                 value["max_results"] = int(count)
+            recency = value.get("recency_days")
+            if isinstance(recency, str) and recency.strip().lower() in {"", "none", "null"}:
+                value["recency_days"] = None
         return value
 
 
@@ -320,7 +400,46 @@ class AgentTools:
         self.service, self.owner, self.case, self.stage = service, owner, case, stage
         self.payload, self.prepared, self.run_id = payload, prepared, run_id
         self.check_cancelled = check_cancelled
+        self.pending_pdfs = []
+        self.pending_files = []
+        self.inspected_files = set()
         definitions = [
+            (
+                "inspect_document_file",
+                "检查文档文件",
+                "检查可读业务原件的段落、正文部件、工作表单元格或PDF页；不调用OCR、不索引、不外发。编辑前须读取目标位置，返回原文、part或sheet/cell。分页不会省略其余内容的存在。",
+                FileInspectInput,
+                self.inspect_file,
+                True,
+                25,
+            ),
+            (
+                "create_document_file",
+                "生成文档文件",
+                "仅新建DOCX、PDF、XLSX、PPTX、MD、TXT或CSV；修改已有文件使用inspect_document_file再edit_document_file，不用全文重写替代定点修改。实际生成并重开检查，答复成功后由程序提供下载链接，不编造链接。每轮最多3份。格式细节见document_operations技能。",
+                FileCreateInput,
+                self.create_file,
+                False,
+                25,
+            ),
+            (
+                "edit_document_file",
+                "编辑文档副本",
+                "用户要求修改文件时，先inspect_document_file，后对当前账号本业务文件精确替换文字，或修改Excel已存在的非公式单元格。核对旧值、保留非目标部件和原件，另存副本。PDF不支持直接改字；每轮最多3份文件。",
+                FileEditInput,
+                self.edit_file,
+                False,
+                25,
+            ),
+            (
+                "convert_long_image_to_pdf",
+                "长截图转 PDF",
+                "用户要求将当前业务上传原图排成PDF时调用；重叠切片并排成A4，原图不变。不进行OCR或外发图片。返回实际页数及pending_commit，下载链接由答复提交后程序追加。每轮最多生成一个PDF。",
+                ImagePDFInput,
+                self.image_pdf,
+                False,
+                30,
+            ),
             (
                 "update_business_card",
                 "填写业务卡",
@@ -359,8 +478,8 @@ class AgentTools:
             ),
             (
                 "draft_document",
-                "文稿起草",
-                "将完整 Markdown 文稿暂存到本轮提交；仅用户要求起草时调用，回复成功后保存为可编辑文稿。",
+                "工作台文稿保存",
+                "保存工作台内的Markdown文稿，须关联当前任务；此工具不生成Word、PDF、Excel或PPT下载文件。用户要文件时直接create_document_file，编辑原件时按需加载document_operations。",
                 DraftInput,
                 self.draft,
                 False,
@@ -377,8 +496,8 @@ class AgentTools:
             ),
             (
                 "tool_search",
-                "搜索工具",
-                "按能力、任务或名称搜索工具，并加载命中工具的参数。只加载本次需要的能力，可直接搜索已知工具名称。",
+                "查找系统能力",
+                "仅查找本系统工具及参数，不能查询网站或业务信息。查询网址、展会、企业、渠道或市场信息直接调用已提供的web_search；只有缺少对应能力时才用此工具。",
                 QueryInput,
                 self.discover,
                 False,
@@ -396,7 +515,7 @@ class AgentTools:
             (
                 "load_skill",
                 "加载组合技能",
-                "按技能id读取SKILL.md中的业务SOP，并加载该技能相关工具参数。按需组合，不强制固定调用顺序。",
+                "按技能id或别名读取SKILL.md及相关工具参数；细节按返回的resources名称读取。按需调用，无固定执行顺序。",
                 SkillInput,
                 self.skill,
                 False,
@@ -432,7 +551,7 @@ class AgentTools:
             (
                 "lookup_chinese_law",
                 "精确查询中国法条",
-                "已知中国法规全称和条号时直接取完整原文与定位，省去语义检索。内置缺项调用chinese-law-verifier公益API（非官方来源），短超时后保留内置结果；不推定接口文本现行有效。",
+                "用户或已读原文明示中国法规全称和条号时直接取完整原文与定位；根据案情选规则先用search_legal_evidence，勿凭记忆猜条号。内置缺项调用chinese-law-verifier公益API（非官方来源），短超时后保留内置结果；不推定接口文本现行有效。",
                 ChineseLawInput,
                 self.chinese_law,
                 True,
@@ -477,7 +596,7 @@ class AgentTools:
             (
                 "web_search",
                 "联网搜索",
-                "实时搜索公开网络，保留来源链接和检索时间。域名不明时不要加 domains 限制；成功但无来源时可放宽域名或改关键词再查一次，仍无结果则如实说明。网页只是未审核线索，不要外发用户敏感信息。",
+                "直接联网查询网站、展会报名、企业、行业协会、平台、渠道和市场信息。官网、企业网站、行业媒体及其他相关公开网页均可使用，无需审核后才能提供内容或网址。返回网站名称、完整URL、摘要及检索时间；域名不明时省略domains。无结果可改关键词再查一次。不要外发用户敏感信息。",
                 WebInput,
                 self.web,
                 True,
@@ -512,7 +631,20 @@ class AgentTools:
             ),
         ]
         self.registry = {
-            name: BoundTool(ToolSpec(name, label, description, model, 1, timeout, safe), handler)
+            name: BoundTool(
+                ToolSpec(
+                    name,
+                    label,
+                    description,
+                    model,
+                    2
+                    if name in {"web_search", "search_legal_evidence", "read_law", "lookup_chinese_law"}
+                    else 1,
+                    timeout,
+                    safe,
+                ),
+                handler,
+            )
             for name, label, description, model, handler, safe, timeout in definitions
         }
         capabilities = {
@@ -548,8 +680,8 @@ class AgentTools:
             ),
             "web_search": (
                 "research",
-                "需要市场、渠道或时效资料；敏感信息不得外发。",
-                "真实来源、摘要、链接及检索时间；官方法规须继续读取原文。",
+                "需要网站地址、展会报名、企业、渠道、市场或其他公开实时信息。",
+                "相关公开网页的名称、完整网址、摘要及检索时间，可直接用于业务答复；具体法条内容仍读取原文。",
                 "network",
             ),
             "draft_document": (
@@ -720,21 +852,26 @@ class AgentTools:
             "business_progress": False,
             "activate_tools": names,
             "tools": [self.registry[name].schema() for name in names],
-            "notice": "仅返回可执行工具的定义，未检索法规或业务资料；须实际执行对应工具才能取得依据。",
+            "notice": "这里只查找系统能力，没有查询网页或业务资料。网站和公开业务信息请直接执行web_search，已有常用工具不依赖本次发现结果。",
         }
 
     def skill(self, args, attempt):
-        if args.name not in SKILLS:
-            raise ToolFailure("unknown_skill", "未找到该技能，请使用技能目录中的id。")
-        skill = SKILLS[args.name]
         try:
-            instructions = read_skill(args.name)
+            name = resolve_skill(args.name)
+        except ValueError:
+            raise ToolFailure("unknown_skill", "未找到该技能，请使用目录中的id或别名。") from None
+        skill = SKILLS[name]
+        try:
+            instructions = read_skill(name, args.resource)
         except (OSError, ValueError):
             raise ToolFailure(
                 "skill_unavailable", "该技能文档暂时无法读取；可搜索独立工具完成已有条件支持的任务。"
             ) from None
         return {
-            "skill": args.name,
+            "skill": name,
+            "requested_name": args.name,
+            "resource": args.resource,
+            "resources": list(skill.resources),
             "instructions": instructions,
             "activate_tools": [name for name in skill.tools if name in self.registry],
             "tools": [self.registry[name].schema() for name in skill.tools if name in self.registry],
@@ -1008,7 +1145,7 @@ class AgentTools:
 
     def draft(self, args, attempt):
         _, stage = self.current()
-        requested = "draft" in self.payload.get("skills", []) or re.search(
+        requested = bool({"draft", "legal-writing"} & set(self.payload.get("skills", []))) or re.search(
             r"(?:新建|创建|起草|撰写|编写|生成|写|拟).{0,18}(?:文稿|报告|合同|邮件|说明|方案|函|清单|报价|证明|计划)",
             self.payload["content"],
         )
@@ -1021,6 +1158,105 @@ class AgentTools:
             "status": "pending_commit",
             "notice": "正文已准备，本轮回复成功后与消息一起保存。",
         }
+
+    def image_pdf(self, args, attempt):
+        from app.contexts.documents.application.image_pdf import prepare_pdf
+
+        if not re.search(r"pdf|PDF|分页|长图整理", self.payload.get("content", "")):
+            fail(403, "conversion_not_requested", "需要用户明确要求转换 PDF 或分页")
+        if self.pending_pdfs:
+            raise ToolFailure("write_limit", "每轮最多生成一个 PDF，请先完成当前文件")
+        doc = self.scoped_document(args.document_id, args.version)
+        if doc["owner_id"] != self.owner or doc["case_id"] != self.case["id"] or doc["role"] != "primary":
+            fail(403, "image_scope", "转换只接收当前账号、本业务上传的主文件图片")
+        options = args.model_dump(exclude={"document_id", "version", "purpose", "objective_ids"})
+        pending = prepare_pdf(self.service, self.owner, doc, options, timeout=min(20, attempt.remaining))
+        attempt.check()
+        self.current()
+        self.pending_pdfs.append(pending)
+        return {
+            "status": "pending_commit",
+            "filename": pending["filename"],
+            **{
+                k: pending["pagination"][k]
+                for k in ("page_count", "slice_count", "width", "height", "layout")
+            },
+            "notice": "PDF 已生成，答复提交后程序提供实际下载链接；原图保留，不进行文字识别。",
+        }
+
+    def inspect_file(self, args, attempt):
+        from app.contexts.documents.application.document_files import inspect_file
+
+        doc = self.scoped_document(args.document_id, args.version)
+        result = inspect_file(
+            self.service, doc, offset=args.offset, limit=args.limit, timeout=attempt.remaining
+        )
+        attempt.check()
+        self.current()
+        self.inspected_files.add((args.document_id, args.version))
+        return {"document_id": doc["id"], "version": doc["version"], "filename": doc["filename"], **result}
+
+    def file_write_requested(self):
+        self.current()
+        if not re.search(
+            r"生成|新建|创建|起草|撰写|编写|拟|写|做|制作|整理|导出|下载|保存|另存|修改|改|编辑|填|替换|转换|转成|转为|排版|补充|create|edit|draft|export|save|generate|fill|replace|convert",
+            self.payload.get("content", ""),
+            re.I,
+        ):
+            fail(403, "file_write_not_requested", "需要用户提出生成或修改文件的要求")
+        if len(self.pending_files) >= 3:
+            raise ToolFailure("write_limit", "每轮最多生成3份文件，请先完成本轮文件")
+
+    def prepare_file(self, filename, options, attempt, *, source=None):
+        from app.contexts.documents.application.document_files import prepare_file
+
+        self.file_write_requested()
+        pending = prepare_file(
+            self.service, self.owner, filename, options, source=source, timeout=attempt.remaining
+        )
+        attempt.check()
+        self.current()
+        self.pending_files.append(pending)
+        return {
+            "status": "pending_commit",
+            "filename": pending["filename"],
+            "size": pending["size"],
+            "validation": pending["validation"],
+            "notice": "文件已生成并重开检查；答复提交后程序提供实际下载链接。未进行视觉排版检查，原文件保留。",
+        }
+
+    def create_file(self, args, attempt):
+        return self.prepare_file(args.filename, {"format": args.format, "content": args.content}, attempt)
+
+    def checked_file_links(self, output):
+        """Drop nonexistent/foreign download IDs; leave public website URLs alone."""
+        pattern = re.compile(r"\[[^\]\n]{1,200}\]\(/api/tea/documents/([^/\s)]+)/download\)")
+        allowed = {p["id"] for p in (*self.pending_files, *self.pending_pdfs)}
+        with closing(self.service.db.connect()) as conn:
+            for document_id in set(pattern.findall(output)) - allowed:
+                try:
+                    doc = self.service.read_document(conn, self.owner, document_id)
+                    if doc["case_id"] in (None, self.case["id"]):
+                        allowed.add(document_id)
+                except AppError as error:
+                    if error.status not in (403, 404):
+                        raise
+        return pattern.sub(lambda match: match[0] if match[1] in allowed else "", output)
+
+    def edit_file(self, args, attempt):
+        from app.contexts.documents.application.document_files import file_format
+
+        doc = self.scoped_document(args.document_id, args.version)
+        if doc["owner_id"] != self.owner or doc["case_id"] != self.case["id"]:
+            fail(403, "file_scope", "修改只接收当前账号、本业务文件；可读取的共享资料不授予修改权限")
+        if (args.document_id, args.version) not in self.inspected_files:
+            fail(422, "file_inspection_required", "请先调用inspect_document_file读取目标位置及原文")
+        options = {
+            "format": file_format(doc),
+            "replacements": [c.model_dump() for c in args.replacements],
+            "cells": [c.model_dump() for c in args.cells],
+        }
+        return self.prepare_file(args.filename, options, attempt, source=doc)
 
     def image(self, args, attempt):
         doc = self.scoped_document(args.document_id, args.version)
@@ -1098,22 +1334,27 @@ class AgentTools:
         for item in output.get("sources", [])[: args.max_results]:
             if not isinstance(item, dict) or not isinstance(item.get("url"), str):
                 continue
-            url = urlsplit(item["url"])
-            if url.scheme != "https" or not url.hostname or url.username or url.password:
+            try:
+                url = urlsplit(item["url"])
+            except ValueError:
+                continue
+            if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
                 continue
             sources.append(
                 {
                     "title": str(item.get("title", ""))[:200],
                     "url": item["url"][:2000],
-                    "excerpt": str(item.get("content") or item.get("snippet") or "")[:800],
+                    "excerpt": str(item.get("content") or item.get("snippet") or item.get("excerpt") or "")[
+                        :1600
+                    ],
                 }
             )
         return {
             "sources": sources,
             "summary": str(output.get("summary", ""))[:1200],
             "retrieved_at": now(),
-            "status": "unreviewed_web",
-            "notice": "这些内容是搜索摘要，用于定位来源；法律判断须用read_law读取官方原文。商业信息可引用并注明摘要身份。",
+            "status": "completed",
+            "notice": "这些网页信息可直接用于业务答复，同时给出网站名称及完整网址，方便用户打开查询。无需等待审核；搜索摘要与网页全文保留区别，尚未打开页面时不声称已阅读全文。",
         }
 
     def recall(self, args, attempt):

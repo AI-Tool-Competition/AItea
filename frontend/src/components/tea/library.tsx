@@ -59,6 +59,7 @@ import {
 export function CitationCard({ citation }: { citation: Citation }) {
   const url = safeSourceUrl(citation.source_url);
   const isPack = citation.metadata?.evidence_store === "country_pack";
+  const isWeb = citation.metadata?.content_role === "search_snippet";
   const locator = citation.locator ?? {};
   const page = locator.page ?? locator.page_number ?? locator.page_no;
   const lineStart = locator.line_start;
@@ -94,11 +95,13 @@ export function CitationCard({ citation }: { citation: Citation }) {
         )}
       </div>
       <small>
-        {isPack
-          ? (citation.metadata?.source_type ?? "资料包摘录")
-          : kind
-            ? kinds[kind]
-            : "参考资料"}
+        {isWeb
+          ? "网页信息"
+          : isPack
+            ? (citation.metadata?.source_type ?? "资料包摘录")
+            : kind
+              ? kinds[kind]
+              : "参考资料"}
         {locations.length ? ` · ${locations.join(" · ")}` : ""}
       </small>
       <p>{citation.excerpt}</p>
@@ -112,7 +115,7 @@ export function CitationCard({ citation }: { citation: Citation }) {
         </small>
       )}
       <footer>
-        {!isPack && (
+        {!isPack && !isWeb && citation.document_id && (
           <a href={downloadUrl(citation.document_id)}>
             <ArrowDownToLine size={13} />
             原始文件
@@ -125,6 +128,14 @@ export function CitationCard({ citation }: { citation: Citation }) {
           </a>
         )}
       </footer>
+      {isWeb && url && (
+        <p>
+          网址：
+          <a href={url} target="_blank" rel="noreferrer">
+            {url}
+          </a>
+        </p>
+      )}
     </div>
   );
 }

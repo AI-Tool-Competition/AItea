@@ -408,11 +408,9 @@ def _bind(content, manifest, object_key, source_url, image, reference, fetched_u
 
 def _worker(connection, operation, args):
     try:
-        import resource
+        from app.contexts.documents.infrastructure.parsers.document_parser import _set_worker_limits
 
-        resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
-        resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        _set_worker_limits()
         result = _bind(*args) if operation == "bind" else _candidates(*args)
         encoded = json.dumps({"result": result}, ensure_ascii=False, allow_nan=False).encode()
         if len(encoded) > 40 * 1024 * 1024:

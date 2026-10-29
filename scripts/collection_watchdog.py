@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.configuration.paths import InstancePaths  # noqa: E402
 from app.configuration.environment import read_environment  # noqa: E402
+from app.shared.infrastructure import darwin_process  # noqa: E402
 
 from official_source_supervisor_recovery import (
     RecoveryDeferred,
@@ -186,20 +187,31 @@ def find_owned(task, state, project):
     if backend_python.exists():
         allowed_python.add(backend_python.resolve())
     launchers, descendants = [], []
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
+    pids = (
+        darwin_process.all_pids()
+        if sys.platform == "darwin"
+        else [int(p.name) for p in Path("/proc").iterdir() if p.name.isdigit()]
+    )
+    for pid in pids:
         try:
-            env = dict(
-                part.split(b"=", 1) for part in (proc / "environ").read_bytes().split(b"\0") if b"=" in part
-            )
-            current = identity(int(proc.name))
+            proc = Path("/proc") / str(pid)
+            if sys.platform == "darwin":
+                command_line, env = darwin_process.process_arguments(pid)
+                command_bytes = command_line.encode()
+            else:
+                command_bytes = (proc / "cmdline").read_bytes()
+                env = dict(
+                    part.split(b"=", 1)
+                    for part in (proc / "environ").read_bytes().split(b"\0")
+                    if b"=" in part
+                )
+            current = identity(pid)
             if not current or not all(env.get(key) == value for key, value in expected.items()):
                 continue
             if current["command_sha256"] == launcher_hash:
                 launchers.append(current)
             elif uv:
-                argv = [os.fsdecode(part) for part in (proc / "cmdline").read_bytes().split(b"\0") if part]
+                argv = [os.fsdecode(part) for part in command_bytes.split(b"\0") if part]
                 if (
                     argv
                     and argv[1:] == script_args
@@ -207,7 +219,7 @@ def find_owned(task, state, project):
                     and Path(argv[0]).resolve() in allowed_python
                 ):
                     descendants.append(current)
-        except (FileNotFoundError, ProcessLookupError, PermissionError):
+        except (OSError, ValueError):
             continue
     matches = launchers or descendants
     if len(matches) > 1:

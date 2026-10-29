@@ -24,6 +24,9 @@ from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+from app.shared.infrastructure import darwin_process  # noqa: E402
+
 MAX_JSON_BYTES = 256 * 1024**2
 MAX_DOCUMENTS = 50_000
 MAX_RECEIPTS = 100_000
@@ -133,6 +136,19 @@ def identity(pid):
     if type(pid) is not int or pid < 1:
         raise ValueError("invalid process identity")
     try:
+        if sys.platform == "darwin":
+            start = darwin_process.process_start(pid)
+            if start is None:
+                return None
+            command, _ = darwin_process.process_arguments(pid)
+            if darwin_process.process_start(pid) != start:
+                raise RecoveryDeferred("process identity changed during inspection")
+            return {
+                "pid": pid,
+                "start_ticks": start,
+                "boot_id": "darwin",
+                "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
+            }
         root = Path("/proc") / str(pid)
         fields = (root / "stat").read_text().rsplit(")", 1)[1].split()
         if fields[0] == "Z":
@@ -317,6 +333,10 @@ def _validate_window(source, window, root, bundle, plan):
 def _holds_native_lock(pid, path):
     wanted = path.stat()
     try:
+        if sys.platform == "darwin":
+            raise RecoveryDeferred(
+                "native source-lock ownership is not observable on macOS; wait for the current consumer to exit"
+            )
         for descriptor in (Path("/proc") / str(pid) / "fd").iterdir():
             try:
                 actual = descriptor.stat()
@@ -347,11 +367,12 @@ def _native_guard(stack, root, window, saved_state):
     current = identity(saved["pid"])
     script = str(window / "process_sg_round3_native.py")
     try:
-        argv = [
-            part.decode()
-            for part in (Path("/proc") / str(saved["pid"]) / "cmdline").read_bytes().split(b"\0")
-            if part
-        ]
+        command = (
+            darwin_process.process_arguments(saved["pid"])[0].encode()
+            if sys.platform == "darwin"
+            else (Path("/proc") / str(saved["pid"]) / "cmdline").read_bytes()
+        )
+        argv = [part.decode() for part in command.split(b"\0") if part]
     except (OSError, UnicodeError) as exc:
         raise RecoveryDeferred("native identity changed during validation") from exc
     command_matches = current and (

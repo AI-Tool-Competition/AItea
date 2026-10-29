@@ -11,7 +11,11 @@ from app.contexts.documents.infrastructure.parsers.archive_parsing import (
     _verify_identity,
 )
 from app.contexts.documents.infrastructure.parsers.docx_parsing import parse_docx
-from app.contexts.documents.infrastructure.parsers.document_parser import _MAX_RESULT_BYTES, _run_bounded
+from app.contexts.documents.infrastructure.parsers.document_parser import (
+    _MAX_RESULT_BYTES,
+    _run_bounded,
+    _set_worker_limits,
+)
 
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 PROTOCOL = "file-source-docx-v1"
@@ -41,11 +45,7 @@ def read_docx_source(path, *, source_hash, size):
 
 def _worker(connection, path, source_hash, size, filename):
     try:
-        import resource
-
-        resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
-        resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        _set_worker_limits()
         stream, info = _open_original(path, size)
         with stream:
             content = read_docx_source(path, source_hash=source_hash, size=size)

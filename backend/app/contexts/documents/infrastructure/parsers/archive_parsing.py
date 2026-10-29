@@ -23,6 +23,7 @@ from app.contexts.documents.infrastructure.parsers.document_parser import (
     _MAX_RESULT_BYTES,
     ProcessingDeferred,
     _run_bounded,
+    _set_worker_limits,
 )
 from app.contexts.documents.infrastructure.parsers.pdf_limits import ARCHIVE_MAX_PAGES
 
@@ -233,14 +234,7 @@ def _checkpoint_payload(manifest: dict | None, source_hash: str) -> dict | None:
 
 def _archive_pdf_worker(connection, path, source_hash, size, filename, checkpoint, max_pages, page_limit):
     try:
-        try:
-            import resource
-
-            resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
-            resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        except ImportError:
-            pass
+        _set_worker_limits()
         result = _parse_archive_window(path, source_hash, size, filename, checkpoint, max_pages, page_limit)
         encoded = json.dumps({"result": result}, ensure_ascii=False, allow_nan=False).encode("utf-8")
         if len(encoded) > _MAX_RESULT_BYTES:
@@ -257,14 +251,7 @@ def _archive_pdf_worker(connection, path, source_hash, size, filename, checkpoin
 
 def _archive_auxiliary_worker(connection, operation, payload):
     try:
-        try:
-            import resource
-
-            resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
-            resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        except ImportError:
-            pass
+        _set_worker_limits()
         if operation == "render":
             result = _render_archive_page(*payload)
         elif operation == "pages":

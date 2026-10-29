@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
@@ -23,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.configuration.paths import InstancePaths  # noqa: E402
+from app.shared.infrastructure import darwin_process  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PNPM_VERSION = "10.26.2"
@@ -88,7 +90,11 @@ def control_lock(root: Path = ROOT, *, timeout: float = 0):
 
 
 def process_identity(pid: int) -> dict | None:
-    """Linux identity prevents PID reuse; launch credentials prove checkout ownership."""
+    """Start identity prevents PID reuse; launch credentials prove ownership."""
+    if sys.platform == "darwin":
+        return darwin_process.process_identity(pid)
+    if not sys.platform.startswith("linux"):
+        return None
     try:
         base = Path("/proc") / str(pid)
         for attempt in range(5):
@@ -120,7 +126,7 @@ def process_identity(pid: int) -> dict | None:
 
 
 def launched_identity(process: subprocess.Popen, token: str, root: Path = ROOT) -> dict | None:
-    # /proc can briefly expose the pre-exec environment of a newly spawned
+    # Process inspection can briefly expose the pre-exec environment of a newly spawned
     # process. Record only the credentials we passed to this specific child.
     deadline = time.monotonic() + 2
     while process.poll() is None and time.monotonic() < deadline:
@@ -162,20 +168,33 @@ def owned_group(record: dict, root: Path = ROOT) -> bool:
         return True
     # Tokens are unique to a launch and inherited by children; an unrelated
     # process that reused the numeric PID/group cannot pass this test.
-    for path in Path("/proc").iterdir():
-        if not path.name.isdigit():
-            continue
-        try:
-            stat = (path / "stat").read_text()
-            fields = stat[stat.rfind(")") + 2 :].split()
-            if (int(fields[2]), int(fields[3])) != (record["pgid"], record["sid"]):
-                continue
-        except (OSError, ValueError, IndexError):
-            continue
-        current = process_identity(int(path.name))
+    for pid in group_pids(record["pgid"]):
+        current = process_identity(pid)
         if current and all(current.get(key) == record.get(key) for key in ("pgid", "sid", "owner", "token")):
             return True
     return False
+
+
+def group_pids(pgid: int) -> list[int]:
+    if sys.platform == "darwin":
+        return darwin_process.group_pids(pgid)
+    if not sys.platform.startswith("linux"):
+        return []
+    members = []
+    try:
+        for path in Path("/proc").iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                stat = (path / "stat").read_text()
+                fields = stat[stat.rfind(")") + 2 :].split()
+                if int(fields[2]) == pgid:
+                    members.append(int(path.name))
+            except (OSError, ValueError, IndexError):
+                continue
+    except OSError:
+        return []
+    return members
 
 
 def live_records(state: dict, root: Path = ROOT) -> list[dict]:
@@ -362,7 +381,11 @@ def available_port(port: int) -> None:
         try:
             probe.bind(("127.0.0.1", port))
         except OSError as exc:
-            raise DevError(f"端口 {port} 已被占用，请指定其他端口；不会停止已有服务。") from exc
+            if exc.errno == errno.EADDRINUSE:
+                raise DevError(f"端口 {port} 已被占用，请指定其他端口；不会停止已有服务。") from exc
+            if exc.errno in {errno.EACCES, errno.EPERM}:
+                raise DevError(f"当前运行环境禁止监听本机端口 {port}；请在允许监听端口的终端运行。") from exc
+            raise DevError(f"无法监听本机端口 {port}：{exc.strerror or exc}。") from exc
 
 
 def default_ports(root: Path = ROOT) -> tuple[int, int]:
@@ -421,15 +444,21 @@ def development_node_options(env: dict[str, str]) -> str:
     if options is None or options & heap_options:
         return value
     # Leaving the flag unset still gives V8 a roughly 4 GiB default heap on a
-    # large machine. Use the memory available to this process, including cgroup
-    # constraints, without imposing another fixed development-only cap.
+    # large machine. Linux availableMemory includes cgroup constraints. Darwin
+    # reports only currently free pages, excluding reclaimable filesystem cache;
+    # using it can reduce a healthy 8 GiB machine's heap below 100 MiB.
     node = shutil.which("node")
     if not node:
         raise DevError("无法读取开发前端可用内存：未找到 Node.js。")
     probe_env = {key: item for key, item in env.items() if key != "NODE_OPTIONS"}
     try:
         probe = subprocess.run(
-            [node, "-p", "Math.floor(process.availableMemory() / 1024 / 1024)"],
+            [
+                node,
+                "-p",
+                "Math.floor((process.platform === 'darwin' ? "
+                "require('node:os').totalmem() / 2 : process.availableMemory()) / 1024 / 1024)",
+            ],
             env=probe_env,
             capture_output=True,
             text=True,
@@ -679,7 +708,7 @@ def serve(args: argparse.Namespace) -> int:
         raise DevError("serve 是内部监管命令，请使用 make dev。")
     supervisor = process_identity(os.getpid())
     if supervisor is None:
-        raise DevError("无法读取 Linux /proc 进程身份，拒绝启动无法安全管理的服务。")
+        raise DevError("无法读取进程身份；需在允许进程检查的 Linux 或 macOS 环境中启动。")
     env = local_env()
     env.setdefault("TEA_DATA_DIR", str(InstancePaths.resolve(ROOT).data))
     env["TEA_API_URL"] = f"http://127.0.0.1:{args.api_port}"

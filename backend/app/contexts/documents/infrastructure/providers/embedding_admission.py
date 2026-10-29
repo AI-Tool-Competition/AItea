@@ -11,11 +11,14 @@ import logging
 import os
 import sqlite3
 import stat
+import sys
 import tempfile
 import threading
 import time
 from contextlib import closing, contextmanager
 from pathlib import Path
+
+from app.shared.infrastructure.darwin_process import process_start
 
 LEASE_SECONDS = 360  # Greater than the existing complete embedding call deadline.
 APPLICATION_ID = 0x41495445
@@ -34,6 +37,8 @@ class SharedEmbeddingCooldown(Exception):
 
 
 def process_identity(pid):
+    if sys.platform == "darwin":
+        return process_start(pid)
     try:
         # Linux process start ticks prevent a recycled PID from inheriting a slot.
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
@@ -73,7 +78,9 @@ class SharedEmbeddingBudget:
                 raise ValueError("Embedding admission path must not contain symlinks")
         self.pid, self.started = os.getpid(), process_identity(os.getpid())
         if not self.started:
-            raise RuntimeError("Shared embedding admission requires Linux process identities")
+            raise RuntimeError(
+                "Shared embedding admission requires readable Linux or macOS process identities"
+            )
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self._initialization_lock():
             self._initialize(scope, limit)
@@ -98,7 +105,11 @@ class SharedEmbeddingBudget:
         # Serialize only initialization, including PRAGMA/DDL, across processes.
         # Validation is read-only and precedes chmod, WAL or any schema mutation.
         with open(self.path, "rb") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            # Darwin unifies flock and fcntl locks: flock on the SQLite file
+            # conflicts with SQLite's own locks. The directory flock already
+            # serializes initialization, including atomic file publication.
+            if sys.platform != "darwin":
+                fcntl.flock(handle, fcntl.LOCK_EX)
             _validate_protocol(self.path)
             with closing(self.connect()) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")

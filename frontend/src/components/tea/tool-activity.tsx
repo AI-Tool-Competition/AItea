@@ -35,12 +35,32 @@ import type { ToolCall, ToolOutputPreview, TraceStep } from "@/core/tea/types";
 const activities: Partial<
   Record<ToolCall["name"], { label: string; active: string; icon: LucideIcon }>
 > = {
+  update_business_card: {
+    label: "整理业务卡",
+    active: "正在整理业务卡",
+    icon: PenLine,
+  },
   agent_turn: { label: "思考摘要", active: "正在思考", icon: Sparkles },
   search_documents: { label: "查找资料", active: "正在查找资料", icon: Search },
   search_legal_evidence: {
     label: "查找依据",
     active: "正在查找依据",
     icon: FileSearch,
+  },
+  lookup_chinese_law: {
+    label: "查询中国法条",
+    active: "正在查询中国法条",
+    icon: FileText,
+  },
+  get_law_versions: {
+    label: "读取法规版本",
+    active: "正在读取法规版本关系…",
+    icon: FileText,
+  },
+  read_law: {
+    label: "阅读法律原文",
+    active: "正在阅读法律原文",
+    icon: FileText,
   },
   check_materials: {
     label: "核对材料",
@@ -58,8 +78,8 @@ const activities: Partial<
     icon: ListChecks,
   },
   analyze_legal: {
-    label: "核对适用依据",
-    active: "正在核对适用依据",
+    label: "法律分析",
+    active: "正在结合事实分析法律",
     icon: FileSearch,
   },
   draft_document: { label: "准备文稿", active: "正在准备文稿", icon: PenLine },

@@ -9,11 +9,13 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from dotenv import dotenv_values, set_key
 
 from app.configuration.paths import InstancePaths
+from app.shared.infrastructure import darwin_process
 from app.contexts.documents.infrastructure.providers.embedding_admission import release_restored_leases
 from app.shared.domain.values import now, uid
 from app.shared.infrastructure.operations.data_backup import (
@@ -52,6 +54,9 @@ def _alive(record):
     if not isinstance(record, dict) or not record.get("pid"):
         return False
     try:
+        if sys.platform == "darwin":
+            start = darwin_process.process_start(int(record["pid"]))
+            return start is not None and start == str(record.get("start", record.get("start_ticks")))
         fields = Path(f"/proc/{int(record['pid'])}/stat").read_text().rsplit(")", 1)[1].split()
         return fields[0] != "Z" and fields[19] == str(record.get("start"))
     except (OSError, ValueError, IndexError):
@@ -91,6 +96,16 @@ def require_stopped(paths):
                     except BlockingIOError:
                         raise DataBackupError("instance_collectors_must_be_stopped") from None
     # This also catches independently launched local database/provider writers.
+    if sys.platform == "darwin":
+        try:
+            for pid, name in darwin_process.open_files():
+                if pid != os.getpid() and Path(name).is_relative_to(paths.data):
+                    raise DataBackupError("instance_files_are_open")
+        except DataBackupError:
+            raise
+        except (OSError, ValueError) as error:
+            raise DataBackupError("instance_file_ownership_unavailable") from error
+        return
     for process in Path("/proc").iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue

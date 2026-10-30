@@ -11,3 +11,6 @@ def copy_configuration(project):
         ignore=shutil.ignore_patterns("__pycache__"),
         dirs_exist_ok=True,
     )
+    infrastructure = project / "backend/app/shared/infrastructure"
+    infrastructure.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PROJECT_ROOT / "backend/app/shared/infrastructure/darwin_process.py", infrastructure)

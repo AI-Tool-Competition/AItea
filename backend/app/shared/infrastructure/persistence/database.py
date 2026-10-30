@@ -181,6 +181,11 @@ class Database:
                             signature TEXT NOT NULL,source_message_id TEXT NOT NULL REFERENCES messages(id),
                             messages TEXT NOT NULL,updated_at TEXT NOT NULL)""")
                         conn.execute("INSERT INTO schema_migrations VALUES(27,?)", (now(),))
+                    if not conn.execute("SELECT 1 FROM schema_migrations WHERE version=28").fetchone():
+                        conn.execute(
+                            "ALTER TABLE task_states ADD COLUMN field_sources_json TEXT NOT NULL DEFAULT '{}'"
+                        )
+                        conn.execute("INSERT INTO schema_migrations VALUES(28,?)", (now(),))
                     conn.commit()
                 except BaseException:
                     conn.rollback()

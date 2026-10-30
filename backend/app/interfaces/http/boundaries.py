@@ -24,7 +24,7 @@ def install(app):
     async def boundaries(request: Request, call_next):
         request.state.request_id = uid()
         origin = request.headers.get("origin")
-        if request.method not in ("GET", "HEAD", "OPTIONS") and origin:
+        if origin and (request.method not in ("GET", "HEAD", "OPTIONS") or request.url.path.endswith("/mcp")):
             parsed = urlparse(origin)
             allowed = {request.headers.get("host", "")}
             if os.getenv("TEA_ENV", "development") != "production":

@@ -410,6 +410,12 @@ with (root/'native-processing.lock').open('a') as lock:
         while not (sg.root / "native-ready").exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert (sg.root / "native-ready").exists()
+        if sys.platform == "darwin":
+            with pytest.raises(recovery.RecoveryDeferred, match="not observable on macOS"):
+                recovery.recover_interrupted_window(**sg.arguments)
+            assert child.poll() is None
+            assert not (sg.root / "continuation-report.json").exists()
+            return
         result = recovery.recover_interrupted_window(**sg.arguments)
         assert result["native"]["active"] is True
         assert child.wait(timeout=5) == 0

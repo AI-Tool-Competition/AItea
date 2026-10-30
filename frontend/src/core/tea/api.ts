@@ -331,8 +331,12 @@ function isToolCall(data: unknown): data is ToolCall {
     data.id.length > 0 &&
     data.id.length <= 100 &&
     [
+      "update_business_card",
       "search_documents",
       "search_legal_evidence",
+      "lookup_chinese_law",
+      "read_law",
+      "get_law_versions",
       "check_materials",
       "generate_guidance",
       "guide_business",
@@ -340,14 +344,20 @@ function isToolCall(data: unknown): data is ToolCall {
       "draft_document",
       "get_handoff",
       "discover_tools",
+      "tool_search",
       "load_skill",
       "list_documents",
       "read_document",
       "inspect_image",
+      "convert_long_image_to_pdf",
+      "inspect_document_file",
+      "create_document_file",
+      "edit_document_file",
       "web_search",
       "recall_memory",
       "remember_memory",
       "update_plan",
+      "update_task_brief",
       "agent_turn",
       "compact_context",
       "read_tool_result",
@@ -869,7 +879,13 @@ export function streamStageAnalysis(
 export function streamLegalAnalysis(
   caseId: string,
   request:
-    | { stage_id: string; question: string; client_request_id: string }
+    | {
+        stage_id: string;
+        question: string;
+        client_request_id: string;
+        jurisdictions?: ("CN" | "ID" | "SG")[];
+        search_queries?: string[];
+      }
     | { expected_revision: number; client_request_id: string },
   {
     analysisId,

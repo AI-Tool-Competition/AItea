@@ -521,6 +521,28 @@ def test_atomic_publication_refuses_racing_existing_empty_directory(tmp_path):
     assert stage.exists()
 
 
+@pytest.mark.parametrize("symlink", [False, True])
+def test_native_publication_refuses_destination_created_after_preflight(tmp_path, monkeypatch, symlink):
+    stage, target = tmp_path / "stage", tmp_path / "destination"
+    stage.mkdir()
+    (stage / "COMPLETE").write_text("complete")
+    sync_directory = module._sync_directory
+
+    def race(directory):
+        sync_directory(directory)
+        if directory == stage:
+            if symlink:
+                target.symlink_to(tmp_path / "missing", target_is_directory=True)
+            else:
+                target.mkdir()
+
+    monkeypatch.setattr(module, "_sync_directory", race)
+    with pytest.raises(module.DataBackupError, match="new_destination"):
+        module._publish(stage, target)
+    assert (stage / "COMPLETE").read_text() == "complete"
+    assert target.is_symlink() if symlink else list(target.iterdir()) == []
+
+
 def test_backup_destination_inside_source_and_restore_existing_are_refused(populated, tmp_path):
     service, _, _ = populated
     with pytest.raises(module.DataBackupError):

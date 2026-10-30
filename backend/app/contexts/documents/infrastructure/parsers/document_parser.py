@@ -10,11 +10,13 @@ import math
 import multiprocessing
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from copy import deepcopy
-from threading import BoundedSemaphore, Condition, Lock
+from threading import BoundedSemaphore, Condition, Event, Lock, Thread
 from uuid import uuid4
 
 from app.contexts.documents.infrastructure.parsers.pdf_limits import ARCHIVE_MAX_PAGES
@@ -24,6 +26,7 @@ from app.contexts.documents.infrastructure.providers.vision import (
     vision_ocr_request_worker_limit,
     vision_ocr_worker_limit,
 )
+from app.shared.infrastructure.darwin_process import resident_bytes
 
 _MAX_BYTES = 20 * 1024 * 1024
 _MAX_RESULT_BYTES = 40 * 1024 * 1024
@@ -207,18 +210,73 @@ _MODEL_REQUEST_SLOTS = _ParserSlots(
 _PROCESS_LIFECYCLE_LOCK = Lock()
 
 
+def _set_worker_limits(memory_limit: int = 768 * 1024 * 1024, cpu_limit: int = 35) -> None:
+    try:
+        import resource
+    except ImportError:
+        return  # Existing Windows behavior retains the parent wall deadline.
+    limits = [(resource.RLIMIT_CPU, cpu_limit), (resource.RLIMIT_CORE, 0)]
+    if sys.platform != "darwin":
+        limits.append((resource.RLIMIT_AS, memory_limit))
+    # Darwin's RLIMIT_AS is an RSS compatibility alias, not an address-space
+    # allocation limit. The parent watchdog enforces a sampled RSS budget there.
+    for kind, requested in limits:
+        soft, hard = resource.getrlimit(kind)
+        ceilings = [value for value in (soft, hard) if value != resource.RLIM_INFINITY]
+        target = min(requested, *ceilings) if ceilings else requested
+        resource.setrlimit(kind, (target, target))
+
+
+@contextmanager
+def _memory_watchdog(process, memory_limit: int, timeout: float):
+    if sys.platform != "darwin":
+        yield
+        return
+    stopped = Event()
+    failures = []
+    deadline = time.monotonic() + timeout
+
+    def watch():
+        while not stopped.is_set():
+            # Keep Process.poll/kill serialized with multiprocessing's cleanup;
+            # only this still-live direct child may be inspected or terminated.
+            with _PROCESS_LIFECYCLE_LOCK:
+                if not process.is_alive():
+                    return
+                try:
+                    exceeded = resident_bytes(process.pid) > memory_limit
+                    message = "文档解析超过内存资源限制，请拆分文件或更换格式。" if exceeded else ""
+                except OSError:
+                    if not process.is_alive():
+                        return  # A normal exit can race the native RSS query.
+                    message = "无法监测解析进程的内存资源，已停止本次解析。"
+                if not message and time.monotonic() >= deadline:
+                    message = "文档解析超时，原件已保留；请拆分文件或更换格式后重试。"
+                if message:
+                    failures.append(message)
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    return
+            stopped.wait(0.05)
+
+    watcher = Thread(target=watch, name="tea-parser-memory", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        watcher.join()
+        if failures:
+            raise ValueError(failures[0])
+
+
 def _parse_worker(connection, filename: str, content: bytes, mime_type: str, parser: str) -> None:
     try:
-        try:
-            import resource
-
-            memory_mb = 4096 if parser == "docling" else 768
-            memory_limit = memory_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-            resource.setrlimit(resource.RLIMIT_CPU, (110 if parser == "docling" else 35,) * 2)
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        except ImportError:
-            pass  # Windows still has an enforced wall clock timeout.
+        _set_worker_limits(
+            (4096 if parser == "docling" else 768) * 1024 * 1024, 110 if parser == "docling" else 35
+        )
         from app.contexts.documents.infrastructure.parsers.native_parser import parse_file
 
         result = parse_file(filename, content, mime_type, parser=parser)
@@ -248,10 +306,17 @@ def parse_bounded(
     timeout = float(os.getenv("TEA_PARSE_TIMEOUT", "120" if parser == "docling" else "45"))
     if not 0 < timeout <= 300:
         raise ValueError("解析超时配置必须在 0 至 300 秒之间。")
-    return _run_bounded(_parse_worker, (filename, content, mime_type, parser), timeout)
+    return _run_bounded(
+        _parse_worker,
+        (filename, content, mime_type, parser),
+        timeout,
+        memory_limit=(4096 if parser == "docling" else 768) * 1024 * 1024,
+    )
 
 
-def _run_bounded(worker: Callable, args: tuple, timeout: float) -> dict:
+def _run_bounded(
+    worker: Callable, args: tuple, timeout: float, *, memory_limit: int = 768 * 1024 * 1024
+) -> dict:
     if not _SLOTS.acquire(timeout=5):
         raise ProcessingDeferred("文档处理队列繁忙，已延后处理。")
     receive = send = process = None
@@ -267,12 +332,13 @@ def _run_bounded(worker: Callable, args: tuple, timeout: float) -> dict:
             process.start()
             release_slot = False
         send.close()
-        if not receive.poll(timeout):
-            raise ValueError("文档解析超时，原件已保留；请拆分文件或更换格式后重试。")
-        try:
-            payload = json.loads(receive.recv_bytes(_MAX_RESULT_BYTES))
-        except (EOFError, OSError, ValueError) as exc:
-            raise ValueError("文档解析进程中断或结果超过限制，请检查文件。") from exc
+        with _memory_watchdog(process, memory_limit, timeout):
+            if not receive.poll(timeout):
+                raise ValueError("文档解析超时，原件已保留；请拆分文件或更换格式后重试。")
+            try:
+                payload = json.loads(receive.recv_bytes(_MAX_RESULT_BYTES))
+            except (EOFError, OSError, ValueError) as exc:
+                raise ValueError("文档解析进程中断或结果超过限制，请检查文件。") from exc
         if "error" in payload:
             raise ValueError(payload["error"])
         return payload["result"]
@@ -306,12 +372,8 @@ def _run_bounded(worker: Callable, args: tuple, timeout: float) -> dict:
 def _auxiliary_worker(connection, operation: str, payload) -> None:
     """Rendering/reassembly get bounded CPU and memory deadlines."""
     try:
-        import resource
-
-        resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
         cpu_limit = _MINERU_REBUILD_CPU_SECONDS if operation == "mineru_rebuild" else 35
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit,) * 2)
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        _set_worker_limits(cpu_limit=cpu_limit)
         if operation == "render":
             result = _render_pdf_page(*payload)
         elif operation == "render_region":

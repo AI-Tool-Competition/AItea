@@ -22,6 +22,44 @@ def digest(value):
     ).hexdigest()
 
 
+def _version_gap(citations, as_of):
+    """A retrieved old text is not evidence that the requested version exists."""
+    if not citations:
+        return False
+    at = str(as_of or date.today())
+    focused = [c for c in citations if c.get("metadata", {}).get("exact_match")] or citations
+
+    def outdated(citation):
+        meta = citation.get("metadata") or {}
+        start, end, replaced = meta.get("effective_from"), meta.get("effective_to"), meta.get("superseded_at")
+        return bool((start and start > at) or (end and end < at) or (replaced and replaced <= at))
+
+    return all(outdated(c) for c in focused)
+
+
+def _specific_source_gap(query, citations):
+    """A general law mentioning imports does not cover a named regulator/rule.
+
+    Lexical coverage only decides whether to acquire more text; it never
+    decides the existence or legal effect of an obligation.
+    """
+    acronyms = set(re.findall(r"\b[A-Z][A-Z0-9-]{2,}\b", query)) - {"CN", "ID", "SG"}
+    names = re.findall(r"《([^》]+)》", query)
+    targets = [*acronyms, *names]
+    bodies = [
+        c.get("title", "")
+        + "\n"
+        + str(c.get("metadata", {}).get("issuing_authority", ""))
+        + (
+            "\n" + c.get("excerpt", "")
+            if c.get("metadata", {}).get("evidence_store") == "official_web"
+            else ""
+        )
+        for c in citations
+    ]
+    return any(not any(target.casefold() in body.casefold() for body in bodies) for target in targets)
+
+
 def fail(status, code, message):
     from app.shared.domain.errors import fail as service_fail
 
@@ -270,20 +308,38 @@ class LegalService:
         if isinstance(as_of, str):
             as_of = date.fromisoformat(as_of)
         as_of = as_of or datetime.now(timezone.utc).date()
-        found, warnings, modes = {}, [], set()
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+
+        packs = CountryPacks(self.db.data_dir)
+        found, warnings, modes, pack_documents = {}, [], set(), set()
         for country in requested or [None]:
             if check_cancelled:
                 check_cancelled()
-            result = self.service.search_eligible(
-                owner,
-                query,
-                case_id,
-                limit,
-                as_of,
-                country=country,
-                document_ids=document_ids,
-                historical=historical,
-            )
+            result = packs.search(country, query, limit, as_of=as_of) if document_ids is None else None
+            if result is not None:
+                pack_documents.update(item["document_id"] for item in result["items"])
+            else:
+                result = self.service.search_eligible(
+                    owner,
+                    query,
+                    case_id,
+                    limit,
+                    as_of,
+                    country=country,
+                    document_ids=document_ids,
+                    historical=historical,
+                )
+                if result["mode"] == "unavailable":
+                    available = [
+                        name
+                        for code, name in (("ID", "印尼"), ("SG", "新加坡"))
+                        if packs.status()["countries"].get(code)
+                    ]
+                    result["warning"] = f"{country or '当前'}法域资料检索尚未就绪。" + (
+                        f"本地已接入：{'、'.join(available)}。"
+                        if available
+                        else "尚未配置 RAGFlow 或对应本地资料包。"
+                    )
             if check_cancelled:
                 check_cancelled()
             modes.add(result["mode"])
@@ -295,13 +351,184 @@ class LegalService:
                 found[citation_id] = {**citation, "id": citation_id}
         with closing(self.db.connect()) as conn:
             for citation in found.values():
-                citation["country"] = document_country(conn, citation["document_id"])
+                if citation["document_id"] not in pack_documents:
+                    citation["country"] = document_country(conn, citation["document_id"])
         if len(found) > 80:
             warnings.append("本轮候选资料超过返回预算，仍需分项补检；不能据此认定依据齐全。")
         return {
             "items": list(found.values())[:80],
-            "mode": "ragflow" if "ragflow" in modes else "unavailable",
+            "mode": "ragflow"
+            if "ragflow" in modes
+            else "local_pack_vector"
+            if "local_pack_vector" in modes
+            else "local_pack"
+            if "local_pack" in modes
+            else "unavailable",
             "warning": "；".join(dict.fromkeys(warnings)) or None,
+        }
+
+    def acquire_evidence(
+        self,
+        owner,
+        query,
+        case_id,
+        template,
+        jurisdictions,
+        limit=5,
+        document_ids=None,
+        as_of=None,
+        *,
+        check_cancelled=None,
+    ):
+        """One internal search per country; a bounded official fallback for a real gap."""
+        from app.contexts.legal_analysis.infrastructure.official_evidence import (
+            cached_official,
+            search_official,
+        )
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+        from app.contexts.documents.infrastructure.providers.reranking import rerank_texts
+        from app.contexts.legal_analysis.application.evidence import balance_countries, complete_source_unit
+        from app.contexts.conversations.application.tool_runtime import ToolFailure
+        import httpx
+
+        countries = list(dict.fromkeys(jurisdictions or self.allowed_countries(template)))
+        items, warnings, audit, modes = {}, [], [], set()
+        for country in countries:
+            if check_cancelled:
+                check_cancelled()
+            result = self.search(
+                owner,
+                query,
+                case_id,
+                template,
+                [country],
+                limit,
+                document_ids,
+                as_of,
+                check_cancelled=check_cancelled,
+            )
+            usable, excluded = [], []
+            for candidate in result["items"]:
+                original, reason = complete_source_unit(candidate, self.db.data_dir)
+                if reason:
+                    excluded.append({"id": candidate["id"], "reason": reason})
+                elif original["country"] == country:
+                    usable.append(original)
+                else:
+                    excluded.append({"id": candidate["id"], "reason": "jurisdiction_mismatch"})
+            audit.append(
+                {
+                    "country": country,
+                    "source": "internal",
+                    "mode": result["mode"],
+                    "count": len(result["items"]),
+                    "usable_count": len(usable),
+                    "excluded": excluded,
+                }
+            )
+            result = {**result, "items": usable}
+            if document_ids is None:
+                recent = cached_official(
+                    self.db.data_dir, query, country, limit, check_cancelled=check_cancelled
+                )
+                for citation in recent:
+                    citation["id"] = (
+                        f"{citation['document_id']}:{citation['document_version']}:{digest(citation['chunk_id'])[:16]}"
+                    )
+                    newer = CountryPacks(self.db.data_dir).later_version(
+                        country,
+                        citation["title"],
+                        citation["metadata"].get("declared_version_date"),
+                        as_of or date.today(),
+                    )
+                    if newer:
+                        citation["metadata"].update(
+                            superseded_at=newer["effective_from"], superseded_by=newer
+                        )
+                if recent:
+                    from itertools import zip_longest
+
+                    result = {
+                        **result,
+                        "items": [
+                            item
+                            for pair in zip_longest(result["items"], recent)
+                            for item in pair
+                            if item is not None
+                        ],
+                    }
+                    audit.append({"country": country, "source": "official_snapshot", "count": len(recent)})
+            # Explicit source selection is a scope, never permission to expand
+            # into unrelated public sources. No network in unconfigured tests.
+            tools_key = (
+                os.getenv("AGENT_TOOLS_API_KEY") or os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY")
+            )
+            direct = [
+                item
+                for item in result["items"]
+                if item["metadata"].get("content_role") != "secondary_summary"
+            ]
+            if (
+                (not direct or _version_gap(direct, as_of) or _specific_source_gap(query, direct))
+                and document_ids is None
+                and tools_key
+            ):
+                try:
+                    extra = search_official(
+                        self.db.data_dir, query, country, limit, check_cancelled=check_cancelled
+                    )
+                    audit.append(
+                        {
+                            "country": country,
+                            "source": "official_web",
+                            "count": len(extra["items"]),
+                            "fetches": extra.get("acquisition", []),
+                        }
+                    )
+                    for citation in extra["items"]:
+                        citation["id"] = (
+                            f"{citation['document_id']}:{citation['document_version']}:{digest(citation['chunk_id'])[:16]}"
+                        )
+                    result = {**extra, "items": [*extra["items"], *result["items"]]}
+                except (ToolFailure, httpx.HTTPError, TimeoutError, OSError, ValueError) as error:
+                    audit.append(
+                        {
+                            "country": country,
+                            "source": "official_web",
+                            "count": 0,
+                            "error_type": type(error).__name__,
+                        }
+                    )
+                    warnings.append("本次尚未取得可供引用的官方原文。")
+            if check_cancelled:
+                check_cancelled()
+            modes.add(result["mode"])
+            if result.get("warning"):
+                warnings.append(result["warning"])
+            pool = result["items"][:48]
+            try:
+                ranks = rerank_texts(query, [item["title"] + "\n" + item["excerpt"] for item in pool])
+                if ranks is not None:
+                    result["items"] = [pool[r["index"]] for r in ranks] + result["items"][len(pool) :]
+                    audit.append(
+                        {
+                            "country": country,
+                            "source": "clause_reranker",
+                            "count": len(ranks),
+                            "status": "completed",
+                        }
+                    )
+            except ValueError:
+                audit.append({"country": country, "source": "clause_reranker", "status": "unavailable"})
+            for item in result["items"]:
+                items[item["id"]] = item
+        if len(items) > 80:
+            warnings.append("本轮候选资料超过返回预算，需按具体事项补检。")
+        return {
+            "items": balance_countries(list(items.values()), countries)[:80],
+            "mode": "+".join(sorted(modes)),
+            "warning": "；".join(dict.fromkeys(warnings)) or None,
+            "acquisition": audit,
         }
 
     def preview(self, owner, payload, **options):
@@ -330,6 +557,8 @@ class LegalService:
         )
 
     def snapshot(self, conn, owner, case):
+        from app.contexts.documents.infrastructure.country_packs import CountryPacks
+
         self.sync_facts(conn, owner, case["id"])
         facts = self.facts(conn, case["id"])
         value = {
@@ -342,6 +571,7 @@ class LegalService:
                 [
                     os.getenv("AGENT_MODEL") or os.getenv("LLM_MODEL"),
                     os.getenv("AGENT_REASONING_EFFORT"),
+                    os.getenv("LEGAL_REASONING_EFFORT"),
                     os.getenv("AGENT_BASE_URL") or os.getenv("LLM_BASE_URL"),
                     os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY"),
                 ]
@@ -349,6 +579,7 @@ class LegalService:
             "embedding": self.service.embedding_fingerprint(),
             "rerank": self.service.rerank_fingerprint(),
             "ragflow_index": self.service.ragflow.cache_signature(conn, owner, case),
+            "country_pack": CountryPacks(self.db.data_dir).status().get("fingerprint"),
             "runner": 1,
             "task_evidence": [
                 (task["id"], task["evidence_ids"]) for stage in case["stages"] for task in stage["tasks"]
@@ -635,9 +866,15 @@ class LegalService:
             return {"fact": self.public(fact), "affected_analysis_ids": affected}
 
     def execute_engine(self, owner, template, stage, question, facts, **options):
-        from app.contexts.legal_analysis.application.analysis_engine import run_legal_analysis
+        if options.pop("reviewed_workflow", False):
+            from app.contexts.legal_analysis.application.analysis_engine import run_legal_analysis
 
-        return run_legal_analysis(self.service, owner, template, stage, question, facts, **options)
+            options.pop("search_queries", None)
+            options.pop("business_context", None)
+            return run_legal_analysis(self.service, owner, template, stage, question, facts, **options)
+        from app.contexts.legal_analysis.application.simple_analysis import run_simple_analysis
+
+        return run_simple_analysis(self.service, owner, template, stage, question, facts, **options)
 
     def expire_requests(self, conn):
         for row in conn.execute(
@@ -678,14 +915,8 @@ class LegalService:
                 self.own(conn, owner, case_id, current_id)["stage_id"] if current_id else payload["stage_id"]
             )
             stage = self.stage(case, stage_id)
-        progress = self.service.index.prepare_scopes(
-            owner,
-            self.allowed_countries(case["template"], stage),
-            case_id=case_id,
-            historical=True,
-        )
-        if progress["remaining"]:
-            fail(409, "index_preparing", "本次范围仍有资料待索引，已完成一批准备；请重试后再分析。")
+        # Ordinary analysis queries only its requested sources. It must not
+        # synchronously prepare every configured country's corpus first.
         with self.db.transaction() as conn:
             case = self.service.case_detail(owner, case_id, conn)
             self.expire_requests(conn)
@@ -750,6 +981,10 @@ class LegalService:
                         if payload.get("_chat_context") is not None
                         else {}
                     ),
+                    "_jurisdictions": payload.get("_jurisdictions"),
+                    "_search_queries": payload.get("search_queries", []),
+                    "_business_context": payload.get("business_context", {}),
+                    **({"_reviewed_workflow": True} if payload.get("_reviewed_workflow") else {}),
                 }
                 self.save(conn, analysis, initial=True)
             analysis["_run_snapshot"] = snapshot
@@ -910,18 +1145,36 @@ class LegalService:
         payload,
         *,
         analysis_id=None,
+        jurisdictions=None,
         emit=None,
         check_cancelled=None,
         prompt_cache_key=None,
+        reviewed_workflow=False,
+        allow_partial=False,
     ):
         from app.contexts.legal_analysis.domain.analysis_models import LegalResult
         from app.shared.application.streaming import StreamCancelled
         from app.shared.domain.errors import AppError
 
+        payload = copy.deepcopy(payload)
+        # Public schemas supply defaults while trusted internal callers may
+        # omit them. Canonicalize both before hashing an idempotent request.
+        for optional in ("jurisdictions", "search_queries"):
+            if not payload.get(optional):
+                payload.pop(optional, None)
+        if not any((payload.get("business_context") or {}).values()):
+            payload.pop("business_context", None)
+        payload_jurisdictions = payload.pop("jurisdictions", None)
+        jurisdictions = jurisdictions or payload_jurisdictions
+        if jurisdictions:
+            payload["_jurisdictions"] = list(dict.fromkeys(jurisdictions))
+        if reviewed_workflow:
+            payload["_reviewed_workflow"] = True
         prepared = self.reserve(owner, case_id, payload, analysis_id)
         if "response" in prepared:
             return prepared["response"]
         analysis = prepared["analysis"]
+        jurisdictions = jurisdictions or analysis.get("_jurisdictions")
 
         def checkpoint(step_id, result, state):
             with self.db.transaction() as conn:
@@ -960,6 +1213,10 @@ class LegalService:
                 check_cancelled=check_cancelled,
                 on_checkpoint=checkpoint,
                 prompt_cache_key=prompt_cache_key,
+                search_queries=analysis.get("_search_queries", []),
+                business_context=analysis.get("_business_context", {}),
+                **({"reviewed_workflow": True} if analysis.get("_reviewed_workflow") else {}),
+                **({"jurisdictions": jurisdictions} if jurisdictions else {}),
             )
             result = LegalResult.model_validate(result).model_dump(mode="json")
             stale = False
@@ -990,12 +1247,13 @@ class LegalService:
                         else "needs_review"
                         if (
                             result["assistant_mode"] == "demo"
-                            or result["gaps"]
+                            or (analysis.get("_reviewed_workflow") and result["gaps"])
                             or any(section["needs_review"] for section in current["sections"])
                         )
                         else "completed"
                     )
                     current["error"] = None
+                    current.pop("_failure", None)
                     current["_snapshot"] = self.snapshot(conn, owner, case)
                     current.pop("_checkpoint", None)
                     current.pop("_progress", None)
@@ -1016,6 +1274,15 @@ class LegalService:
                 fail(409, "analysis_context_changed", current["error"])
             return response
         except BaseException as error:
+            from app.contexts.conversations.application.tool_runtime import failure_code
+
+            code = "invalid_response" if isinstance(error, json.JSONDecodeError) else failure_code(error)
+            response = getattr(error, "response", None)
+            failure = {
+                "code": code,
+                "http_status": getattr(response, "status_code", None),
+            }
+            partial = None
             with self.db.transaction() as conn:
                 request = conn.execute(
                     "SELECT state,token FROM legal_requests WHERE owner_id=? AND case_id=? AND client_id=?",
@@ -1030,6 +1297,7 @@ class LegalService:
                         if cancelled
                         else "分析未完成，请检查失败步骤后重试。",
                         revision=current["revision"] + 1,
+                        _failure=failure,
                     )
                     partial = current.get("_progress") or (current.get("_checkpoint") or {}).get(
                         "state", {}
@@ -1046,6 +1314,18 @@ class LegalService:
             if isinstance(error, (AppError, StreamCancelled)) or not isinstance(error, Exception):
                 raise
             logger.exception("legal_analysis_failed", extra={"analysis_id": analysis["id"]})
+            if allow_partial and partial and partial.get("citations"):
+                # Preserve acquired originals for an internal conversation,
+                # while keeping the failed status and absent conclusions.
+                response = self.public(current)
+                # Internal adapters need a safe machine-readable cause. Do not
+                # return exception strings, provider bodies or request headers.
+                response["_failure"] = failure
+                response["result"]["gaps"] = [
+                    *response["result"].get("gaps", []),
+                    "已取得原文，本次模型分析未完成；未生成的法律判断不能视为结论。",
+                ]
+                return response
             fail(502, "legal_analysis_failed", "分析未完成；已保存的内容仍然保留，请稍后重试")
 
     def patch_section(self, owner, case_id, analysis_id, section_id, payload):

@@ -113,15 +113,21 @@ watchdog.run(Path(sys.argv[2]),Path(sys.argv[3]))
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         saved = watchdog.load(state / "state.json") if (state / "state.json").exists() else {}
-        alive = [
-            task.get("identity")
-            for task in saved.get("tasks", {}).values()
-            if watchdog.strict_alive(task.get("identity"))
-        ]
-        if not alive:
+        pending = False
+        for task in saved.get("tasks", {}).values():
+            record = task.get("identity")
+            try:
+                if watchdog.strict_alive(record):
+                    pending = True
+                    os.kill(record["pid"], signal.SIGTERM)
+            except watchdog.RecoveryDeferred:
+                # The process may exit between macOS identity reads. Inspect
+                # again on the next bounded pass; never signal an unknown PID.
+                pending = True
+            except ProcessLookupError:
+                pass
+        if not pending:
             break
-        for record in alive:
-            os.kill(record["pid"], signal.SIGTERM)
         time.sleep(0.05)
     for process in processes:
         try:

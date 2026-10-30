@@ -6,6 +6,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -197,7 +198,8 @@ def test_real_mixed_children_share_capacity_and_next_child_defers(parser_slots, 
         results = [future.result(timeout=12) for future in first]
     records = [json.loads(path.read_text()) for path in observations.glob("*.done")]
     assert len(records) == capacity
-    assert all(record["memory_limit"] == [768 * 1024 * 1024] * 2 for record in records)
+    if sys.platform != "darwin":
+        assert all(record["memory_limit"] == [768 * 1024 * 1024] * 2 for record in records)
     assert all(record["cpu_limit"] == [35, 35] and record["core_limit"] == [0, 0] for record in records)
     assert all(record["result_bytes"] <= 40 * 1024 * 1024 for record in records)
     assert all(result["source_hash"] == originals[index][1] for index, result in enumerate(results))
@@ -273,6 +275,7 @@ def test_concurrent_starts_and_cleanup_never_poll_the_same_child_together(parser
 
 def test_cleanup_failure_keeps_the_unconfirmed_child_slot(parser_slots, monkeypatch):
     monkeypatch.setenv("TEA_PARSE_WORKERS", "1")
+    monkeypatch.setattr(parsing, "resident_bytes", lambda pid: 0)
 
     class Pipe:
         def close(self):
@@ -320,6 +323,7 @@ def test_cleanup_failure_keeps_the_unconfirmed_child_slot(parser_slots, monkeypa
 
 def test_pipe_close_error_still_reaps_owned_child_before_returning_slot(parser_slots, monkeypatch):
     monkeypatch.setenv("TEA_PARSE_WORKERS", "1")
+    monkeypatch.setattr(parsing, "resident_bytes", lambda pid: 0)
     events = []
 
     class Pipe:
@@ -364,6 +368,52 @@ def test_pipe_close_error_still_reaps_owned_child_before_returning_slot(parser_s
     with pytest.raises(OSError, match="Owned receive pipe close failed"):
         parsing._run_bounded(_exit_worker, (), 1)
     assert events[-3:] == ["close-send", "join", "close-child"]
+    assert parser_slots.acquire(timeout=0)
+    parser_slots.release()
+
+
+def _resource_exhaustion_worker(connection, mode, marker):
+    parsing._set_worker_limits(cpu_limit=1 if mode == "cpu" else 35)
+    Path(marker).write_text(str(os.getpid()))
+    if mode == "cpu":
+        while True:
+            pass
+    blocks = []
+    while True:
+        blocks.append(bytearray(16 * 1024 * 1024))
+        time.sleep(0.05)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS parent RSS watchdog")
+@pytest.mark.parametrize("mode,expected", [("memory", "内存资源限制"), ("cpu", "进程中断")])
+def test_real_resource_exhaustion_reaps_child_and_returns_slot(
+    parser_slots, monkeypatch, tmp_path, mode, expected
+):
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "1")
+    marker = tmp_path / "resource.pid"
+    with pytest.raises(ValueError, match=expected):
+        parsing._run_bounded(
+            _resource_exhaustion_worker, (mode, str(marker)), 8, memory_limit=128 * 1024 * 1024
+        )
+    assert int(marker.read_text()) not in {child.pid for child in multiprocessing.active_children()}
+    assert parsing._run_bounded(_exit_worker, ("healthy", str(marker)), 5)["pid"]
+    assert parser_slots.acquire(timeout=0)
+    assert not parser_slots.acquire(timeout=0)
+    parser_slots.release()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS parent RSS watchdog")
+def test_unavailable_memory_inspection_stops_child(parser_slots, monkeypatch, tmp_path):
+    monkeypatch.setenv("TEA_PARSE_WORKERS", "1")
+
+    def denied(pid):
+        raise PermissionError("inspection denied")
+
+    monkeypatch.setattr(parsing, "resident_bytes", denied)
+    before = {child.pid for child in multiprocessing.active_children()}
+    with pytest.raises(ValueError, match="无法监测"):
+        parsing._run_bounded(_exit_worker, ("timeout", str(tmp_path / "pid")), 5)
+    assert {child.pid for child in multiprocessing.active_children()} == before
     assert parser_slots.acquire(timeout=0)
     parser_slots.release()
 

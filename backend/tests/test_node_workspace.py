@@ -86,7 +86,7 @@ def test_guide_asks_first_materials_optional_and_appends_reports_once(setup):
     assert saved["status"] == "completed"
     assert "recent_messages" not in saved["result"]["output"]
     assert saved["result"]["question"] == "没有资料，开始分析"
-    assert {step["id"] for step in saved["trace"]} == {f"qa0{i}" for i in range(1, 7)}
+    assert [step["id"] for step in saved["trace"]] == ["scope", "retrieve", "analyze"]
     assert send(client, case, guide["id"], "没有资料，开始分析", "report")["messages"] == report["messages"]
     assert client.get(route + "/guides").json()["total"] == 1
     send(client, case, guide["id"], "接下来准备什么？", "continue")
@@ -166,7 +166,7 @@ def test_upgrade_backfills_old_messages_without_changing_them(setup):
     }
     NodeWorkspace(service)
     with closing(service.db.connect()) as conn:
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 27
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 28
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

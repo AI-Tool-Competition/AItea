@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import os
 import signal
 import socket
@@ -51,11 +52,42 @@ def test_exited_child_identity_cannot_be_recorded(monkeypatch, tmp_path):
 
 def test_occupied_port_is_rejected_without_stopping_listener():
     with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
+        try:
+            listener.bind(("127.0.0.1", 0))
+        except PermissionError:
+            pytest.skip("This execution sandbox prohibits listening sockets")
         listener.listen()
         with pytest.raises(dev.DevError, match="已被占用"):
             dev.available_port(listener.getsockname()[1])
         assert listener.fileno() >= 0
+
+
+@pytest.mark.parametrize(
+    "code,message",
+    [
+        (errno.EPERM, "禁止监听"),
+        (errno.EACCES, "禁止监听"),
+        (errno.EADDRINUSE, "已被占用"),
+        (errno.EADDRNOTAVAIL, "无法监听"),
+    ],
+)
+def test_port_failure_reports_the_actual_cause(monkeypatch, code, message):
+    class Probe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def setsockopt(self, *args):
+            pass
+
+        def bind(self, address):
+            raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(dev.socket, "socket", lambda *args: Probe())
+    with pytest.raises(dev.DevError, match=message):
+        dev.available_port(8483)
 
 
 def test_real_owned_process_and_pid_reuse_protection(tmp_path):
@@ -255,6 +287,7 @@ def test_state_file_private(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux /proc exec transition")
 def test_new_child_identity_waits_for_launch_environment(tmp_path, monkeypatch):
     environment = {**os.environ, "TEA_DEV_ROOT": str(tmp_path), "TEA_DEV_TOKEN": "delayed-identity"}
     process = subprocess.Popen(
@@ -660,8 +693,11 @@ def service_commands(args, root=ROOT):
 
 def test_background_services_serve_after_launcher_exits(tmp_path):
     with socket.socket() as api_socket, socket.socket() as web_socket:
-        api_socket.bind(("127.0.0.1", 0))
-        web_socket.bind(("127.0.0.1", 0))
+        try:
+            api_socket.bind(("127.0.0.1", 0))
+            web_socket.bind(("127.0.0.1", 0))
+        except PermissionError:
+            pytest.skip("This execution sandbox prohibits listening sockets")
         api_port = api_socket.getsockname()[1]
         web_port = web_socket.getsockname()[1]
     child = """import http.server, sys

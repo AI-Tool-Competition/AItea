@@ -21,7 +21,9 @@ def isolated_providers(monkeypatch):
         for field in ("BASE_URL", "API_KEY", "MODEL"):
             monkeypatch.setenv(f"{prefix}_{field}", "")
     monkeypatch.setenv("AGENT_TOOLS_BASE_URL", "")
+    monkeypatch.setenv("AGENT_TOOLS_API_KEY", "")
     monkeypatch.setenv("AGENT_REASONING_EFFORT", "")
+    monkeypatch.setenv("LEGAL_REASONING_EFFORT", "")
     for key in (
         "MINERU_API_TOKEN",
         "RAGFLOW_BASE_URL",

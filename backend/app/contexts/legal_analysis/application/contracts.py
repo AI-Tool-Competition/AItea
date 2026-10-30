@@ -1,12 +1,13 @@
 """Legal application input and output contracts."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, StrictFloat, StrictInt, StrictStr, model_validator
 
 from app.contexts.conversations.application.contracts import MessageStreamEvent
 from app.contexts.workflows.application.contracts import TemplateInput
 from app.shared.domain.models import StrictModel
+from app.contexts.legal_analysis.domain.analysis_models import BusinessContext
 
 
 class LegalStreamEvent(MessageStreamEvent):
@@ -17,6 +18,11 @@ class LegalAnalysisInput(StrictModel):
     stage_id: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=10000)
     client_request_id: str = Field(min_length=1, max_length=100)
+    jurisdictions: list[Literal["CN", "ID", "SG"]] | None = Field(default=None, min_length=1, max_length=3)
+    search_queries: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=4
+    )
+    business_context: BusinessContext = Field(default_factory=BusinessContext)
 
 
 class LegalRefreshInput(StrictModel):

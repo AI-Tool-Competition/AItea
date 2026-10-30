@@ -266,6 +266,7 @@ class AdminStudio:
                 analysis_id=previous["id"] if previous else None,
                 emit=progress,
                 check_cancelled=check_cancelled,
+                reviewed_workflow=True,
             )
         except (AppError, StreamCancelled) as error:
             if isinstance(error, AppError) and error.code == "legal_analysis_failed" and link:
@@ -343,18 +344,14 @@ class AdminStudio:
 
     @staticmethod
     def node_result(stage_id, report):
+        from app.contexts.legal_analysis.application.evidence import retrieval_mode
+
         result = report["result"]
-        outputs = [step.get("output_data") or {} for step in result.get("trace", [])]
-        hybrid = any(
-            output.get("retrieval_mode") == "ragflow"
-            or any(item.get("mode") == "ragflow" for item in output.get("coverage", []))
-            for output in outputs
-        )
         return {
             **result,
             "stage_id": stage_id,
             "checks": [],
-            "retrieval_mode": "ragflow" if hybrid else "unavailable",
+            "retrieval_mode": retrieval_mode(result.get("trace", [])),
             "legal_analysis_id": report["id"],
             "legal_revision": report["revision"],
             "status": "failed" if report["status"] in ("failed", "cancelled") else "completed",

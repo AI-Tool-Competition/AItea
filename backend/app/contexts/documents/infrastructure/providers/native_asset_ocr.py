@@ -668,11 +668,9 @@ def render_native_asset_bounded(manifest, asset, archive_path, archive_size):
 
 def _worker(connection, operation, args):
     try:
-        import resource
+        from app.contexts.documents.infrastructure.parsers.document_parser import _set_worker_limits
 
-        resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024,) * 2)
-        resource.setrlimit(resource.RLIMIT_CPU, (35,) * 2)
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        _set_worker_limits()
         if operation == "render":
             result = _render(*args)
         elif operation == "assemble":

@@ -49,6 +49,7 @@ const Answer = memo(function Answer({
       isAnimating={streaming}
       animated={false}
       caret="circle"
+      linkSafety={{ enabled: false }}
       aria-busy={streaming}
       parseIncompleteMarkdown={streaming}
     >
@@ -73,6 +74,16 @@ const ChatMessage = memo(function ChatMessage({
   onRetry?: () => void;
 }) {
   const sending = turn?.state === "sending";
+  const delivery = (message?.trace ?? turn?.steps ?? emptyTrace).find(
+    (step) => step.delivery_status,
+  )?.delivery_status;
+  const deliveryLabels = {
+    answered: "",
+    partially_answered: "部分完成 · 请查看尚未确认的事项",
+    needs_user_input: "需要补充信息",
+    execution_failed: "执行未完成 · 请查看具体原因后重试",
+    unsupported_jurisdiction: "当前专业资料能力尚未覆盖所问法域",
+  };
   const content =
     message?.content ??
     (role === "user" ? turn?.request.content : turn?.text) ??
@@ -104,9 +115,18 @@ const ChatMessage = memo(function ChatMessage({
           />
         )}
         <div className="tea-message-content">
+          {role === "assistant" &&
+            !sending &&
+            delivery &&
+            deliveryLabels[delivery] && (
+              <p className="tea-small-note" role="status">
+                {deliveryLabels[delivery]}
+              </p>
+            )}
           {role === "user" ? (
             content
-          ) : message?.guide_result ? (
+          ) : message?.guide_result &&
+            !message.trace.some((step) => step.id === "agent") ? (
             <div className="tea-chat-report">
               <h3>分析结论与下一步</h3>
               <p className="tea-small-note">
@@ -141,6 +161,15 @@ const ChatMessage = memo(function ChatMessage({
             ))}
           </details>
         )}
+        {role === "assistant" &&
+          message &&
+          delivery === "execution_failed" &&
+          onRetry && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={onRetry}>
+              <RotateCcw size={14} />
+              重试回复
+            </Button>
+          )}
         {role === "assistant" && turn && !sending && (
           <div className="tea-turn-feedback">
             <span role={turn.error ? "alert" : "status"}>
@@ -249,6 +278,16 @@ export function StageChat({
                     key={chat.messageKey(entry.message)}
                     role={entry.message.role}
                     message={entry.message}
+                    busy={chat.sending || chat.loading || !!chat.historyError}
+                    onRetry={
+                      chat.messages[
+                        chat.messages.findIndex(
+                          (item) => item.id === entry.message.id,
+                        ) - 1
+                      ]?.role === "user"
+                        ? () => chat.retryMessage(entry.message)
+                        : undefined
+                    }
                   />
                 ) : (
                   [

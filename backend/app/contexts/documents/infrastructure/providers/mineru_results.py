@@ -6,7 +6,6 @@ import hashlib
 import json
 import mimetypes
 import re
-import resource
 import stat
 import tempfile
 import uuid
@@ -310,7 +309,9 @@ def _read_archive(task, store, owner, *, preserve_render_pdf=False):
                             pdf_file.write(chunk)
                     if size != item.file_size:
                         raise ValueError("MinerU 结果包原件输出长度不一致。")
-                    is_exact_part = size == part_ref["size"] and digest.hexdigest() == part_ref["content_hash"]
+                    is_exact_part = (
+                        size == part_ref["size"] and digest.hexdigest() == part_ref["content_hash"]
+                    )
                     if not is_exact_part:
                         if bytes(prefix) != b"%PDF-":
                             raise ValueError("MinerU 结果包原件输出不是有效 PDF。")
@@ -727,9 +728,9 @@ def _assemble(tasks, source_hash, filename, files_dir, owner, previous_manifest)
 
 def worker(connection, operation, arguments):
     try:
-        resource.setrlimit(resource.RLIMIT_AS, (1536 * 1024 * 1024,) * 2)
-        resource.setrlimit(resource.RLIMIT_CPU, (90,) * 2)
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        from app.contexts.documents.infrastructure.parsers.document_parser import _set_worker_limits
+
+        _set_worker_limits(1536 * 1024 * 1024, 90)
         if operation == "prepare":
             result = _prepare(*arguments)
         elif operation == "extract_render_pdf":

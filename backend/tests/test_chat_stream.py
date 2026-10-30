@@ -61,7 +61,7 @@ def test_stream_validates_ownership_and_stage_before_headers(chat):
     assert client.post(url, json=payload).status_code == 404
 
 
-def provider(monkeypatch, chunks):
+def provider(monkeypatch, chunks, *, streaming=True):
     import httpx
 
     monkeypatch.setenv("LLM_MODEL", "test-model")
@@ -93,7 +93,7 @@ def provider(monkeypatch, chunks):
             pass
 
         def stream(self, *args, **kwargs):
-            assert kwargs["json"]["stream"] is True
+            assert kwargs["json"].get("stream", False) is streaming
             sent.append(kwargs["json"])
             return ProviderResponse()
 
@@ -146,6 +146,57 @@ def test_legal_guidance_uses_the_selected_agent_thinking_effort(monkeypatch):
     )
     assert sent[0]["model"] == "Nemotron-3.5"
     assert sent[0]["reasoning_effort"] == "high"
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "high"])
+def test_deepseek_structured_calls_keep_selected_effort_and_json(monkeypatch, effort):
+    body = json.dumps(
+        {"choices": [{"finish_reason": "stop", "message": {"content": '{"issues":[]}'}}]}
+    ).encode()
+    sent = provider(monkeypatch, lambda: iter([body]), streaming=False)
+    monkeypatch.setenv("AGENT_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("AGENT_MODEL", "deepseek-flash")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", effort)
+    assistant.generate_guidance(
+        {"language": "zh-CN", "instructions": ""},
+        {},
+        "JSON",
+        {},
+        [],
+        [],
+        "",
+        max_tokens=6000,
+        on_delta=lambda _: None,
+        structured=True,
+    )
+    assert sent[0]["thinking"] == {"type": "disabled" if effort == "none" else "enabled"}
+    assert sent[0]["reasoning_effort"] == effort
+    assert sent[0]["response_format"] == {"type": "json_object"}
+    assert sent[0]["max_tokens"] == 6000
+
+
+def test_nemotron_structured_calls_request_json_and_preserve_high_effort(monkeypatch):
+    body = json.dumps(
+        {"choices": [{"finish_reason": "stop", "message": {"content": '{"issues":[]}'}}]}
+    ).encode()
+    sent = provider(monkeypatch, lambda: iter([body]), streaming=False)
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
+    assistant.generate_guidance(
+        {"language": "zh-CN", "instructions": ""},
+        {},
+        "JSON",
+        {},
+        [],
+        [],
+        "",
+        max_tokens=3500,
+        structured=True,
+    )
+    assert sent[0]["model"] == "Nemotron-3.5"
+    assert sent[0]["reasoning_effort"] == "high"
+    assert sent[0]["response_format"] == {"type": "json_object"}
+    assert sent[0]["max_tokens"] == 3500
 
 
 def test_chat_stream_reuses_opaque_openai_cache_key_and_logs_usage(chat, monkeypatch, caplog):

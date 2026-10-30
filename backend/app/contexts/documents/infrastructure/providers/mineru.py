@@ -609,6 +609,7 @@ class MinerUParser:
                     ),
                 ),
                 120,
+                memory_limit=1536 * 1024 * 1024,
             )
             with self.db.transaction() as conn:
                 self._guard(conn, doc, claim)
@@ -788,6 +789,7 @@ class MinerUParser:
                     ),
                 ),
                 120,
+                memory_limit=1536 * 1024 * 1024,
             )
             result["remote_parse"].update(profile=profile, profile_hash=fingerprint)
             if retry_generation:

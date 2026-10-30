@@ -96,7 +96,7 @@ def test_legal_debugger_pauses_and_resumes_checked_legal_state(client):
     assert stale.status_code == 409 and stale.json()["error"]["code"] == "stale_checkpoint"
 
 
-@pytest.mark.parametrize("mode", ["unavailable", "ragflow"])
+@pytest.mark.parametrize("mode", ["unavailable", "ragflow", "local_pack", "local_pack_vector"])
 @pytest.mark.parametrize("stop_after_step_id", ["qa01", "qa06"])
 def test_legal_debugger_reports_actual_retrieval_mode(client, monkeypatch, mode, stop_after_step_id):
     monkeypatch.setattr(

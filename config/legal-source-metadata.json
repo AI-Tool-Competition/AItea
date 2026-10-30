@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "country": "ID",
+      "document_id": "LAW-3dd44e8b1c43705e87545f86",
+      "metadata": {
+        "superseded_at": "2025-06-05",
+        "superseded_by": {
+          "document_id": "LAW-dbb42d7995e90ff1bdfd25c6",
+          "title": "Peraturan Pemerintah Nomor 28 Tahun 2025",
+          "source_url": "https://jdih-storage.bkpm.go.id/jdih/jdih/2025PP28Eng-.pdf",
+          "article": "550(b), 552"
+        },
+        "version_relations": [
+          {
+            "relation_type": "full_repeal",
+            "effective_date": "2025-06-05",
+            "evidence_record_id": "ID:original:FILE-339813752601521dcb5c-operative-A550-1",
+            "date_evidence_record_id": "ID:original:FILE-339813752601521dcb5c-operative-A552-1",
+            "source_hash": "339813752601521dcb5c1802b0151370ef8bb82b95e56e35f5b2896d1eb195c1",
+            "quote": "Regulation of the Government Number 5 of 2021 on the Implementation of Risk-Based Business Licensing (State Gazette of the Republic of Indonesia 2021 Number 15, Supplement to the State Gazette WINDIANINGRUM | DIUNDUH PADA 25 JULI 2025 202 / 268 of the Republic of Indonesia Number 6617), shall be repealed and declared invalid."
+          }
+        ]
+      }
+    },
+    {
+      "country": "ID",
+      "document_id": "LAW-dbb42d7995e90ff1bdfd25c6",
+      "metadata": {
+        "published_at": "2025-06-05",
+        "effective_from": "2025-06-05",
+        "date_evidence": [
+          {
+            "record_id": "ID:original:FILE-339813752601521dcb5c-operative-A552-1",
+            "source_hash": "339813752601521dcb5c1802b0151370ef8bb82b95e56e35f5b2896d1eb195c1",
+            "source_url": "https://jdih-storage.bkpm.go.id/jdih/jdih/2025PP28Eng-.pdf",
+            "article": "552",
+            "quote": "This Regulation of the Government comes into force on the date of its promulgation.",
+            "date_quote": "Promulgated in Jakarta, On 5 June 2025"
+          }
+        ]
+      }
+    },
+    {
+      "country": "CN",
+      "document_id": "CN-LAW-ba22e1df80f6156b18bd",
+      "source_hash": "1fd0649a1572174b3fc47fce20d7b22c5aae06fb68fe16eaef4e7ea21af9de72",
+      "metadata": {
+        "catalog_title": "食品（含保健食品）经营许可服务指南",
+        "full_text_available": false,
+        "content_role": "secondary_summary",
+        "kind": "guidance",
+        "source_identity_evidence": {
+          "record_id": "CN:CN-LAW-ba22e1df80f6156b18bd-R0001",
+          "quote": "食品（含保健食品）经营许可服务指南"
+        }
+      }
+    }
+  ]
+}

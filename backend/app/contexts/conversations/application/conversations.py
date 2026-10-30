@@ -126,17 +126,13 @@ class ConversationService:
             checkpoint = options.get("on_checkpoint")
 
             def adapt(result):
-                outputs = [step.get("output_data") or {} for step in result.get("trace", [])]
-                hybrid = any(
-                    output.get("retrieval_mode") == "ragflow"
-                    or any(item.get("mode") == "ragflow" for item in output.get("coverage", []))
-                    for output in outputs
-                )
+                from app.contexts.legal_analysis.application.evidence import retrieval_mode
+
                 return {
                     **result,
                     "checks": [],
                     "stage_id": stage["id"],
-                    "retrieval_mode": "ragflow" if hybrid else "unavailable",
+                    "retrieval_mode": retrieval_mode(result.get("trace", [])),
                 }
 
             legal_options = {
@@ -159,7 +155,9 @@ class ConversationService:
                     step_id, adapt(result), state
                 )
             return adapt(
-                self.app.legal.execute_engine(owner, template, stage, content, facts, **legal_options)
+                self.app.legal.execute_engine(
+                    owner, template, stage, content, facts, reviewed_workflow=True, **legal_options
+                )
             )
         return run_workflow(self.app, owner, template, stage, content, tasks, **options)
 

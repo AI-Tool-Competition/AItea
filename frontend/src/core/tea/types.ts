@@ -135,6 +135,16 @@ export interface TaskState extends TaskDefinition {
   needs_review: boolean;
   revision: number;
   values: Record<string, string | number>;
+  field_sources?: Record<
+    string,
+    {
+      kind: "user_statement";
+      quote: string;
+      source_message_id: string;
+      agent_run_id: string | null;
+      updated_at: string;
+    }
+  >;
   evidence_ids: string[];
   confirmed: boolean;
   verification: Verification | null;
@@ -235,12 +245,16 @@ export interface Citation {
   id?: string;
   chunk_id?: string;
   chunk_hash?: string;
-  metadata?: DocumentMetadata;
+  metadata?: Partial<DocumentMetadata> & {
+    evidence_store?: string;
+    source_type?: string;
+    content_role?: string;
+  };
   metadata_revision?: number;
-  document_id: string;
+  document_id?: string;
   title: string;
   excerpt: string;
-  locator: Record<string, unknown>;
+  locator?: Record<string, unknown>;
   source_url?: string;
   document_version?: number;
 }
@@ -254,8 +268,12 @@ export interface ToolOutputPreview {
 export interface ToolCall {
   id: string;
   name:
+    | "update_business_card"
     | "search_documents"
     | "search_legal_evidence"
+    | "lookup_chinese_law"
+    | "read_law"
+    | "get_law_versions"
     | "check_materials"
     | "generate_guidance"
     | "guide_business"
@@ -263,14 +281,20 @@ export interface ToolCall {
     | "draft_document"
     | "get_handoff"
     | "discover_tools"
+    | "tool_search"
     | "load_skill"
     | "list_documents"
     | "read_document"
     | "inspect_image"
+    | "convert_long_image_to_pdf"
+    | "inspect_document_file"
+    | "create_document_file"
+    | "edit_document_file"
     | "web_search"
     | "recall_memory"
     | "remember_memory"
     | "update_plan"
+    | "update_task_brief"
     | "agent_turn"
     | "compact_context"
     | "read_tool_result";
@@ -285,6 +309,12 @@ export interface ToolCall {
   output_preview?: ToolOutputPreview | null;
 }
 export interface TraceStep {
+  delivery_status?:
+    | "answered"
+    | "partially_answered"
+    | "needs_user_input"
+    | "execution_failed"
+    | "unsupported_jurisdiction";
   run_id?: string;
   sequence?: number;
   tools?: ToolCall[];
@@ -318,6 +348,32 @@ export interface Message {
   guide_result?: LegalResult | null;
 }
 export type ChatSkill =
+  | "business"
+  | "export_planning"
+  | "legal_lookup"
+  | "contract_review"
+  | "litigation_analysis"
+  | "long_image_to_pdf"
+  | "document_operations"
+  | "china-lawyer-analyst"
+  | "chinese-law-verifier"
+  | "contract-review"
+  | "legal-writing"
+  | "litigation-analysis"
+  | "long-image-to-pdf"
+  | "document-operations"
+  | "legal-research"
+  | "foreign-law-research"
+  | "proposition-checking"
+  | "adversarial-qc"
+  | "sgcite"
+  | "bart-statutory-reference-checker"
+  | "document-fill"
+  | "coquill"
+  | "legal-translation"
+  | "contract-qa"
+  | "redlines"
+  | "comms-improver"
   | "guidance"
   | "materials"
   | "legal"
@@ -362,7 +418,14 @@ export type MessageStreamEvent =
   | { event: "step"; data: TraceStep };
 export interface Capabilities {
   assistant_mode: "demo" | "live";
-  retrieval_mode: "lexical" | "hybrid" | "ragflow" | "unavailable";
+  retrieval_mode:
+    | "lexical"
+    | "hybrid"
+    | "ragflow"
+    | "local_pack"
+    | "local_pack_vector"
+    | "official_web"
+    | "unavailable";
   parser: string;
 }
 export interface SearchResult {
@@ -838,6 +901,51 @@ export interface LegalDeadline {
   citation_ids: string[];
   inputs: Record<string, unknown>;
 }
+export interface BusinessContext {
+  actors: {
+    id: string;
+    name: string;
+    entity_type: string;
+    jurisdiction: string | null;
+    roles: string[];
+    identity_status: "identified" | "unknown";
+    sources: string[];
+  }[];
+  relationships: {
+    from_actor_id: string;
+    to_actor_id: string;
+    relationship: string;
+    sources: string[];
+  }[];
+  credentials: {
+    id: string;
+    actor_id: string;
+    credential_type: string;
+    scope: string;
+    proof: string;
+    status: "reported_completed" | "documented" | "unknown";
+    sources: string[];
+  }[];
+}
+export interface LegalObligation {
+  id: string;
+  matter: string;
+  kind: "statutory" | "contractual" | "right";
+  legal_actor_id: string | null;
+  performer_id: string | null;
+  registrant_id: string | null;
+  business_responsible_id: string | null;
+  trigger: string;
+  citation_ids: string[];
+  prerequisites: string[];
+  completion_proof: string[];
+  status: "completed" | "pending" | "not_applicable" | "unconfirmed";
+  credential_ids: string[];
+  fact_sources: string[];
+  validity_status?: "reference_checked" | "unconfirmed" | "historical";
+  fact_status?: "sourced" | "unknown";
+  reason: string;
+}
 export interface LegalIssue {
   id: string;
   question: string;
@@ -851,12 +959,16 @@ export interface LegalIssue {
     label: string;
     state: "met" | "not_met" | "unknown" | "not_applicable";
     fact_keys: string[];
+    fact_sources?: string[];
     citation_ids: string[];
     reason: string;
   }[];
   status: "supported" | "unsupported" | "conditional" | "undetermined";
   conclusion: string;
   explanation: string;
+  rule_interpretation?: string;
+  exceptions?: string[];
+  obligations?: LegalObligation[];
   citations: Citation[];
   deadlines: LegalDeadline[];
   actions: {
@@ -869,12 +981,24 @@ export interface LegalIssue {
       | "commercial"
       | "unverified";
     details: string;
+    obligation_ids?: string[];
+    responsible_actor_id?: string | null;
+    timing?: string;
+    prerequisites?: string[];
+    completion_proof?: string[];
   }[];
   gaps: string[];
   needs_review: boolean;
 }
 export interface LegalResult {
   question: string;
+  task_type?:
+    | "lookup"
+    | "consultation"
+    | "dispute"
+    | "contract_review"
+    | "business_plan";
+  business_context?: BusinessContext;
   issues: LegalIssue[];
   facts: LegalFact[];
   followups: LegalFactRequirement[];

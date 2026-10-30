@@ -1,0 +1,33 @@
+[
+  {
+    "id": "payment_natural_query",
+    "country": "CN",
+    "query": "国内茶叶买卖合同，已交货，约定货到30天付款，买方逾期20天不付货款。能否要求付款并承担违约责任？",
+    "expected": [
+      {"title": "中华人民共和国民法典", "article": "577"},
+      {"title": "中华人民共和国民法典", "article": "579"},
+      {"title": "中华人民共和国民法典", "article": "626"},
+      {"title": "中华人民共和国民法典", "article": "628"}
+    ],
+    "forbidden": [["中华人民共和国民法典", "260"]]
+  },
+  {
+    "id": "payment_legal_concepts",
+    "country": "CN",
+    "query": "民法典 买卖合同 买受人 支付价款 支付时间 不履行金钱债务 违约责任",
+    "expected": [
+      {"title": "中华人民共和国民法典", "article": "577"},
+      {"title": "中华人民共和国民法典", "article": "579"},
+      {"title": "中华人民共和国民法典", "article": "626"},
+      {"title": "中华人民共和国民法典", "article": "628"}
+    ],
+    "forbidden": [["中华人民共和国民法典", "260"]]
+  },
+  {
+    "id": "exact_payment_article",
+    "country": "CN",
+    "query": "《中华人民共和国民法典》第五百七十九条",
+    "expected": [{"title": "中华人民共和国民法典", "article": "579"}],
+    "forbidden": [["中华人民共和国民法典", "260"]]
+  }
+]

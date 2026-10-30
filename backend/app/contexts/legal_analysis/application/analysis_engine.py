@@ -279,6 +279,10 @@ class _LegalRunner:
                 ],
             )
         )
+        if requested := options.get("jurisdictions"):
+            if not set(requested) <= set(self.allowed):
+                raise LegalEngineError("分析法域超出业务允许范围。")
+            self.allowed = _unique(requested)
         clean_facts = [LegalFact.model_validate(item).model_dump() for item in facts]
         if len(clean_facts) > MAX_ANALYSIS_FACTS or len({item["key"] for item in clean_facts}) != len(
             clean_facts
@@ -294,6 +298,7 @@ class _LegalRunner:
                 "case_id": options.get("case_id"),
                 "owner": owner,
                 "document_ids": options.get("document_ids"),
+                "jurisdictions": self.allowed,
                 "as_of": str(self.as_of),
                 "mode": self.mode,
                 "case_context": self.case_context,
@@ -395,6 +400,7 @@ class _LegalRunner:
                     [],
                     "",
                     max_tokens=6000,
+                    structured=True,
                     prompt_cache_key=self.options.get("prompt_cache_key"),
                     on_delta=(lambda _: None) if self.options.get("check_cancelled") else None,
                     check_cancelled=self.cancel,
@@ -1289,6 +1295,7 @@ def run_legal_analysis(
     on_checkpoint=None,
     context=None,
     prompt_cache_key=None,
+    jurisdictions=None,
 ):
     return _LegalRunner(
         service,
@@ -1308,4 +1315,5 @@ def run_legal_analysis(
         on_checkpoint=on_checkpoint,
         context=context,
         prompt_cache_key=prompt_cache_key,
+        jurisdictions=jurisdictions,
     ).run()

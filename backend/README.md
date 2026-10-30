@@ -1,6 +1,6 @@
 # 后端目录与职责
 
-HTTP 请求由 `app/main.py` 进入，`interfaces/http/factory.py` 装配路由和后台任务，`bootstrap.py` 装配业务服务。配置和存储路径统一经过 `configuration/`，不从业务模块层级推算仓库位置。
+HTTP 请求由 `app/main.py` 进入，`interfaces/http/factory.py` 装配路由，`bootstrap.py` 装配业务服务。聊天 API 默认不启动采集处理队列，独立后台入口为 `scripts/run_workers.py`。配置和存储位置统一经过 `configuration/`，不从业务模块层级推算仓库位置。
 
 ```text
 backend/
@@ -48,7 +48,10 @@ backend/
 | 历史解析证据恢复 | `contexts/documents/infrastructure/recovery/` |
 | 来源清单、采集队列、导入 | `contexts/ingestion/application/source_catalog.py`、`collection_jobs.py`、`official_source_import.py` |
 | 官方站点结构适配 | `contexts/ingestion/infrastructure/source_adapters/`，通用发现入口 `link_discovery.py` |
-| 法律分析与人工修订 | `contexts/legal_analysis/application/analysis_engine.py`、`analysis_service.py` |
+| 普通问答、工具与运行收据 | `contexts/conversations/application/agent_loop.py`、`agent_tools.py`、`agent_journal.py` |
+| 国别原文、语义与版本资料 | `contexts/documents/infrastructure/country_packs.py`、`country_semantic.py`、`country_clauses.py` |
+| 法律证据适配与保留研究入口 | `contexts/legal_analysis/application/evidence.py`、`analysis_service.py`；旧报告引擎不参与普通问答 |
+| 独立采集、解析和索引进程 | 仓库根目录 `scripts/run_workers.py` |
 | 备份与迁移 | `shared/infrastructure/operations/instance_storage.py`、`data_backup.py` |
 
 接口契约仍在各上下文的 `application/contracts.py` 定义，经 `shared/application/models.py` 显式汇总。现有查询与事务属于各应用服务；不另造空 Repository 或 ORM 层。对外 API、数据库表名、历史文档标识不随 Python 包名变化。

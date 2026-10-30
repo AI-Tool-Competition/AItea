@@ -2,64 +2,194 @@
 
 from dataclasses import dataclass
 
+from app.configuration.paths import InstancePaths
+
+
+def resolve_skill(name):
+    name = SKILL_ALIASES.get(name, name)
+    if name not in SKILLS:
+        raise ValueError("未找到该技能")
+    return name
+
+
+def read_skill(name, resource="SKILL.md"):
+    name = resolve_skill(name)
+    if resource not in ("SKILL.md", *SKILLS[name].resources):
+        raise ValueError("未找到该技能资源")
+    root = (InstancePaths.resolve().catalogs / "agent-skills" / name).resolve()
+    path = (root / resource).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("技能资源位置无效")
+    if path.stat().st_size > 24000:
+        raise ValueError("技能文档超过读取上限")
+    return path.read_text(encoding="utf-8")
+
 
 @dataclass(frozen=True)
 class AgentSkill:
     label: str
     description: str
     tools: tuple[str, ...]
-    instructions: str
+    resources: tuple[str, ...] = ()
 
 
 SKILLS = {
     "guidance": AgentSkill(
         "办理指导",
-        "解释当前节点要求并给出下一步建议。",
-        ("guide_business", "recall_memory"),
-        "先读当前节点、任务状态和用户问题，需要时回忆讨论、检索资料。建议应引用实际结果，不把建议说成已办理。",
+        "用茶商能理解的话说明下一步，询问影响建议的信息并填写业务卡。",
+        ("guide_business", "recall_memory", "update_business_card"),
     ),
     "materials": AgentSkill(
         "资料核对",
         "找出材料缺口与事实冲突。",
-        ("check_materials", "list_documents", "read_document", "search_documents"),
-        "结合规则检查和原文核对；需要看包装图时直接调用 inspect_image。未指定任务时核对整个节点；聊天已提供的信息注明待填写或核验，不重复索要，不自行核验通过。",
+        ("check_materials", "list_documents", "read_document", "search_documents", "update_business_card"),
     ),
     "legal": AgentSkill(
         "法律分析",
-        "使用已配置的法域和证据门禁进行分析。",
-        ("analyze_legal", "search_legal_evidence"),
-        "法律结论交由 analyze_legal 的既有分析引擎；需要近期信息可组合 web_search，但网页线索不是已审核法规。明确依据不足、适用期与复核状态。",
+        "优先查内部法律库，按需开展中国法或外国法研究、规则适用、法律命题与来源对应检查，解释事实缺项和行动。",
+        (
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "list_documents",
+            "read_document",
+            "search_documents",
+        ),
+        ("references/interpretation.md", "references/research.md", "references/foreign-law.md"),
     ),
     "draft": AgentSkill(
-        "文稿起草",
-        "结合事实和依据生成可编辑文稿。",
-        ("draft_document", "guide_business", "recall_memory"),
-        "先收集已知信息和目标任务编号；涉及法律要求可组合法律分析。用户提供但未核验的信息注明来源，未知信息标待补充；不把已口述的信息丢弃或写成已确认。组织完整 Markdown 正文后调用 draft_document，返回保存结果前不声称文稿已经创建。",
+        "法律文书起草与改写",
+        "起草、改写法律与业务文书；从本业务材料溯源填写模板，按需翻译，使用真实文档工具交付文件。",
+        (
+            "draft_document",
+            "list_documents",
+            "read_document",
+            "search_documents",
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "guide_business",
+            "recall_memory",
+            "inspect_document_file",
+            "create_document_file",
+            "edit_document_file",
+        ),
+        ("references/template-fill.md", "references/translation.md"),
     ),
     "handoff": AgentSkill(
         "节点交接",
         "回顾前序节点成果、待办和复核要求。",
         ("get_handoff", "recall_memory", "guide_business"),
-        "读取服务端节点进度，区分已完成、待核对和历史讨论。指出当前可做的下一步，不通过聊天改变进度。",
     ),
     "research": AgentSkill(
         "联网调研",
         "实时搜索外部来源并与业务法规交叉核对。",
         ("web_search", "search_legal_evidence"),
-        "搜索词不要包含个人身份信息或未公开商业秘密。保留网页链接和抓取时间，优先官方原文；不把搜索摘要当作已审核的法规证据。",
     ),
     "vision": AgentSkill(
         "图片核对",
         "查看当前业务上传的图片并与材料核对。",
         ("list_documents", "inspect_image", "check_materials"),
-        "从资料清单选择图片及不可变版本；原始图片省略 image_id，页面图使用 read_document 返回的真实编号。解析失败不影响尝试原图识别；识别失败时明确无法观察，不能用历史对话猜测图中文字。图片分析只是本轮观察，不替代 MinerU 入库解析和审核。",
     ),
+    "business": AgentSkill(
+        "商业模式决策", "比较渠道、收入、投入和交易风险，形成有理由的建议。", ("web_search",)
+    ),
+    "export_planning": AgentSkill(
+        "跨境交易准备",
+        "识别交易主体，组织商业选择、合规依据及办理顺序。",
+        ("search_legal_evidence", "read_law", "web_search"),
+    ),
+    "legal_lookup": AgentSkill(
+        "法规原文查询",
+        "优先查内部原文和版本，缺项补查官方来源；支持中国法条定位及新加坡法规、判例引用核对方法。",
+        ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions", "web_search"),
+        ("references/singapore.md",),
+    ),
+    "contract_review": AgentSkill(
+        "合同审查",
+        "回答合同具体问题或审查全文，引用原条款；对照用户业务与谈判底线，区分法律风险和交易影响，给出替换条文。",
+        (
+            "list_documents",
+            "read_document",
+            "search_documents",
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "draft_document",
+            "recall_memory",
+            "inspect_document_file",
+            "create_document_file",
+            "edit_document_file",
+        ),
+        ("references/practice-profile.md", "references/revisions.md"),
+    ),
+    "litigation_analysis": AgentSkill(
+        "诉讼材料与争议分析",
+        "读取起诉材料、证据、裁判和庭审记录，区分各方主张与法院认定，解释请求、证明缺口和后续行动。",
+        (
+            "list_documents",
+            "read_document",
+            "search_documents",
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "draft_document",
+        ),
+        ("references/materials.md",),
+    ),
+    "long_image_to_pdf": AgentSkill(
+        "长截图转 PDF",
+        "将本业务上传的长截图重叠分页，按行或列排成 A4 PDF，保留原图并提供下载；不进行 OCR。",
+        ("list_documents", "convert_long_image_to_pdf"),
+    ),
+    "document_operations": AgentSkill(
+        "文档生成与编辑",
+        "生成可下载的Word、PDF、Excel、PPT及文本文件；读取原件后定点修改文字或单元格，保留原件并检查保存结果。",
+        ("list_documents", "inspect_document_file", "create_document_file", "edit_document_file"),
+        ("references/formats.md",),
+    ),
+}
+
+SKILL_ALIASES = {
+    "china-lawyer-analyst": "legal",
+    "chinese-law-verifier": "legal_lookup",
+    "contract-review": "contract_review",
+    "legal-writing": "draft",
+    "litigation-analysis": "litigation_analysis",
+    "long-image-to-pdf": "long_image_to_pdf",
+    "document-operations": "document_operations",
+    "legal-research": "legal",
+    "foreign-law-research": "legal",
+    "proposition-checking": "legal",
+    "adversarial-qc": "legal",
+    "sgcite": "legal_lookup",
+    "bart-statutory-reference-checker": "legal_lookup",
+    "document-fill": "draft",
+    "coquill": "draft",
+    "legal-translation": "draft",
+    "contract-qa": "contract_review",
+    "redlines": "contract_review",
+    "comms-improver": "guidance",
 }
 
 
 def skill_catalog():
     return [
-        {"id": key, "label": value.label, "description": value.description, "tools": list(value.tools)}
+        {
+            "id": key,
+            "label": value.label,
+            "description": value.description,
+            "aliases": [alias for alias, target in SKILL_ALIASES.items() if target == key],
+            "tools": list(value.tools),
+        }
         for key, value in SKILLS.items()
     ]
 
@@ -73,7 +203,7 @@ COMPOSITION_HINTS = [
     {
         "label": "联网 + 法律分析",
         "skills": ["research", "legal"],
-        "description": "查找近期官方信息，再与已审核法规交叉核对。",
+        "description": "查找近期官方原文，与内部法规的版本和适用期间交叉核对。",
     },
     {
         "label": "法律分析 + 文稿",

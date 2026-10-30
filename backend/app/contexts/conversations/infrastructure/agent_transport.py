@@ -3,6 +3,7 @@
 import asyncio
 import codecs
 import json
+import math
 import os
 import re
 from urllib.parse import urlsplit
@@ -21,12 +22,13 @@ def provider_settings():
         "key": os.getenv("AGENT_API_KEY") or os.getenv("LLM_API_KEY") or "",
         "model": model,
         "reasoning_effort": reasoning_effort(model),
+        "legal_reasoning_effort": reasoning_effort(model, os.getenv("LEGAL_REASONING_EFFORT")),
     }
 
 
-def reasoning_effort(model):
+def reasoning_effort(model, override=None):
     name = model.lower().rsplit("/", 1)[-1]
-    effort = (os.getenv("AGENT_REASONING_EFFORT") or "").strip().lower()
+    effort = (override or os.getenv("AGENT_REASONING_EFFORT") or "").strip().lower()
     if not effort:
         return "high" if name.startswith("nemotron-3") else "low" if name.startswith("gemini-") else None
     if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "auto"):
@@ -90,11 +92,59 @@ def valid_message(message, finish):
         raise ValueError("incomplete answer")
     # Keep provider thinking separate from the answer, but replay it verbatim
     # with tool results, like sub2api web chat. Never render opaque signatures.
-    return {
+    valid = {
         key: value
         for key, value in {**message, "role": "assistant", "content": content}.items()
         if key in ("role", "content", "reasoning_content", "tool_calls", "extra_content")
     }
+    if not calls:
+        valid.pop("tool_calls", None)
+    return valid
+
+
+def invalid_response(reason):
+    """Persist a controlled protocol diagnostic without response text or secrets."""
+    error = ToolFailure("invalid_response", f"模型响应不完整或格式不正确（{reason}）。")
+    error.response_error = reason
+    return error
+
+
+def stream_idle_timeout():
+    try:
+        value = float(os.getenv("AGENT_STREAM_IDLE_TIMEOUT", "30"))
+    except ValueError:
+        value = 0
+    if not math.isfinite(value) or not 0 < value <= 120:
+        raise ToolFailure("not_configured", "模型流空闲超时须为0至120秒之间的有效正数。")
+    return value
+
+
+def provider_stream_error(payload, *, retryable):
+    """Classify a confirmed failure without retaining the provider's message."""
+    detail = payload.get("error")
+    detail = detail if isinstance(detail, dict) else {}
+    status = detail.get("status") or detail.get("status_code") or payload.get("status_code")
+    code = detail.get("code") or detail.get("type")
+    code = code if isinstance(code, str) else None
+    denied = str(status) in {"401", "403"} or code in {
+        "invalid_api_key",
+        "authentication_error",
+        "permission_denied",
+        "insufficient_quota",
+    }
+    limited = str(status) == "429" or code in {"rate_limit_exceeded", "rate_limit_error"}
+    permanent = str(status) in {"400", "404", "405", "422"} or code in {
+        "invalid_request_error",
+        "context_length_exceeded",
+        "model_not_found",
+    }
+    error = ToolFailure(
+        "access_denied" if denied else "rate_limited" if limited else "upstream_error",
+        "模型供应商报告生成失败。",
+    )
+    error.response_error = "provider_stream_error"
+    error.retryable = retryable and not (denied or limited or permanent)
+    return error
 
 
 async def agent_turn(
@@ -103,19 +153,31 @@ async def agent_turn(
     on_delta,
     check,
     *,
-    timeout=180,
+    timeout=None,
     on_usage=None,
     on_summary=None,
     cache_key=None,
     request_key=None,
+    tool_choice="auto",
+    max_tokens=6000,
 ):
+    if timeout == math.inf:
+        timeout = None
     settings = provider_settings()
     body = {
         "model": settings["model"],
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": "auto",
-        "max_tokens": 6000,
+        "messages": [
+            {key: value for key, value in message.items() if not (key == "tool_calls" and value == [])}
+            for message in messages
+        ],
+        **(
+            {"tools": tools, "tool_choice": tool_choice}
+            if tools
+            else {"tool_choice": "none"}
+            if tool_choice == "none"
+            else {}
+        ),
+        "max_tokens": max_tokens,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
@@ -124,19 +186,60 @@ async def agent_turn(
     model_name = settings["model"].lower().rsplit("/", 1)[-1]
     gemini = model_name.startswith("gemini-")
     visible_thinking = gemini or model_name.startswith("nemotron-3")
+    capture_reasoning = visible_thinking or model_name.startswith("deepseek-")
     if settings["reasoning_effort"]:
         body["reasoning_effort"] = settings["reasoning_effort"]
+    if urlsplit(settings["base"]).hostname == "api.deepseek.com" and (
+        tools or settings["reasoning_effort"] == "none"
+    ):
+        # DeepSeek rejects required/named tool choice in thinking mode. Keep
+        # capability dispatch non-thinking; final composition uses the chosen
+        # effort and has no tools. This also avoids mixed-mode tool histories.
+        body["thinking"] = {"type": "disabled"}
+        body["reasoning_effort"] = "none"
+    elif urlsplit(settings["base"]).hostname == "api.deepseek.com" and settings["reasoning_effort"]:
+        body["thinking"] = {"type": "enabled"}
     if gemini and on_summary:
         body["generationConfig"] = {"thinkingConfig": {"includeThoughts": True}}
     if len(json.dumps(body, ensure_ascii=False).encode()) > 256 * 1024:
         raise ToolFailure("input_limit", "上下文超过预算，请缩小问题范围。")
 
+    usage = {}
+    received = {"content": "", "tool_calls": False, "reasoning_characters": 0, "finish_reason": None}
+    idle_seconds = stream_idle_timeout()
+    idle_guard = None
+
     async def read():
+        nonlocal idle_guard
         decoder = codecs.getincrementaldecoder("utf-8")()
         buffer, size, finish, content, reasoning = "", 0, None, "", ""
         calls, extra = {}, {}
-        usage = {}
-        async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+
+        def assembled():
+            message = {"content": content, "tool_calls": [calls[i] for i in sorted(calls)]}
+            if extra:
+                message["extra_content"] = extra
+            if reasoning:
+                message["reasoning_content"] = reasoning
+            if finish == "length":
+                raise ToolFailure("generation_truncated", "模型已达到输出长度上限，未执行不完整工具请求。")
+            try:
+                return valid_message(message, finish)
+            except ValueError as error:
+                raise invalid_response(str(error)) from error
+
+        connection_seconds = min(10, timeout) if timeout is not None else 10
+        network_timeout = httpx.Timeout(
+            timeout,
+            connect=connection_seconds,
+            read=min(idle_seconds, timeout) if timeout is not None else idle_seconds,
+            pool=connection_seconds,
+        )
+        async with (
+            asyncio.timeout(timeout),
+            asyncio.timeout(idle_seconds) as idle_guard,
+            httpx.AsyncClient(timeout=network_timeout, trust_env=False) as client,
+        ):
             async with client.stream(
                 "POST",
                 settings["base"] + "/chat/completions",
@@ -154,7 +257,7 @@ async def agent_turn(
                     # Nemotron can emit one small thinking fragment per token;
                     # SSE envelopes count toward this bound as well as content.
                     if size > 4 * 1024 * 1024:
-                        raise ToolFailure("invalid_response", "模型响应超过大小限制。")
+                        raise invalid_response("response_size_limit")
                     buffer += decoder.decode(part)
                     while boundary := re.search(r"\r?\n\r?\n", buffer):
                         frame, buffer = buffer[: boundary.start()], buffer[boundary.end() :]
@@ -170,21 +273,12 @@ async def agent_turn(
                             continue
                         try:
                             if data.strip() == "[DONE]":
-                                message = {
-                                    "content": content,
-                                    "tool_calls": [calls[i] for i in sorted(calls)],
-                                }
-                                if extra:
-                                    message["extra_content"] = extra
-                                if reasoning:
-                                    message["reasoning_content"] = reasoning
-                                valid = valid_message(message, finish)
-                                if on_usage and usage:
-                                    on_usage(usage)
-                                return valid
+                                return assembled()
                             payload = json.loads(data)
-                            if not isinstance(payload, dict) or "error" in payload:
-                                raise ValueError("provider error")
+                            if not isinstance(payload, dict):
+                                raise ValueError("invalid frame")
+                            if payload.get("error"):
+                                raise provider_stream_error(payload, retryable=not content and not calls)
                             if isinstance(reported := payload.get("usage"), dict):
                                 for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                                     if type(reported.get(key)) is int and reported[key] >= 0:
@@ -196,6 +290,13 @@ async def agent_turn(
                                     and details["cached_tokens"] >= 0
                                 ):
                                     usage["cached_tokens"] = details["cached_tokens"]
+                                completion_details = reported.get("completion_tokens_details")
+                                if (
+                                    isinstance(completion_details, dict)
+                                    and type(completion_details.get("reasoning_tokens")) is int
+                                    and completion_details["reasoning_tokens"] >= 0
+                                ):
+                                    usage["reasoning_tokens"] = completion_details["reasoning_tokens"]
                             choices = payload.get("choices")
                             if choices == [] and isinstance(payload.get("usage"), dict):
                                 continue
@@ -206,21 +307,24 @@ async def agent_turn(
                             if not isinstance(delta, dict) or delta.get("refusal") or finish is not None:
                                 raise ValueError("unexpected delta")
                             text = delta.get("content") or ""
-                            if visible_thinking:
+                            if capture_reasoning:
                                 summary = delta.get("reasoning_content") or delta.get("reasoning") or ""
                                 if not isinstance(summary, str) or len(reasoning) + len(summary) > 60000:
                                     raise ValueError("invalid thinking delta")
                                 reasoning += summary
-                                if on_summary and summary:
+                                received["reasoning_characters"] = len(reasoning)
+                                if visible_thinking and on_summary and summary:
                                     on_summary(summary)
                             if not isinstance(text, str) or len(content) + len(text) > 20000:
                                 raise ValueError("oversize content")
                             content += text
+                            received["content"] = content
                             if text:
                                 on_delta(text)
                             if isinstance(delta.get("extra_content"), dict):
                                 extra.update(delta["extra_content"])
                             updates = delta.get("tool_calls") or []
+                            received["tool_calls"] |= bool(updates)
                             if not isinstance(updates, list):
                                 raise ValueError("invalid tool deltas")
                             for item in updates:
@@ -243,19 +347,87 @@ async def agent_turn(
                                 if isinstance(item.get("extra_content"), dict):
                                     target.setdefault("extra_content", {}).update(item["extra_content"])
                             finish = choice.get("finish_reason")
-                            if finish not in (None, "stop", "tool_calls"):
+                            received["finish_reason"] = finish
+                            if finish not in (None, "stop", "tool_calls", "length"):
                                 raise ValueError("truncated reply")
+                            if text or updates or (capture_reasoning and summary) or finish:
+                                # Heartbeats and empty gateway frames cannot extend a stalled request.
+                                idle_guard.reschedule(asyncio.get_running_loop().time() + idle_seconds)
                         except (ValueError, TypeError, AttributeError, KeyError) as exc:
-                            raise ToolFailure("invalid_response", "模型工具响应不完整或格式不正确。") from exc
-        raise ToolFailure("invalid_response", "模型连接中断，工具请求未执行。")
+                            known = {
+                                "invalid message",
+                                "invalid thinking bounds",
+                                "invalid message bounds",
+                                "incomplete tools",
+                                "invalid call",
+                                "invalid call id",
+                                "invalid function",
+                                "invalid arguments",
+                                "incomplete answer",
+                                "provider error",
+                                "invalid choice",
+                                "unexpected delta",
+                                "invalid thinking delta",
+                                "oversize content",
+                                "invalid tool deltas",
+                                "invalid tool index",
+                                "invalid tool type",
+                                "invalid function fragment",
+                                "truncated reply",
+                            }
+                            reason = (
+                                str(exc)
+                                if str(exc) in known
+                                else "invalid_json"
+                                if isinstance(exc, json.JSONDecodeError)
+                                else "invalid_frame"
+                            )
+                            raise invalid_response(reason) from exc
+        # Some compatible providers close a fully finished SSE stream without
+        # a redundant [DONE] sentinel. Never accept a missing finish or frame.
+        if finish in {"stop", "tool_calls"} and not buffer.strip():
+            return assembled()
+        raise invalid_response("missing_done")
 
-    return await cancellable(read(), check)
+    try:
+        return await cancellable(read(), check)
+    except Exception as error:
+        if (
+            not received["content"]
+            and not received["tool_calls"]
+            and (
+                isinstance(error, (httpx.ReadTimeout, httpx.RemoteProtocolError))
+                or (isinstance(error, TimeoutError) and idle_guard is not None and idle_guard.expired())
+            )
+        ):
+            # Only a model generation is replayable here. No tool request has
+            # been delivered or executed, so business writes cannot duplicate.
+            stalled = ToolFailure("model_stream_stalled", "模型响应中断，尚未收到答复或工具请求。")
+            stalled.retryable = True
+            stalled.partial_content = ""
+            stalled.generation = {"content_characters": 0, "incomplete_tool_calls": False}
+            raise stalled from error
+        # Preserve public answer text only. Thinking and incomplete tool
+        # requests can never become a partial business/legal deliverable.
+        error.partial_content = "" if received["tool_calls"] else received["content"]
+        error.generation = {
+            "finish_reason": received["finish_reason"],
+            "content_characters": len(received["content"]),
+            "reasoning_characters": received["reasoning_characters"],
+            "incomplete_tool_calls": received["tool_calls"],
+            "max_tokens": max_tokens,
+        }
+        raise
+    finally:
+        if on_usage and usage:
+            on_usage(dict(usage))
 
 
 async def gateway_tool(name, payload, check, *, timeout):
     settings = provider_settings()
     base = (os.getenv("AGENT_TOOLS_BASE_URL") or settings["base"]).rstrip("/")
-    endpoint, key, request = base + "/v1/tools/" + name, settings["key"], {"json": payload}
+    key = os.getenv("AGENT_TOOLS_API_KEY") or settings["key"]
+    endpoint, request = base + "/v1/tools/" + name, {"json": payload}
     if name == "image_recognition":
         from app.contexts.documents.infrastructure.providers.vision import (
             _vision_api_key,

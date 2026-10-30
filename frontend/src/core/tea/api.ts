@@ -332,38 +332,8 @@ function isToolCall(data: unknown): data is ToolCall {
     typeof data.id === "string" &&
     data.id.length > 0 &&
     data.id.length <= 100 &&
-    [
-      "update_business_card",
-      "search_documents",
-      "search_legal_evidence",
-      "lookup_chinese_law",
-      "read_law",
-      "get_law_versions",
-      "check_materials",
-      "generate_guidance",
-      "guide_business",
-      "analyze_legal",
-      "draft_document",
-      "get_handoff",
-      "discover_tools",
-      "tool_search",
-      "load_skill",
-      "list_documents",
-      "read_document",
-      "inspect_image",
-      "convert_long_image_to_pdf",
-      "inspect_document_file",
-      "create_document_file",
-      "edit_document_file",
-      "web_search",
-      "recall_memory",
-      "remember_memory",
-      "update_plan",
-      "update_task_brief",
-      "agent_turn",
-      "compact_context",
-      "read_tool_result",
-    ].includes(String(data.name)) &&
+    typeof data.name === "string" &&
+    /^[a-z_]{1,64}$/.test(data.name) &&
     typeof data.label === "string" &&
     data.label.length <= 100 &&
     ["running", "retrying", "completed", "failed", "cancelled"].includes(

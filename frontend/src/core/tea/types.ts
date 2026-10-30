@@ -267,38 +267,8 @@ export interface ToolOutputPreview {
 }
 export interface ToolCall {
   id: string;
-  name:
-    | "update_business_card"
-    | "search_documents"
-    | "search_legal_evidence"
-    | "lookup_chinese_law"
-    | "read_law"
-    | "get_law_versions"
-    | "check_materials"
-    | "generate_guidance"
-    | "guide_business"
-    | "analyze_legal"
-    | "draft_document"
-    | "get_handoff"
-    | "discover_tools"
-    | "tool_search"
-    | "load_skill"
-    | "list_documents"
-    | "read_document"
-    | "inspect_image"
-    | "convert_long_image_to_pdf"
-    | "inspect_document_file"
-    | "create_document_file"
-    | "read_contract_template"
-    | "edit_document_file"
-    | "web_search"
-    | "recall_memory"
-    | "remember_memory"
-    | "update_plan"
-    | "update_task_brief"
-    | "agent_turn"
-    | "compact_context"
-    | "read_tool_result";
+  /** Server-owned identifier; new tools must not require a client allowlist update. */
+  name: string;
   label: string;
   position: number;
   status: "running" | "retrying" | "completed" | "failed" | "cancelled";

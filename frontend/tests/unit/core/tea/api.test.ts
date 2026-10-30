@@ -154,8 +154,10 @@ it.each([
   "get_law_versions",
   "update_task_brief",
   "inspect_document_file",
+  "read_contract_template",
   "create_document_file",
   "edit_document_file",
+  "future_document_tool",
 ])("accepts registered runtime tool snapshots (%s)", async (name) => {
   const step = {
     id: "agent",
@@ -195,6 +197,48 @@ it.each([
   ).resolves.toEqual(done);
   expect(received).toHaveBeenCalledWith({ event: "step", data: step });
   rs.restoreAllMocks();
+});
+
+it.each(
+  ["", "read contract", "../read_law", "x".repeat(65), 42, ["read_law"]].map(
+    (name) => ({ name }),
+  ),
+)("rejects malformed tool identifiers (%j)", async ({ name }) => {
+  const step = {
+    id: "agent",
+    label: "处理",
+    status: "running",
+    detail: "",
+    tools: [
+      {
+        id: "call",
+        name,
+        label: "处理",
+        position: 1,
+        status: "running",
+        attempt: 1,
+        max_attempts: 1,
+        detail: "",
+        duration_ms: 0,
+      },
+    ],
+  };
+  rs.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(`event: step\ndata: ${JSON.stringify(step)}\n\n`, {
+      headers: { "Content-Type": "text/event-stream" },
+    }),
+  );
+  try {
+    await expect(
+      streamMessage(
+        "one",
+        { stage_id: "stage", content: "问题", client_message_id: "id" },
+        { onEvent: () => undefined },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+  } finally {
+    rs.restoreAllMocks();
+  }
 });
 
 it.each([

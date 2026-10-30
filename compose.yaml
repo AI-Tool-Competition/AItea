@@ -1,39 +1,113 @@
-name: aitea
+name: ${TEA_COMPOSE_PROJECT:-aitea-production}
+
+x-service: &service
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 40s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-api: &api
+  <<: *service
+  image: aitea-api:${TEA_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile.api
+    args:
+      TEA_REVISION: ${TEA_REVISION:-unknown}
+  user: "${TEA_UID:-10001}:${TEA_GID:-10001}"
+  environment: &api-environment
+    TEA_ENV: production
+    TEA_DATA_DIR: ${TEA_INSTANCE_DATA:?请显式指定已有实例的绝对数据路径}
+    TEA_ENV_FILE: ${TEA_INSTANCE_DATA}/config/application.env
+    TEA_CONFIG_DIR: ${TEA_INSTANCE_CONFIG:?请显式指定活动来源和流程配置目录}
+    TEA_REQUIRE_EXISTING_DATA: "true"
+    TEA_BACKGROUND_WORKERS: external
+    TEA_COOKIE_SECURE: ${TEA_COOKIE_SECURE:-true}
+    TEA_COOKIE_PATH: ${TEA_BASE_PATH:-/aitea}
+    TEA_ALLOWED_ORIGINS: ${TEA_PUBLIC_ORIGIN:?请指定生产站点来源}
+  volumes:
+    # Keep absolute original/checkpoint paths valid. Never create an empty store.
+    - type: bind
+      source: ${TEA_INSTANCE_DATA}
+      target: ${TEA_INSTANCE_DATA}
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${TEA_INSTANCE_CONFIG}
+      target: ${TEA_INSTANCE_CONFIG}
+      read_only: true
+      bind:
+        create_host_path: false
+  tmpfs:
+    - /tmp:rw,nosuid,noexec,size=512m
+
 services:
   api:
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.api
-    environment:
-      TEA_ENV: ${TEA_ENV:-development}
-      TEA_DATA_DIR: /data
-      TEA_COOKIE_SECURE: ${TEA_COOKIE_SECURE:-false}
-      TEA_ALLOWED_ORIGINS: ${TEA_ALLOWED_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      TEA_PARSER: ${TEA_PARSER:-basic}
-    volumes:
-      - tea_data:/data
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
+    <<: *api
+  worker:
+    <<: *api
+    profiles: [workers]
+    command:
+      - python
+      - /app/scripts/run_workers.py
+      - --data-dir
+      - ${TEA_INSTANCE_DATA}
+      - --env-file
+      - ${TEA_INSTANCE_DATA}/config/application.env
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
   web:
+    <<: *service
+    image: aitea-web:${TEA_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: deploy/Dockerfile.web
       args:
         TEA_API_URL: http://api:8000
-    ports:
-      - "127.0.0.1:${TEA_WEB_PORT:-3000}:3000"
+        TEA_BASE_PATH: ${TEA_BASE_PATH:-/aitea}
+        TEA_REVISION: ${TEA_REVISION:-unknown}
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=128m
+      - /app/.next/cache:rw,nosuid,noexec,uid=1000,gid=1000,size=128m
     depends_on:
       api:
         condition: service_healthy
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-volumes:
-  tea_data:
+  gateway:
+    <<: *service
+    image: aitea-gateway:${TEA_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.gateway
+      args:
+        TEA_REVISION: ${TEA_REVISION:-unknown}
+    user: "10001:10001"
+    environment:
+      TEA_BASE_PATH: ${TEA_BASE_PATH:-/aitea}
+      TEA_LISTEN: :8080
+      TEA_API_UPSTREAM: api:8000
+      TEA_WEB_UPSTREAM: web:3000
+    ports:
+      - "127.0.0.1:${TEA_GATEWAY_PORT:-3080}:8080"
+    tmpfs:
+      - /config:rw,nosuid,noexec,uid=10001,gid=10001,size=16m
+      - /data:rw,nosuid,noexec,uid=10001,gid=10001,size=16m
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080$${TEA_BASE_PATH}/api/tea/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy

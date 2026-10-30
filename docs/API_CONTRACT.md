@@ -1,5 +1,7 @@
 # Tea API v1 (implementation contract)
 
+部署前缀由网关与前端统一处理：`/aitea` 部署对浏览器公开 `/aitea/api/tea`，网关剥离前缀后仍使用下述 `/api/tea` 路由，OpenAPI 和请求结构不变。`TEA_COOKIE_PATH` 默认 `/`，生产设为 `/aitea`；登录和退出使用同一 Cookie 范围。配置与流式转发见 [部署说明](DEPLOYMENT.md)。
+
 Current ingestion and retrieval use MinerU precise cloud parsing and local RAGFlow. New retrieval results report `mode:'ragflow'|'unavailable'`; historical `lexical`/`hybrid` values remain readable in saved analyses. Missing configuration or provider failures are explicit and never select the old local retrieval path. PDF/Office/image parsing is asynchronous: saving an original does not imply text or index completion. Schema 20 persists MinerU tasks; schema 21 persists RAGFlow generations and chunk receipts; schema 22 stores immutable, source-page-hash-bound Setneg metadata for discovery candidates; schema 23 records automatic official-source version imports. Source/account/review/version eligibility is checked before retrieval and after remote results, with citations derived from trusted local chunks. See [pipeline and operations](MINERU_RAGFLOW.md).
 
 Base `/api/tea`. Same-origin HTTP-only cookie session. JSON objects snake_case. Errors `{error:{code,message,request_id?}}`; 401 unauthenticated, 404 non-owned resources, 409 stale revisions/locked stage, 422 validation. All returned dates ISO UTC. API owns all state; no browser-only business data. List endpoints return `{items:[],total:number}` with bounded limit/offset. `GET /bootstrap` supplies `{user,templates:Template[],cases:CaseSummary[],capabilities}`.

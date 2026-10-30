@@ -10,7 +10,10 @@ export function proxy(request: NextRequest) {
       { error: { code: "not_found", message: "接口不存在" } },
       { status: 404 },
     );
-  return NextResponse.redirect(new URL("/tea", request.url));
+  const destination = request.nextUrl.clone();
+  destination.pathname = "/tea";
+  destination.search = "";
+  return NextResponse.redirect(destination);
 }
 export const config = {
   matcher: [

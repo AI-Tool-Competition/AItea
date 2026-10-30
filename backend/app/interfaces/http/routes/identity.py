@@ -1,6 +1,7 @@
 """Identity HTTP endpoints; business rules stay in application services."""
 
 import os
+import re
 
 from fastapi import Depends, Query, Request, Response
 
@@ -9,6 +10,10 @@ from app.shared.application import models as models
 
 
 def register(app, service, auth, user, admin_user):
+    cookie_path = os.getenv("TEA_COOKIE_PATH", "/")
+    if cookie_path != "/" and not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)+", cookie_path):
+        raise ValueError("TEA_COOKIE_PATH 必须为 / 或 /aitea 一类的路径。")
+
     def set_session(response, token):
         secure = (
             os.getenv(
@@ -17,7 +22,7 @@ def register(app, service, auth, user, admin_user):
             == "true"
         )
         response.set_cookie(
-            COOKIE, token, httponly=True, secure=secure, samesite="lax", max_age=7 * 86400, path="/"
+            COOKIE, token, httponly=True, secure=secure, samesite="lax", max_age=7 * 86400, path=cookie_path
         )
 
     def throttle(request):
@@ -48,7 +53,7 @@ def register(app, service, auth, user, admin_user):
     @app.post("/api/tea/auth/logout", status_code=204)
     def logout(request: Request, response: Response):
         auth.logout(request.cookies.get(COOKIE))
-        response.delete_cookie(COOKIE, path="/")
+        response.delete_cookie(COOKIE, path=cookie_path)
 
     @app.get("/api/tea/auth/me")
     def me(current=Depends(user)):

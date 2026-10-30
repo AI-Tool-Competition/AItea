@@ -1,6 +1,11 @@
 tmp
 .git
 .dev
+.worktrees
+.agents
+.codex
+backups
+restores
 .venv
 backend/.venv
 **/__pycache__
@@ -10,6 +15,11 @@ backend/.venv
 **/.next
 **/*.tsbuildinfo
 .env
+**/.env
+**/.env.*
+**/*.env
+**/*.env.*
+**/*.sif
 data
 output
 **/test-results

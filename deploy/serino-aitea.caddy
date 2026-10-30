@@ -1,0 +1,18 @@
+# serino-route-schema: 3
+# serino-route-name: 茶渡
+# serino-route-source: custom
+# serino-route-path: /aitea
+# serino-route-upstream: http://127.0.0.1:18088
+@aitea_entry path /aitea /aitea/*
+handle @aitea_entry {
+    # Preserve /aitea: the Next.js build and local gateway own this prefix.
+    reverse_proxy 127.0.0.1:18088 {
+        flush_interval -1
+        stream_close_delay 5m
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 330s
+            keepalive 60s
+        }
+    }
+}

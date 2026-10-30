@@ -1,0 +1,33 @@
+{
+    admin off
+    auto_https off
+    servers {
+        trusted_proxies static 127.0.0.1/32 ::1/128 172.16.0.0/12
+        trusted_proxies_strict
+    }
+}
+
+{$TEA_LISTEN::8080} {
+    bind {$TEA_BIND:0.0.0.0}
+    @api path {$TEA_BASE_PATH:/aitea}/api/tea {$TEA_BASE_PATH:/aitea}/api/tea/*
+    handle @api {
+        uri strip_prefix {$TEA_BASE_PATH:/aitea}
+        reverse_proxy {$TEA_API_UPSTREAM:api:8000} {
+            flush_interval -1
+            stream_close_delay 5m
+            transport http {
+                dial_timeout 5s
+                response_header_timeout 330s
+                keepalive 60s
+            }
+        }
+    }
+    @web path {$TEA_BASE_PATH:/aitea} {$TEA_BASE_PATH:/aitea}/*
+    handle @web {
+        encode zstd gzip
+        reverse_proxy {$TEA_WEB_UPSTREAM:web:3000}
+    }
+    handle {
+        respond 404
+    }
+}

@@ -1,3 +1,5 @@
+import { teaPath } from "@/tea-paths";
+
 export class TeaApiError extends Error {
   constructor(
     public status: number,
@@ -17,7 +19,7 @@ async function teaFetch(
     headers.set("Content-Type", "application/json");
   let response: Response;
   try {
-    response = await fetch(`/api/tea${path}`, {
+    response = await fetch(teaPath(`/api/tea${path}`), {
       ...options,
       headers,
       credentials: "same-origin",
@@ -565,14 +567,16 @@ export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "操作未完成，请重试。";
 }
 export function documentImageUrl(documentId: string, imageId: string) {
-  return `/api/tea/documents/${encodeURIComponent(documentId)}/images/${encodeURIComponent(imageId)}`;
+  return teaPath(
+    `/api/tea/documents/${encodeURIComponent(documentId)}/images/${encodeURIComponent(imageId)}`,
+  );
 }
 
 export function downloadUrl(
   id: string,
   kind: "documents" | "artifacts" = "documents",
 ) {
-  return `/api/tea/${kind}/${encodeURIComponent(id)}/download`;
+  return teaPath(`/api/tea/${kind}/${encodeURIComponent(id)}/download`);
 }
 export function safeSourceUrl(url?: string | null) {
   if (!url) return undefined;

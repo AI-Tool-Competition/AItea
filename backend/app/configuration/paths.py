@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Mapping
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
-# Source checkouts keep app/ under backend/; the API image copies app/ and
-# config/ directly into /app. Both layouts use the same explicit path contract.
+# Source checkouts and current images keep app/ under backend/; legacy flat
+# images remain readable through the same explicit path contract.
 PROJECT_ROOT = _BACKEND_ROOT.parent if _BACKEND_ROOT.name == "backend" else _BACKEND_ROOT
 
 

@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { memo, useLayoutEffect, useRef } from "react";
+import { defaultUrlTransform, type UrlTransform } from "streamdown";
 import type { StickToBottomContext } from "use-stick-to-bottom";
 
 import {
@@ -29,11 +30,17 @@ import type {
   TraceStep,
 } from "@/core/tea/types";
 import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
+import { teaResourceUrl } from "@/tea-paths";
 
 import { LegalResultView } from "./legal-result";
 import { CitationCard } from "./library";
 import { Busy, dateLabel, ErrorNotice } from "./shared";
 import { MessageActivity } from "./tool-activity";
+
+const answerUrlTransform: UrlTransform = (url, key, node) => {
+  const safe = defaultUrlTransform(url, key, node);
+  return safe ? teaResourceUrl(safe) : safe;
+};
 
 const Answer = memo(function Answer({
   content,
@@ -50,6 +57,7 @@ const Answer = memo(function Answer({
       animated={false}
       caret="circle"
       linkSafety={{ enabled: false }}
+      urlTransform={answerUrlTransform}
       aria-busy={streaming}
       parseIncompleteMarkdown={streaming}
     >

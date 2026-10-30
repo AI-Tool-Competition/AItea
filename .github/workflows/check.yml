@@ -34,3 +34,20 @@ jobs:
         env:
           SKIP_ENV_VALIDATION: "1"
           NEXT_TELEMETRY_DISABLED: "1"
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.10"
+      - name: Validate production Compose
+        run: docker compose --env-file deploy/production.env.example -f compose.yaml -f deploy/compose.host.yaml config --quiet
+      - name: Build production images
+        run: docker compose --env-file deploy/production.env.example -f compose.yaml -f deploy/compose.host.yaml build
+        env:
+          TEA_IMAGE_TAG: ci
+          TEA_REVISION: ${{ github.sha }}
+      - name: Verify isolated login, assets, routing and unbuffered streams
+        run: uv run --project backend --locked --no-dev python scripts/container_smoke.py --tag ci

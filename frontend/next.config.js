@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
  */
 import "./src/env.js";
 import { getAllowedDevOrigins } from "./src/dev-origins.js";
+import { normalizeTeaBasePath } from "./src/tea-paths.js";
 
 function getInternalServiceURL(envKey, fallbackURL) {
   const configured = process.env[envKey]?.trim();
@@ -19,6 +20,7 @@ const withNextra = nextra({});
 
 /** @type {import("next").NextConfig} */
 const config = {
+  basePath: normalizeTeaBasePath(process.env.NEXT_PUBLIC_TEA_BASE_PATH),
   output:
     process.env.NEXT_CONFIG_BUILD_OUTPUT === "standalone"
       ? "standalone"

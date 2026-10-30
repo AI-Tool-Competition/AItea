@@ -42,6 +42,11 @@ Makefile       统一命令入口
 | `make check`      | 运行后端检查、前端类型与交互测试       |
 | `make build`      | 构建前端生产产物，执行前先停止开发服务 |
 | `make start`      | 启动已构建的生产预览                   |
+| `make production-prepare` | 准备已有实例的 Docker 部署参数 |
+| `make production-build` | 构建前后端与流式网关生产镜像 |
+| `make production-check` | 验证 Docker 可访问同一份现有资料 |
+| `make production-up` | 启动容器并等待健康检查通过 |
+| `make production-status` | 查看生产容器状态 |
 
 默认入口：[工作台](http://127.0.0.1:3000/tea) · [管理后台](http://127.0.0.1:3000/tea/admin)。
 

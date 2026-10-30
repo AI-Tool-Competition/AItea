@@ -1,0 +1,27 @@
+# Linux-only: retain access to existing loopback-bound RAGFlow/proxy services.
+services:
+  api:
+    network_mode: host
+    command: [uvicorn, app.main:app, --host, 127.0.0.1, --port, "${TEA_API_PORT:-8000}"]
+    environment:
+      TEA_API_PORT: ${TEA_API_PORT:-8000}
+  worker:
+    network_mode: host
+  web:
+    network_mode: host
+    build:
+      args:
+        TEA_API_URL: http://127.0.0.1:${TEA_API_PORT:-8000}
+    environment:
+      HOSTNAME: 127.0.0.1
+      PORT: ${TEA_WEB_PORT:-3000}
+  gateway:
+    network_mode: host
+    ports: !reset []
+    environment:
+      TEA_LISTEN: :${TEA_GATEWAY_PORT:-3080}
+      TEA_BIND: 127.0.0.1
+      TEA_API_UPSTREAM: 127.0.0.1:${TEA_API_PORT:-8000}
+      TEA_WEB_UPSTREAM: 127.0.0.1:${TEA_WEB_PORT:-3000}
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:${TEA_GATEWAY_PORT:-3080}$${TEA_BASE_PATH}/api/tea/health"]

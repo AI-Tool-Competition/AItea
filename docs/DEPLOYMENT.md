@@ -2,7 +2,7 @@
 
 [文档中心](README.md) · [实例管理](INSTANCE_MANAGEMENT.md) · [MinerU 与 RAGFlow](MINERU_RAGFLOW.md)
 
-当前应用按单机实例管理 SQLite、原件及后台队列。MinerU 和 embedding 使用 API，本机 RAGFlow 的用户权限运行方式另见接入文档。开发启动、前端生产预览和容器演示是不同入口；选择与实际用途对应的方式。
+当前应用按单机实例管理 SQLite、原件及后台队列。MinerU 和 embedding 使用 API，本机 RAGFlow 的用户权限运行方式另见接入文档。开发启动、本机生产预览和容器生产部署是不同入口；选择与实际用途对应的方式。
 
 ## 本机生产预览
 
@@ -27,17 +27,76 @@ RAGFlow 运行环境准备完成后，使用 `make ragflow-up` 启动服务、`m
 
 `make dev-stop` 管理工作台前后端；独立的官方采集服务与 RAGFlow 有各自的生命周期。完整实例备份前须按 [实例管理](INSTANCE_MANAGEMENT.md) 停止全部所属写入者，再进行备份和校验。
 
-## 容器演示配方
+## Docker 生产部署
 
-已准备 Docker Engine 与 Compose 的环境可以使用仓库现有配方：
+使用调用者的 Docker Engine 与 Compose 2.24.4+，不使用 sudo、不修改默认 context 或全局 Docker 配置。先用 `docker context show` 和 `docker info` 核实实际守护进程；SSH context 的挂载路径属于远端主机，不能用本机目录存在推定挂载成立。容器不会创建新空库替代已有资料。
+
+根 `compose.yaml` 包含 API、Next.js standalone 前端和 Caddy 流式网关。默认桥接网络只发布宿主机 `127.0.0.1:3080`；服务使用非 root 用户、只读镜像、受限临时目录、日志轮转和健康检查。整个实例以相同绝对路径挂载，保持历史原件、检查点和版本证据中的绝对路径有效；原件不会复制进镜像。旧配方的 `tea_data` volume 不会自动删除或迁移。
+
+`deploy/compose.host.yaml` 用于 Linux 上已有 RAGFlow、下载代理绑定本机回环地址的实例。三个服务均只监听回环地址，不另建 RAGFlow、不改变已有检索数据。`production-prepare` 默认选择此模式；独立桥接部署传 `--network bridge`，并确保 `application.env` 中的外部服务地址在容器内真实可达。
+
+先停止同工作树的开发服务，确认所需备份与数据库升级副本检查，再执行：
 
 ```bash
-docker compose up --build
+make instance-paths
+make dev-stop
+make production-prepare PRODUCTION_ARGS='--origin https://example.com --base-path /aitea'
+make production-build
+make production-check
+make production-up
+make production-status
 ```
 
-根 `compose.yaml` 启动 API 和前端，入口默认绑定宿主机 `127.0.0.1:3000`，API 不单独暴露宿主端口；数据位于 Compose 管理的 `tea_data` volume。镜像使用锁文件和非 root 用户。
+`prepare` 读取现有实例路径，只生成 `.dev/production/deploy.env` 的非密钥部署参数，权限为 `0600`。`--data-dir` 可显式选择已有目录，必须包含有效的 `tea.sqlite3`、`files/` 和 `config/application.env`；不会创建缺失数据目录。已有参数需核对后显式 `--replace`。端口分别用 `--api-port`、`--web-port`、`--gateway-port` 设置。
 
-这份配方是独立的演示实例：不会自动挂载宿主项目的 `data/`，也没有部署完整 RAGFlow 服务或自动传入 `application.env` 的全部参数。现有运行实例不能直接改用它作为迁移方式。使用前需在目标环境验证镜像构建、数据持久化及前后端连通性；历史检查范围见 [验收记录](VERIFICATION.md)，本机测试通过不能代替容器验收。
+活动来源和流程目录也保持原绝对路径并只读挂载，默认由 `InstancePaths` 选择，可用 `--catalogs` 显式指定。这样宿主采集器与容器不会各维护一份生效清单；恢复实例的 `data/config/catalogs/` 继续优先。`--replace` 保留已生成产物的位置，封装时仍重新核对源码与参数，不能绕过过期检查。
+
+容器直接读取同一份 `application.env`，不使用空环境变量覆盖 Agent、MinerU、识图、Embedding 或 RAGFlow 配置，后台 API 配置仍可原子保存。UID/GID 默认取当前用户；普通 Docker 可用 `--uid`、`--gid` 与现有目录所有者匹配，不能递归改属主来绕过权限。Rootless Docker 的容器 UID 0 对应宿主普通用户，需准备好系统的 uidmap 与 subordinate UID/GID，再用 `--uid 0 --gid 0`。详见 [Docker Rootless](https://docs.docker.com/engine/security/rootless/)。
+
+Docker 主机内存不足或使用 CPU 模拟时，可将前端编译放在拥有项目 Node.js 22 工具链的本机，再由同一个 Docker 封装镜像：
+
+```bash
+make production-web-build
+make production-build PRODUCTION_ARGS='--prebuilt-web'
+```
+
+两条路径共用 `Dockerfile.web` 的生产基础层，Node.js 固定为 22.23.0，与项目工具链一致。产物保存在 `.dev/production/web-artifacts/`，必须通过源码指纹、前缀、API 代理、Node 主版本及包内链接检查；前端源码或部署参数改变后拒绝封装旧产物。有独立前端环境文件时拒绝本机封装，避免将私有配置混入。生产运行仍全部使用 Docker；CI 使用默认的容器内源码构建路径。
+
+`production-check` 和 `production-up` 在资料根生成一次性只读校验标识，要求容器能读到同一标识、SQLite 文件及私有配置；无论成功、超时或拒绝都会清理标识。远端空目录、错误副本或无权限均阻止启动。`up` 等待三个服务健康，不以容器进程已创建代替就绪；`production-stop` 保留所有数据、配置和容器卷。
+
+API 默认不启动解析、采集和索引 worker，使聊天与批量处理分离。需要启动这组现有持久队列时，明确执行 `make production-up PRODUCTION_ARGS='--with-workers'`，确认没有其他实例处理同一队列，并核对付费调用预算。原独立官方采集器和 RAGFlow 的生命周期保持各自管理；旧未知付费结果及超预算任务不会因部署被重置。
+
+## `/aitea` 与流式转发
+
+生产默认入口为 `/aitea`，自动跳转到 `/aitea/tea`；管理后台为 `/aitea/tea/admin`。前端构建时固化 `NEXT_PUBLIC_TEA_BASE_PATH`，接口、文件下载和映射图片均使用同一前缀。改变前缀或前端直连的 API 地址后重新构建，不能仅修改运行时变量。根路径 `make dev` 与 `make build` 默认保持 `/tea`，原客户端 API 协议不变。
+
+Cookie 使用 `Secure`、`HttpOnly`、`SameSite=Lax`，范围限定到部署前缀，退出按同一范围删除。`TEA_PUBLIC_ORIGIN` 只允许 HTTPS 来源，本机隔离测试例外。来源只填站点，例如 `https://example.com`，不含 `/aitea`。
+
+网关将 `/aitea/api/tea/*` 直接转发到 API，剥离部署前缀，避免正文流经过 Next.js 代理；模型和工具流保持 `no-store, no-transform` 与 `X-Accel-Buffering: no`。API 代理即时刷新，不压缩 SSE；前端静态资源由 Next.js 生成内容指纹并缓存。配置依据 [Next.js basePath](https://nextjs.org/docs/pages/api-reference/config/next-config-js/basePath) 与 [Caddy reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)。
+
+Serino 的独立扩展片段见 [serino-aitea.caddy](../deploy/serino-aitea.caddy)。先验证本机生产入口、资料挂载、账号与流式，再从实际 Docker 宿主机建立到腾讯云的专用 SSH 反向转发：
+
+```bash
+systemd-run --user --unit=aitea-production-tunnel \
+  --property=Restart=always --property=RestartSec=3 \
+  /usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o Compression=no \
+  -o ControlMaster=no -R 127.0.0.1:18088:127.0.0.1:3080 rowan@tcyun
+```
+
+该用户级临时服务在连接中断后重连；宿主机重启后需重新启动。端口已占用时拒绝接管，不停止其他转发。Serino 只加入 `/aitea` 的扩展文件，保留原站点路由；片段不剥离前缀。验证完整 Caddy 配置后热加载，再检查 `https://aerisun.top/aitea`。Docker 守护进程在其他主机时，SSH 转发也必须指向真正的容器入口。
+
+## 容器隔离验收
+
+构建镜像后执行：
+
+```bash
+uv run --project backend --locked python scripts/container_smoke.py --tag <镜像标签>
+```
+
+脚本只创建带随机标识的专用 Docker 数据卷和本地模型替身，测试真实镜像的页面跳转、静态资源、登录、Cookie 范围、退出失效和逐段 SSE。模型替身每 250 ms 发送一段，要求至少两段在不同时间到达，防止把最终一次性返回误判为流式。普通检查不读取业务配置，不访问真实模型；结束清理所属容器和卷。`--keep` 可保留合成实例供浏览器检查，完成后按输出的 `state.json` 使用 `--cleanup` 清理。CI 对每次 push/PR 构建三个镜像并执行同一检查。
+
+真实账号、现有原件、RAGFlow 检索和公网转发需另行验收。隔离镜像冒烟通过不能证明某个远端 Docker 已挂载本机资料，也不代表上游模型、专业法律内容或并发容量已通过验收。
 
 ## 正式接入的验收范围
 

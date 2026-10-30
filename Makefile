@@ -46,6 +46,9 @@ help:
 	  'make instance-restore BACKUP=backups/实例名称 TARGET=restores/新实例  恢复并重定位' \
 	  'make check            运行后端、前端类型与茶业务交互检查' \
 	  'make build / start    构建 / 启动本地生产预览' \
+	  'make production-prepare / production-build  准备已有实例参数 / 构建生产镜像' \
+	  'make production-check / production-up       验证真实挂载 / 等待生产容器就绪' \
+	  'make production-status / production-stop    查看 / 停止生产容器，保留数据' \
 	  'make archive-inventory COUNTRY=ID  导出资料目录，可选 OWNER=账号ID' \
 	  'make collection-catalog [COUNTRY=ID|SG]  导出共享总库、原件、文本、映射和采集状态目录' \
 	  'make collect-resources OUTPUT=data/campaigns/run ORIGINALS=2  并发采集；RESUME=1 续跑' \
@@ -149,6 +152,24 @@ check: backend-check frontend-check
 
 build:
 	cd frontend && SKIP_ENV_VALIDATION=1 $(PNPM) build
+
+.PHONY: production-prepare production-web-build production-build production-check production-up production-status production-logs production-stop
+production-prepare:
+	uv run --project backend --locked python scripts/production.py prepare $(PRODUCTION_ARGS)
+production-web-build:
+	uv run --project backend --locked python scripts/production.py web-build $(PRODUCTION_ARGS)
+production-build:
+	uv run --project backend --locked python scripts/production.py build $(PRODUCTION_ARGS)
+production-check:
+	uv run --project backend --locked python scripts/production.py check $(PRODUCTION_ARGS)
+production-up:
+	uv run --project backend --locked python scripts/production.py up $(PRODUCTION_ARGS)
+production-status:
+	uv run --project backend --locked python scripts/production.py status $(PRODUCTION_ARGS)
+production-logs:
+	uv run --project backend --locked python scripts/production.py logs $(PRODUCTION_ARGS)
+production-stop:
+	uv run --project backend --locked python scripts/production.py stop $(PRODUCTION_ARGS)
 
 ragflow-bootstrap:
 	uv run --project backend --locked python scripts/ragflow.py bootstrap

@@ -258,6 +258,8 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
     started = monotonic()
     next_progress = 30
     next_lease_renewal = 60
+    streamed_output = ""
+    stream_started = False
 
     def checkpoint():
         result["_evidence"] = list(sources.sources.values())
@@ -279,6 +281,35 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 "status",
                 {"label": f"已用时{elapsed:.0f}秒，正在读取资料或生成答复；可以停止，已有工具记录会保留。"},
             )
+
+    def publish_answer(output):
+        nonlocal streamed_output, stream_started
+        if not emit or output == streamed_output:
+            return
+        if not stream_started or not output.startswith(streamed_output):
+            emit("start", {"step_id": "agent", "append": False})
+            streamed_output = ""
+            stream_started = True
+        suffix = output[len(streamed_output) :]
+        for offset in range(0, len(suffix), 480):
+            check()
+            emit("delta", {"text": suffix[offset : offset + 480]})
+        streamed_output = output
+
+    def preview_answer(output):
+        if not emit:
+            return
+        # Withhold incomplete markup so split tool protocol, citation handles
+        # and private download links cannot bypass the final presentation checks.
+        if has_tool_protocol(output):
+            publish_answer("")
+            return
+        pending = re.search(r"<[^>]*$|(?:\[\[?|【)[^\]\n】]*$|\[[^\]\n]*\]\([^\)\n]*$", output)
+        if pending:
+            output = output[: pending.start()]
+        if "/api/tea/documents/" in output:
+            output = bound.checked_file_links(output)
+        publish_answer(sources.render(output))
 
     run.check_cancelled = check
 
@@ -406,11 +437,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
             detail="本次执行未完成。" if error else "已生成答复；法律质量由独立评测判断。",
         )
         checkpoint()
-        if emit:
-            emit("start", {"step_id": "agent", "append": False})
-            for offset in range(0, len(result["output"]), 480):
-                check()
-                emit("delta", {"text": result["output"][offset : offset + 480]})
+        publish_answer(result["output"])
         run.publish(trace)
         journal.finish(result)
         return result
@@ -478,14 +505,15 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                     raise ToolFailure("provider_busy", "模型服务繁忙，请稍后重试。")
                 try:
                     state["model_calls"] += 1
-                    size = 0
+                    content = ""
 
                     def delta(text):
-                        nonlocal size
-                        size += len(text)
+                        nonlocal content
+                        content += text
                         attempt.output_started |= bool(text)
-                        if size > 20000:
+                        if len(content) > 20000:
                             raise ToolFailure("output_limit", "回复超过输出预算。")
+                        preview_answer(answer_prefix + content)
 
                     return asyncio.run(
                         agent_turn(
@@ -620,6 +648,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                         }
                     )
                 if broken and not repair_used and run.deadline - monotonic() > 5:
+                    publish_answer("")
                     repair_used = True
                     messages.extend(
                         [
@@ -643,6 +672,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 return finalize("", error="取证结束后仍返回工具请求，未生成答复。")
             if len(calls) > 12:
                 return finalize("", error="一次请求超过工具调用数量限制。")
+            publish_answer("")
             messages.append(response)
             progressed = False
             exhausted = True

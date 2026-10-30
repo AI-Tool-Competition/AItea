@@ -13,6 +13,133 @@ from test_agent_runtime import workspace as workspace_fixture, send, tools, last
 workspace = workspace_fixture
 
 
+def post_emitting(workspace, monkeypatch, turn, events):
+    scenario(monkeypatch, [])
+    monkeypatch.setattr(agent_loop, "agent_turn", turn)
+    _, service, owner, case, payload = workspace
+    return service.post_message(
+        owner, case["id"], payload, emit=lambda event, data: events.append((event, data))
+    )
+
+
+def displayed_answer(events):
+    output = ""
+    for event, data in events:
+        if event == "start" and not data.get("append"):
+            output = ""
+        elif event == "delta":
+            output += data["text"]
+    return output
+
+
+def test_answer_chunks_are_delivered_before_model_completion_without_final_replay(workspace, monkeypatch):
+    events = []
+
+    async def turn(messages, definitions, delta, check, **kwargs):
+        delta("先核对产品。")
+        assert displayed_answer(events) == "先核对产品。"
+        delta("再确认目标市场。")
+        assert displayed_answer(events) == "先核对产品。再确认目标市场。"
+        return {"role": "assistant", "content": displayed_answer(events)}
+
+    result = post_emitting(workspace, monkeypatch, turn, events)
+    assert [value["text"] for event, value in events if event == "delta"] == [
+        "先核对产品。",
+        "再确认目标市场。",
+    ]
+    assert sum(event == "start" for event, _ in events) == 1
+    assert result["messages"][1]["content"] == displayed_answer(events)
+
+
+def test_split_citations_and_foreign_downloads_never_leak_into_stream(workspace, monkeypatch):
+    events = []
+    calls = 0
+    monkeypatch.setattr(
+        AgentTools, "web", lambda *a: {"sources": [{"url": "https://expo.example/", "title": "官网"}]}
+    )
+
+    async def turn(messages, definitions, delta, check, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return tools(("web_search", {"query": "官网"}))
+        fragments = ["请核对[S", "1]。", "缺少[S99]。", "[下载](/api/tea/documents/foreign/", "download)"]
+        for fragment in fragments:
+            delta(fragment)
+            assert "[S" not in displayed_answer(events)
+            assert "/foreign/" not in displayed_answer(events)
+        return {"role": "assistant", "content": "".join(fragments)}
+
+    result = post_emitting(workspace, monkeypatch, turn, events)
+    assert "https://expo.example/" in displayed_answer(events)
+    assert "该处尚未取得对应原文链接" in displayed_answer(events)
+    assert result["messages"][1]["content"] == displayed_answer(events)
+
+
+def test_split_unexecuted_tool_protocol_is_withheld_and_repaired(workspace, monkeypatch):
+    events = []
+    calls = 0
+
+    async def turn(messages, definitions, delta, check, **kwargs):
+        nonlocal calls
+        calls += 1
+        fragments = ["<tool_", "call><function=web_search>", "private</function></tool_call>"]
+        if calls == 1:
+            for fragment in fragments:
+                delta(fragment)
+                assert displayed_answer(events) == ""
+            return {"role": "assistant", "content": "".join(fragments)}
+        delta("尚未取得对应来源。")
+        return {"role": "assistant", "content": "尚未取得对应来源。"}
+
+    result = post_emitting(workspace, monkeypatch, turn, events)
+    assert result["messages"][1]["content"] == "尚未取得对应来源。"
+    assert not last_run(workspace)["_task_state"]["calls"]
+
+
+def test_pre_tool_text_is_cleared_before_executing_the_tool(workspace, monkeypatch):
+    events = []
+    calls = 0
+
+    def web(*args):
+        assert displayed_answer(events) == ""
+        return {"sources": []}
+
+    monkeypatch.setattr(AgentTools, "web", web)
+
+    async def turn(messages, definitions, delta, check, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            delta("我会先核对来源。")
+            return tools(("web_search", {"query": "官网"})) | {"content": "我会先核对来源。"}
+        delta("尚未找到来源。")
+        return {"role": "assistant", "content": "尚未找到来源。"}
+
+    post_emitting(workspace, monkeypatch, turn, events)
+    assert displayed_answer(events) == "尚未找到来源。"
+
+
+def test_interrupted_live_answer_is_not_replayed_or_retried(workspace, monkeypatch):
+    events = []
+    calls = 0
+
+    async def turn(messages, definitions, delta, check, **kwargs):
+        nonlocal calls
+        calls += 1
+        delta("已完成的一段。")
+        assert displayed_answer(events) == "已完成的一段。"
+        error = ToolFailure("upstream_error", "controlled interruption")
+        error.partial_content = "已完成的一段。"
+        raise error
+
+    result = post_emitting(workspace, monkeypatch, turn, events)
+    assert calls == 1
+    assert displayed_answer(events).count("已完成的一段。") == 1
+    assert result["messages"][1]["content"] == displayed_answer(events)
+    assert last_run(workspace)["_task_state"]["delivery"] == "partially_answered"
+
+
 @pytest.mark.parametrize("field", ["limit", "max_results"])
 def test_web_result_count_accepts_bounded_historical_count(field):
     assert WebInput.model_validate({"query": "茶叶", field: "5"}).max_results == 5

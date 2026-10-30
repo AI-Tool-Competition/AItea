@@ -1392,7 +1392,12 @@ def test_tool_planning_text_stays_out_of_final_answer_and_replays_exactly(worksp
     response = send(workspace, stream=True)
     events = stream_events(response)
     assert [data for event, data in events if event == "start"][-1] == {"step_id": "agent", "append": False}
-    actual = "".join(data["text"] for event, data in events if event == "delta")
+    actual = ""
+    for event, data in events:
+        if event == "start" and not data.get("append"):
+            actual = ""
+        elif event == "delta":
+            actual += data["text"]
     assert actual == "请补充主体信息。"
     saved = next(data for event, data in events if event == "done")
     assert saved["messages"][1]["content"] == actual

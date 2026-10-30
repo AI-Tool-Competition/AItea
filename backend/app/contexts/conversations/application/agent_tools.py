@@ -25,6 +25,7 @@ from app.contexts.conversations.application.agent_skills import (
     resolve_skill,
     skill_catalog,
 )
+from app.contexts.conversations.application.document_delivery import file_delivery_request
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolInput, ToolSpec
 from app.contexts.conversations.infrastructure.agent_transport import gateway_tool
 from app.shared.domain.countries import resolve_country
@@ -1201,7 +1202,7 @@ class AgentTools:
 
     def file_write_requested(self):
         self.current()
-        if not re.search(
+        if not file_delivery_request(self.payload.get("content", ""))[0] and not re.search(
             r"生成|新建|创建|起草|撰写|编写|拟|写|做|制作|整理|导出|下载|保存|另存|修改|改|编辑|填|替换|转换|转成|转为|排版|补充|create|edit|draft|export|save|generate|fill|replace|convert",
             self.payload.get("content", ""),
             re.I,

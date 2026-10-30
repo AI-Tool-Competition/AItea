@@ -13,6 +13,7 @@ from app.contexts.conversations.application import agent_loop
 from app.contexts.conversations.application.agent_tools import AgentTools, LawReadInput, LegalSearchInput
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_loop import compact_messages
+from app.contexts.conversations.application.document_delivery import file_delivery_request
 from app.contexts.conversations.application.agent_skills import (
     SKILLS,
     SKILL_ALIASES,
@@ -191,6 +192,207 @@ def test_document_files_commit_with_answer_and_have_authenticated_downloads(
     client.post("/api/tea/auth/logout")
     client.post("/api/tea/auth/demo", json={})
     assert all(client.get(url).status_code == 404 for url in urls)
+
+
+@pytest.mark.parametrize(
+    "question,formats,editing",
+    [
+        ("给我生成合同文档，格式是对的", ("docx",), False),
+        ("先给我直接生成文档", ("docx",), False),
+        ("请生成可编辑Word合同和PDF副本", ("docx", "pdf"), False),
+        ("给我一份Word", ("docx",), False),
+        ("导出Excel报价表", ("xlsx",), False),
+        ("不要PDF，生成Word", ("docx",), False),
+        ("修改原Word合同，其他文字保持不变", ("docx",), True),
+        ("合同需要注意什么", (), False),
+        ("只给合同正文，不要生成文件", (), False),
+        ("只要合同正文，不保存文件", (), False),
+        ("本地的文档生成一直失败，看看情况", (), False),
+        ("如何生成Word文件", (), False),
+        ("生成Word合同需要哪些资料", (), False),
+    ],
+)
+def test_file_delivery_request_respects_requested_output(question, formats, editing):
+    assert file_delivery_request(question) == (formats, editing)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "question,formats",
+    [
+        ("给我生成合同文档，格式是对的", {"docx"}),
+        ("先给我直接生成文档", {"docx"}),
+        ("请生成Word催款函和同内容PDF", {"docx", "pdf"}),
+    ],
+)
+def test_file_request_exports_model_body_without_another_model_call(
+    workspace, monkeypatch, question, formats, stream
+):
+    import io
+    import re
+
+    from docx import Document
+    from pypdf import PdfReader
+
+    client, service, _, case, payload = workspace
+    body = "# 催款函草案\n请支付六堡茶货款8000元。\n账号：[待补充]"
+    scenario(monkeypatch, [body], auto_discover=False)
+    response = send(workspace, {**payload, "content": question}, stream=stream)
+    assert response.status_code == 200, response.text
+    state = last_run(workspace)["_task_state"]
+    assert state["model_calls"] == 1
+    assert state["delivery"] == "answered"
+    assert not state["file_delivery"]["missing_formats"]
+    assert len(state["calls"]) == len(formats)
+    assert all(c["tool"] == "create_document_file" and not c["error"] for c in state["calls"])
+    with closing(service.db.connect()) as conn:
+        files = conn.execute("SELECT * FROM documents WHERE case_id=?", (case["id"],)).fetchall()
+    assert {f["filename"].rsplit(".", 1)[1] for f in files} == formats
+    saved = next(v for e, v in stream_events(response) if e == "done") if stream else response.json()
+    answer = saved["messages"][1]["content"]
+    assert "请支付六堡茶货款8000元。" in answer
+    assert len(re.findall(r"\]\(/api/tea/documents/[^)]+/download\)", answer)) == len(formats)
+    for file in files:
+        receipt = stored_receipt(workspace, "delivery_file_" + file["filename"].rsplit(".", 1)[1])
+        assert receipt["validation"]["reopened"]
+        download = client.get(f"/api/tea/documents/{file['id']}/download")
+        assert download.status_code == 200
+        if file["filename"].endswith(".docx"):
+            text = "\n".join(p.text for p in Document(io.BytesIO(download.content)).paragraphs)
+            assert text == body.removeprefix("# ")
+        else:
+            text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(download.content)).pages)
+            assert "8000" in text and "待补充" in text
+
+
+def test_missing_pdf_uses_created_document_body_not_final_chat_summary(workspace, monkeypatch):
+    import io
+
+    from pypdf import PdfReader
+
+    client, _, _, _, payload = workspace
+    scenario(
+        monkeypatch,
+        [
+            tools(
+                (
+                    "create_document_file",
+                    {"filename": "合同.docx", "format": "docx", "content": "六堡茶100公斤，总价20000元。"},
+                )
+            ),
+            "文件已准备。",
+        ],
+    )
+    assert send(workspace, {**payload, "content": "生成Word合同和同内容PDF"}).status_code == 200
+    run = last_run(workspace)
+    assert len(run["_document_files"]) == 2
+    pdf = next(p for p in run["_document_files"] if p["format"] == "pdf")
+    download = client.get(f"/api/tea/documents/{pdf['id']}/download")
+    text = PdfReader(io.BytesIO(download.content)).pages[0].extract_text()
+    assert "20000" in text and "文件已准备" not in text
+
+
+def test_downloadable_file_uses_workbench_draft_instead_of_save_notice(workspace, monkeypatch):
+    import io
+
+    from docx import Document
+
+    client, _, _, case, payload = workspace
+    body = "# 催款函草案\n请支付货款8000元。"
+    scenario(
+        monkeypatch,
+        [
+            tools(
+                (
+                    "draft_document",
+                    {"title": "催款函", "content": body, "task_id": case["stages"][0]["tasks"][0]["id"]},
+                )
+            ),
+            "催款函已准备。",
+        ],
+    )
+    assert send(workspace, {**payload, "content": "生成Word催款函文档"}).status_code == 200
+    run = last_run(workspace)
+    assert run["_task_state"]["delivery"] == "answered"
+    file = run["_document_files"][0]
+    download = client.get(f"/api/tea/documents/{file['id']}/download")
+    text = "\n".join(p.text for p in Document(io.BytesIO(download.content)).paragraphs)
+    assert text == body.removeprefix("# ")
+    assert "已准备" not in text
+
+
+@pytest.mark.parametrize("question", ["只给合同正文，不要生成文件", "解释一下合同付款条款"])
+def test_plain_chat_does_not_automatically_create_files(workspace, monkeypatch, question):
+    scenario(monkeypatch, ["合同正文或分析说明。"])
+    assert send(workspace, {**workspace[-1], "content": question}).status_code == 200
+    run = last_run(workspace)
+    assert run["_task_state"]["delivery"] == "answered"
+    assert not run["_document_files"] and not run["_task_state"]["calls"]
+
+
+@pytest.mark.parametrize("question", ["修改原Word合同，其他文字不变", "请生成Excel报价表"])
+def test_file_requests_that_require_real_editing_or_structure_are_not_plain_text_exports(
+    workspace, monkeypatch, question
+):
+    scenario(monkeypatch, ["下面是修改或报价说明。"])
+    assert send(workspace, {**workspace[-1], "content": question}).status_code == 200
+    run = last_run(workspace)
+    assert run["_task_state"]["delivery"] == "partially_answered"
+    assert run["_task_state"]["file_delivery"]["missing_formats"]
+    assert not run["_document_files"] and not run["_task_state"]["calls"]
+    assert "尚未生成所需的" in run["output"]
+
+
+def test_file_export_failure_preserves_body_and_is_not_answered(workspace, monkeypatch):
+    def fail_file(*args):
+        raise ToolFailure("renderer_unavailable", "受控文件生成失败")
+
+    monkeypatch.setattr(AgentTools, "create_file", fail_file)
+    scenario(monkeypatch, ["# 催款函\n请支付货款8000元。"])
+    assert send(workspace, {**workspace[-1], "content": "生成Word催款函"}).status_code == 200
+    run = last_run(workspace)
+    assert run["_task_state"]["delivery"] == "partially_answered"
+    assert run["_task_state"]["calls"][0]["error"] == "renderer_unavailable"
+    assert stored_receipt(workspace, "delivery_file_docx")["error"] == "renderer_unavailable"
+    assert "8000元" in run["output"] and "尚未生成所需的 DOCX 文件" in run["output"]
+    assert not run["_document_files"]
+
+
+def test_failed_renderer_is_not_automatically_replayed(workspace, monkeypatch):
+    def fail_file(*args):
+        raise ToolFailure("renderer_unavailable", "受控文件生成失败")
+
+    monkeypatch.setattr(AgentTools, "create_file", fail_file)
+    scenario(
+        monkeypatch,
+        [
+            tools(
+                ("create_document_file", {"filename": "合同.docx", "format": "docx", "content": "合同正文。"})
+            ),
+            "合同正文。",
+        ],
+    )
+    assert send(workspace, {**workspace[-1], "content": "生成Word合同"}).status_code == 200
+    run = last_run(workspace)
+    assert run["_task_state"]["delivery"] == "partially_answered"
+    assert len(run["_task_state"]["calls"]) == 1
+    assert not run["_document_files"]
+
+
+def test_cancelled_automatic_export_does_not_commit_file(workspace, monkeypatch):
+    create_file = AgentTools.create_file
+
+    def cancel_after_prepare(*args):
+        create_file(*args)
+        raise StreamCancelled()
+
+    monkeypatch.setattr(AgentTools, "create_file", cancel_after_prepare)
+    scenario(monkeypatch, ["# 催款函\n请支付货款8000元。"])
+    _, service, owner, case, payload = workspace
+    with pytest.raises(StreamCancelled):
+        service.post_message(owner, case["id"], {**payload, "content": "生成Word催款函"})
+    with closing(service.db.connect()) as conn:
+        assert not conn.execute("SELECT 1 FROM documents WHERE case_id=?", (case["id"],)).fetchone()
 
 
 def test_document_edit_requires_inspection_and_preserves_original(workspace, monkeypatch):

@@ -15,6 +15,11 @@ from app.contexts.conversations.application.answer_sources import AnswerSources
 from app.contexts.conversations.application.conversation_context import context_identity
 from app.contexts.conversations.application.agent_skills import skill_catalog
 from app.contexts.conversations.application.agent_tools import AgentTools, EmptyInput
+from app.contexts.conversations.application.document_delivery import (
+    TEXT_FORMATS,
+    export_filename,
+    file_delivery_request,
+)
 from app.contexts.conversations.application.execution_plan import ExecutionBudget
 from app.contexts.conversations.application.tool_output import tool_output_preview
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolRun, ToolSpec, failure_code
@@ -255,6 +260,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         },
     }
     cached, discovery_count = {}, 0
+    file_formats, edit_requested = file_delivery_request(payload["content"])
     started = monotonic()
     next_progress = 30
     next_lease_renewal = 60
@@ -282,7 +288,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
 
     run.check_cancelled = check
 
-    def execute(call):
+    def execute(call, *, allowed=None):
         nonlocal discovery_count
         name, call_id = call["function"]["name"], call["id"]
         try:
@@ -302,7 +308,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         try:
             if value is not None:
                 pass
-            elif not tool or name not in enabled:
+            elif not tool or name not in (enabled if allowed is None else allowed):
                 value = {
                     "error": "unknown_tool",
                     "message": "此工具尚未加载或不存在；常用证据工具可直接使用，其他能力按需tool_search。",
@@ -349,6 +355,70 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
             cached[key] = value
         return value, args
 
+    def record_call(call, value, args):
+        name = call["function"]["name"]
+        empty = (
+            name in {"search_legal_evidence", "lookup_chinese_law", "web_search", "search_documents"}
+            and not (value.get("items") or value.get("sources"))
+            and not value.get("error")
+        )
+        state["calls"].append(
+            {
+                "call_id": call["id"],
+                "tool": name,
+                "input": args,
+                "error": value.get("error"),
+                "execution_status": "failed" if value.get("error") else "completed",
+                "empty_result": empty,
+                "reused_result": value.get("reused_result", False),
+            }
+        )
+        return empty
+
+    def missing_file_formats():
+        available = {p["format"] for p in bound.pending_files if not edit_requested or p.get("source_id")}
+        if bound.pending_pdfs and not edit_requested:
+            available.add("pdf")
+        return [format for format in file_formats if format not in available]
+
+    def export_answer_files(output):
+        # A completed text answer can be exported without another model pass.
+        # Editing an original and structured spreadsheets/slides stay with the
+        # model's real tools; prose must not replace those operations.
+        if edit_requested or not file_formats:
+            return
+        creates = [c for c in state["calls"] if c["tool"] == "create_document_file"]
+        content = next(
+            (
+                c["input"]["content"]
+                for c in reversed(creates)
+                if not c["error"] and c["input"].get("format") in TEXT_FORMATS
+            ),
+            result["_drafts"][-1]["content"] if result["_drafts"] else output,
+        )
+        content = sources.render(bound.checked_file_links(sources.with_web_links(content)))
+        for format in missing_file_formats():
+            check()
+            # A failed renderer is already recorded. Do not repeat its writes
+            # or export an explanatory reply as a replacement document.
+            if format not in TEXT_FORMATS or any(c["input"].get("format") == format for c in creates):
+                continue
+            call = {
+                "id": f"delivery_file_{format}",
+                "function": {
+                    "name": "create_document_file",
+                    "arguments": dump(
+                        {"filename": export_filename(content, format), "format": format, "content": content}
+                    ),
+                },
+            }
+            if emit:
+                emit("status", {"label": f"正在生成并检查 {format.upper()} 文件…"})
+            value, args = execute(call, allowed={"create_document_file"})
+            record_call(call, value, args)
+            state.setdefault("file_delivery_exports", []).append(format)
+            checkpoint()
+
     def finalize(output, *, error=None, partial=False):
         check()
         unknown = sources.unknown(output)
@@ -358,6 +428,21 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
             state["unresolved_citations"] = sorted(unknown)
         if not output.strip():
             error = error or "未能生成答复正文。"
+        missing_files = missing_file_formats()
+        if file_formats:
+            state["file_delivery"] = {
+                "requested_formats": list(file_formats),
+                "missing_formats": missing_files,
+                "operation": "edit" if edit_requested else "create",
+            }
+        if missing_files and not error:
+            partial = True
+            output += (
+                "\n\n尚未生成所需的 "
+                + "、".join(f.upper() for f in missing_files)
+                + (" 修改副本" if edit_requested else " 文件")
+                + "，本轮保留已得到的正文和文件；没有下载链接的文件尚未交付。"
+            )
         card_gaps = state.get("unresolved_card_fields", {})
         if card_gaps and not error:
             partial = True
@@ -638,6 +723,8 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                         ]
                     )
                     continue
+                if not broken:
+                    export_answer_files(output)
                 return finalize(output)
             if final_only:
                 return finalize("", error="取证结束后仍返回工具请求，未生成答复。")
@@ -679,23 +766,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                     fresh_evidence = sources.sources != prior_sources
                     material = sources.project(material)
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": dump(material)})
-                    empty = (
-                        name
-                        in {"search_legal_evidence", "lookup_chinese_law", "web_search", "search_documents"}
-                        and not (value.get("items") or value.get("sources"))
-                        and not value.get("error")
-                    )
-                    state["calls"].append(
-                        {
-                            "call_id": call["id"],
-                            "tool": name,
-                            "input": args,
-                            "error": value.get("error"),
-                            "execution_status": "failed" if value.get("error") else "completed",
-                            "empty_result": empty,
-                            "reused_result": value.get("reused_result", False),
-                        }
-                    )
+                    empty = record_call(call, value, args)
                     progressed |= bool(
                         not value.get("error")
                         and not value.get("reused_result")

@@ -13,6 +13,7 @@ from app.contexts.conversations.application import agent_loop
 from app.contexts.conversations.application.agent_tools import AgentTools, LawReadInput, LegalSearchInput
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_loop import compact_messages
+from app.contexts.conversations.application.contracts import MessageStreamEvent
 from app.contexts.conversations.application.document_delivery import file_delivery_request
 from app.contexts.conversations.application.agent_skills import (
     SKILLS,
@@ -135,8 +136,9 @@ def legal_tools(workspace, check=lambda: None):
 
 @pytest.mark.parametrize("both_formats", [False, True])
 @pytest.mark.parametrize("fill", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
 def test_contract_template_loads_and_creates_an_authenticated_contract_file(
-    workspace, monkeypatch, both_formats, fill
+    workspace, monkeypatch, both_formats, fill, stream
 ):
     import io
     import re
@@ -174,10 +176,29 @@ def test_contract_template_loads_and_creates_an_authenticated_contract_file(
     )
     format_names = "Word和PDF" if both_formats else "Word"
     response = send(
-        workspace, {**workspace[4], "content": f"请按茶叶采购模板生成{format_names}合同草稿，未知处留空。"}
+        workspace,
+        {**workspace[4], "content": f"请按茶叶采购模板生成{format_names}合同草稿，未知处留空。"},
+        stream=stream,
     )
     assert response.status_code == 200
-    answer = response.json()["messages"][-1]["content"]
+    if stream:
+        frames = [frame for frame in response.text.split("\n\n") if frame.startswith("event:")]
+        assert frames[-1].startswith("event: done"), response.text
+        progress = [
+            json.loads(frame.split("data: ")[1]) for frame in frames if frame.startswith("event: step")
+        ]
+        template_calls = [
+            tool
+            for step in progress
+            for tool in step.get("tools", [])
+            if tool["name"] == "read_contract_template"
+        ]
+        assert template_calls[0]["status"] == "running"
+        assert template_calls[-1]["status"] == "completed"
+        body = json.loads(frames[-1].split("data: ")[1])
+    else:
+        body = response.json()
+    answer = body["messages"][-1]["content"]
     url = re.search(r"\]\((/api/tea/documents/[^)]+/download)\)", answer)[1]
     download = workspace[0].get(url)
     assert download.status_code == 200
@@ -1412,6 +1433,25 @@ def test_durable_claim_blocks_second_worker_and_conflicting_payload(workspace):
     with pytest.raises(AppError) as busy:
         AgentJournal(service, owner, case, {**payload, "client_message_id": "second"}, "new")
     assert busy.value.code == "message_in_progress"
+
+
+def test_all_registered_tools_have_serializable_stream_progress(workspace):
+    snapshots = [
+        {
+            "id": f"call-{tool.spec.name}",
+            "name": tool.spec.name,
+            "label": tool.spec.label,
+            "position": index,
+            "status": "running",
+            "attempt": 1,
+            "max_attempts": tool.spec.attempts,
+            "detail": "正在执行",
+            "duration_ms": 0,
+        }
+        for index, tool in enumerate(legal_tools(workspace).registry.values(), start=1)
+    ]
+    event = MessageStreamEvent(event="step", data={"tools": snapshots})
+    assert json.loads(event.encode().split("data: ")[1])["tools"] == snapshots
 
 
 def test_streaming_trace_contract_and_catalog_expose_all_business_tools(workspace, monkeypatch):

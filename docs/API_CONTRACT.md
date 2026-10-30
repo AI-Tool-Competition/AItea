@@ -281,6 +281,7 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 - `status` 为 `running | retrying | completed | failed | cancelled`；`attempt` 为当前尝试次数，`max_attempts` 最大为 2，`duration_ms` 含重试等待。
 - 重试保持同一工具 `id`。每个 `step` 是完整快照；客户端在原位置更新，同一 `run_id` 下忽略小于等于已接收 `sequence` 的快照。
 - 普通聊天也推送实际步骤的开始、工具进度和结束；最终消息 `trace` 保存相同公开记录。工具成功不等于业务任务完成。
+- 进度序列化须覆盖全部已注册工具，包括 `read_contract_template`。事件结构损坏时发送明确的 `stream_failed` 错误并触发工作线程取消，不将校验堆栈或原始内部数据发送给客户端，也不把断开的连接记为完整交付。
 - 当前问答交付完整或部分答复后发送 `done`，其中 `trace.delivery_status` 记录生成与取证状态；`done` 只表示消息已保存。`execution_failed`、取消、版本冲突及最终保存失败发送 `error`，不发送 `done`。已完成请求使用原 `client_message_id` 恢复持久结果；失败或中断的请求需用新编号明确重新发送，不能自动重放未知外部请求。历史已保存的失败说明保持读取兼容。
 
 模型驱动节点会话的预算、取消、记忆边界和进度展示规则见 [Agent 调度与记忆](AGENT_RUNTIME.md)；固定分析流程的兼容说明见 [旧工具执行层](AGENT_TOOLS.md)。当前聊天端不发送 `mode` / `skills`，由服务端默认自动调度；这两个字段仍供旧客户端兼容。SSE 和历史记录契约保持完整，聊天界面只展示允许的业务进度，不渲染内部调度与记忆记录。

@@ -1,10 +1,14 @@
+import asyncio
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from app.contexts.conversations.application import assistant as assistant
+from app.contexts.conversations.application.contracts import MessageStreamEvent
 from app.interfaces.http.factory import create_app
+from app.shared.application.streaming import workflow_events
 from app.shared.domain.errors import AppError
 from fastapi.testclient import TestClient
 
@@ -59,6 +63,30 @@ def test_stream_validates_ownership_and_stage_before_headers(chat):
     assert client.post(url, json=payload).status_code == 401
     client.post("/api/tea/auth/demo", json={})
     assert client.post(url, json=payload).status_code == 404
+
+
+def test_stream_reports_invalid_progress_and_cancels_worker():
+    stopped = threading.Event()
+
+    def execute(emit, check):
+        try:
+            emit("step", {"tools": [{"name": "private-invalid-tool"}]})
+            while True:
+                check()
+                time.sleep(0.005)
+        finally:
+            stopped.set()
+
+    async def collect():
+        return [frame async for frame in workflow_events(execute, MessageStreamEvent, "正在处理…")]
+
+    output = asyncio.run(collect())
+    assert stopped.is_set()
+    assert output[0].startswith("event: status")
+    assert output[-1].startswith("event: error")
+    assert json.loads(output[-1].split("data: ")[1])["code"] == "stream_failed"
+    assert "private-invalid-tool" not in "".join(output)
+    assert not any(frame.startswith("event: done") for frame in output)
 
 
 def provider(monkeypatch, chunks, *, streaming=True):

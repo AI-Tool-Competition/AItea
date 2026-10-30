@@ -104,6 +104,7 @@ class ToolCallSnapshot(StrictModel):
         "inspect_image",
         "convert_long_image_to_pdf",
         "inspect_document_file",
+        "read_contract_template",
         "create_document_file",
         "edit_document_file",
         "web_search",

@@ -5,6 +5,8 @@ import logging
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
 
+from pydantic import ValidationError
+
 from app.contexts.conversations.application.contracts import MessageStreamEvent
 from app.contexts.workflows.application.contracts import DebugStreamEvent
 
@@ -82,7 +84,19 @@ async def workflow_events(execute, envelope, initial_label):
             except TimeoutError:
                 yield ": keep-alive\n\n"
                 continue
-            yield envelope(event=event, data=data).encode()
+            try:
+                encoded = envelope(event=event, data=data).encode()
+            except ValidationError:
+                cancelled.set()
+                logger.error(
+                    "workflow_stream_invalid_event",
+                    extra={"stream_event": event, "envelope": envelope.__name__},
+                )
+                yield envelope(
+                    event="error", data={"code": "stream_failed", "message": "回复传输未能完成，请重试。"}
+                ).encode()
+                break
+            yield encoded
             if event in ("done", "error"):
                 break
     finally:

@@ -1577,6 +1577,7 @@ def test_citation_handles_replace_entire_markdown_wrapper_and_deduplicate(wrappe
 
 
 def test_response_deadline_returns_recoverable_error_without_committing_answer(workspace, monkeypatch):
+    monkeypatch.setenv("AGENT_BUDGET_TOTAL", "180")
     clock = {"seconds": 0}
     monkeypatch.setattr(agent_loop, "monotonic", lambda: clock["seconds"])
     monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
@@ -1597,4 +1598,70 @@ def test_response_deadline_returns_recoverable_error_without_committing_answer(w
                 0
             ]
             == 0
+        )
+
+
+def test_active_task_runs_past_old_deadlines_and_renews_claim(workspace, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.contexts.conversations.application import agent_journal, tool_runtime
+
+    clock = {"seconds": 0}
+    origin = datetime.now(timezone.utc)
+
+    class ClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return origin + timedelta(seconds=clock["seconds"])
+
+    monkeypatch.setattr(agent_loop, "monotonic", lambda: clock["seconds"])
+    monkeypatch.setattr(tool_runtime, "monotonic", lambda: clock["seconds"])
+    monkeypatch.setattr(agent_journal, "datetime", ClockDateTime)
+    monkeypatch.setattr(agent_journal, "now", lambda: ClockDateTime.now().isoformat())
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+    monkeypatch.setenv("AGENT_BUDGET_TOTAL", "0")
+    monkeypatch.setenv("AGENT_BUDGET_MODEL", "0")
+
+    async def active(messages, definitions, delta, check, **options):
+        assert options["timeout"] == float("inf")
+        for seconds in range(60, 1021, 60):
+            clock["seconds"] = seconds
+            check()
+        delta("已完成代理筛选建议。")
+        return {"role": "assistant", "content": "已完成代理筛选建议。"}
+
+    monkeypatch.setattr(agent_loop, "agent_turn", active)
+    events = stream_events(send(workspace, stream=True))
+    assert events[-1][0] == "done"
+    assert any(event == "status" and "1020秒" in data["label"] for event, data in events)
+    result = last_run(workspace)
+    assert result["_task_state"]["delivery"] == "answered"
+    assert result["_task_state"]["model_calls"] == 1
+    assert result["output"] == "已完成代理筛选建议。"
+    with closing(workspace[1].db.connect()) as conn:
+        row = conn.execute("SELECT status,lease_until FROM agent_runs").fetchone()
+        assert row["status"] == "completed"
+        assert datetime.fromisoformat(row["lease_until"]) > ClockDateTime.now()
+
+
+@pytest.mark.parametrize("status, expired", [("running", True), ("interrupted", False)])
+def test_long_task_cannot_renew_a_lost_claim(workspace, status, expired):
+    from datetime import datetime, timedelta, timezone
+
+    _, service, owner, case, payload = workspace
+    prepared = service.prepare_message(owner, case["id"], payload)
+    journal = AgentJournal(service, owner, prepared["case"], payload, prepared["payload_hash"])
+    lease_until = (datetime.now(timezone.utc) + timedelta(seconds=-1 if expired else 60)).isoformat()
+    with service.db.transaction() as conn:
+        conn.execute(
+            "UPDATE agent_runs SET status=?,lease_until=? WHERE id=?",
+            (status, lease_until, journal.id),
+        )
+    with pytest.raises(AppError) as error:
+        journal.renew()
+    assert error.value.code == "agent_lease_lost"
+    with closing(service.db.connect()) as conn:
+        assert (
+            conn.execute("SELECT lease_until FROM agent_runs WHERE id=?", (journal.id,)).fetchone()[0]
+            == lease_until
         )

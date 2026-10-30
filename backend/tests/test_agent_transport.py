@@ -137,8 +137,9 @@ def test_finished_stream_with_truncated_trailing_frame_is_not_complete(monkeypat
 
 
 @pytest.mark.parametrize("prefix", ["thinking", "answer", "tool"])
+@pytest.mark.parametrize("timeout", [None, float("inf"), 2])
 def test_idle_heartbeats_do_not_keep_stalled_model_alive_and_only_empty_generations_retry(
-    monkeypatch, prefix
+    monkeypatch, prefix, timeout
 ):
     import time
 
@@ -177,7 +178,7 @@ def test_idle_heartbeats_do_not_keep_stalled_model_alive_and_only_empty_generati
     )
     started = time.monotonic()
     with pytest.raises(Exception) as error:
-        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=2))
+        asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=timeout))
     assert time.monotonic() - started < 1
     if prefix == "thinking":
         assert isinstance(error.value, ToolFailure) and error.value.code == "model_stream_stalled"
@@ -188,7 +189,8 @@ def test_idle_heartbeats_do_not_keep_stalled_model_alive_and_only_empty_generati
         assert error.value.partial_content == ("已收到正文" if prefix == "answer" else "")
 
 
-def test_active_reasoning_can_take_longer_than_one_idle_window(monkeypatch):
+@pytest.mark.parametrize("timeout", [None, float("inf"), 2])
+def test_active_reasoning_can_take_longer_than_one_idle_window(monkeypatch, timeout):
     class Active(httpx.AsyncByteStream):
         async def __aiter__(self):
             for _ in range(6):
@@ -208,8 +210,48 @@ def test_active_reasoning_can_take_longer_than_one_idle_window(monkeypatch):
             **kw, transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Active()))
         ),
     )
-    result = asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=2))
+    result = asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=timeout))
     assert result["content"] == "已完成"
+
+
+@pytest.mark.parametrize("timeout", [None, float("inf")])
+def test_unlimited_model_request_still_has_network_idle_and_connect_limits(monkeypatch, timeout):
+    requests = provider(monkeypatch, (frame(delta({"content": "完成"}, "stop")) + frame("[DONE]")).encode())
+    asyncio.run(transport.agent_turn([], [], lambda _: None, lambda: None, timeout=timeout))
+    assert requests[0].extensions["timeout"] == {"connect": 10, "read": 30, "write": None, "pool": 10}
+
+
+@pytest.mark.parametrize("timeout", [None, float("inf")])
+def test_unlimited_model_request_can_be_cancelled_while_waiting_for_more_data(monkeypatch, timeout):
+    closed = []
+    checks = []
+
+    class Waiting(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            try:
+                yield frame(delta({"reasoning_content": "检查"})).encode()
+                await asyncio.sleep(30)
+            finally:
+                closed.append(True)
+
+    original = httpx.AsyncClient
+    monkeypatch.setenv("AGENT_API_KEY", "fixture-only")
+    monkeypatch.setattr(
+        transport.httpx,
+        "AsyncClient",
+        lambda **kw: original(
+            **kw, transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Waiting()))
+        ),
+    )
+
+    def check():
+        checks.append(True)
+        if len(checks) >= 3:
+            raise StreamCancelled()
+
+    with pytest.raises(StreamCancelled):
+        asyncio.run(transport.agent_turn([], [], lambda _: None, check, timeout=timeout))
+    assert closed
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "121", "bad"])

@@ -173,11 +173,11 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
     bound = AgentTools(service, owner, case, stage, payload, prepared, journal.id, cancelled)
     registry = bound.registry
     active = set(COMMON_TOOLS) & registry.keys()
-    spec = replace(MODEL_TURN, timeout_seconds=budget.model, attempts=budget.retries + 1)
+    spec = replace(MODEL_TURN, timeout_seconds=budget.model_seconds, attempts=budget.retries + 1)
     run = ToolRun(
         emit,
         cancelled,
-        timeout_seconds=budget.total,
+        timeout_seconds=budget.total_seconds,
         max_calls=40,
         catalog=[t.spec for t in registry.values()] + [spec],
     )
@@ -255,6 +255,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
     cached, discovery_count = {}, 0
     started = monotonic()
     next_progress = 30
+    next_lease_renewal = 60
 
     def checkpoint():
         result["_evidence"] = list(sources.sources.values())
@@ -262,11 +263,14 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         journal.checkpoint(trace, state, snapshot=result)
 
     def check():
-        nonlocal next_progress
+        nonlocal next_progress, next_lease_renewal
         cancelled()
         elapsed = monotonic() - started
-        if elapsed >= budget.total:
+        if elapsed >= budget.total_seconds:
             raise ToolFailure("response_timeout", "本次已达到总时间限制，原文及执行记录已保留。")
+        if elapsed >= next_lease_renewal:
+            journal.renew()
+            next_lease_renewal = elapsed + 60
         if emit and elapsed >= next_progress:
             next_progress = elapsed + 15
             emit(
@@ -414,7 +418,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         evidence_rounds, input_error_rounds, repair_used, no_progress = 0, 0, False, False
         length_recovered, answer_prefix, token_limit = False, "", budget.tokens
         # Two searches, one targeted original read and one parameter correction
-        # are bounded by the same hard deadline. No report/polishing submodel.
+        # share the configured deadline, if any. No report/polishing submodel.
         for turn in range(6):
             check()
             bound.current()

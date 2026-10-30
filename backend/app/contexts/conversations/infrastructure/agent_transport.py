@@ -153,7 +153,7 @@ async def agent_turn(
     on_delta,
     check,
     *,
-    timeout=180,
+    timeout=None,
     on_usage=None,
     on_summary=None,
     cache_key=None,
@@ -161,6 +161,8 @@ async def agent_turn(
     tool_choice="auto",
     max_tokens=6000,
 ):
+    if timeout == math.inf:
+        timeout = None
     settings = provider_settings()
     body = {
         "model": settings["model"],
@@ -226,8 +228,12 @@ async def agent_turn(
             except ValueError as error:
                 raise invalid_response(str(error)) from error
 
+        connection_seconds = min(10, timeout) if timeout is not None else 10
         network_timeout = httpx.Timeout(
-            timeout, connect=min(10, timeout), read=min(idle_seconds, timeout), pool=min(10, timeout)
+            timeout,
+            connect=connection_seconds,
+            read=min(idle_seconds, timeout) if timeout is not None else idle_seconds,
+            pool=connection_seconds,
         )
         async with (
             asyncio.timeout(timeout),

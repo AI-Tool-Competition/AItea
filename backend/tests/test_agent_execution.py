@@ -525,11 +525,32 @@ def test_evidence_budget_does_not_cut_a_legal_condition():
     assert "分页读取" in value["notice"]
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-1", "0"])
-def test_invalid_time_budget_rejected(monkeypatch, value):
-    monkeypatch.setenv("AGENT_BUDGET_TOTAL", value)
+@pytest.mark.parametrize("field", ["TOTAL", "MODEL"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-1"])
+def test_invalid_time_budget_rejected(monkeypatch, field, value):
+    monkeypatch.setenv(f"AGENT_BUDGET_{field}", value)
     with pytest.raises(ToolFailure):
         ExecutionBudget.configured()
+
+
+@pytest.mark.parametrize("value", [None, "0"])
+def test_default_time_budget_allows_active_long_tasks(monkeypatch, value):
+    for field in ("TOTAL", "MODEL"):
+        monkeypatch.delenv(f"AGENT_BUDGET_{field}", raising=False)
+        if value is not None:
+            monkeypatch.setenv(f"AGENT_BUDGET_{field}", value)
+    budget = ExecutionBudget.configured()
+    assert budget.total_seconds == budget.model_seconds == float("inf")
+    assert budget.evidence == 45
+
+
+@pytest.mark.parametrize("total, model", [(180, 120), (7200, 3600), (0, 120), (180, 0)])
+def test_explicit_time_limits_remain_configurable(monkeypatch, total, model):
+    monkeypatch.setenv("AGENT_BUDGET_TOTAL", str(total))
+    monkeypatch.setenv("AGENT_BUDGET_MODEL", str(model))
+    budget = ExecutionBudget.configured()
+    assert budget.total_seconds == (total or float("inf"))
+    assert budget.model_seconds == (model or float("inf"))
 
 
 def test_empty_model_stall_has_one_bounded_retry_without_executing_tools(workspace, monkeypatch):

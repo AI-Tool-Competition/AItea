@@ -96,6 +96,16 @@ class AgentJournal:
             )
         return None
 
+    def renew(self):
+        """A live long-running turn keeps its claim; expired/stolen claims stay lost."""
+        with self.service.db.transaction() as conn:
+            self.guard(conn)
+            expires = (datetime.now(timezone.utc) + timedelta(seconds=960)).isoformat()
+            conn.execute(
+                "UPDATE agent_runs SET lease_until=?,updated_at=? WHERE id=?",
+                (expires, now(), self.id),
+            )
+
     def finish_tool(self, call_id, result):
         with self.service.db.transaction() as conn:
             self.guard(conn)

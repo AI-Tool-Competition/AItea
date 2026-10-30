@@ -22,6 +22,7 @@ EXPORTED_TOOLS = frozenset(
     {
         "tool_search",
         "load_skill",
+        "read_contract_template",
         "guide_business",
         "check_materials",
         "get_handoff",

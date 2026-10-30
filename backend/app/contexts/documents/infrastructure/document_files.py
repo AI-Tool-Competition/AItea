@@ -55,6 +55,7 @@ def _worker(send, action, options, content):
                 "validation": {
                     "reopened": True,
                     "format": options["format"],
+                    **({"layout": options.get("layout", "standard")} if action == "create" else {}),
                     "total": checked["total"],
                     "structure": checked["structure"],
                     "visual_check": "not_performed",
@@ -264,14 +265,19 @@ def _blocks(content):
         i += 1
 
 
-def create(format, content):
+def create(format, content, layout="standard"):
     if not isinstance(content, str) or not 0 < len(content) <= 40000:
         raise ValueError("新文件正文需在1至40000字符内")
+    if layout not in {"standard", "contract"} or (layout == "contract" and format not in {"docx", "pdf"}):
+        raise ValueError("合同版式仅支持Word和PDF")
+    contract = layout == "contract"
     buffer = io.BytesIO()
     if format == "docx":
         from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
-        from docx.shared import Mm, Pt
+        from docx.shared import Mm, Pt, RGBColor
 
         document = Document()
         section = document.sections[0]
@@ -281,49 +287,161 @@ def create(format, content):
             style.font.name = "宋体" if name == "Normal" else "黑体"
             style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), style.font.name)
         document.styles["Normal"].font.size = Pt(11)
+        if contract:
+            document.core_properties.author = "茶渡"
+            document.core_properties.comments = ""
+            section.top_margin = section.bottom_margin = Mm(22)
+            section.left_margin = section.right_margin = Mm(25)
+            normal = document.styles["Normal"]
+            normal.font.size = Pt(12)
+            normal.paragraph_format.line_spacing = 1.5
+            normal.paragraph_format.space_after = Pt(4)
+            normal.paragraph_format.widow_control = True
+            for name in ("Title", "Heading 1", "Heading 2", "Heading 3"):
+                style = document.styles[name]
+                style.font.color.rgb = RGBColor(0, 0, 0)
+                style.font.size = Pt(18 if name == "Title" else 12)
+                style.paragraph_format.keep_with_next = True
+                style.paragraph_format.space_before = Pt(10)
+                style.paragraph_format.space_after = Pt(6)
+            footer = section.footer.paragraphs[0]
+            footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            footer.add_run("第 ")
+            field = OxmlElement("w:fldSimple")
+            field.set(qn("w:instr"), "PAGE")
+            run = OxmlElement("w:r")
+            value = OxmlElement("w:t")
+            value.text = "1"
+            run.append(value)
+            field.append(run)
+            footer._p.append(field)
+            footer.add_run(" 页")
+        title_seen = False
         for kind, text in _blocks(content):
             if kind == "table":
                 table = document.add_table(rows=0, cols=len(text[0]))
                 table.style = "Table Grid"
-                for row in text:
-                    for cell, value in zip(table.add_row().cells, row, strict=True):
+                for index, row in enumerate(text):
+                    cells = table.add_row().cells
+                    if contract:
+                        properties = table.rows[-1]._tr.get_or_add_trPr()
+                        if index == 0:
+                            properties.append(OxmlElement("w:tblHeader"))
+                        if sum(map(len, row)) <= 1200:
+                            properties.append(OxmlElement("w:cantSplit"))
+                    for cell, value in zip(cells, row, strict=True):
                         cell.text = value
+                        if contract:
+                            for paragraph in cell.paragraphs:
+                                paragraph.paragraph_format.line_spacing = 1.2
+                                if len(text) <= 8 and sum(len(c) for r in text for c in r) <= 1200:
+                                    paragraph.paragraph_format.keep_with_next = index < len(text) - 1
+                                for run in paragraph.runs:
+                                    run.font.size = Pt(10.5)
+                                    run.bold = index == 0
             elif kind.startswith("heading"):
-                document.add_heading(text, int(kind[-1]))
+                if contract and kind == "heading1" and not title_seen:
+                    document.core_properties.title = text
+                    paragraph = document.add_paragraph(text, "Title")
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    title_seen = True
+                else:
+                    document.add_heading(text, int(kind[-1]))
             else:
-                document.add_paragraph(text)
+                paragraph = document.add_paragraph(text)
+                if contract and text.startswith("本栏对应《"):
+                    paragraph.paragraph_format.keep_with_next = True
         document.save(buffer)
     elif format == "pdf":
         from reportlab.lib import colors
-        from reportlab.lib.enums import TA_LEFT
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 
         pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
         normal = ParagraphStyle(
-            "cn", fontName="STSong-Light", fontSize=11, leading=17, wordWrap="CJK", alignment=TA_LEFT
+            "cn",
+            fontName="STSong-Light",
+            fontSize=12 if contract else 11,
+            leading=20 if contract else 17,
+            wordWrap="CJK",
+            alignment=TA_LEFT,
         )
+        margin = 25 * 72 / 25.4
+        text_width = 595.276 - 2 * margin
+        cell_style = ParagraphStyle("cell", parent=normal, fontSize=10, leading=15)
         story = []
+        title_seen = False
+        signature_start = None
         for kind, text in _blocks(content):
             if kind == "table":
-                table = Table([[Paragraph(escape(c), normal) for c in row] for row in text], repeatRows=1)
+                table = Table(
+                    [[Paragraph(escape(c), cell_style if contract else normal) for c in row] for row in text],
+                    colWidths=[text_width / len(text[0])] * len(text[0]) if contract else None,
+                    repeatRows=1,
+                    hAlign="LEFT",
+                )
                 table.setStyle(
                     TableStyle(
                         [("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP")]
                     )
                 )
-                story.append(table)
+                if contract:
+                    table.setStyle(
+                        TableStyle(
+                            [
+                                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                            ]
+                        )
+                    )
+                if contract and len(text) <= 8 and sum(len(c) for r in text for c in r) <= 1200:
+                    if signature_start is not None:
+                        story[signature_start:] = [KeepTogether([*story[signature_start:], table])]
+                    else:
+                        story.append(KeepTogether([table]))
+                else:
+                    story.append(table)
+                signature_start = None
             else:
+                if kind.startswith("heading"):
+                    signature_start = len(story) if contract and text.startswith("签署栏") else None
+                title = contract and kind == "heading1" and not title_seen
                 style = ParagraphStyle(
                     kind,
                     parent=normal,
-                    fontSize=16 - int(kind[-1]) if kind.startswith("heading") else 11,
+                    fontSize=(18 if title else 12)
+                    if contract
+                    else (16 - int(kind[-1]) if kind.startswith("heading") else 11),
                     spaceAfter=8,
+                    alignment=TA_CENTER if title else TA_LEFT,
+                    keepWithNext=contract and (kind.startswith("heading") or text.startswith("本栏对应《")),
                 )
-                story.extend([Paragraph(escape(text), style), Spacer(1, 4)])
-        SimpleDocTemplate(buffer, pagesize=(595.276, 841.89)).build(story)
+                title_seen |= title
+                story.append(Paragraph(escape(text), style))
+                if not contract:
+                    story.append(Spacer(1, 4))
+        if contract:
+
+            def page_number(canvas, doc):
+                canvas.saveState()
+                canvas.setFont("STSong-Light", 9)
+                canvas.drawCentredString(595.276 / 2, 12 * 72 / 25.4, f"第 {doc.page} 页")
+                canvas.restoreState()
+
+            SimpleDocTemplate(
+                buffer,
+                pagesize=(595.276, 841.89),
+                leftMargin=margin,
+                rightMargin=margin,
+                topMargin=22 * 72 / 25.4,
+                bottomMargin=22 * 72 / 25.4,
+            ).build(story, onFirstPage=page_number, onLaterPages=page_number)
+        else:
+            SimpleDocTemplate(buffer, pagesize=(595.276, 841.89)).build(story)
     elif format == "xlsx":
         from openpyxl import Workbook, load_workbook
 

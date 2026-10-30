@@ -1,6 +1,6 @@
 ---
 name: legal-writing
-description: 为茶商起草完整法律与业务文书，改写现有文稿或提供针对性写作反馈。适用于催款函、法律意见、合同及条款、合规报告和交易说明；按要求交付成稿并说明影响使用的事实与依据缺项。
+description: 为茶商起草、改写完整法律与业务文书，含茶叶采购、出口销售、委托出口和经销合同模板；按业务事实填写，保留依据与缺项，使用真实文件工具交付Word/PDF。
 metadata:
   source-skill: user-provided-legal-writing
   tea-skill-id: draft
@@ -35,6 +35,10 @@ metadata:
 法律主张须对应读到的原文、条款位置、实际法域与适用时间。搜索摘要保留线索身份，学术观点、商业解读及第三方条文接口标明来源性质；不虚构案例、条号、引文、页码、链接或检索结果。法院裁判的参考作用按其法域和实际地位说明，不能套用外国判例制度。无法核对的内容说明具体缺口，未查到不能推出规则不存在；没有依据的胜诉概率、利率、赔偿比例和程序期限不写成确定值。
 
 ## 按文书用途组织正文
+
+起草茶叶交易合同时，直接用read_contract_template(template="tea_purchase"／"tea_export"／"export_agency"／"tea_distribution")读取境内采购、跨境销售、委托出口或经销的对应正文；无需先搜索业务库。也可用load_skill(name="draft", resource="assets/contracts/tea-purchase.md")按资源名读取。交易关系或文件格式仍需确认时，才读取[选择说明](references/contracts.md)。官方原件、日期及改编范围见[模板来源](references/contract-sources.md)；用户要求官方模板或需要核对原文时读取assets/sources的文本。模板用于约定交易，不能作为证明手续法定必需的依据。用户提供原合同或指定格式时优先保留其要求。
+
+需要合同文件时，已有模板可用create_document_file的template与replacements按原文字面填写已知事实，其余条款由程序保留，不用模型重传全文；此方式默认contract版式。需要实质重新起草时传完整content及layout="contract"。来源、待确认问题和起草解释放在稿外，不能把技能说明或文件调用代码写进合同。用户只要正文时直接交付正文。draft_document仅保存工作台Markdown，不能代替可下载附件。
 
 催款函、履约通知和法律往来函写清发函主体、背景、请求及对方可采取的行动。付款期限、解除条件及后果区分已有约定、法定要求与本次建议；没有支持时不声称已满足解除、送达或起诉条件。文书中的“我方”“委托人”等身份须有事实基础，不冒充已经接受委托的律师或机构。
 

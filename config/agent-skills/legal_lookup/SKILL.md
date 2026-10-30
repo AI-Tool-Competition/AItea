@@ -13,4 +13,6 @@ metadata:
 
 公益API由李伯阳律师提供，属于第三方来源。返回成功仅证明取得匹配的条文文本；接口没有提供的公布日期、施行日期或修订关系仍是未知，不宣称来自官方数据库或已经确认现行有效。需要官方出处、历史或未来适用版本时，继续用 search_legal_evidence、get_law_versions 或 web_search 定位，再用 read_law 取得官方正文。
 
-未知条号和其他法域使用 search_legal_evidence，按真实记录编号或官方链接 read_law。保留完整条文中的主体、适用范围和例外；摘要不能冒充原文。最终直接提供法名、原文、条款位置、实际来源链接和必要的版本限制，不扩展为完整合规报告。
+未知条号和其他法域优先使用 search_legal_evidence 查询内部库，按真实记录编号 read_law，版本关系用 get_law_versions。内库缺少相关原文或适用版本再用 web_search 找官方原件，以 read_law 读取当前支持法域的官方页面。保留完整条文中的主体、适用范围和例外；摘要不能冒充原文。最终直接提供法名、原文、条款位置、实际来源链接和必要的版本限制，不扩展为完整合规报告。
+
+本入口融合 sgcite 与 bart-statutory-reference-checker 的新加坡引用核对方法。涉及新加坡案件真实性、当事人、段落引文或法规修订时，用 load_skill(name="legal_lookup", resource="references/singapore.md") 读取方法与当前工具限制。未安装上游 CLI、Word 插件或私有 BART 后端，不能宣称这些服务已经运行。核对引用是否存在与判断其是否支持法律命题分别处理；后一项按需读取 legal 的 references/research.md。

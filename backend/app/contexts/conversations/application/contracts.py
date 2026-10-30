@@ -36,6 +36,18 @@ class MessageInput(StrictModel):
             "litigation-analysis",
             "long-image-to-pdf",
             "document-operations",
+            "legal-research",
+            "foreign-law-research",
+            "proposition-checking",
+            "adversarial-qc",
+            "sgcite",
+            "bart-statutory-reference-checker",
+            "document-fill",
+            "coquill",
+            "legal-translation",
+            "contract-qa",
+            "redlines",
+            "comms-improver",
         ]
     ] = Field(default_factory=list, max_length=21)
     content: str = Field(min_length=1, max_length=20000)

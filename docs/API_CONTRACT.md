@@ -289,6 +289,7 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 
 - `GET /cases/{case_id}/stages/{stage_id}/agent-tools` → `{tools:[{name,label,description,parallel}],skills:[{id,label,description,aliases:string[],tools:string[]}],combinations:[{label,skills:string[],description}]}`。目录仅描述已登记工具，不执行工具。
 - `load_skill` 接收 `name`（目录id或alias）和可选 `resource`（默认SKILL.md，仅限该技能返回的资源名），返回canonical `skill`、`requested_name`、`resource`、`resources`、`instructions`及有权使用的工具定义；加载不执行业务写入。技能来源名映射见 [Agent运行机制](AGENT_RUNTIME.md#法律证据操作与按需方法)。
+- 新融合的法律研究、引用核对、模板填写与翻译名称作为现有技能别名接受，`MessageInput.skills` 与前端 `ChatSkill` 同步支持。技能目录仍为14项，详情与参考资源按需读取；别名不代表相应上游CLI、MCP或渲染后端已安装。
 - `convert_long_image_to_pdf` 接收当前业务主文件图片 `document_id`、`version` 及可选 `slice_height=2000`、`overlap=200`、`cols=2`、`rows=2`、`layout=grid|column`；返回 `status=pending_commit`、文件名、实际页数、切片数和图片尺寸。本轮答复事务中保存secondary附件并在正文追加鉴权下载链接；不返回本机文件位置、不修改原图、不自动解析或索引，MCP不开放此写入工具。
 - `document_operations`（别名 `document-operations`）按需加载文件操作说明和 `references/formats.md`；不更改普通问答流程。`inspect_document_file(document_id, version, offset=0, limit=20)` 读取实际文件结构，返回正文部件、单元格或PDF页及检查限制，不进行OCR与索引。
 - `create_document_file(filename, format, content)` 支持 `docx|pdf|xlsx|pptx|md|txt|csv`，Excel与PPT内容为技能文档约定的JSON字符串。`edit_document_file(document_id, version, filename, replacements=[], cells=[])` 先要求读取原件；Word/PPT按part、原文与命中次数替换，Excel按sheet、cell、expected_value修改已存在的非公式单元格，文本保留UTF-8编码与原换行。编辑只接受当前账号本业务文件，不覆盖原件。

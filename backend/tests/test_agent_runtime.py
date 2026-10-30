@@ -321,7 +321,7 @@ def test_skill_document_and_related_parameters_are_loaded_only_on_request(worksp
 
 @pytest.mark.parametrize(
     "skill_id",
-    ["contract_review", "draft", "litigation_analysis", "long_image_to_pdf", "document_operations"],
+    list(SKILLS),
 )
 def test_document_skill_loads_full_method_and_available_tools_on_request(workspace, monkeypatch, skill_id):
     seen = []
@@ -417,7 +417,7 @@ def test_mcp_initialization_discovery_and_data_call_share_authorized_registry(wo
 
 @pytest.mark.parametrize(
     "skill_id",
-    ["contract_review", "draft", "litigation_analysis", "long_image_to_pdf", "document_operations"],
+    list(SKILLS),
 )
 def test_mcp_document_skill_limits_tools_to_authorized_registry(workspace, skill_id):
     from app.contexts.conversations.application.mcp_tools import EXPORTED_TOOLS
@@ -470,6 +470,112 @@ def test_skill_reference_is_explicit_and_cannot_read_arbitrary_file(workspace):
     for resource in ("../../NOTICE.md", "/etc/passwd", "references/../SKILL.md", "missing.md"):
         assert load("litigation-analysis", resource)["isError"] is True
     assert load("unknown")["isError"] is True
+
+
+@pytest.mark.parametrize(
+    "skill_id,resource",
+    [(name, resource) for name, skill in SKILLS.items() for resource in skill.resources],
+)
+def test_skill_reference_loads_on_demand_without_expanding_permissions(workspace, skill_id, resource):
+    from app.contexts.conversations.application.mcp_tools import EXPORTED_TOOLS
+
+    entrance = read_skill(skill_id)
+    instructions = read_skill(skill_id, resource)
+    assert 0 < len(instructions.encode()) <= 24000
+    assert instructions not in entrance
+    result = mcp_request(
+        workspace,
+        "tools/call",
+        {"name": "load_skill", "arguments": {"name": skill_id, "resource": resource}},
+    ).json()["result"]
+    assert result["isError"] is False
+    loaded = result["structuredContent"]
+    assert loaded["instructions"] == instructions
+    assert set(loaded["activate_tools"]) == set(SKILLS[skill_id].tools) & EXPORTED_TOOLS
+
+
+@pytest.mark.parametrize("alias,target", SKILL_ALIASES.items())
+def test_message_skill_alias_is_accepted_without_loading_detail(workspace, monkeypatch, alias, target):
+    seen = []
+    scenario(monkeypatch, ["请提供需要处理的材料。"], seen, auto_discover=False)
+    response = send(workspace, {**workspace[4], "skills": [alias]})
+    assert response.status_code == 200
+    assert read_skill(target) not in str(seen[0][0])
+    assert {d["function"]["name"] for d in seen[0][1]} == agent_loop.COMMON_TOOLS
+
+
+def test_document_fill_uses_existing_editor_and_preserves_template_and_gaps(workspace, monkeypatch):
+    from app.contexts.documents.application.document_files import commit_file, prepare_file
+    from app.contexts.documents.infrastructure.document_files import inspect
+
+    client, service, owner, case, payload = workspace
+    pending = prepare_file(
+        service,
+        owner,
+        "模拟催款模板.docx",
+        {
+            "format": "docx",
+            "content": "致：{{买方}}\n请支付货款{{金额}}元。\n收款账号：[待补充]\n署名：{{卖方}}",
+        },
+        timeout=20,
+    )
+    with service.db.transaction() as conn:
+        source = commit_file(service, conn, owner, case["id"], pending)
+    original = client.get(f"/api/tea/documents/{source['id']}/download").content
+    reference_call = tools(
+        ("load_skill", {"name": "document-fill", "resource": "references/template-fill.md"})
+    )
+    reference_call["tool_calls"][0]["id"] = "call_load_fill_reference"
+    scenario(
+        monkeypatch,
+        [
+            tools(("load_skill", {"name": "document-fill"})),
+            reference_call,
+            tools(("list_documents", {})),
+            tools(("inspect_document_file", {"document_id": source["id"], "version": 1})),
+            tools(
+                (
+                    "edit_document_file",
+                    {
+                        "document_id": source["id"],
+                        "version": 1,
+                        "filename": "模拟催款填写稿.docx",
+                        "replacements": [
+                            {"part": "word/document.xml", "old_text": "{{买方}}", "new_text": "王芳"},
+                            {"part": "word/document.xml", "old_text": "{{金额}}", "new_text": "8000"},
+                            {"part": "word/document.xml", "old_text": "{{卖方}}", "new_text": "李明"},
+                        ],
+                    },
+                )
+            ),
+            "已按提供的信息填写，收款账号仍待补充。",
+        ],
+        auto_discover=False,
+    )
+    response = send(
+        workspace,
+        {
+            **payload,
+            "content": "按模板生成Word填写稿，其他文字不变。卖方李明，买方王芳，货款8000元；收款账号未知。",
+            "skills": ["document-fill"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    with closing(service.db.connect()) as conn:
+        rows = conn.execute(
+            "SELECT id FROM documents WHERE case_id=? AND id<>?", (case["id"], source["id"])
+        ).fetchall()
+    assert len(rows) == 1
+    edited = client.get(f"/api/tea/documents/{rows[0]['id']}/download")
+    assert edited.status_code == 200
+    assert [item["text"] for item in inspect(edited.content, "docx")["elements"]] == [
+        "致：王芳",
+        "请支付货款8000元。",
+        "收款账号：[待补充]",
+        "署名：李明",
+    ]
+    assert client.get(f"/api/tea/documents/{source['id']}/download").content == original
+    assert stored_receipt(workspace, "call_edit_document_file_0")["status"] == "pending_commit"
 
 
 @pytest.mark.parametrize("model_fails,stream", [(False, False), (False, True), (True, False), (True, True)])

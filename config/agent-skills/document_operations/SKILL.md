@@ -11,6 +11,8 @@ description: 为用户生成可下载的 Word、PDF、Excel、PPT、Markdown、T
 
 这项技能负责把内容做成文件。合同风险、法律判断和文书内容仍由主 Agent 结合相关专业技能与实际来源完成。用户需要完整文书时交付全文，不用提纲替代正文。
 
+要求按本业务材料填写模板时，可用 load_skill(name="draft", resource="references/template-fill.md") 读取字段溯源方法，复用本技能的真实文件操作。未安装上游 CoQuill 渲染器，不把 Jinja 条件模板、HTML 渲染或 Word 原生修订痕迹列为当前功能。
+
 新建文件使用 `create_document_file`。Word 和 PDF 的 content 是完整正文，支持一至三级 Markdown 标题、普通段落和管线表格。MD、TXT、CSV 使用实际文本。Excel 和 PPT 使用 JSON 字符串，读取 `references/formats.md` 后按示例提供。文件名必须包含对应扩展名。
 
 修改文件先用 `list_documents` 取得实际编号和版本，再用 `inspect_document_file` 阅读相关内容与位置。检查是分页的，按 total 和 offset 继续读取需要修改的部分，不能把首批结果当作全文。调用 `edit_document_file` 时使用实际 part、原文、预期命中次数，或实际 sheet、cell 与原值。只改变用户指定的内容，另存副本，原件保留。重名、多处相同文字时缩小原文范围，不猜测修改位置。

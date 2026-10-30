@@ -20,6 +20,7 @@ from pydantic import Field, StrictFloat, StrictInt, StrictStr, field_validator, 
 from app.contexts.conversations.application.agent_skills import (
     COMPOSITION_HINTS,
     SKILLS,
+    SKILL_ALIASES,
     read_skill,
     resolve_skill,
     skill_catalog,
@@ -1145,7 +1146,9 @@ class AgentTools:
 
     def draft(self, args, attempt):
         _, stage = self.current()
-        requested = bool({"draft", "legal-writing"} & set(self.payload.get("skills", []))) or re.search(
+        requested = any(
+            SKILL_ALIASES.get(name, name) == "draft" for name in self.payload.get("skills", [])
+        ) or re.search(
             r"(?:新建|创建|起草|撰写|编写|生成|写|拟).{0,18}(?:文稿|报告|合同|邮件|说明|方案|函|清单|报价|证明|计划)",
             self.payload["content"],
         )

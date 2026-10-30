@@ -46,13 +46,22 @@ SKILLS = {
     ),
     "legal": AgentSkill(
         "法律分析",
-        "采用china-lawyer-analyst的规则解释、请求权和事实对应方法；按问题深度给判断与行动。",
-        ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions", "web_search"),
-        ("references/interpretation.md",),
+        "优先查内部法律库，按需开展中国法或外国法研究、规则适用、法律命题与来源对应检查，解释事实缺项和行动。",
+        (
+            "lookup_chinese_law",
+            "search_legal_evidence",
+            "read_law",
+            "get_law_versions",
+            "web_search",
+            "list_documents",
+            "read_document",
+            "search_documents",
+        ),
+        ("references/interpretation.md", "references/research.md", "references/foreign-law.md"),
     ),
     "draft": AgentSkill(
         "法律文书起草与改写",
-        "按legal-writing方法起草完整法律与业务文书、改写原稿或提供写作反馈；结合事实和原文依据交付可用正文。",
+        "起草、改写法律与业务文书；从本业务材料溯源填写模板，按需翻译，使用真实文档工具交付文件。",
         (
             "draft_document",
             "list_documents",
@@ -65,7 +74,11 @@ SKILLS = {
             "web_search",
             "guide_business",
             "recall_memory",
+            "inspect_document_file",
+            "create_document_file",
+            "edit_document_file",
         ),
+        ("references/template-fill.md", "references/translation.md"),
     ),
     "handoff": AgentSkill(
         "节点交接",
@@ -92,12 +105,13 @@ SKILLS = {
     ),
     "legal_lookup": AgentSkill(
         "法规原文查询",
-        "采用chinese-law-verifier的全称与条号查询；取得原文、位置和实际来源。",
+        "优先查内部原文和版本，缺项补查官方来源；支持中国法条定位及新加坡法规、判例引用核对方法。",
         ("lookup_chinese_law", "search_legal_evidence", "read_law", "get_law_versions", "web_search"),
+        ("references/singapore.md",),
     ),
     "contract_review": AgentSkill(
         "合同审查",
-        "按用户立场审查合同及条款，对照谈判底线，说明交易风险并给出可直接替换的条文与备选方案。",
+        "回答合同具体问题或审查全文，引用原条款；对照用户业务与谈判底线，区分法律风险和交易影响，给出替换条文。",
         (
             "list_documents",
             "read_document",
@@ -108,7 +122,12 @@ SKILLS = {
             "get_law_versions",
             "web_search",
             "draft_document",
+            "recall_memory",
+            "inspect_document_file",
+            "create_document_file",
+            "edit_document_file",
         ),
+        ("references/practice-profile.md", "references/revisions.md"),
     ),
     "litigation_analysis": AgentSkill(
         "诉讼材料与争议分析",
@@ -147,6 +166,18 @@ SKILL_ALIASES = {
     "litigation-analysis": "litigation_analysis",
     "long-image-to-pdf": "long_image_to_pdf",
     "document-operations": "document_operations",
+    "legal-research": "legal",
+    "foreign-law-research": "legal",
+    "proposition-checking": "legal",
+    "adversarial-qc": "legal",
+    "sgcite": "legal_lookup",
+    "bart-statutory-reference-checker": "legal_lookup",
+    "document-fill": "draft",
+    "coquill": "draft",
+    "legal-translation": "draft",
+    "contract-qa": "contract_review",
+    "redlines": "contract_review",
+    "comms-improver": "guidance",
 }
 
 

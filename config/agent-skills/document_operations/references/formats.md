@@ -12,6 +12,10 @@
 
 PDF 使用同一正文、`format: "pdf"` 和 `.pdf` 文件名。使用本地中文字体编码生成普通文稿，不依赖 LibreOffice 或外部转换服务。支持基础标题、段落和表格；不将原有 Word 重排后冒称保留模板。MD/TXT 直接保留文本，CSV 保留提供的分隔符与前导零；Excel 打开CSV的自动类型转换不受本工具控制。
 
+新建合同时可加 `"layout":"contract"`，仅支持DOCX/PDF：A4、居中首个一级标题、黑色条款标题、合同页边距、重复表头与页码。未传时沿用standard版式。模板正文与选择说明按需读取draft技能的references/contracts.md；版式不会替代事实核对或补充法定要求。编辑原件时仍保留原格式，不传layout重建。
+
+内置茶叶合同可用read_contract_template读取，再向create_document_file传template及replacements，省去重传完整正文；此方式默认contract版式，不同时传content。模板枚举、按原文匹配和expected_count受程序校验，未替换条款保留；需要重写时仍可传完整content。此能力仅访问内置公开模板，不接受任意文件位置或替代原件编辑。
+
 修改 Word 或 PPT 的某段：先检查文件，再逐字使用返回的 part 与 old_text。
 
 ```json

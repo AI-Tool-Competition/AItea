@@ -42,6 +42,7 @@ COMMON_TOOLS = frozenset(
         "check_materials",
         "web_search",
         "draft_document",
+        "read_contract_template",
         "create_document_file",
         "inspect_document_file",
         "edit_document_file",
@@ -385,16 +386,19 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         # A completed text answer can be exported without another model pass.
         # Editing an original and structured spreadsheets/slides stay with the
         # model's real tools; prose must not replace those operations.
-        if edit_requested or not file_formats:
+        if edit_requested or not file_formats or not missing_file_formats():
             return
         creates = [c for c in state["calls"] if c["tool"] == "create_document_file"]
-        content = next(
+        source_input = next(
             (
-                c["input"]["content"]
+                c["input"]
                 for c in reversed(creates)
                 if not c["error"] and c["input"].get("format") in TEXT_FORMATS
             ),
-            result["_drafts"][-1]["content"] if result["_drafts"] else output,
+            {},
+        )
+        content = source_input.get("content") or (
+            result["_drafts"][-1]["content"] if result["_drafts"] else output
         )
         content = sources.render(bound.checked_file_links(sources.with_web_links(content)))
         for format in missing_file_formats():
@@ -403,13 +407,24 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
             # or export an explanatory reply as a replacement document.
             if format not in TEXT_FORMATS or any(c["input"].get("format") == format for c in creates):
                 continue
+            options = {"filename": export_filename(content, format), "format": format, "content": content}
+            if "layout" in source_input:
+                options["layout"] = source_input["layout"]
+            if source_input.get("template"):
+                options = {
+                    "filename": source_input["filename"].rsplit(".", 1)[0] + "." + format,
+                    "format": format,
+                    **{
+                        k: source_input[k]
+                        for k in ("template", "replacements", "layout")
+                        if k in source_input
+                    },
+                }
             call = {
                 "id": f"delivery_file_{format}",
                 "function": {
                     "name": "create_document_file",
-                    "arguments": dump(
-                        {"filename": export_filename(content, format), "format": format, "content": content}
-                    ),
+                    "arguments": dump(options),
                 },
             }
             if emit:

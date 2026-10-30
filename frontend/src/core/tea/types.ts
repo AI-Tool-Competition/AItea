@@ -289,6 +289,7 @@ export interface ToolCall {
     | "convert_long_image_to_pdf"
     | "inspect_document_file"
     | "create_document_file"
+    | "read_contract_template"
     | "edit_document_file"
     | "web_search"
     | "recall_memory"

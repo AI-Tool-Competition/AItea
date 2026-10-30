@@ -155,13 +155,12 @@ class FileInspectInput(ToolInput):
     limit: int = Field(default=20, ge=1, le=30)
 
 
-class FileCreateInput(ToolInput):
-    filename: str = Field(min_length=1, max_length=160, description="带真实扩展名的文件名，不传本机位置。")
-    format: Literal["docx", "pdf", "xlsx", "pptx", "md", "txt", "csv"]
-    content: str = Field(
-        min_length=1,
-        max_length=40000,
-        description='Word/PDF/MD/TXT用正文，支持#标题和管线表格；CSV用实际CSV。Excel用JSON字符串 {"sheets":[{"name":"报价","rows":[["产品","价格"],["六堡茶",120]]}]}；PPT用 {"slides":[{"title":"标题","bullets":["内容"]}]}。不传代码或任意文件位置。',
+ContractTemplate = Literal["tea_purchase", "tea_export", "export_agency", "tea_distribution"]
+
+
+class ContractTemplateInput(ToolInput):
+    template: ContractTemplate = Field(
+        description="国内茶叶采购、跨境销售、受托办理出口或买断经销。直接读取内置正文，无需搜索业务资料。"
     )
 
 
@@ -169,11 +168,45 @@ class FileReplacement(StrictModel):
     part: str = Field(
         default="",
         max_length=160,
-        description="Word/PPT须逐字使用inspect_document_file返回的part；文本文件留空。",
+        description="Word/PPT须逐字使用inspect_document_file返回的part；文本及内置合同模板留空。",
     )
     old_text: str = Field(min_length=1, max_length=6000)
     new_text: str = Field(max_length=6000)
     expected_count: int = Field(default=1, ge=1, le=20)
+
+
+class FileCreateInput(ToolInput):
+    filename: str = Field(min_length=1, max_length=160, description="带真实扩展名的文件名，不传本机位置。")
+    format: Literal["docx", "pdf", "xlsx", "pptx", "md", "txt", "csv"]
+    layout: Literal["standard", "contract"] = Field(
+        default="standard",
+        description="Word/PDF合同选contract：居中标题、黑色条款标题、A4页边距、表头及页码；其他文件用standard。仅控制版式。",
+    )
+    content: str = Field(
+        default="",
+        max_length=40000,
+        description='Word/PDF/MD/TXT用正文，支持#标题和管线表格；CSV用实际CSV。Excel用JSON字符串 {"sheets":[{"name":"报价","rows":[["产品","价格"],["六堡茶",120]]}]}；PPT用 {"slides":[{"title":"标题","bullets":["内容"]}]}。不传代码或任意文件位置。',
+    )
+    template: ContractTemplate | None = Field(
+        default=None,
+        description="Word/PDF可直接选内置合同模板，配合replacements填写，不再重传完整content；默认使用contract版式。",
+    )
+    replacements: list[FileReplacement] = Field(
+        default_factory=list,
+        max_length=30,
+        description="使用内置template时按已读原文逐字替换已知事实，part留空，指定准确命中次数；其余条款保留。",
+    )
+
+    @model_validator(mode="after")
+    def content_source(self):
+        if self.template:
+            if self.content or self.format not in {"docx", "pdf"}:
+                raise ValueError("内置合同模板仅生成Word/PDF，选template时不同时传content")
+            if any(item.part for item in self.replacements):
+                raise ValueError("内置合同模板的文字替换不接收文件part")
+        elif not self.content or self.replacements:
+            raise ValueError("新建文件需要content；replacements只用于内置template")
+        return self
 
 
 class FileCellEdit(StrictModel):
@@ -407,6 +440,15 @@ class AgentTools:
         self.inspected_files = set()
         definitions = [
             (
+                "read_contract_template",
+                "读取茶叶合同模板",
+                "直接读取内置茶叶采购、出口销售、委托出口或经销合同全文。按模板生成合同时先调用此工具，再按已知事实填写并用create_document_file的contract版式交付Word/PDF。无需搜索业务资料或联网；模板为茶渡业务改编稿。",
+                ContractTemplateInput,
+                self.contract_template,
+                True,
+                10,
+            ),
+            (
                 "inspect_document_file",
                 "检查文档文件",
                 "检查可读业务原件的段落、正文部件、工作表单元格或PDF页；不调用OCR、不索引、不外发。编辑前须读取目标位置，返回原文、part或sheet/cell。分页不会省略其余内容的存在。",
@@ -418,7 +460,7 @@ class AgentTools:
             (
                 "create_document_file",
                 "生成文档文件",
-                "仅新建DOCX、PDF、XLSX、PPTX、MD、TXT或CSV；修改已有文件使用inspect_document_file再edit_document_file，不用全文重写替代定点修改。实际生成并重开检查，答复成功后由程序提供下载链接，不编造链接。每轮最多3份。格式细节见document_operations技能。",
+                "新建DOCX、PDF、XLSX、PPTX、MD、TXT或CSV。茶叶合同可先read_contract_template，再用template加replacements填写已知事实并生成Word/PDF，不必重写全文；需重新起草时传完整content及layout=contract。编辑已有文件先inspect_document_file再edit_document_file。程序提供下载链接，每轮最多3份。",
                 FileCreateInput,
                 self.create_file,
                 False,
@@ -1229,8 +1271,43 @@ class AgentTools:
             "notice": "文件已生成并重开检查；答复提交后程序提供实际下载链接。未进行视觉排版检查，原文件保留。",
         }
 
+    def contract_template(self, args, attempt):
+        resource = f"assets/contracts/{args.template.replace('_', '-')}.md"
+        try:
+            content = read_skill("draft", resource)
+        except (OSError, ValueError):
+            raise ToolFailure(
+                "template_unavailable", "该合同模板暂时无法读取，已知正文和其他文件能力仍可使用。"
+            ) from None
+        return {
+            "template": args.template,
+            "title": content.splitlines()[0].removeprefix("# "),
+            "content": content,
+            "layout": "contract",
+            "notice": "这是茶渡业务改编稿。用create_document_file的同一template及逐字replacements填写，无需重传全文。按已知事实填写双方、产品表内的品名、数量、单价、金额，以及交付安排；未知项保留待补充，不能只填名称和总价便声称填写完成。其余条款保留。来源按需读取draft的references/contract-sources.md。",
+        }
+
     def create_file(self, args, attempt):
-        return self.prepare_file(args.filename, {"format": args.format, "content": args.content}, attempt)
+        content = args.content
+        if args.template:
+            from app.contexts.documents.infrastructure.document_files import edit
+
+            content = self.contract_template(args, attempt)["content"]
+            if args.replacements:
+                try:
+                    content = edit(
+                        content.encode("utf-8"),
+                        "md",
+                        replacements=[item.model_dump() for item in args.replacements],
+                    ).decode("utf-8")
+                except ValueError as error:
+                    raise ToolFailure("template_change_failed", str(error)) from error
+        layout = "contract" if args.template and "layout" not in args.model_fields_set else args.layout
+        return self.prepare_file(
+            args.filename,
+            {"format": args.format, "content": content, "layout": layout},
+            attempt,
+        )
 
     def checked_file_links(self, output):
         """Drop nonexistent/foreign download IDs; leave public website URLs alone."""

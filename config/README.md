@@ -42,3 +42,5 @@
 六堡茶路线是按手册形成的业务配置，所涉法规适用与办理证据仍需实质核验。旧 `china-indonesia-demo` 模板、草稿与业务已从可办理入口下线，旧编号不可重新发布；原始数据库记录和文件不在启动时清空。其他账号已发布版本与业务快照继续保留。
 
 [`document_operations`](agent-skills/document_operations/SKILL.md) 提供文件生成与编辑方法，别名为 `document-operations`，吸收用户提供的文档技能。入口保持简短，格式示例按需加载；实际支持格式、权限、原件保留与下载说明见[Agent运行机制](../docs/AGENT_RUNTIME.md)。
+
+`draft`包含茶叶采购、出口销售、委托出口和经销四份合同正文模板，由`load_skill`按需读取，不将全部模板放入常驻上下文。[选择与格式](agent-skills/draft/references/contracts.md)说明实际交易关系和Word/PDF版式，[来源记录](agent-skills/draft/references/contract-sources.md)保留官方原件、日期、版本及改编范围；模板约定不能代替法定义务的依据。

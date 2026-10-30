@@ -133,6 +133,97 @@ def legal_tools(workspace, check=lambda: None):
     return AgentTools(service, owner, case, case["stages"][0], payload, {}, "tool-test", check)
 
 
+@pytest.mark.parametrize("both_formats", [False, True])
+@pytest.mark.parametrize("fill", [False, True])
+def test_contract_template_loads_and_creates_an_authenticated_contract_file(
+    workspace, monkeypatch, both_formats, fill
+):
+    import io
+    import re
+
+    from docx import Document
+
+    content = read_skill("draft", "assets/contracts/tea-purchase.md")
+    scenario(
+        monkeypatch,
+        [
+            tools(("read_contract_template", {"template": "tea_purchase"})),
+            tools(
+                (
+                    "create_document_file",
+                    {
+                        "filename": "茶叶采购合同-草稿.docx",
+                        "format": "docx",
+                        "template": "tea_purchase",
+                        "replacements": [
+                            {
+                                "old_text": "甲方（买方）：[待补充]",
+                                "new_text": "甲方（买方）：甲茶坊",
+                                "expected_count": 1,
+                            },
+                            {"old_text": "[品名及批次待补充]", "new_text": "六堡茶，批次待补充"},
+                            {"old_text": "[数量及单位待补充]", "new_text": "500公斤"},
+                        ]
+                        if fill
+                        else [],
+                    },
+                )
+            ),
+            "合同草稿已生成，双方名称、货品、价款和交付条件仍需补充。",
+        ],
+    )
+    format_names = "Word和PDF" if both_formats else "Word"
+    response = send(
+        workspace, {**workspace[4], "content": f"请按茶叶采购模板生成{format_names}合同草稿，未知处留空。"}
+    )
+    assert response.status_code == 200
+    answer = response.json()["messages"][-1]["content"]
+    url = re.search(r"\]\((/api/tea/documents/[^)]+/download)\)", answer)[1]
+    download = workspace[0].get(url)
+    assert download.status_code == 200
+    doc = Document(io.BytesIO(download.content))
+    assert doc.paragraphs[0].text == "茶叶采购合同"
+    assert any("隐蔽瑕疵" in p.text for p in doc.paragraphs)
+    buyer = "甲方（买方）：甲茶坊" if fill else "甲方（买方）：[待补充]"
+    assert any(buyer == p.text for p in doc.paragraphs)
+    product_row = [cell.text for cell in doc.tables[0].rows[1].cells]
+    assert product_row[0] == ("六堡茶，批次待补充" if fill else "[品名及批次待补充]")
+    assert product_row[2] == ("500公斤" if fill else "[数量及单位待补充]")
+    assert "甲方（买方）：[待补充]" in content
+    assert round(doc.sections[0].left_margin.mm) == 25
+    receipt = stored_receipt(workspace, "call_create_document_file_0")
+    assert receipt["validation"]["layout"] == "contract"
+    if both_formats:
+        from pypdf import PdfReader
+
+        urls = re.findall(r"\]\((/api/tea/documents/[^)]+/download)\)", answer)
+        assert len(urls) == 2
+        pdf_download = workspace[0].get(urls[1])
+        assert pdf_download.status_code == 200
+        text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf_download.content)).pages)
+        assert buyer in text
+        assert "隐蔽瑕疵" in text
+
+
+@pytest.mark.parametrize("template", ["tea_purchase", "tea_export", "export_agency", "tea_distribution"])
+def test_mcp_contract_template_returns_full_public_resource_without_a_document_search(workspace, template):
+    response = mcp_request(
+        workspace,
+        "tools/call",
+        {
+            "name": "read_contract_template",
+            "arguments": {"template": template},
+        },
+    )
+    result = response.json()["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["content"] == read_skill(
+        "draft",
+        f"assets/contracts/{template.replace('_', '-')}.md",
+    )
+    assert result["structuredContent"]["layout"] == "contract"
+
+
 @pytest.mark.parametrize("model_fails,stream", [(False, False), (False, True), (True, False), (True, True)])
 def test_document_files_commit_with_answer_and_have_authenticated_downloads(
     workspace, monkeypatch, model_fails, stream
@@ -265,7 +356,8 @@ def test_file_request_exports_model_body_without_another_model_call(
             assert "8000" in text and "待补充" in text
 
 
-def test_missing_pdf_uses_created_document_body_not_final_chat_summary(workspace, monkeypatch):
+@pytest.mark.parametrize("layout", ["standard", "contract"])
+def test_missing_pdf_uses_created_document_body_not_final_chat_summary(workspace, monkeypatch, layout):
     import io
 
     from pypdf import PdfReader
@@ -277,7 +369,12 @@ def test_missing_pdf_uses_created_document_body_not_final_chat_summary(workspace
             tools(
                 (
                     "create_document_file",
-                    {"filename": "合同.docx", "format": "docx", "content": "六堡茶100公斤，总价20000元。"},
+                    {
+                        "filename": "合同.docx",
+                        "format": "docx",
+                        "content": "六堡茶100公斤，总价20000元。",
+                        "layout": layout,
+                    },
                 )
             ),
             "文件已准备。",
@@ -290,6 +387,7 @@ def test_missing_pdf_uses_created_document_body_not_final_chat_summary(workspace
     download = client.get(f"/api/tea/documents/{pdf['id']}/download")
     text = PdfReader(io.BytesIO(download.content)).pages[0].extract_text()
     assert "20000" in text and "文件已准备" not in text
+    assert stored_receipt(workspace, "delivery_file_pdf")["validation"]["layout"] == layout
 
 
 def test_downloadable_file_uses_workbench_draft_instead_of_save_notice(workspace, monkeypatch):

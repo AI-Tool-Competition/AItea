@@ -61,8 +61,9 @@ SKILLS = {
     ),
     "draft": AgentSkill(
         "法律文书起草与改写",
-        "起草、改写法律与业务文书；从本业务材料溯源填写模板，按需翻译，使用真实文档工具交付文件。",
+        "起草、改写法律与业务文书；茶叶采购、出口销售、委托出口、经销合同用read_contract_template直接读取正文，按事实填写并交付Word/PDF。",
         (
+            "read_contract_template",
             "draft_document",
             "list_documents",
             "read_document",
@@ -78,7 +79,18 @@ SKILLS = {
             "create_document_file",
             "edit_document_file",
         ),
-        ("references/template-fill.md", "references/translation.md"),
+        (
+            "references/template-fill.md",
+            "references/translation.md",
+            "references/contracts.md",
+            "references/contract-sources.md",
+            "assets/contracts/tea-purchase.md",
+            "assets/contracts/tea-export.md",
+            "assets/contracts/export-agency.md",
+            "assets/contracts/tea-distribution.md",
+            "assets/sources/SAMR-GF-2025-0151.txt",
+            "assets/sources/Guangzhou-tea-sale-2015.txt",
+        ),
     ),
     "handoff": AgentSkill(
         "节点交接",

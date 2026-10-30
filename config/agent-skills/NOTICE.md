@@ -1,5 +1,7 @@
 # 外部技能检查与茶渡版本
 
+2026-10-30增加茶叶业务合同资源：官方原件、原始下载链接、文件校验值、版本边界与茶渡改编范围统一见[draft模板来源](draft/references/contract-sources.md)。保留总局GF—2025—0151原PDF与广州SF—2013—0107原DOC及其文字提取，广州文件仅作历史行业字段参考。四份茶渡模板不冠以官方编号或政府审定身份。跨境供货结构参考accordproject/cicero-template-library的supply-agreement-loc（John Carpenter，Apache-2.0），固定提交89d82efc8768592ced768e9e22cd769c42233c81；保留[许可](licenses/accord-templates-Apache-2.0.txt)，未复制上游脚本、默认外国法和数值。模板、版式与法律原文检索分别使用，未增加审核服务。
+
 检查日期：2026-10-29。运行时只读取本目录，不依赖用户下载目录。来源名称均为调用别名；已有 legal、legal_lookup、contract_review、draft 标识保留，新增 litigation_analysis 和 long_image_to_pdf。
 
 china-lawyer-analyst：来源为用户提供的同名目录，作者陈石律师，原入口声明 MIT，许可文本见 [MIT](licenses/MIT.txt)。保留已有来源说明，吸收法律解释、请求及事实对应方法；不复制案例数据库、全领域模块或其中的示例法条。方法文字不能证明示例条号现行或准确。

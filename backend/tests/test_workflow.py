@@ -218,9 +218,9 @@ def test_register_upgrade_login_logout_and_origin(client):
     assert response.status_code == 201
     assert response.json()["is_demo"] is False
     assert response.json()["id"] == owner
-    assert response.json()["can_login"] is False
+    assert response.json()["can_login"] is True
     assert response.json()["is_admin"] is False
-    assert client.get("/api/tea/cases/" + original["id"]).status_code == 401
+    assert client.get("/api/tea/cases/" + original["id"]).status_code == 200
     assert (
         client.post("/api/tea/auth/logout", headers={"origin": "https://attacker.invalid"}).status_code == 403
     )
@@ -235,14 +235,27 @@ def test_register_upgrade_login_logout_and_origin(client):
         client.post(
             "/api/tea/auth/login", json={"email": "owner@example.com", "password": "correct horse battery"}
         ).status_code
-        == 403
+        == 200
     )
     with TestClient(client.app) as admin:
         login_admin(admin)
         access = admin.get("/api/tea/admin/users", params={"q": "owner@example.com"}).json()["items"][0]
+        disabled = admin.patch(
+            f"/api/tea/admin/users/{owner}",
+            json={"expected_revision": access["revision"], "can_login": False},
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert client.get("/api/tea/auth/me").status_code == 401
+        assert (
+            client.post(
+                "/api/tea/auth/login",
+                json={"email": "owner@example.com", "password": "correct horse battery"},
+            ).status_code
+            == 403
+        )
         approved = admin.patch(
             f"/api/tea/admin/users/{owner}",
-            json={"expected_revision": access["revision"], "can_login": True},
+            json={"expected_revision": disabled.json()["revision"], "can_login": True},
         )
         assert approved.status_code == 200, approved.text
         assert approved.json()["is_admin"] is False
@@ -254,6 +267,25 @@ def test_register_upgrade_login_logout_and_origin(client):
     )
     assert client.get("/api/tea/auth/me").json()["is_admin"] is False
     assert client.get("/api/tea/cases/" + original["id"]).status_code == 200
+
+
+def test_public_registration_starts_a_regular_session_without_admin_approval(client):
+    payload = {"name": "新用户", "email": "Public@example.com", "password": "public-signup-test"}
+    response = client.post("/api/tea/auth/register", json=payload)
+    assert response.status_code == 201, response.text
+    account = response.json()
+    assert account["can_login"] is True and account["is_admin"] is False
+    assert account["email"] == "public@example.com"
+    assert client.get("/api/tea/auth/me").json()["id"] == account["id"]
+    assert client.get("/api/tea/bootstrap").status_code == 200
+    assert client.get("/api/tea/admin/users").status_code == 403
+    assert client.post("/api/tea/auth/register", json=payload).status_code == 409
+    assert client.get("/api/tea/auth/me").json()["id"] == account["id"]
+    assert client.post("/api/tea/auth/logout").status_code == 204
+    assert client.get("/api/tea/auth/me").status_code == 401
+    credentials = {key: payload[key] for key in ("email", "password")}
+    assert client.post("/api/tea/auth/login", json=credentials).status_code == 200
+    assert client.get("/api/tea/auth/me").json()["id"] == account["id"]
 
 
 def test_message_request_id_reuse_for_different_payload_is_rejected(client):

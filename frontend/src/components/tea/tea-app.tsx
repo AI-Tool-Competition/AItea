@@ -34,13 +34,13 @@ import {
   type ListResult,
   type NodeConversation,
   type Template,
-  type User,
 } from "@/core/tea/types";
 import { clearLegalDrafts } from "@/core/tea/use-legal-workbench";
 
 import { Admin, type AdminPage } from "./admin";
 import { AdminBootstrap } from "./admin-bootstrap";
 import { clearArtifactDrafts } from "./artifact-panel";
+import { AuthPage } from "./auth-page";
 import { Library, UploadDialog } from "./library";
 import { TeaNavigation, teaNavigationItems, type TeaView } from "./navigation";
 import { ActionButton, Brand, Busy, ErrorNotice } from "./shared";
@@ -49,210 +49,6 @@ import { clearStudioDrafts } from "./studio";
 import { clearTaskDrafts } from "./task-panel";
 import { UpgradeAccount } from "./upgrade-account";
 import { Workspace, clearChatDrafts } from "./workspace";
-
-function Welcome({
-  onAuthenticated,
-  onRetry,
-  initialError,
-  adminMode = false,
-  onBack,
-}: {
-  onAuthenticated: () => void;
-  onRetry: () => void;
-  initialError: string;
-  adminMode?: boolean;
-  onBack?: () => void;
-}) {
-  const [auth, setAuth] = useState<"login" | "register" | null>(
-    adminMode ? "login" : null,
-  );
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState(initialError);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const pending = useRef(false);
-  const demoEnabled = process.env.NODE_ENV !== "production";
-  async function login(mode: "demo" | "login" | "register") {
-    if (pending.current) return;
-    pending.current = true;
-    setBusy(mode);
-    setError("");
-    try {
-      const user = await post<User>(
-        `/auth/${mode}`,
-        mode === "demo"
-          ? {}
-          : {
-              email,
-              password,
-              ...(mode === "register" ? { name } : {}),
-            },
-      );
-      if (mode === "register" && !user.can_login) {
-        setError(
-          "账号已创建，等待管理员开放登录。获准后可用此邮箱和密码登录。",
-        );
-        return;
-      }
-      onAuthenticated();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      pending.current = false;
-      setBusy("");
-    }
-  }
-  return (
-    <div className="tea-welcome">
-      <header>
-        <Brand />
-        <span className="tea-welcome-tag">
-          中国 → 印尼 / 新加坡 <span>六堡茶</span>
-        </span>
-      </header>
-      <main>
-        <div className="tea-welcome-copy">
-          <h1>{adminMode ? "管理后台" : "茶叶出口工作台"}</h1>
-          {!adminMode && <p>集中管理出口业务、材料与办理进度。</p>}
-          {!adminMode ? (
-            <div className="tea-welcome-actions">
-              <ActionButton
-                size="lg"
-                busy={busy === "demo"}
-                disabled={!!busy}
-                onClick={() => (demoEnabled ? login("demo") : setAuth("login"))}
-              >
-                {demoEnabled ? "进入演示工作台" : "开始办理"}
-                <ArrowRight size={17} />
-              </ActionButton>
-              <Button
-                variant="ghost"
-                disabled={!!busy}
-                onClick={() => setAuth("login")}
-              >
-                登录我的账号
-                <ChevronRight size={16} />
-              </Button>
-            </div>
-          ) : (
-            <p>请使用管理员账号登录。</p>
-          )}
-          {!adminMode && (
-            <div className="tea-welcome-note">
-              <ShieldCheck size={14} />
-              {demoEnabled ? "体验业务独立保存" : "业务记录随账号保存"} ·
-              四条六堡茶出口流程
-            </div>
-          )}
-          {error && <ErrorNotice message={error} onRetry={onRetry} />}
-        </div>
-      </main>
-      <footer>茶渡 · 出口业务办理空间</footer>
-      <Dialog
-        open={adminMode || !!auth}
-        onOpenChange={(open) => {
-          if (!open) {
-            if (adminMode) onBack?.();
-            else setAuth(null);
-          }
-        }}
-      >
-        <DialogContent className="tea-theme tea-dialog">
-          <DialogHeader>
-            <DialogTitle>
-              {adminMode
-                ? "管理员登录"
-                : auth === "register"
-                  ? "创建你的茶渡账号"
-                  : "欢迎回到茶渡"}
-            </DialogTitle>
-            <DialogDescription>
-              {adminMode
-                ? "登录后进入茶渡管理后台。"
-                : "业务、材料与办理记录保存在你的账号中。"}
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (auth) void login(auth);
-            }}
-          >
-            {auth === "register" && (
-              <label className="tea-field">
-                <span>姓名</span>
-                <Input
-                  autoComplete="name"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </label>
-            )}
-            <label className="tea-field">
-              <span>{auth === "register" ? "邮箱" : "邮箱或管理员账号"}</span>
-              <Input
-                type={auth === "register" ? "email" : "text"}
-                autoComplete={auth === "register" ? "email" : "username"}
-                placeholder={auth === "login" ? "邮箱或 admin" : undefined}
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </label>
-            <label className="tea-field">
-              <span>
-                {auth === "register" ? "密码 · 至少 10 个字符" : "密码"}
-              </span>
-              <Input
-                type="password"
-                minLength={auth === "register" ? 10 : 1}
-                autoComplete={
-                  auth === "register" ? "new-password" : "current-password"
-                }
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            {error && <ErrorNotice message={error} />}
-            <ActionButton type="submit" busy={!!busy} className="tea-full">
-              {adminMode
-                ? "登录管理后台"
-                : auth === "register"
-                  ? "创建账号"
-                  : "登录"}
-            </ActionButton>
-            {adminMode && onBack && (
-              <button
-                type="button"
-                className="tea-auth-switch"
-                onClick={onBack}
-              >
-                返回工作台
-              </button>
-            )}
-            {!adminMode && (
-              <button
-                type="button"
-                className="tea-auth-switch"
-                onClick={() => {
-                  setAuth(auth === "login" ? "register" : "login");
-                  setError("");
-                }}
-              >
-                {auth === "login"
-                  ? "还没有账号？创建一个"
-                  : "已有账号？返回登录"}
-              </button>
-            )}
-          </form>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
 
 function NewCase({
   open,
@@ -683,12 +479,12 @@ export function TeaApp({
   if (!bootstrap)
     return (
       <div className="tea-theme">
-        <Welcome
+        <AuthPage
           onAuthenticated={() => setSessionKey((k) => k + 1)}
           onRetry={() => setSessionKey((k) => k + 1)}
           initialError={error}
           adminMode={!!initialAdminPage}
-          onBack={initialAdminPage ? () => router.replace("/tea") : undefined}
+          onBack={initialAdminPage ? () => router.replace("/") : undefined}
         />
       </div>
     );
@@ -704,7 +500,7 @@ export function TeaApp({
         <h1>首次设置管理后台</h1>
         <p>请用管理员引导码将当前账号设为首位管理员。</p>
         <AdminBootstrap onReady={() => setSessionKey((key) => key + 1)} />
-        <Button variant="ghost" onClick={() => router.replace("/tea")}>
+        <Button variant="ghost" onClick={() => router.replace("/")}>
           返回工作台
         </Button>
       </div>
@@ -718,7 +514,7 @@ export function TeaApp({
         <Button disabled={logoutBusy} onClick={logout}>
           {logoutBusy ? "正在退出…" : "切换账号登录"}
         </Button>
-        <Button variant="ghost" onClick={() => router.replace("/tea")}>
+        <Button variant="ghost" onClick={() => router.replace("/")}>
           返回工作台
         </Button>
       </div>

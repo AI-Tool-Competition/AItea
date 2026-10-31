@@ -6,7 +6,6 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from admin_helpers import login_admin
 from app.bootstrap import Service
 from app.contexts.accounts.application.auth import COOKIE, Auth
 from app.contexts.documents.application.contracts import ClassificationPatch, LegalRelationInput
@@ -653,23 +652,16 @@ def test_search_scope_filters_remote_candidates(service, ragflow_library, monkey
 
 def test_http_regular_users_share_system_reads_but_never_each_others_uploads(tmp_path):
     app = create_app(data_dir=tmp_path)
-    with TestClient(app) as client, TestClient(app) as admin:
-        login_admin(admin)
+    with TestClient(app) as client:
 
         def register_user(name):
             credentials = {"email": f"{name.lower()}@example.test", "password": "test-password-123"}
             registered = client.post("/api/tea/auth/register", json={"name": name, **credentials})
             assert registered.status_code == 201, registered.text
             account = registered.json()
-            assert account["can_login"] is False and account["is_admin"] is False
-            assert client.post("/api/tea/auth/login", json=credentials).status_code == 403
-            access = admin.get("/api/tea/admin/users", params={"q": credentials["email"]}).json()["items"][0]
-            approved = admin.patch(
-                f"/api/tea/admin/users/{account['id']}",
-                json={"expected_revision": access["revision"], "can_login": True},
-            )
-            assert approved.status_code == 200, approved.text
-            assert approved.json()["is_admin"] is False
+            assert account["can_login"] is True and account["is_admin"] is False
+            assert client.get("/api/tea/auth/me").json()["id"] == account["id"]
+            assert client.post("/api/tea/auth/logout").status_code == 204
             logged_in = client.post("/api/tea/auth/login", json=credentials)
             assert logged_in.status_code == 200, logged_in.text
             assert logged_in.json()["is_admin"] is False

@@ -11,7 +11,7 @@ export function proxy(request: NextRequest) {
       { status: 404 },
     );
   const destination = request.nextUrl.clone();
-  destination.pathname = "/tea";
+  destination.pathname = "/";
   destination.search = "";
   return NextResponse.redirect(destination);
 }

@@ -181,7 +181,7 @@ class Auth:
         id = current["id"] if current and current["is_demo"] else uid()
         bootstrap_token = values.get("bootstrap_token", "")
         is_admin = False
-        can_login = False
+        can_login = True
         try:
             with self.service.db.transaction() as conn:
                 if bootstrap_token:
@@ -194,7 +194,6 @@ class Auth:
                     ).fetchone():
                         fail(409, "admin_setup_complete", "管理员已完成设置")
                     is_admin = True
-                    can_login = True
                 if current and current["is_demo"]:
                     conn.execute(
                         "UPDATE users SET name=?,email=?,password_hash=?,is_demo=0 WHERE id=?",
@@ -214,8 +213,6 @@ class Auth:
                         "INSERT INTO user_access(user_id,can_login,is_admin,revision) VALUES (?,?,?,1)",
                         (id, int(can_login), int(is_admin)),
                     )
-                if not can_login:
-                    conn.execute("DELETE FROM sessions WHERE user_id=?", (id,))
         except sqlite3.IntegrityError:
             fail(409, "email_registered", "该邮箱已注册，请直接登录")
         result = {
@@ -226,7 +223,7 @@ class Auth:
             "can_login": can_login,
             "is_admin": is_admin,
         }
-        return result, self.session(id, old_token) if can_login else None
+        return result, self.session(id, old_token)
 
     def login(self, values, old_token=None):
         identity = values["email"].strip().lower()

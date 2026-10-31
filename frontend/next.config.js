@@ -39,6 +39,9 @@ const config = {
     // Keep hydration working when a browser or proxy blocks the HMR socket.
     reactDebugChannel: false,
   },
+  async redirects() {
+    return [{ source: "/tea", destination: "/", permanent: false }];
+  },
   async rewrites() {
     const teaURL = getInternalServiceURL(
       "TEA_API_URL",

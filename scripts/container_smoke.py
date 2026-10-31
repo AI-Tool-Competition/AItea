@@ -55,8 +55,10 @@ health=load('/api/tea/health');assert health['status']=='ok'
 with opener.open(urllib.request.Request(base+'/api/tea/health',headers={'Host':'aitea.example.invalid','X-Forwarded-Proto':'https'}),timeout=30) as response:
     assert response.status==200
 with request('') as response:
-    assert urllib.parse.urlsplit(response.url).path=='/aitea/tea',response.url
+    assert urllib.parse.urlsplit(response.url).path=='/aitea',response.url
     html=response.read().decode()
+with request('/tea') as response:
+    assert urllib.parse.urlsplit(response.url).path=='/aitea',response.url
 assets=re.findall(r'<script[^>]+src="([^"]+)"',html)
 assert assets and all(path.startswith('/aitea/_next/') for path in assets),assets[:3]
 with opener.open('http://127.0.0.1:'+str(port)+assets[0],timeout=30) as response:
@@ -89,7 +91,13 @@ with request('/api/tea/auth/logout',{}) as response:assert response.status==204
 try:load('/api/tea/auth/me')
 except urllib.error.HTTPError as error:assert error.code==401
 else:raise AssertionError('session survived logout')
-print(json.dumps({'status':'passed','prefix':'/aitea','static_asset':True,'cookie_scope':True,'login_logout':True,'stream_deltas':len(deltas),'first_delta_seconds':round(deltas[0][0],3),'last_delta_seconds':round(deltas[-1][0],3),'duration_seconds':round(time.monotonic()-started,3)}))
+credentials={'email':'public-signup@example.test','password':'smoke-signup-password'}
+account=load('/api/tea/auth/register',dict(credentials,name='Public signup'))
+assert account['can_login'] is True and account['is_admin'] is False,account
+assert load('/api/tea/auth/me')['id']==account['id']
+with request('/api/tea/auth/logout',{}) as response:assert response.status==204
+assert load('/api/tea/auth/login',credentials)['id']==account['id']
+print(json.dumps({'status':'passed','prefix':'/aitea','static_asset':True,'cookie_scope':True,'login_logout':True,'public_signup':True,'stream_deltas':len(deltas),'first_delta_seconds':round(deltas[0][0],3),'last_delta_seconds':round(deltas[-1][0],3),'duration_seconds':round(time.monotonic()-started,3)}))
 """
 
 

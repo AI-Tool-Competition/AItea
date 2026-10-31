@@ -99,7 +99,7 @@ export function AdminAccounts() {
       </header>
 
       <p className="tea-note">
-        新注册账号默认等待开放；至少保留一名可登录管理员。管理员也可以作为普通登录人员使用工作台。
+        新注册账号可直接登录；可在此停用账号或调整管理员权限，至少保留一名可登录管理员。
       </p>
 
       <div className="ta-library-toolbar">
@@ -220,7 +220,8 @@ export function AdminAccounts() {
         {data.total > PAGE_SIZE && (
           <div className="ta-pagination">
             <span>
-              第 {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} 项，共 {data.total} 项
+              第 {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} 项，共{" "}
+              {data.total} 项
             </span>
             <div>
               <Button
@@ -234,7 +235,9 @@ export function AdminAccounts() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={loading || !!busyId || offset + PAGE_SIZE >= data.total}
+                disabled={
+                  loading || !!busyId || offset + PAGE_SIZE >= data.total
+                }
                 onClick={() => setOffset(offset + PAGE_SIZE)}
               >
                 下一页

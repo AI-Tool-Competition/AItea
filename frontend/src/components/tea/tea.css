@@ -2398,7 +2398,7 @@
 }
 .tea-auth-content {
   width: 100%;
-  max-width: 392px;
+  max-width: 336px;
 }
 .tea-auth-brand {
   display: flex;
@@ -2419,19 +2419,8 @@
   width: 22px;
   height: 22px;
 }
-.tea-auth-card {
-  gap: 0;
-  padding: 28px 0 0;
-  overflow: hidden;
-  border-radius: 18px;
-  background: color-mix(in oklch, var(--card) 97%, var(--foreground));
-  box-shadow: 0 8px 32px oklch(0 0 0 / 0.07);
-}
-.tea-auth-card [data-slot="card-header"],
-.tea-auth-card [data-slot="card-content"] {
-  padding-inline: 28px;
-}
 .tea-auth-heading {
+  display: grid;
   gap: 8px;
   margin-bottom: 28px;
   text-align: center;
@@ -2442,28 +2431,28 @@
   letter-spacing: -0.025em;
   line-height: 1.4;
 }
-.tea-auth-heading [data-slot="card-description"] {
+.tea-auth-description {
   font-size: 13px;
   line-height: 1.6;
 }
-.tea-auth-card fieldset {
+.tea-auth-form fieldset {
   min-width: 0;
   border: 0;
   padding: 0;
 }
-.tea-auth-card .tea-field {
+.tea-auth-form .tea-field {
   gap: 8px;
   margin-bottom: 20px;
 }
-.tea-auth-card .tea-field > :is(span, label) {
+.tea-auth-form .tea-field > :is(span, label) {
   font-size: 13px;
   font-weight: 500;
 }
-.tea-auth-card .tea-field small {
+.tea-auth-form .tea-field small {
   font-size: 12px;
   color: var(--muted-foreground);
 }
-.tea-auth-card [data-slot="input"] {
+.tea-auth-form [data-slot="input"] {
   height: 44px;
   border-radius: 9px;
   background: var(--background);
@@ -2491,12 +2480,11 @@
   border-radius: 9px;
 }
 .tea-auth-footer {
+  display: flex;
+  align-items: center;
   justify-content: center;
   gap: 2px;
-  margin-top: 28px;
-  padding: 12px 20px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in oklch, var(--muted) 30%, transparent);
+  margin-top: 20px;
   color: var(--muted-foreground);
   font-size: 13px;
 }

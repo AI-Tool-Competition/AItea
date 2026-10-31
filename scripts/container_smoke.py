@@ -23,6 +23,7 @@ import json,os,shutil,sys,socket
 from pathlib import Path
 from app.bootstrap import Service
 data=Path(sys.argv[1])
+uid=int(sys.argv[2]);gid=int(sys.argv[3])
 data.mkdir(parents=True,exist_ok=True)
 (data/'config').mkdir(exist_ok=True)
 shutil.copytree('/app/config',data/'config/catalogs')
@@ -35,7 +36,7 @@ private.write_text("AGENT_MODEL=smoke-local\nAGENT_API_KEY=smoke-only\nAGENT_BAS
 os.environ['TEA_ENV_FILE']=str(private)
 Service(data)
 for path in [data,*data.rglob('*')]:
-    if not path.is_symlink():os.chown(path,10001,10001)
+    if not path.is_symlink():os.chown(path,uid,gid)
 private.chmod(0o600)
 print(json.dumps({'ports':ports}))
 """
@@ -106,6 +107,7 @@ def cleanup(state, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag")
+    parser.add_argument("--engine", choices=("standard", "gvisor"), default="standard")
     parser.add_argument("--keep", action="store_true", help="保留本次隔离实例供浏览器检查；随后显式清理")
     parser.add_argument("--cleanup", type=Path, help="清理本脚本生成的 state.json")
     args = parser.parse_args()
@@ -131,6 +133,7 @@ def main():
     runtime = ROOT / ".dev/production" / name
     runtime.mkdir(parents=True, mode=0o700)
     image = "aitea-api:" + args.tag
+    uid = "0" if args.engine == "gvisor" else "10001"
     state = {"identity": identity, "volume": name + "-data", "provider": name + "-model"}
     success = False
     try:
@@ -158,6 +161,8 @@ def main():
                 "-c",
                 INITIALIZE,
                 volume,
+                uid,
+                uid,
             ],
             env,
             capture_output=True,
@@ -177,6 +182,8 @@ def main():
                 "aitea.smoke=" + identity,
                 "--network",
                 "host",
+                "--user",
+                "0:0" if args.engine == "gvisor" else "10001:10001",
                 "--read-only",
                 "--cap-drop=ALL",
                 "--entrypoint",
@@ -194,14 +201,16 @@ def main():
             "TEA_INSTANCE_CONFIG": volume + "/config/catalogs",
             "TEA_PUBLIC_ORIGIN": "http://127.0.0.1:" + str(gateway),
             "TEA_BASE_PATH": "/aitea",
-            "TEA_UID": "10001",
-            "TEA_GID": "10001",
+            "TEA_UID": uid,
+            "TEA_GID": uid,
             "TEA_API_PORT": str(api),
             "TEA_WEB_PORT": str(web),
             "TEA_GATEWAY_PORT": str(gateway),
             "TEA_COOKIE_SECURE": "false",
             "TEA_IMAGE_TAG": args.tag,
             "TEA_DOCKER_NETWORK": "host",
+            "TEA_DOCKER_ENGINE": args.engine,
+            "TEA_ALLOW_DEMO": "true",
             "TEA_COMPOSE_PROJECT": name,
         }
         config = runtime / "deploy.env"

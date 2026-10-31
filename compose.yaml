@@ -24,6 +24,7 @@ x-api: &api
   user: "${TEA_UID:-10001}:${TEA_GID:-10001}"
   environment: &api-environment
     TEA_ENV: production
+    TEA_ALLOW_DEMO: ${TEA_ALLOW_DEMO:-false}
     TEA_DATA_DIR: ${TEA_INSTANCE_DATA:?请显式指定已有实例的绝对数据路径}
     TEA_ENV_FILE: ${TEA_INSTANCE_DATA}/config/application.env
     TEA_CONFIG_DIR: ${TEA_INSTANCE_CONFIG:?请显式指定活动来源和流程配置目录}

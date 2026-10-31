@@ -72,6 +72,7 @@ function Welcome({
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const pending = useRef(false);
+  const demoEnabled = process.env.NODE_ENV !== "production";
   async function login(mode: "demo" | "login" | "register") {
     if (pending.current) return;
     pending.current = true;
@@ -120,9 +121,9 @@ function Welcome({
                 size="lg"
                 busy={busy === "demo"}
                 disabled={!!busy}
-                onClick={() => login("demo")}
+                onClick={() => (demoEnabled ? login("demo") : setAuth("login"))}
               >
-                进入演示工作台
+                {demoEnabled ? "进入演示工作台" : "开始办理"}
                 <ArrowRight size={17} />
               </ActionButton>
               <Button
@@ -135,12 +136,13 @@ function Welcome({
               </Button>
             </div>
           ) : (
-            <p>请使用管理员账号登录。初始账号：admin，密码：admin123。</p>
+            <p>请使用管理员账号登录。</p>
           )}
           {!adminMode && (
             <div className="tea-welcome-note">
               <ShieldCheck size={14} />
-              体验业务独立保存 · 四条六堡茶出口流程
+              {demoEnabled ? "体验业务独立保存" : "业务记录随账号保存"} ·
+              四条六堡茶出口流程
             </div>
           )}
           {error && <ErrorNotice message={error} onRetry={onRetry} />}

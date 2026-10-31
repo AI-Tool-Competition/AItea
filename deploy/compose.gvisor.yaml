@@ -1,0 +1,31 @@
+# Single-UID Docker-in-gVisor only: guest UID 0 maps to the host's wenbo UID.
+# Keep read-only roots, dropped capabilities and no-new-privileges from compose.yaml.
+services:
+  api:
+    build:
+      network: host
+      entitlements: [network.host]
+  worker:
+    build:
+      network: host
+      entitlements: [network.host]
+  web:
+    build:
+      network: host
+      entitlements: [network.host]
+    user: "0:0"
+    tmpfs: !override
+      - /tmp:rw,nosuid,noexec,size=128m
+      - /app/.next/cache:rw,nosuid,noexec,uid=0,gid=0,size=128m
+  gateway:
+    build:
+      network: host
+      entitlements: [network.host]
+      args:
+        # Flattened from the verified official image, with file capabilities removed.
+        # The single-UID host filesystem cannot store security.capability xattrs.
+        TEA_CADDY_BASE: aitea-caddy-base:2.11.4
+    user: "0:0"
+    tmpfs: !override
+      - /config:rw,nosuid,noexec,uid=0,gid=0,size=16m
+      - /data:rw,nosuid,noexec,uid=0,gid=0,size=16m

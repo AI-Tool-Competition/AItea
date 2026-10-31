@@ -29,7 +29,7 @@ RAGFlow 运行环境准备完成后，使用 `make ragflow-up` 启动服务、`m
 
 ## Docker 生产部署
 
-使用调用者的 Docker Engine 与 Compose 2.24.4+，不使用 sudo、不修改默认 context 或全局 Docker 配置。先用 `docker context show` 和 `docker info` 核实实际守护进程；SSH context 的挂载路径属于远端主机，不能用本机目录存在推定挂载成立。容器不会创建新空库替代已有资料。
+使用调用者的 Docker Engine 与 Compose 2.24.4+，不使用 sudo；部署脚本不修改默认 context 或全局 Docker 配置。先用 `docker context show` 和 `docker info` 核实实际守护进程；SSH context 的挂载路径属于远端主机，不能用本机目录存在推定挂载成立。容器不会创建新空库替代已有资料。
 
 根 `compose.yaml` 包含 API、Next.js standalone 前端和 Caddy 流式网关。默认桥接网络只发布宿主机 `127.0.0.1:3080`；服务使用非 root 用户、只读镜像、受限临时目录、日志轮转和健康检查。整个实例以相同绝对路径挂载，保持历史原件、检查点和版本证据中的绝对路径有效；原件不会复制进镜像。旧配方的 `tea_data` volume 不会自动删除或迁移。
 
@@ -64,7 +64,11 @@ make production-build PRODUCTION_ARGS='--prebuilt-web'
 
 `production-check` 和 `production-up` 在资料根生成一次性只读校验标识，要求容器能读到同一标识、SQLite 文件及私有配置；无论成功、超时或拒绝都会清理标识。远端空目录、错误副本或无权限均阻止启动。`up` 等待三个服务健康，不以容器进程已创建代替就绪；`production-stop` 保留所有数据、配置和容器卷。
 
+生产配方显式关闭匿名演示，欢迎页改为登录办理；普通注册继续等待管理员开放登录。公网开放前须更换仍使用的初始管理员弱口令，不能把源码中的默认密码当作生产凭据。隔离容器冒烟显式开启演示，仅使用本地模型替身。
+
 API 默认不启动解析、采集和索引 worker，使聊天与批量处理分离。需要启动这组现有持久队列时，明确执行 `make production-up PRODUCTION_ARGS='--with-workers'`，确认没有其他实例处理同一队列，并核对付费调用预算。原独立官方采集器和 RAGFlow 的生命周期保持各自管理；旧未知付费结果及超预算任务不会因部署被重置。
+
+本机缺少 uidmap 且无法获得管理员协助时，已验证的 Docker-in-gVisor 配置见 [wenbo 本机 Docker](DOCKER_HOST.md)。该模式需要显式使用 `--engine gvisor`，不能直接套用标准 RootlessKit 的准备步骤。
 
 ## `/aitea` 与流式转发
 
@@ -84,7 +88,7 @@ systemd-run --user --unit=aitea-production-tunnel \
   -o ControlMaster=no -R 127.0.0.1:18088:127.0.0.1:3080 rowan@tcyun
 ```
 
-该用户级临时服务在连接中断后重连；宿主机重启后需重新启动。端口已占用时拒绝接管，不停止其他转发。Serino 只加入 `/aitea` 的扩展文件，保留原站点路由；片段不剥离前缀。验证完整 Caddy 配置后热加载，再检查 `https://aerisun.top/aitea`。Docker 守护进程在其他主机时，SSH 转发也必须指向真正的容器入口。
+该用户级临时服务在连接中断后重连；宿主机重启后需重新启动。需要持久运行时，使用 [aitea-production-tunnel.service](../deploy/aitea-production-tunnel.service)：将 `@ROOT@` 替换为实际仓库路径，安装到用户服务目录并启用；它从已有部署参数读取本机网关端口。端口已占用时拒绝接管，不停止其他转发。Serino 只加入 `/aitea` 的扩展文件，保留原站点路由；片段不剥离前缀。验证完整 Caddy 配置后热加载，再检查 `https://aerisun.top/aitea`。Docker 守护进程在其他主机时，SSH 转发也必须指向真正的容器入口。
 
 ## 容器隔离验收
 
@@ -93,6 +97,8 @@ systemd-run --user --unit=aitea-production-tunnel \
 ```bash
 uv run --project backend --locked python scripts/container_smoke.py --tag <镜像标签>
 ```
+
+单 UID 的本机 Docker-in-gVisor 增加 `--engine gvisor`。该模式使用命名空间内 UID/GID 0 初始化和运行隔离实例，仍不挂载业务资料或调用真实模型。
 
 脚本只创建带随机标识的专用 Docker 数据卷和本地模型替身，测试真实镜像的页面跳转、静态资源、登录、Cookie 范围、退出失效和逐段 SSE。模型替身每 250 ms 发送一段，要求至少两段在不同时间到达，防止把最终一次性返回误判为流式。普通检查不读取业务配置，不访问真实模型；结束清理所属容器和卷。`--keep` 可保留合成实例供浏览器检查，完成后按输出的 `state.json` 使用 `--cleanup` 清理。CI 对每次 push/PR 构建三个镜像并执行同一检查。
 

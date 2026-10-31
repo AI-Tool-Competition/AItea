@@ -73,6 +73,112 @@ def test_missing_instance_is_not_created(tmp_path):
     assert not missing.exists()
 
 
+def test_single_uid_engine_prepares_namespace_root_without_changing_host_files(
+    instance, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(production.subprocess, "check_output", lambda *a, **k: "a" * 40 + "\n")
+    owner = (instance / "tea.sqlite3").stat().st_uid
+    args = arguments(instance, tmp_path, engine="gvisor", uid=None, gid=None)
+    values = production.prepare(args, root=tmp_path)
+    assert values["TEA_UID"] == values["TEA_GID"] == "0"
+    assert production.settings(args.config)["TEA_DOCKER_ENGINE"] == "gvisor"
+    command = production.compose_command(values, args.config, root=tmp_path)
+    assert str(tmp_path / "deploy/compose.gvisor.yaml") in command
+    assert (instance / "tea.sqlite3").stat().st_uid == owner
+
+
+@pytest.mark.parametrize(
+    "changes", [{"network": "bridge"}, {"uid": 1000}, {"gid": 1000}, {"engine": "unknown"}]
+)
+def test_unsupported_single_uid_settings_fail_before_writing_config(instance, tmp_path, changes):
+    options = {"engine": "gvisor", "uid": 0, "gid": 0} | changes
+    args = arguments(instance, tmp_path, **options)
+    with pytest.raises(ValueError):
+        production.prepare(args, root=tmp_path)
+    assert not args.config.exists()
+
+
+def test_modified_single_uid_config_cannot_start_with_unmapped_user(instance, tmp_path, monkeypatch):
+    monkeypatch.setattr(production.subprocess, "check_output", lambda *a, **k: "a" * 40 + "\n")
+    args = arguments(instance, tmp_path, engine="gvisor", uid=0, gid=0)
+    production.prepare(args, root=tmp_path)
+    args.config.write_text(args.config.read_text().replace("TEA_UID='0'", "TEA_UID='1000'"))
+    with pytest.raises(ValueError, match="单 UID"):
+        production.settings(args.config)
+
+
+def test_single_uid_build_grants_only_host_network_and_reuses_compose_files():
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        "private-deployment.env",
+        "-f",
+        "compose.yaml",
+        "-f",
+        "host.yaml",
+        "-f",
+        "gvisor.yaml",
+    ]
+
+    assert production.image_build_command(command, {}, ("api",)) == command + ["build", "api"]
+    result = production.image_build_command(command, {"TEA_DOCKER_ENGINE": "gvisor"}, ("api", "gateway"))
+    assert result == [
+        "docker",
+        "buildx",
+        "bake",
+        "--allow=network.host",
+        "-f",
+        "compose.yaml",
+        "-f",
+        "host.yaml",
+        "-f",
+        "gvisor.yaml",
+        "api",
+        "gateway",
+    ]
+
+
+@pytest.mark.parametrize("network,build_network", [("host", "host"), ("bridge", "default")])
+def test_prebuilt_image_uses_supported_buildkit_network(network, build_network, tmp_path, monkeypatch):
+    values = {
+        "TEA_DOCKER_NETWORK": network,
+        "TEA_REVISION": "a" * 40,
+        "TEA_IMAGE_TAG": "candidate",
+        "TEA_BASE_PATH": "/aitea",
+    }
+    calls = []
+    monkeypatch.setattr(production, "settings", lambda path: values)
+    monkeypatch.setattr(production, "compose_command", lambda *a, **k: ["docker", "compose"])
+    monkeypatch.setattr(production, "docker_environment", lambda: {})
+    monkeypatch.setattr(production, "web_artifact", lambda values: tmp_path)
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(production.subprocess, "run", run)
+    assert production.main(["build", "--prebuilt-web"]) == 0
+    command = calls[-1]
+    assert command[command.index("--network") + 1] == build_network
+
+
+@pytest.mark.parametrize("allow_demo", [None, "true"])
+def test_production_anonymous_access_requires_explicit_opt_in(tmp_path, monkeypatch, allow_demo):
+    monkeypatch.setenv("TEA_ENV", "production")
+    monkeypatch.setenv("TEA_COOKIE_SECURE", "false")
+    if allow_demo is None:
+        monkeypatch.delenv("TEA_ALLOW_DEMO", raising=False)
+    else:
+        monkeypatch.setenv("TEA_ALLOW_DEMO", allow_demo)
+    with TestClient(create_app(tmp_path / "store")) as client:
+        response = client.post("/api/tea/auth/demo")
+        assert response.status_code == (200 if allow_demo else 403)
+        if allow_demo is None:
+            assert response.json()["error"]["code"] == "demo_disabled"
+            assert client.get("/api/tea/auth/me").status_code == 401
+
+
 @pytest.mark.parametrize("failure", ["wrong_host", "timeout", "permission"])
 def test_failed_remote_mount_stops_before_start_and_cleans_probe(instance, failure, monkeypatch):
     monkeypatch.setattr(production, "docker_environment", lambda *args: {})

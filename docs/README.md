@@ -11,6 +11,7 @@
 | [演示指南](DEMO_GUIDE.md)        | 体验工作台与示例业务材料                    |
 | [开发环境](DEVELOPMENT.md)       | uv/pnpm、启动停止、热更新、独立工作树及排错 |
 | [部署说明](DEPLOYMENT.md)        | 本机生产预览、容器配方及实际部署边界        |
+| [本机 Docker](DOCKER_HOST.md) | 无管理员权限的 Docker-in-gVisor、单 UID 映射与运行边界 |
 | [2026-10-30 Docker 部署验证](DOCKER_VALIDATION_20261030.md) | 分支集成、已有资料校验、容器流式实测及挂载阻塞 |
 | [测试范围](TESTING.md)           | 日常检查、测试隔离与保留的风险覆盖          |
 | [后端目录](../backend/README.md) | 按业务定位实现文件及 DDD 分层职责           |

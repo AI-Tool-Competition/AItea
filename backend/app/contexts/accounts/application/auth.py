@@ -133,6 +133,9 @@ class Auth:
         return token
 
     def demo(self, token):
+        default = "false" if os.getenv("TEA_ENV") == "production" else "true"
+        if os.getenv("TEA_ALLOW_DEMO", default).lower() != "true":
+            fail(403, "demo_disabled", "请使用已开放的账号登录；生产环境未开放匿名演示。")
         current = self.current(token)
         if current:
             return current, token

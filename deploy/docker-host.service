@@ -1,0 +1,26 @@
+[Unit]
+Description=wenbo local Docker Engine through gVisor (no virtual machine)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=180
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 @ROOT@/scripts/docker_host.py run --runtime-dir @RUNTIME@
+ExecStartPost=/usr/bin/python3 @ROOT@/scripts/docker_host.py check --runtime-dir @RUNTIME@
+ExecStop=/usr/bin/python3 @ROOT@/scripts/docker_host.py stop --runtime-dir @RUNTIME@
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStartSec=90
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+MemoryMax=8G
+MemorySwapMax=0
+TasksMax=4096
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

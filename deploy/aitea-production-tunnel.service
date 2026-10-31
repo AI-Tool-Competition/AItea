@@ -1,0 +1,18 @@
+[Unit]
+Description=AItea production reverse tunnel to Serino /aitea
+After=network-online.target wenbo-docker-host.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+EnvironmentFile=@ROOT@/.dev/production/deploy.env
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ConnectTimeout=15 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o Compression=no -o ControlMaster=no -R 127.0.0.1:18088:127.0.0.1:${TEA_GATEWAY_PORT} rowan@tcyun
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

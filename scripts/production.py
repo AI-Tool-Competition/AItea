@@ -84,14 +84,18 @@ def prepare(args, root=ROOT):
     for value in (args.uid, args.gid):
         if value is not None and value < 0:
             raise ValueError("容器 UID/GID 必须为非负整数。")
+    engine = getattr(args, "engine", "standard")
+    uid = args.uid if args.uid is not None else (0 if engine == "gvisor" else os.getuid())
+    gid = args.gid if args.gid is not None else (0 if engine == "gvisor" else os.getgid())
+    validate_engine(engine, args.network, str(uid), str(gid))
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     values = {
         "TEA_INSTANCE_DATA": str(data),
         "TEA_INSTANCE_CONFIG": str(catalogs),
         "TEA_PUBLIC_ORIGIN": origin,
         "TEA_BASE_PATH": prefix,
-        "TEA_UID": str(args.uid if args.uid is not None else os.getuid()),
-        "TEA_GID": str(args.gid if args.gid is not None else os.getgid()),
+        "TEA_UID": str(uid),
+        "TEA_GID": str(gid),
         "TEA_API_PORT": str(ports[0]),
         "TEA_WEB_PORT": str(ports[1]),
         "TEA_GATEWAY_PORT": str(ports[2]),
@@ -100,6 +104,7 @@ def prepare(args, root=ROOT):
         "TEA_REVISION": revision,
         "TEA_COMPOSE_PROJECT": "aitea-production",
         "TEA_DOCKER_NETWORK": args.network,
+        "TEA_DOCKER_ENGINE": engine,
     }
     path = args.config.resolve()
     if path.exists() and not args.replace:
@@ -151,7 +156,20 @@ def settings(path: Path):
     for key in ("TEA_UID", "TEA_GID"):
         if not values[key].isdigit():
             raise ValueError("容器 UID/GID 必须为非负整数。")
+    validate_engine(
+        values.get("TEA_DOCKER_ENGINE", "standard"),
+        values.get("TEA_DOCKER_NETWORK", "host"),
+        values["TEA_UID"],
+        values["TEA_GID"],
+    )
     return values
+
+
+def validate_engine(engine, network, uid, gid):
+    if engine not in {"standard", "gvisor"}:
+        raise ValueError("Docker 运行方式必须为 standard 或 gvisor。")
+    if engine == "gvisor" and (network != "host" or uid != "0" or gid != "0"):
+        raise ValueError("单 UID 的 Docker-in-gVisor 必须使用 host 网络与命名空间内 UID/GID 0。")
 
 
 def docker_environment(root=ROOT):
@@ -271,9 +289,25 @@ def compose_command(values, config, *, workers=False, root=ROOT):
         if sys.platform != "linux":
             raise ValueError("host 网络配方仅支持 Linux；其他系统请使用 bridge 并配置可达的外部服务。")
         command.extend(["-f", str(root / "deploy/compose.host.yaml")])
+    if values.get("TEA_DOCKER_ENGINE", "standard") == "gvisor":
+        validate_engine("gvisor", values["TEA_DOCKER_NETWORK"], values["TEA_UID"], values["TEA_GID"])
+        command.extend(["-f", str(root / "deploy/compose.gvisor.yaml")])
     if workers:
         command.extend(["--profile", "workers"])
     return command
+
+
+def image_build_command(command, values, services=()):
+    if values.get("TEA_DOCKER_ENGINE", "standard") != "gvisor":
+        return command + ["build", *services]
+    # Bake requires the caller to grant the host network explicitly. All
+    # interpolation values come from the already validated deployment settings.
+    files = [command[index + 1] for index, value in enumerate(command) if value == "-f"]
+    return (
+        [command[0], "buildx", "bake", "--allow=network.host"]
+        + [item for path in files for item in ("-f", path)]
+        + list(services)
+    )
 
 
 def verify_mount(token_file: Path, token: str, data_dir: Path):
@@ -349,6 +383,7 @@ def main(argv=None):
     parser.add_argument("--uid", type=int)
     parser.add_argument("--gid", type=int)
     parser.add_argument("--network", choices=["host", "bridge"], default="host")
+    parser.add_argument("--engine", choices=["standard", "gvisor"], default="standard")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--with-workers", action="store_true")
     parser.add_argument("--prebuilt-web", action="store_true")
@@ -377,13 +412,15 @@ def main(argv=None):
             return 0
         if args.action == "build" and args.prebuilt_web:
             artifact = web_artifact(values)
-            subprocess.run(command + ["build", "api", "gateway"], env=env, check=True)
+            subprocess.run(image_build_command(command, values, ("api", "gateway")), env=env, check=True)
             return subprocess.run(
                 [
                     command[0],
                     "build",
                     "--target",
                     "prebuilt",
+                    "--network",
+                    "host" if values.get("TEA_DOCKER_NETWORK", "host") == "host" else "default",
                     "--file",
                     str(ROOT / "deploy/Dockerfile.web"),
                     "--build-arg",
@@ -397,8 +434,11 @@ def main(argv=None):
                 env=env,
                 check=False,
             ).returncode
+        if args.action == "build":
+            return subprocess.run(
+                image_build_command(command, values, ("api", "web", "gateway")), env=env, check=False
+            ).returncode
         action = {
-            "build": ["build"],
             "up": ["up", "-d", "--wait", "--wait-timeout", "180"],
             "status": ["ps"],
             "logs": ["logs", "--tail", "100"],

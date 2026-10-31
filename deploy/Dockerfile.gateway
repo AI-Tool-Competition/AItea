@@ -1,8 +1,9 @@
-FROM caddy:2.11.4-alpine
+ARG TEA_CADDY_BASE=caddy:2.11.4-alpine
+FROM ${TEA_CADDY_BASE}
 ARG TEA_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/AI-Tool-Competition/AItea" \
       org.opencontainers.image.revision=$TEA_REVISION
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 # All listeners are above 1024; inherited file capabilities conflict with cap_drop.
-RUN setcap -r /usr/bin/caddy
+RUN if [ -n "$(getcap /usr/bin/caddy)" ]; then setcap -r /usr/bin/caddy; fi
 USER 10001:10001

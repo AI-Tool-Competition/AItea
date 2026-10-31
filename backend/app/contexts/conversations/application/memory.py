@@ -5,6 +5,7 @@ import hashlib
 import re
 from contextlib import closing
 
+from app.contexts.conversations.application.question_requests import question_history_text
 from app.shared.domain.errors import fail
 from app.shared.domain.values import dump, now, uid
 
@@ -58,7 +59,10 @@ class AgentMemory:
         with closing(self.db.connect()) as conn:
             self.scope(conn, owner, case_id, stage_id, conversation_id)
             rows = conn.execute(
-                """SELECT m.role,m.content FROM messages m
+                """SELECT m.role,m.content,
+                (SELECT json_extract(t.value,'$.question_request') FROM json_each(m.trace) t
+                 WHERE json_type(t.value,'$.question_request')='object' LIMIT 1) AS question_request
+                FROM messages m
                 JOIN conversation_messages cm ON cm.message_id=m.id
                 WHERE m.case_id=? AND m.stage_id=? AND cm.conversation_id=?
                 ORDER BY m.created_at DESC,m.id DESC LIMIT 200""",
@@ -66,7 +70,9 @@ class AgentMemory:
             ).fetchall()
         selected, size = [], 0
         for row in rows:
-            message = dict(row)
+            message = {"role": row["role"], "content": row["content"]}
+            if row["role"] == "assistant" and (questions := question_history_text(row["question_request"])):
+                message["content"] += "\n\n" + questions
             cost = len(dump(message).encode())
             if size + cost > budget:
                 break

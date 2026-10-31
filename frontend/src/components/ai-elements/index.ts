@@ -30,7 +30,24 @@ export type {
 } from "./chain-of-thought";
 
 export { Task, TaskContent, TaskItem, TaskTrigger } from "./task";
-export type { TaskProps, TaskContentProps, TaskItemProps, TaskTriggerProps } from "./task";
+export type {
+  TaskProps,
+  TaskContentProps,
+  TaskItemProps,
+  TaskTriggerProps,
+} from "./task";
 
 export { ClipboardSafeStreamdown } from "./streamdown";
 export type { ClipboardSafeStreamdownProps } from "./streamdown";
+
+export {
+  Question,
+  QuestionActions,
+  QuestionDescription,
+  QuestionInput,
+  QuestionOption,
+  QuestionOptions,
+  QuestionPrompt,
+  QuestionSubmit,
+} from "./question";
+export type { QuestionResponse, QuestionValue } from "./question";

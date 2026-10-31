@@ -1,5 +1,29 @@
 import { teaPath } from "@/tea-paths";
 
+import { isQuestionRequest } from "./questions";
+import type {
+  ApiSettings,
+  ApiSettingsPatch,
+  LegalAnalysis,
+  LegalFact,
+  LegalFactInput,
+  LegalHistory,
+  LegalPolicyDefaults,
+  LegalResult,
+  LegalStreamEvent,
+  Template,
+  DebugRequest,
+  DebugRun,
+  DebugStreamEvent,
+  MessageInput,
+  MessageResult,
+  MessageStreamEvent,
+  TraceStep,
+  ToolCall,
+  StageAnalysis,
+  SearchResult,
+} from "./types";
+
 export class TeaApiError extends Error {
   constructor(
     public status: number,
@@ -361,6 +385,8 @@ function isToolCall(data: unknown): data is ToolCall {
 function isTraceStep(data: unknown): data is TraceStep {
   return (
     record(data) &&
+    (data.question_request === undefined ||
+      isQuestionRequest(data.question_request)) &&
     typeof data.id === "string" &&
     typeof data.label === "string" &&
     typeof data.detail === "string" &&
@@ -559,28 +585,6 @@ export function safeSourceUrl(url?: string | null) {
     return undefined;
   }
 }
-import type {
-  ApiSettings,
-  ApiSettingsPatch,
-  LegalAnalysis,
-  LegalFact,
-  LegalFactInput,
-  LegalHistory,
-  LegalPolicyDefaults,
-  LegalResult,
-  LegalStreamEvent,
-  Template,
-  DebugRequest,
-  DebugRun,
-  DebugStreamEvent,
-  MessageInput,
-  MessageResult,
-  MessageStreamEvent,
-  TraceStep,
-  ToolCall,
-  StageAnalysis,
-  SearchResult,
-} from "./types";
 
 export function getApiSettings(signal?: AbortSignal) {
   return teaRequest<ApiSettings>("/admin/api-settings", { signal });

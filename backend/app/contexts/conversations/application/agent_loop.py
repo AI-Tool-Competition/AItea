@@ -31,6 +31,7 @@ from app.shared.domain.values import dump, now
 MODEL_TURN = ToolSpec("agent_turn", "分析与答复", "根据用户事实和实际资料分析并回答。", EmptyInput)
 COMMON_TOOLS = frozenset(
     {
+        "ask_user",
         "update_business_card",
         "search_legal_evidence",
         "lookup_chinese_law",
@@ -60,6 +61,7 @@ def has_tool_protocol(text):
 
 
 SYSTEM = (
+    "关键信息不足且适合给出选项时，用ask_user提问，支持单选、多选和其他回答；每轮只问一至三个真正影响下一步的问题。不要重复询问已确认的信息，不默认替用户选择。"
     "你是茶渡，陪茶农和茶商梳理经营问题的咨询助手。用日常用语解释，让没有法律知识的人知道现在该做什么、找谁办、需要准备什么。法规术语首次出现时简短解释其实际作用。"
     "先根据已有信息给出能用的建议，再用一两句具体问题询问会影响下一步的信息；给出易回答的选项，不一次索要整套资料。复用已经说过的信息，明确假设只用于本次分析。"
     "用户原话、明确假设和限定范围优先；历史事实在用户未变更时延续。业务模板不代表本次交易事实。"
@@ -481,7 +483,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 "missing_formats": missing_files,
                 "operation": "edit" if edit_requested else "create",
             }
-        if missing_files and not error:
+        if missing_files and not error and not state.get("awaiting_user"):
             partial = True
             output += (
                 "\n\n尚未生成所需的 "
@@ -508,6 +510,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
         )
         # Delivery describes transport/evidence availability, not a legal quality verdict.
         if error:
+            trace.pop("question_request", None)
             output = error + (" 已取得的资料已保留。" if sources.sources else " 本次未生成答复，请稍后重试。")
             result["_drafts"], result["_memories"], result["_card_updates"] = [], [], []
             bound.pending_pdfs.clear()
@@ -812,6 +815,10 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                     material = sources.project(material)
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": dump(material)})
                     empty = record_call(call, value, args)
+                    if name == "ask_user" and not value.get("error"):
+                        trace["question_request"] = value["question_request"]
+                        state["awaiting_user"] = True
+                        return finalize(value["intro"])
                     progressed |= bool(
                         not value.get("error")
                         and not value.get("reused_result")

@@ -3,7 +3,7 @@
 import json
 from typing import Literal
 
-from pydantic import Field, StrictInt, model_validator
+from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from app.shared.domain.models import StrictModel
 
@@ -63,6 +63,34 @@ class GuideRetry(StrictModel):
     client_request_id: str = Field(min_length=1, max_length=100)
 
 
+class QuestionOption(StrictModel):
+    label: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=300)
+
+
+class ChoiceQuestion(StrictModel):
+    question: str = Field(min_length=1, max_length=500)
+    options: list[QuestionOption] = Field(min_length=2, max_length=6)
+    multiple: StrictBool = False
+
+    @model_validator(mode="after")
+    def distinct_options(self):
+        if len({option.label.casefold() for option in self.options}) != len(self.options):
+            raise ValueError("同一问题的选项不能重复")
+        return self
+
+
+class QuestionRequest(StrictModel):
+    id: str = Field(min_length=1, max_length=100)
+    questions: list[ChoiceQuestion] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def bounded_request(self):
+        if len(self.model_dump_json().encode()) > 16000:
+            raise ValueError("问题和选项合计不能超过16000字节，请简化描述")
+        return self
+
+
 class ToolOutputItem(StrictModel):
     label: str = Field(default="", max_length=200)
     text: str = Field(default="", max_length=1200)
@@ -84,6 +112,7 @@ class ToolCallSnapshot(StrictModel):
 
     id: str = Field(min_length=1, max_length=100)
     name: Literal[
+        "ask_user",
         "update_business_card",
         "search_documents",
         "search_legal_evidence",
@@ -161,6 +190,8 @@ class MessageStreamEvent(StrictModel):
                 raise ValueError("invalid tool history")
             for tool in tools:
                 ToolCallSnapshot.model_validate(tool)
+        if self.event == "step" and "question_request" in self.data:
+            QuestionRequest.model_validate(self.data["question_request"])
         return self
 
     def encode(self):

@@ -4,7 +4,11 @@
 
 ## 问答执行
 
-常用工具直接提供参数定义：`update_business_card`、`lookup_chinese_law`、`search_legal_evidence`、`read_law`、`get_law_versions`、`search_documents`、`list_documents`、`read_document`、`check_materials`、`web_search`、`draft_document`、`create_document_file`、`inspect_document_file`、`edit_document_file`、`load_skill`、`tool_search`、`read_tool_result`。当前节点指导、交接、显式记忆、识图及操作计划按需发现。`load_skill` 按需读取方法文档，发现结果只表示加载能力，不表示查过资料。`update_plan` 只记录操作步骤，不改变业务任务。
+常用工具直接提供参数定义：`ask_user`、`update_business_card`、`lookup_chinese_law`、`search_legal_evidence`、`read_law`、`get_law_versions`、`search_documents`、`list_documents`、`read_document`、`check_materials`、`web_search`、`draft_document`、`create_document_file`、`inspect_document_file`、`edit_document_file`、`load_skill`、`tool_search`、`read_tool_result`。当前节点指导、交接、显式记忆、识图及操作计划按需发现。`load_skill` 按需读取方法文档，发现结果只表示加载能力，不表示查过资料。`update_plan` 只记录操作步骤，不改变业务任务。
+
+信息不足而适合选项确认时，主 Agent 可调用 `ask_user`，一次提出一至三个单选或多选问题，并提供简短引导。程序保存真实问题并结束本轮，不再调用模型复述选项，也不默认替用户作答。网页使用 Vercel AI Elements `Question`、`QuestionOption`、`QuestionInput` 与 `QuestionSubmit`；题组逐题填写，可返回修改和自由补充，最后合为一条普通用户消息在原会话继续。用户回答不会绕过服务端核验或自动完成任务。
+
+问题随现有消息 trace JSON 持久化，旧库无需结构升级；后续模型历史只加入用户可见的问题和选项，不恢复内部参数或思考。已保存且位于当前会话末尾的问题可回答；流式未保存的问题仅预览，历史问题只读。未发送的选择草稿按账号、业务、节点、会话与问题隔离，仅保存在当前标签页内，导航后可恢复，退出登录时一并清理。问题结构、边界与流式兼容规则见[接口契约](API_CONTRACT.md#交互式选择题)。
 
 网站、展会、企业、协会、平台及渠道等公开业务信息直接使用 `web_search`，无需先发现工具。相关官网、企业网站、行业媒体和其他公开网页均可用于业务答复，不等待逐项审核。搜索结果状态为 `completed`，保留实际摘要和检索时间。HTTP、HTTPS 网页链接均可交付；搜索结果仍与已读取的网页全文区分，链接可提供不代表已经阅读全文。主模型按实际结果给出网站名称、完整可点击网址及用途，报名等任务优先给具体入口。
 
@@ -88,16 +92,16 @@
 
 主 Agent 默认不按累计耗时截断持续响应的任务。2026-10-30的代理咨询仍在返回思考和正文时，被原先120秒的单次模型上限中断，因此取消默认单次和整轮墙钟上限；需要限制的实例仍可配置正数。模型、思考强度与工具各自的限制保持原配置：
 
-| 配置 | 默认值 | 作用 |
-| --- | --- | --- |
-| `AGENT_BUDGET_TOTAL` | 0 | 0关闭整轮墙钟上限；正数指定整轮最多执行的秒数 |
-| `AGENT_BUDGET_MODEL` | 0 | 0关闭单次主模型墙钟上限；正数限制每次模型请求及其重试，仍受已配置的整轮时间限制 |
-| `AGENT_STREAM_IDLE_TIMEOUT` | 30 秒 | 模型流无正文、思考、工具片段或结束信号的最长等待；允许大于0且不超过120秒 |
-| `AGENT_BUDGET_EVIDENCE` | 45 秒 | 单项工具执行上限，另受实际剩余时间约束 |
-| `AGENT_BUDGET_ANSWER_RESERVE` | 60 秒 | 设置整轮时限时，取证和普通模型请求为答复保留的时间 |
-| `AGENT_BUDGET_RETRIES` | 1 | 暂时性供应商错误最多重试一次 |
-| `AGENT_BUDGET_DISCOVERY` | 2 | 按需加载或发现的次数上限 |
-| `AGENT_BUDGET_TOKENS` | 12000 | 每次请求的生成额度，包含供应商计入的思考消耗；允许1024—24000的整数 |
+| 配置                          | 默认值 | 作用                                                                            |
+| ----------------------------- | ------ | ------------------------------------------------------------------------------- |
+| `AGENT_BUDGET_TOTAL`          | 0      | 0关闭整轮墙钟上限；正数指定整轮最多执行的秒数                                   |
+| `AGENT_BUDGET_MODEL`          | 0      | 0关闭单次主模型墙钟上限；正数限制每次模型请求及其重试，仍受已配置的整轮时间限制 |
+| `AGENT_STREAM_IDLE_TIMEOUT`   | 30 秒  | 模型流无正文、思考、工具片段或结束信号的最长等待；允许大于0且不超过120秒        |
+| `AGENT_BUDGET_EVIDENCE`       | 45 秒  | 单项工具执行上限，另受实际剩余时间约束                                          |
+| `AGENT_BUDGET_ANSWER_RESERVE` | 60 秒  | 设置整轮时限时，取证和普通模型请求为答复保留的时间                              |
+| `AGENT_BUDGET_RETRIES`        | 1      | 暂时性供应商错误最多重试一次                                                    |
+| `AGENT_BUDGET_DISCOVERY`      | 2      | 按需加载或发现的次数上限                                                        |
+| `AGENT_BUDGET_TOKENS`         | 12000  | 每次请求的生成额度，包含供应商计入的思考消耗；允许1024—24000的整数              |
 
 设置正数时限的实例按剩余时间执行，普通取证轮的模型请求扣除答复预留时间。默认配置下，持续返回思考、正文或工具片段的请求可继续执行。30秒后每15秒提供进度，用户仍可主动停止；活跃任务每60秒续期执行占用资格，已过期或中断的任务不能借续期恢复。HTTP连接和连接池等待最多10秒，连续30秒无有效流响应仍会超时；空帧、心跳不延长等待时间。
 

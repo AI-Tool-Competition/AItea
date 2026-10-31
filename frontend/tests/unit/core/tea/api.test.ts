@@ -3,6 +3,56 @@ import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { teaRequest, TeaApiError, streamMessage } from "@/core/tea/api";
 import type { ToolOutputPreview } from "@/core/tea/types";
 
+it.each([true, false])(
+  "validates structured question SSE snapshots (valid=%s)",
+  async (valid) => {
+    const step = {
+      id: "agent",
+      label: "",
+      detail: "",
+      status: "completed",
+      question_request: {
+        id: "question",
+        questions: [
+          {
+            question: "目的地？",
+            multiple: false,
+            options: valid
+              ? [
+                  { label: "新加坡", description: "" },
+                  { label: "印尼", description: "" },
+                ]
+              : [{ label: "一项", description: "" }],
+          },
+        ],
+      },
+    };
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        `event: step\ndata: ${JSON.stringify(step)}\n\nevent: done\ndata: {"messages":[],"case":{}}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    const received = rs.fn();
+    const result = streamMessage(
+      "one",
+      { stage_id: "stage", content: "问题", client_message_id: "id" },
+      { onEvent: received },
+    );
+    try {
+      if (valid) {
+        await expect(result).resolves.toBeTruthy();
+        expect(received).toHaveBeenCalledWith({ event: "step", data: step });
+      } else
+        await expect(result).rejects.toMatchObject({
+          code: "invalid_response",
+        });
+    } finally {
+      rs.restoreAllMocks();
+    }
+  },
+);
+
 describe("Tea API transport", () => {
   afterEach(() => {
     rs.restoreAllMocks();

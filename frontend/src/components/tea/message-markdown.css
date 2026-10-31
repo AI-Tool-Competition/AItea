@@ -1,0 +1,267 @@
+/* SPDX-License-Identifier: LGPL-3.0-only
+   Adapted from Aerisun/sub2api chat-ui/src/markdown.css at 47edf1aed42f0dac90fb53308a34807d2c547c45.
+   Changes: tea-only scope, theme variables and Streamdown selectors.
+   License, source and modification details: frontend/THIRD_PARTY_NOTICES.md. */
+.tea-theme .tea-answer {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.tea-theme .tea-answer p {
+  margin-block: 0 1em;
+  line-height: inherit;
+}
+.tea-theme .tea-answer :is(h1, h2, h3, h4, h5, h6) {
+  margin-block: 1.5em 0.6em;
+  color: inherit;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.025em;
+}
+.tea-theme .tea-answer h1 {
+  font-size: 1.8em;
+}
+.tea-theme .tea-answer h2 {
+  font-size: 1.45em;
+}
+.tea-theme .tea-answer h3 {
+  font-size: 1.2em;
+}
+.tea-theme .tea-answer :is(h4, h5, h6) {
+  font-size: 1em;
+}
+.tea-theme .tea-answer strong {
+  font-weight: 600;
+}
+.tea-theme .tea-answer :is(ul, ol) {
+  margin-block: 0.8em 1.1em;
+  padding-inline-start: 1.5em;
+}
+.tea-theme .tea-answer ul {
+  list-style: disc;
+}
+.tea-theme .tea-answer ol {
+  list-style: decimal;
+}
+.tea-theme .tea-answer li {
+  margin-block: 0.3em;
+  padding-inline-start: 0.2em;
+}
+.tea-theme .tea-answer li::marker {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.tea-theme .tea-answer li :is(ul, ol) {
+  margin-block: 0.35em 0.55em;
+}
+.tea-theme .tea-answer li p {
+  margin-block: 0.35em;
+}
+.tea-theme .tea-answer input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin-inline: 0 0.5em;
+  vertical-align: -0.1em;
+}
+.tea-theme .tea-answer blockquote {
+  margin-block: 1.3em;
+  padding-inline: 1em 0;
+  border: 0;
+  border-inline-start: 2px solid var(--border);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-style: normal;
+}
+.tea-theme .tea-answer hr {
+  margin-block: 1.8em;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.tea-theme .tea-answer a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.tea-theme .tea-answer :is(code, pre) {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+.tea-theme .tea-answer [data-streamdown="inline-code"] {
+  padding: 0.16em 0.38em;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: inherit;
+  font-size: 0.86em;
+  font-weight: 400;
+}
+.tea-theme .tea-answer [data-streamdown="code-block"] {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 1.25em 1.5em;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tea-theme .tea-answer [data-streamdown="code-block-header"] {
+  display: none;
+}
+.tea-theme .tea-answer [data-streamdown="code-block-body"] {
+  max-width: 100%;
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+}
+.tea-theme .tea-answer [data-streamdown="code-block"] pre {
+  max-width: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 16px 44px 16px 16px;
+  overflow-x: auto;
+  border: 0;
+  background: transparent !important;
+  font-size: 12.5px;
+  line-height: 1.85;
+  white-space: pre;
+  tab-size: 2;
+}
+.tea-theme .tea-answer [data-streamdown="code-block"] code {
+  display: block;
+  background: none;
+  font-size: inherit;
+  font-weight: 400;
+}
+/* Streamdown 2.5 renders token rows as unclassified spans when line numbers
+   are off. Keep those rows separate without changing token colors or text. */
+.tea-theme .tea-answer [data-streamdown="code-block"] code > span {
+  display: block;
+  min-height: 1lh;
+}
+.tea-theme .tea-answer [data-streamdown="code-block-actions"] {
+  position: absolute;
+  inset-block-start: 8px;
+  inset-inline-end: 8px;
+  pointer-events: auto;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+/* The 2.5 toolbar wrapper has a negative margin for its header. With the header
+   hidden, anchor a zero-height sticky row inside the code instead of over text. */
+.tea-theme
+  .tea-answer
+  [data-streamdown="code-block"]
+  > div:has(> [data-streamdown="code-block-actions"]) {
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  align-items: flex-start;
+  pointer-events: none;
+}
+.tea-theme .tea-answer [data-streamdown="code-block-actions"] button {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-foreground);
+  box-shadow: none;
+}
+.tea-theme .tea-answer [data-streamdown="code-block-actions"] button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.tea-theme .tea-answer [data-streamdown="table-wrapper"] {
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 1.3em 1.6em;
+  padding: 0;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tea-theme .tea-answer [data-streamdown="table-wrapper"] > div {
+  border: 0;
+  border-radius: 0;
+}
+.tea-theme .tea-answer table {
+  width: 100%;
+  min-width: 30rem;
+  border-collapse: collapse;
+  font-size: 0.9em;
+  line-height: 1.8;
+}
+.tea-theme .tea-answer :is(th, td) {
+  padding: 11px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  text-align: start;
+  vertical-align: top;
+}
+.tea-theme .tea-answer :is(thead, tbody, tr) {
+  border: 0;
+  background: transparent;
+}
+.tea-theme .tea-answer th {
+  font-weight: 600;
+}
+.tea-theme .tea-answer tbody tr:last-child td {
+  border-bottom: 0;
+}
+.tea-theme .tea-answer :is(th, td):first-child {
+  padding-inline-start: 0;
+}
+.tea-theme .tea-answer :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+.tea-theme .tea-answer :is(th, td) p {
+  margin: 0;
+}
+.tea-theme .tea-answer > :first-child {
+  margin-top: 0;
+}
+.tea-theme .tea-answer > :last-child,
+.tea-theme .tea-answer blockquote > :last-child {
+  margin-bottom: 0;
+}
+@media (max-width: 640px) {
+  .tea-theme .tea-answer {
+    font-size: 14px;
+  }
+  .tea-theme .tea-answer h1 {
+    font-size: 1.6em;
+  }
+  .tea-theme .tea-answer h2 {
+    font-size: 1.35em;
+  }
+  .tea-theme .tea-answer h3 {
+    font-size: 1.15em;
+  }
+  .tea-theme .tea-answer [data-streamdown="code-block"] pre {
+    padding-inline: 12px 40px;
+    font-size: 12px;
+  }
+  .tea-theme .tea-answer :is(th, td) {
+    padding-inline: 12px;
+  }
+}

@@ -120,6 +120,156 @@ async function send(text = "准备哪些资料？") {
   return input;
 }
 
+it("streams a Vercel choice prompt, enables it after persistence and sends the selection in the same conversation", async () => {
+  const stream = transport();
+  render(<StageChat {...props} conversationId="choices" />);
+  const input = await send("帮我确认出口安排");
+  await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(2));
+  const step = {
+    id: "agent",
+    label: "智能工具协作",
+    detail: "",
+    status: "completed",
+    run_id: "run",
+    sequence: 1,
+    question_request: {
+      id: "choice-request",
+      questions: [
+        {
+          question: "准备出口到哪里？",
+          options: [
+            { label: "新加坡", description: "" },
+            { label: "印尼", description: "" },
+          ],
+          multiple: false,
+        },
+      ],
+    },
+  };
+  await act(async () => {
+    stream.event("step", step);
+    stream.event("delta", { text: "先确认一下目的地。" });
+  });
+  const option = await screen.findByRole<HTMLButtonElement>("radio", {
+    name: "新加坡",
+  });
+  expect(option.disabled).toBe(true);
+  const messages = [
+    {
+      id: "user-choice",
+      role: "user",
+      content: "帮我确认出口安排",
+      stage_id: "stage",
+      task_id: null,
+      created_at: "2026-11-01T00:00:00Z",
+      citations: [],
+      trace: [],
+    },
+    {
+      id: "assistant-choice",
+      role: "assistant",
+      content: "先确认一下目的地。",
+      stage_id: "stage",
+      task_id: null,
+      created_at: "2026-11-01T00:00:01Z",
+      citations: [],
+      trace: [step],
+    },
+  ];
+  await act(async () => {
+    stream.event("done", { messages, case: record });
+    stream.close();
+  });
+  await waitFor(() =>
+    expect(
+      screen.getByRole<HTMLButtonElement>("radio", { name: "新加坡" }).disabled,
+    ).toBe(false),
+  );
+  fireEvent.change(input, { target: { value: "尚未发送的补充内容" } });
+  fireEvent.click(screen.getByRole("radio", { name: "新加坡" }));
+  fireEvent.click(screen.getByRole("button", { name: "发送回答" }));
+  await waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(3));
+  const body = stream.fetcher.mock.calls[2]?.[1]?.body;
+  if (typeof body !== "string") throw new Error("Expected a JSON request body");
+  const request = JSON.parse(body);
+  expect(request.content).toBe("1、准备出口到哪里？\n新加坡");
+  expect(request.conversation_id).toBe("choices");
+  expect(request.stage_id).toBe("stage");
+  expect(request.client_message_id).toBeTruthy();
+  expect(request.content).not.toContain("choice-request");
+  expect(input.value).toBe("尚未发送的补充内容");
+  expect(screen.queryByRole("radio")).toBeNull();
+  await act(async () => {
+    stream.event("error", { code: "timeout", message: "暂时超时，请重试" });
+    stream.close();
+  });
+  expect(await screen.findByText("暂时超时，请重试")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "重试回复" })).toBeTruthy();
+});
+
+it("restores a saved unanswered question as interactive and keeps earlier questions read-only", async () => {
+  const request = {
+    id: "saved-request",
+    questions: [
+      {
+        question: "目的地？",
+        options: [
+          { label: "新加坡", description: "" },
+          { label: "印尼", description: "" },
+        ],
+        multiple: false,
+      },
+    ],
+  };
+  const message = {
+    id: "saved",
+    role: "assistant",
+    content: "请先确认。",
+    stage_id: "stage",
+    task_id: null,
+    created_at: "2026-11-01T00:00:01Z",
+    citations: [],
+    trace: [
+      {
+        id: "agent",
+        label: "",
+        status: "completed",
+        detail: "",
+        question_request: request,
+      },
+    ],
+  };
+  const fetcher = rs
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(Response.json({ items: [message], total: 1 }));
+  const view = render(<StageChat {...props} conversationId="saved-choice" />);
+  expect(
+    (await screen.findByRole<HTMLButtonElement>("radio", { name: "新加坡" }))
+      .disabled,
+  ).toBe(false);
+  view.unmount();
+  fetcher.mockResolvedValue(
+    Response.json({
+      items: [
+        message,
+        {
+          ...message,
+          id: "later",
+          role: "user",
+          content: "之后的回复",
+          trace: [],
+          created_at: "2026-11-01T00:00:02Z",
+        },
+      ],
+      total: 2,
+    }),
+  );
+  render(<StageChat {...props} conversationId="another-conversation" />);
+  expect(await screen.findByText("查看此前的问题")).toBeTruthy();
+  expect(screen.queryByRole("radio")).toBeNull();
+  expect(screen.queryByRole("button", { name: "发送回答" })).toBeNull();
+});
+
 describe("stage chat experience", () => {
   it("keeps commentary across model rounds and streams summary deltas in the active progress row", async () => {
     const stream = transport();

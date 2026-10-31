@@ -1,0 +1,233 @@
+{
+  "bootstrap": {
+    "user": {
+      "id": "browser-user",
+      "name": "体验用户",
+      "email": null,
+      "is_demo": true,
+      "can_login": true,
+      "is_admin": false
+    },
+    "templates": [
+      {
+        "id": "test-minimal-workflow",
+        "version": 1,
+        "title": "中国 → 印度尼西亚 · 茶叶出口准备",
+        "description": "用于演示资料准备与核验协作。主体、任务和模式均可配置；此模板不代表实际法定出口手续。",
+        "origin": "中国",
+        "destination": "印度尼西亚",
+        "is_demo": true,
+        "modes": [
+          {
+            "id": "mode-a",
+            "name": "模式 A（待配置）",
+            "description": "业务规则由法务同学后续配置。",
+            "enabled": true
+          }
+        ],
+        "stages": [
+          {
+            "id": "business_materials",
+            "name": "业务资料",
+            "actor": "企业",
+            "description": "明确本批次产品与企业信息，建立可复用的业务档案。",
+            "tasks": [],
+            "analysis": null
+          }
+        ],
+        "agent": {
+          "language": "简体中文",
+          "instructions": "围绕当前任务给出可执行指导；区分用户陈述、已核验资料和法规依据。缺少原文依据时明确说明，不补造法条。",
+          "retrieval_limit": 5,
+          "steps": [
+            {
+              "id": "retrieve",
+              "type": "retrieve",
+              "label": "查找相关资料",
+              "enabled": true,
+              "instructions": ""
+            },
+            {
+              "id": "check",
+              "type": "check",
+              "label": "检查缺项与冲突",
+              "enabled": true,
+              "instructions": ""
+            },
+            {
+              "id": "guide",
+              "type": "guide",
+              "label": "生成办理指导",
+              "enabled": true,
+              "instructions": ""
+            },
+            {
+              "id": "draft",
+              "type": "draft",
+              "label": "整理文稿",
+              "enabled": true,
+              "instructions": ""
+            },
+            {
+              "id": "verify",
+              "type": "verify",
+              "label": "核验完成条件",
+              "enabled": true,
+              "instructions": ""
+            }
+          ],
+          "legal": null
+        }
+      }
+    ],
+    "cases": [
+      {
+        "id": "browser-case",
+        "title": "中国 → 印度尼西亚 · 茶叶出口准备",
+        "company": "",
+        "product": "六堡茶",
+        "mode_id": "mode-a",
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-01T00:00:00Z",
+        "template_version": 1,
+        "completed_tasks": 0,
+        "total_tasks": 0,
+        "current_stage_id": "business_materials"
+      }
+    ],
+    "capabilities": {
+      "assistant_mode": "live",
+      "retrieval_mode": "unavailable",
+      "parser": "mineru"
+    },
+    "admin_setup_required": true
+  },
+  "case": {
+    "id": "browser-case",
+    "title": "中国 → 印度尼西亚 · 茶叶出口准备",
+    "company": "",
+    "product": "六堡茶",
+    "mode_id": "mode-a",
+    "revision": 1,
+    "created_at": "2026-11-01T00:00:00Z",
+    "updated_at": "2026-11-01T00:00:00Z",
+    "template_version": 1,
+    "template": {
+      "id": "test-minimal-workflow",
+      "version": 1,
+      "title": "中国 → 印度尼西亚 · 茶叶出口准备",
+      "description": "用于演示资料准备与核验协作。主体、任务和模式均可配置；此模板不代表实际法定出口手续。",
+      "origin": "中国",
+      "destination": "印度尼西亚",
+      "is_demo": true,
+      "modes": [
+        {
+          "id": "mode-a",
+          "name": "模式 A（待配置）",
+          "description": "业务规则由法务同学后续配置。",
+          "enabled": true
+        }
+      ],
+      "stages": [
+        {
+          "id": "business_materials",
+          "name": "业务资料",
+          "actor": "企业",
+          "description": "明确本批次产品与企业信息，建立可复用的业务档案。",
+          "tasks": [],
+          "analysis": null
+        }
+      ],
+      "agent": {
+        "language": "简体中文",
+        "instructions": "围绕当前任务给出可执行指导；区分用户陈述、已核验资料和法规依据。缺少原文依据时明确说明，不补造法条。",
+        "retrieval_limit": 5,
+        "steps": [
+          {
+            "id": "retrieve",
+            "type": "retrieve",
+            "label": "查找相关资料",
+            "enabled": true,
+            "instructions": ""
+          },
+          {
+            "id": "check",
+            "type": "check",
+            "label": "检查缺项与冲突",
+            "enabled": true,
+            "instructions": ""
+          },
+          {
+            "id": "guide",
+            "type": "guide",
+            "label": "生成办理指导",
+            "enabled": true,
+            "instructions": ""
+          },
+          {
+            "id": "draft",
+            "type": "draft",
+            "label": "整理文稿",
+            "enabled": true,
+            "instructions": ""
+          },
+          {
+            "id": "verify",
+            "type": "verify",
+            "label": "核验完成条件",
+            "enabled": true,
+            "instructions": ""
+          }
+        ],
+        "legal": null
+      }
+    },
+    "stages": [
+      {
+        "id": "business_materials",
+        "name": "业务资料",
+        "actor": "企业",
+        "description": "明确本批次产品与企业信息，建立可复用的业务档案。",
+        "tasks": [],
+        "analysis": null,
+        "status": "active"
+      }
+    ],
+    "facts": [],
+    "documents": [],
+    "artifacts": [],
+    "events": [],
+    "completed_tasks": 0,
+    "total_tasks": 0,
+    "current_stage_id": "business_materials"
+  },
+  "guide": {
+    "id": "browser-conversation",
+    "case_id": "browser-case",
+    "stage_id": "business_materials",
+    "title": "节点引导",
+    "client_id": "guide:business_materials",
+    "created_at": "2026-11-01T00:00:00Z",
+    "updated_at": "2026-11-01T00:00:00Z",
+    "kind": "guide"
+  },
+  "conversations": {
+    "items": [
+      {
+        "id": "browser-conversation",
+        "case_id": "browser-case",
+        "stage_id": "business_materials",
+        "title": "节点引导",
+        "client_id": "guide:business_materials",
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-01T00:00:00Z",
+        "kind": "guide"
+      }
+    ],
+    "total": 1
+  },
+  "messages": {
+    "items": [],
+    "total": 0
+  }
+}

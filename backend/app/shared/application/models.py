@@ -15,6 +15,9 @@ from app.contexts.conversations.application.contracts import ConversationCreate 
 from app.contexts.conversations.application.contracts import GuideRetry as GuideRetry
 from app.contexts.conversations.application.contracts import MessageInput as MessageInput
 from app.contexts.conversations.application.contracts import MessageStreamEvent as MessageStreamEvent
+from app.contexts.conversations.application.contracts import QuestionRequest as QuestionRequest
+from app.contexts.conversations.application.contracts import ChoiceQuestion as ChoiceQuestion
+from app.contexts.conversations.application.contracts import QuestionOption as QuestionOption
 from app.contexts.conversations.application.contracts import ToolCallSnapshot as ToolCallSnapshot
 from app.contexts.conversations.application.contracts import ToolOutputPreview as ToolOutputPreview
 from app.contexts.conversations.application.contracts import ToolOutputItem as ToolOutputItem

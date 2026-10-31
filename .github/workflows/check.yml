@@ -27,7 +27,13 @@ jobs:
         working-directory: frontend
       - run: pnpm typecheck
         working-directory: frontend
-      - run: pnpm exec rstest run tests/unit/core/tea/api.test.ts tests/unit/components/tea/draft-safety.dom.test.tsx
+      - run: >-
+          pnpm exec rstest run
+          tests/unit/core/tea/api.test.ts
+          tests/unit/core/tea/questions.test.ts
+          tests/unit/components/tea/draft-safety.dom.test.tsx
+          tests/unit/components/tea/choice-question.dom.test.tsx
+          tests/unit/components/tea/stage-chat.dom.test.tsx
         working-directory: frontend
       - run: pnpm build
         working-directory: frontend

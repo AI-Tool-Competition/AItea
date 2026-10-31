@@ -10,10 +10,16 @@ from types import SimpleNamespace
 
 import pytest
 from app.contexts.conversations.application import agent_loop
-from app.contexts.conversations.application.agent_tools import AgentTools, LawReadInput, LegalSearchInput
+from app.contexts.conversations.application.agent_tools import (
+    AgentTools,
+    AskUserInput,
+    LawReadInput,
+    LegalSearchInput,
+)
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_loop import compact_messages
-from app.contexts.conversations.application.contracts import MessageStreamEvent
+from app.contexts.conversations.application.contracts import MessageStreamEvent, QuestionRequest
+from app.contexts.conversations.application.question_requests import question_history_text
 from app.contexts.conversations.application.document_delivery import file_delivery_request
 from app.contexts.conversations.application.agent_skills import (
     SKILLS,
@@ -132,6 +138,122 @@ def test_read_law_requires_exactly_one_source(values):
 def legal_tools(workspace, check=lambda: None):
     _, service, owner, case, payload = workspace
     return AgentTools(service, owner, case, case["stages"][0], payload, {}, "tool-test", check)
+
+
+def question_input():
+    return {
+        "intro": "先确认目的地，便于继续核对办理要求。",
+        "questions": [
+            {
+                "question": "这批茶计划出口到哪里？",
+                "options": [
+                    {"label": "新加坡", "description": "由当地进口商清关"},
+                    {"label": "印度尼西亚", "description": "进口方尚待确认"},
+                ],
+                "multiple": False,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspace, monkeypatch, stream):
+    seen = []
+    scenario(
+        monkeypatch,
+        [tools(("ask_user", question_input()), ("web_search", {"query": "should never execute"}))],
+        seen,
+    )
+    response = send(workspace, stream=stream)
+    assert response.status_code == 200
+    if stream:
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        done = next(event for event in events if "messages" in event)
+    else:
+        done = response.json()
+    assistant = done["messages"][-1]
+    trace = next(step for step in assistant["trace"] if step["id"] == "agent")
+    request = QuestionRequest.model_validate(trace["question_request"])
+    assert request.questions[0].question == question_input()["questions"][0]["question"]
+    assert len(seen) == 1  # no model round to restate a prepared question
+    assert [call["call_id"] for call in last_run(workspace)["_task_state"]["calls"]] == ["call_ask_user_0"]
+    assert assistant["content"] == question_input()["intro"]
+    assert not any(
+        task["status"] == "completed" for stage in done["case"]["stages"] for task in stage["tasks"]
+    )
+    replay = send(workspace).json()
+    assert replay["messages"][-1]["trace"] == assistant["trace"]
+    assert len(seen) == 1
+    client, service, owner, case, payload = workspace
+    saved = client.get(
+        f"/api/tea/cases/{case['id']}/messages",
+        params={"stage_id": payload["stage_id"], "conversation_id": payload["conversation_id"]},
+    ).json()
+    assert saved["items"][-1]["trace"] == assistant["trace"]
+    history = service.agent_memory.model_history(
+        owner, case["id"], payload["stage_id"], payload["conversation_id"]
+    )
+    assert "新加坡：由当地进口商清关" in history[-1]["content"]
+    assert "（单选）" in history[-1]["content"]
+    assert request.id not in json.dumps(history, ensure_ascii=False)
+    assert "工具" not in history[-1]["content"]
+    followup = []
+    scenario(monkeypatch, ["已了解目的地，接下来核对进口主体。"], followup)
+    assert send(workspace, {**payload, "content": "新加坡", "client_message_id": "turn-2"}).status_code == 200
+    assert any("这批茶计划出口到哪里？" in str(message["content"]) for message in followup[0][0])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"options": [{"label": "只有一项"}]},
+        {"multiple": "true"},
+        {"question": "  "},
+        {"options": [{"label": "重复"}, {"label": "重复"}]},
+        {"options": [{"label": "A"}, {"label": "a"}]},
+        {"extra": "not accepted"},
+    ],
+)
+def test_question_tool_rejects_ambiguous_or_malformed_choices(change):
+    value = question_input()
+    value["questions"][0].update(change)
+    with pytest.raises(ValidationError):
+        AskUserInput.model_validate(value)
+
+
+def test_question_request_byte_budget_and_corrupt_history_are_bounded():
+    question = {
+        "question": "确认情况",
+        "options": [{"label": str(i), "description": "茶" * 300} for i in range(6)],
+        "multiple": True,
+    }
+    with pytest.raises(ValidationError, match="16000"):
+        QuestionRequest(id="bounded", questions=[question] * 3)
+    assert question_history_text('{"id":"broken","questions":[]}') == ""
+    assert question_history_text("x" * 16001) == ""
+    assert question_history_text(None) == ""
+
+
+def test_invalid_question_tool_can_be_corrected_without_publishing_a_question(workspace, monkeypatch):
+    invalid = question_input()
+    invalid["questions"][0]["options"] = [{"label": "一项"}]
+    scenario(monkeypatch, [tools(("ask_user", invalid)), "请补充这批货的出口目的地。"])
+    response = send(workspace)
+    assert response.status_code == 200
+    assert all("question_request" not in step for step in response.json()["messages"][-1]["trace"])
+
+
+def test_clarification_for_a_file_request_does_not_claim_a_failed_file_delivery(workspace, monkeypatch):
+    scenario(monkeypatch, [tools(("ask_user", question_input()))])
+    response = send(workspace, {**workspace[4], "content": "帮我生成出口合同Word，先问我目的地"})
+    assert response.status_code == 200
+    assistant = response.json()["messages"][-1]
+    assert assistant["content"] == question_input()["intro"]
+    assert assistant["trace"][0]["delivery_status"] == "answered"
 
 
 @pytest.mark.parametrize("both_formats", [False, True])

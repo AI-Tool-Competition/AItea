@@ -11,6 +11,7 @@ import {
   readChatHistory,
 } from "./chat-cache";
 import { clearNodeAnalyses } from "./node-analysis";
+import { clearQuestionDrafts } from "./questions";
 import { createStreamPublisher } from "./stream-publisher";
 import { mergeToolDelta, mergeTraceStep, settleTraceSteps } from "./trace";
 import type {
@@ -40,6 +41,7 @@ const controllers = new Set<AbortController>();
 export function clearChatDrafts() {
   clearChatHistory();
   clearNodeAnalyses();
+  clearQuestionDrafts();
   for (const controller of controllers) controller.abort();
   controllers.clear();
   drafts.clear();
@@ -338,8 +340,15 @@ export function useStageChat({
   }
   function send(taskId: string, suppliedContent?: string) {
     const content = (suppliedContent ?? text).trim();
-    if (!content || active.current || loading || historyError) return;
-    edit("");
+    if (
+      !content ||
+      active.current ||
+      loading ||
+      historyError ||
+      drafts.get(scope) !== draft
+    )
+      return false;
+    if (suppliedContent === undefined) edit("");
     void submit({
       stage_id: stageId,
       ...(taskId ? { task_id: taskId } : {}),
@@ -347,6 +356,7 @@ export function useStageChat({
       content,
       client_message_id: crypto.randomUUID(),
     });
+    return true;
   }
   async function loadEarlier() {
     if (moreBusy || active.current) return;

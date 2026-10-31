@@ -26,12 +26,13 @@ from app.contexts.conversations.application.agent_skills import (
     skill_catalog,
 )
 from app.contexts.conversations.application.document_delivery import file_delivery_request
+from app.contexts.conversations.application.contracts import ChoiceQuestion, QuestionRequest
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolInput, ToolSpec
 from app.contexts.conversations.infrastructure.agent_transport import gateway_tool
 from app.shared.domain.countries import resolve_country
 from app.shared.domain.errors import AppError, fail
 from app.shared.domain.models import StrictModel
-from app.shared.domain.values import now
+from app.shared.domain.values import now, uid
 
 
 class EmptyInput(ToolInput):
@@ -372,6 +373,26 @@ class PlanInput(ToolInput):
     current: int = Field(ge=0, le=8)
 
 
+class AskUserInput(ToolInput):
+    intro: str = Field(
+        min_length=1,
+        max_length=600,
+        description="一两句面向用户的说明，不重复列出问题、选项，不写内部调度或思考。",
+    )
+    questions: list[ChoiceQuestion] = Field(
+        min_length=1,
+        max_length=3,
+        description="只问影响下一步的未知信息；每题2至6个选项，multiple=true可多选。界面自动支持其他回答，不必另列其他选项。",
+    )
+
+    @field_validator("intro")
+    @classmethod
+    def nonblank_intro(cls, value):
+        if not value.strip():
+            raise ValueError("请提供简短的提问说明")
+        return value.strip()
+
+
 class ReceiptInput(ToolInput):
     call_id: str = Field(min_length=1, max_length=100)
     offset: int = Field(default=0, ge=0, le=240000)
@@ -439,6 +460,15 @@ class AgentTools:
         self.pending_files = []
         self.inspected_files = set()
         definitions = [
+            (
+                "ask_user",
+                "确认关键信息",
+                "用可点击的单选或多选问题向用户确认关键事实或偏好。已有信息不重复询问；问题和选项由界面展示，不在intro重复。调用后本轮暂停，用户回答后在当前会话继续；不得假定选项已被用户选择。",
+                AskUserInput,
+                self.ask_user,
+                False,
+                10,
+            ),
             (
                 "read_contract_template",
                 "读取茶叶合同模板",
@@ -692,6 +722,12 @@ class AgentTools:
             for name, label, description, model, handler, safe, timeout in definitions
         }
         capabilities = {
+            "ask_user": (
+                "operations",
+                "当前缺少会影响下一步的事实或偏好，且适合通过选项或自由回答确认。",
+                "保存1至3个真实问题后结束本轮，等待用户回答；不替用户作答或改变任务状态。",
+                "local",
+            ),
             "guide_business": (
                 "operations",
                 "用户要求查看当前工作台节点、填写现有任务或核对办理进度；一般经营咨询无需读取。",
@@ -750,6 +786,11 @@ class AgentTools:
                 ),
                 tool.handler,
             )
+
+    def ask_user(self, args, attempt):
+        attempt.check()
+        request = QuestionRequest(id=uid(), questions=args.questions)
+        return {"intro": args.intro, "question_request": request.model_dump()}
 
     def current(self):
         with closing(self.service.db.connect()) as conn:

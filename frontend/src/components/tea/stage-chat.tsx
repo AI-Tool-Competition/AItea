@@ -1,5 +1,7 @@
 "use client";
 
+import "./message-markdown.css";
+
 import {
   ArrowUp,
   BookOpen,
@@ -22,6 +24,7 @@ import {
 } from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
 import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
+import { messageQuestion } from "@/core/tea/questions";
 import type {
   Capabilities,
   CaseDetail,
@@ -32,6 +35,7 @@ import type {
 import { type ChatTurn, useStageChat } from "@/core/tea/use-stage-chat";
 import { teaResourceUrl } from "@/tea-paths";
 
+import { ChoiceQuestions } from "./choice-question";
 import { LegalResultView } from "./legal-result";
 import { CitationCard } from "./library";
 import { Busy, dateLabel, ErrorNotice } from "./shared";
@@ -52,6 +56,7 @@ const Answer = memo(function Answer({
   return (
     <ClipboardSafeStreamdown
       {...streamdownPluginsWithoutRawHtml}
+      className="tea-answer"
       mode={streaming ? "streaming" : "static"}
       isAnimating={streaming}
       animated={false}
@@ -60,6 +65,9 @@ const Answer = memo(function Answer({
       urlTransform={answerUrlTransform}
       aria-busy={streaming}
       parseIncompleteMarkdown={streaming}
+      lineNumbers={false}
+      controls={{ code: { copy: true, download: false }, table: false }}
+      translations={{ copyCode: "复制代码", copied: "已复制" }}
     >
       {content}
     </ClipboardSafeStreamdown>
@@ -74,14 +82,24 @@ const ChatMessage = memo(function ChatMessage({
   turn,
   busy = false,
   onRetry,
+  questionScope,
+  questionActive = false,
+  onAnswer,
 }: {
   role: Message["role"];
   message?: Message;
   turn?: ChatTurn;
   busy?: boolean;
   onRetry?: () => void;
+  questionScope?: string;
+  questionActive?: boolean;
+  onAnswer?: (content: string) => boolean;
 }) {
   const sending = turn?.state === "sending";
+  const question =
+    role === "assistant"
+      ? messageQuestion(message?.trace ?? turn?.steps ?? emptyTrace)
+      : undefined;
   const delivery = (message?.trace ?? turn?.steps ?? emptyTrace).find(
     (step) => step.delivery_status,
   )?.delivery_status;
@@ -155,6 +173,16 @@ const ChatMessage = memo(function ChatMessage({
             <Answer content={content} streaming={sending} />
           ) : null}
         </div>
+        {question && questionScope && (
+          <ChoiceQuestions
+            key={`${questionScope}:${question.id}`}
+            request={question}
+            scope={`${questionScope}:${question.id}`}
+            historical={!!message && !questionActive}
+            disabled={busy || !message}
+            onAnswer={onAnswer}
+          />
+        )}
         {!!message?.citations?.length && (
           <details className="tea-message-citations">
             <summary>
@@ -224,6 +252,12 @@ export function StageChat({
     conversationId,
     onUpdate,
   });
+  const questionScope = JSON.stringify([
+    accountId,
+    record.id,
+    stage.id,
+    conversationId ?? null,
+  ]);
   const input = useRef<HTMLTextAreaElement>(null);
   const conversation = useRef<StickToBottomContext>(null);
   const followMessages = useRef(true);
@@ -287,6 +321,12 @@ export function StageChat({
                     role={entry.message.role}
                     message={entry.message}
                     busy={chat.sending || chat.loading || !!chat.historyError}
+                    questionScope={questionScope}
+                    questionActive={
+                      entry.message.id === chat.messages.at(-1)?.id &&
+                      chat.turns.length === 0
+                    }
+                    onAnswer={(content) => chat.send(taskId, content)}
                     onRetry={
                       chat.messages[
                         chat.messages.findIndex(
@@ -308,6 +348,7 @@ export function StageChat({
                       key={`${entry.turn.request.client_message_id}:assistant`}
                       role="assistant"
                       turn={entry.turn}
+                      questionScope={questionScope}
                       busy={chat.sending || chat.loading || !!chat.historyError}
                       onRetry={() => chat.retry(entry.turn)}
                     />,

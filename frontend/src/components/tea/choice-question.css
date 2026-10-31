@@ -1,0 +1,106 @@
+.tea-theme .tea-question-form {
+  display: grid;
+  gap: 12px;
+  max-width: 600px;
+  margin-block: 18px 8px;
+  box-shadow: none;
+}
+.tea-theme .tea-question-form > * {
+  margin: 0;
+}
+.tea-question-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.tea-theme .tea-question-heading p {
+  font-size: 15px;
+  line-height: 1.7;
+}
+.tea-question-heading > span {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.tea-question-form > p {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.tea-theme .tea-question-options {
+  display: grid;
+  gap: 4px;
+}
+.tea-theme .tea-question-option {
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  text-align: start;
+  font-weight: 400;
+  line-height: 1.6;
+  box-shadow: none;
+  overflow-wrap: anywhere;
+}
+.tea-theme .tea-question-option:hover {
+  background: var(--accent);
+}
+.tea-theme .tea-question-option[aria-checked="true"] {
+  border-color: var(--border);
+  background: var(--accent);
+}
+.tea-question-mark {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 22px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.tea-question-option[aria-checked="true"] .tea-question-mark {
+  color: var(--foreground);
+}
+.tea-question-label,
+.tea-question-description {
+  display: block;
+}
+.tea-question-label {
+  font-size: 14px;
+}
+.tea-question-description {
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.tea-theme .tea-question-input {
+  min-height: 66px;
+  max-height: 180px;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.7;
+  box-shadow: none;
+}
+.tea-theme .tea-question-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+.tea-question-history {
+  margin-block: 12px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.tea-question-history > div {
+  margin-top: 12px;
+}
+.tea-question-history ul {
+  list-style: disc;
+  padding-left: 1.5em;
+  margin-block: 6px 12px;
+}

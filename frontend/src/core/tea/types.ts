@@ -279,7 +279,21 @@ export interface ToolCall {
   error_code?: string;
   output_preview?: ToolOutputPreview | null;
 }
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+export interface ChoiceQuestion {
+  question: string;
+  options: QuestionOption[];
+  multiple: boolean;
+}
+export interface QuestionRequest {
+  id: string;
+  questions: ChoiceQuestion[];
+}
 export interface TraceStep {
+  question_request?: QuestionRequest;
   delivery_status?:
     | "answered"
     | "partially_answered"

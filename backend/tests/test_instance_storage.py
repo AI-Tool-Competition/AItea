@@ -3,6 +3,7 @@
 import json
 import io
 import hashlib
+import os
 import sqlite3
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from app.contexts.documents.infrastructure.providers.embedding_admission import 
 from app.shared.infrastructure.operations.data_backup import DataBackupError, verify_backup
 from app.shared.infrastructure.operations.instance_storage import (
     _fleet_digest,
+    _linux_instance_files_open,
     adopt_instance,
     backup_instance,
     require_stopped,
@@ -114,6 +116,23 @@ def test_open_instance_files_block_offline_operations(tmp_path):
         process.terminate()
         process.wait(timeout=5)
     require_stopped(paths)
+
+
+def test_linux_scan_recognizes_deleted_file_paths_and_ignores_kernel_handles(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    proc = tmp_path / "proc"
+    descriptors = proc / str(os.getpid() + 1) / "fd"
+    descriptors.mkdir(parents=True)
+    (descriptors / "0").symlink_to("socket:[12345]")
+    (descriptors / "1").symlink_to("anon_inode:[eventpoll]")
+    (descriptors / "2").symlink_to(tmp_path / "unrelated-mount/missing")
+    (descriptors / "4").symlink_to(tmp_path / "data-other/tea.sqlite3")
+    assert not _linux_instance_files_open(data, proc)
+    # An open, unlinked database is still an active instance descriptor. No
+    # lookup of this nonexistent target or an unrelated mount is necessary.
+    (descriptors / "3").symlink_to(data / "tea.sqlite3 (deleted)")
+    assert _linux_instance_files_open(data, proc)
 
 
 def instance(populated, tmp_path, catalog_name="config"):

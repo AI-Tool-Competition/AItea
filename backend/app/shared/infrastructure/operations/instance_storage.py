@@ -106,18 +106,37 @@ def require_stopped(paths):
         except (OSError, ValueError) as error:
             raise DataBackupError("instance_file_ownership_unavailable") from error
         return
-    for process in Path("/proc").iterdir():
+    if _linux_instance_files_open(paths.data):
+        raise DataBackupError("instance_files_are_open")
+
+
+def _linux_instance_files_open(data, proc_root=Path("/proc")):
+    """Read kernel FD paths without traversing unrelated mounted filesystems.
+
+    /proc/PID/fd already reports the resolved file path (also for deleted files).
+    Path.resolve on every FD can traverse slow user mounts for unrelated apps,
+    letting a writer exit before the scan ever reaches its descriptor.
+    """
+    base = os.fspath(data)
+    prefix = base.rstrip("/") + "/"
+    for process in proc_root.iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
         try:
             if process.stat().st_uid != os.getuid():
                 continue
-            for fd in (process / "fd").iterdir():
-                target = fd.resolve()
-                if target.is_relative_to(paths.data):
-                    raise DataBackupError("instance_files_are_open")
+            with os.scandir(process / "fd") as descriptors:
+                for fd in descriptors:
+                    try:
+                        target = os.readlink(fd.path)
+                    except (FileNotFoundError, PermissionError, ProcessLookupError):
+                        # A descriptor closing does not hide this process's others.
+                        continue
+                    if target == base or target.startswith(prefix):
+                        return True
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
+    return False
 
 
 def adopt_instance(paths):

@@ -332,7 +332,7 @@ def preflight(values, *, root=ROOT, run=subprocess.run, env=None):
             "--rm",
             "--no-healthcheck",
             "--network",
-            "none",
+            "host" if values.get("TEA_DOCKER_ENGINE", "standard") == "gvisor" else "none",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges:true",

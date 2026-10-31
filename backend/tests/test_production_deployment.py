@@ -179,6 +179,24 @@ def test_production_anonymous_access_requires_explicit_opt_in(tmp_path, monkeypa
             assert client.get("/api/tea/auth/me").status_code == 401
 
 
+def test_switch_to_production_rejects_old_demo_cookie_but_keeps_account_login(tmp_path, monkeypatch):
+    from app.contexts.accounts.application.auth import Auth
+
+    monkeypatch.setenv("TEA_ENV", "development")
+    monkeypatch.setenv("TEA_COOKIE_SECURE", "false")
+    monkeypatch.delenv("TEA_ALLOW_DEMO", raising=False)
+    with TestClient(create_app(tmp_path / "store")) as client:
+        Auth(client.app.state.service).ensure_default_admin()
+        assert client.post("/api/tea/auth/demo").status_code == 200
+        assert client.get("/api/tea/cases").status_code == 200
+        monkeypatch.setenv("TEA_ENV", "production")
+        assert client.get("/api/tea/auth/me").status_code == 401
+        assert client.get("/api/tea/cases").status_code == 401
+        response = client.post("/api/tea/auth/login", json={"email": "admin", "password": "admin123"})
+        assert response.status_code == 200
+        assert client.get("/api/tea/auth/me").json()["is_admin"] is True
+
+
 @pytest.mark.parametrize("failure", ["wrong_host", "timeout", "permission"])
 def test_failed_remote_mount_stops_before_start_and_cleans_probe(instance, failure, monkeypatch):
     monkeypatch.setattr(production, "docker_environment", lambda *args: {})
@@ -204,6 +222,27 @@ def test_failed_remote_mount_stops_before_start_and_cleans_probe(instance, failu
     assert not list((instance / ".runtime").glob(".production-mount-*"))
     with sqlite3.connect(instance / "tea.sqlite3") as conn:
         assert conn.execute("SELECT id FROM original_documents").fetchone()[0] == "kept"
+
+
+def test_single_uid_mount_probe_uses_supported_network_and_preserves_read_only_mounts(instance):
+    values = {
+        "TEA_INSTANCE_DATA": str(instance),
+        "TEA_INSTANCE_CONFIG": str(instance / "config/catalogs"),
+        "TEA_UID": "0",
+        "TEA_GID": "0",
+        "TEA_IMAGE_TAG": "candidate",
+        "TEA_DOCKER_ENGINE": "gvisor",
+    }
+
+    def run(command, **kwargs):
+        assert command[command.index("--network") + 1] == "host"
+        assert "--read-only" in command and "--cap-drop=ALL" in command
+        mounts = [command[i + 1] for i, value in enumerate(command) if value == "--mount"]
+        assert len(mounts) == 2 and all(value.endswith(",readonly") for value in mounts)
+        return SimpleNamespace(returncode=0)
+
+    production.preflight(values, run=run, env={})
+    assert not list((instance / ".runtime").glob(".production-mount-*"))
 
 
 def test_mount_probe_requires_same_live_host_token(instance, tmp_path):

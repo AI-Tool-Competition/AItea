@@ -19,6 +19,11 @@ DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin123"
 
 
+def demo_enabled():
+    default = "false" if os.getenv("TEA_ENV") == "production" else "true"
+    return os.getenv("TEA_ALLOW_DEMO", default).lower() == "true"
+
+
 def user_dict(row):
     keys = row.keys()
     return {
@@ -101,6 +106,8 @@ class Auth:
                     WHERE sessions.token_hash=? AND sessions.expires_at>?""",
                 (token_hash, now()),
             ).fetchone()
+            if row and row["is_demo"] and not demo_enabled():
+                return None
             return user_dict(row) if row and row["id"] != SYSTEM_OWNER_ID and row["can_login"] else None
 
     def throttle(self, ip):
@@ -133,8 +140,7 @@ class Auth:
         return token
 
     def demo(self, token):
-        default = "false" if os.getenv("TEA_ENV") == "production" else "true"
-        if os.getenv("TEA_ALLOW_DEMO", default).lower() != "true":
+        if not demo_enabled():
             fail(403, "demo_disabled", "请使用已开放的账号登录；生产环境未开放匿名演示。")
         current = self.current(token)
         if current:

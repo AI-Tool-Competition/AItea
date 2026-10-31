@@ -40,6 +40,8 @@ DOCKER_CONTEXT=wenbo-host make production-up
 
 切换前停止同一工作树的开发服务。已有 RAGFlow 和独立采集服务继续运行在本机，Docker host 网络使容器仍能访问它们的回环入口。不要为部署重建资料库或批量重置外部请求。
 
+已有用户权限 RAGFlow 的开机启动模板是 [aitea-ragflow.service](../deploy/aitea-ragflow.service)，替换 `@ROOT@` 和 `@UV@` 后启用。它复用现有进程身份、配置和数据，并等待依赖就绪；不复制资料，不重新生成凭据。生产中的启停用该用户服务管理，状态仍可用 `make ragflow-status` 检查；服务处于 active 不代表已经完成长期检索质量或崩溃恢复验收。
+
 ## 闲鱼、GPU 与旧虚拟机
 
 闲鱼后台迁至本机 Python 服务 `xianyu-native.service`，使用其项目 `var/native/state/` 中的迁移数据。GPU 的正式后端是独立的本机 gVisor/JupyterHub，保留原有用户、存储和后台服务；它不经过本 Docker 引擎，也不要求给 AItea 容器开放 GPU。

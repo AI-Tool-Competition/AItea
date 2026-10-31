@@ -1,0 +1,22 @@
+[Unit]
+Description=AItea existing RAGFlow stack on the local host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=@ROOT@
+Environment=UV_PROJECT_ENVIRONMENT=@ROOT@/backend/.venv
+Environment=UV_CACHE_DIR=@ROOT@/.dev/uv-cache
+Environment=UV_PYTHON_INSTALL_DIR=@ROOT@/.dev/python
+ExecStart=@UV@ run --project @ROOT@/backend --locked python @ROOT@/scripts/ragflow.py up --runtime user
+ExecStop=@UV@ run --project @ROOT@/backend --locked python @ROOT@/scripts/ragflow.py stop --runtime user
+TimeoutStartSec=300
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+TasksMax=4096
+
+[Install]
+WantedBy=default.target

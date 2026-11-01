@@ -32,6 +32,44 @@ def provider(monkeypatch, body, status=200):
     return requests
 
 
+def test_nemotron_high_keeps_named_question_choice_and_reasoning_stream(monkeypatch):
+    request_call = {
+        "index": 0,
+        "id": "question-call",
+        "type": "function",
+        "function": {"name": "ask_user", "arguments": '{"intro":"请确认","questions":[]}'},
+    }
+    requests = provider(
+        monkeypatch,
+        (
+            frame(delta({"reasoning_content": "确认本次需要的目的地信息"}))
+            + frame(delta({"tool_calls": [request_call]}, "tool_calls"))
+            + frame("[DONE]")
+        ).encode(),
+    )
+    monkeypatch.setenv("AGENT_MODEL", "Nemotron-3.5")
+    monkeypatch.setenv("AGENT_REASONING_EFFORT", "high")
+    choice = {"type": "function", "function": {"name": "ask_user"}}
+    definitions = [{"type": "function", "function": {"name": "ask_user", "parameters": {"type": "object"}}}]
+    summaries = []
+    result = asyncio.run(
+        transport.agent_turn(
+            [{"role": "user", "content": "做选择题"}],
+            definitions,
+            lambda _: None,
+            lambda: None,
+            tool_choice=choice,
+            on_summary=summaries.append,
+        )
+    )
+    body = json.loads(requests[0].content)
+    assert body["tool_choice"] == choice
+    assert body["tools"] == definitions
+    assert body["reasoning_effort"] == "high"
+    assert result["tool_calls"][0]["function"]["name"] == "ask_user"
+    assert "确认本次需要的目的地信息" in "".join(summaries)
+
+
 def test_followup_normalizes_empty_tool_calls_from_persisted_answers(monkeypatch):
     body = (frame(delta({"content": "第二次回答"}, "stop")) + frame("[DONE]")).encode()
     requests = provider(monkeypatch, body)

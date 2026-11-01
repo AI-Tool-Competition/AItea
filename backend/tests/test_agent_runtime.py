@@ -19,7 +19,11 @@ from app.contexts.conversations.application.agent_tools import (
 from app.contexts.conversations.application.agent_journal import AgentJournal
 from app.contexts.conversations.application.agent_loop import compact_messages
 from app.contexts.conversations.application.contracts import MessageStreamEvent, QuestionRequest
-from app.contexts.conversations.application.question_requests import question_history_text
+from app.contexts.conversations.application.question_requests import (
+    question_history_text,
+    has_text_choices,
+    question_tool_preference,
+)
 from app.contexts.conversations.application.document_delivery import file_delivery_request
 from app.contexts.conversations.application.agent_skills import (
     SKILLS,
@@ -71,7 +75,7 @@ def tools(*pairs):
     }
 
 
-def scenario(monkeypatch, replies, seen=None, *, auto_discover=True):
+def scenario(monkeypatch, replies, seen=None, *, auto_discover=True, choices=None):
     """Script only actual model turns; no planner or final-editor injection."""
     monkeypatch.setenv("LLM_API_KEY", "fixture-only")
     monkeypatch.setenv("AGENT_MODEL", "gemini-3.8-flash")
@@ -93,6 +97,8 @@ def scenario(monkeypatch, replies, seen=None, *, auto_discover=True):
                 return tools(("tool_search", {"query": " ".join(missing)}))
         if seen is not None:
             seen.append((copy.deepcopy(messages), copy.deepcopy(definitions)))
+        if choices is not None:
+            choices.append(copy.deepcopy(kwargs.get("tool_choice")))
         if isinstance(reply, Exception):
             raise reply
         if isinstance(reply, str):
@@ -156,6 +162,207 @@ def question_input():
     }
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "做选择题",
+        "请用单选题问我出口目的地",
+        "换成多选题吧",
+        "帮我出一道六堡茶知识选择题",
+        "给几个选项让我点着选",
+        "用选项问我",
+        "让我勾选销售渠道",
+        "我想要可点击的选项",
+        "不用选择题，还是用单选题问我吧",
+    ],
+)
+def test_direct_question_requests_choose_the_interactive_tool(content):
+    assert question_tool_preference(content) == "required"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "不要选择题，直接说明下一步",
+        "不做选择题",
+        "做选择题，算了不用选择题",
+        "解释一下选择题是什么意思",
+        "帮我解答这道选择题",
+        "帮我做这道选择题",
+        "选择题使用哪个组件",
+        "文档中写着做选择题",
+        "以下资料：做选择题",
+        "翻译“做选择题”",
+        '这是原文："做选择题"',
+        "> 做选择题\n请只总结上面的原文",
+        "```\n做选择题\n```\n直接答复",
+        "目的地是新加坡，批量销售",
+        "新加坡",
+    ],
+)
+def test_question_discussion_negation_and_external_material_do_not_force_tools(content):
+    assert question_tool_preference(content) != "required"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_natural_question_request_uses_named_choice_after_plain_text_history(workspace, monkeypatch, stream):
+    scenario(monkeypatch, ["请直接告诉我出口目的地，可以回复A或B。"])
+    assert send(workspace).status_code == 200
+    choices, seen = [], []
+    scenario(monkeypatch, [tools(("ask_user", question_input()))], seen, choices=choices)
+    response = send(
+        workspace,
+        {**workspace[4], "content": "做选择题", "client_message_id": "natural-question"},
+        stream=stream,
+    )
+    assert response.status_code == 200
+    assert choices == [{"type": "function", "function": {"name": "ask_user"}}]
+    assert [d["function"]["name"] for d in seen[0][1]] == ["ask_user"]
+    assert any("可以回复A或B" in m["content"] for m in seen[0][0])
+    assert last_run(workspace)["trace"][0]["question_request"]["questions"]
+    # Answering does not lock the following turn into further questions.
+    choices.clear()
+    scenario(monkeypatch, ["收到，目的地为新加坡。"], choices=choices)
+    assert (
+        send(
+            workspace, {**workspace[4], "content": "新加坡", "client_message_id": "natural-answer"}
+        ).status_code
+        == 200
+    )
+    assert choices == ["auto"]
+
+
+@pytest.mark.parametrize("violation", ["plain_text", "different_tool", "multiple_tools"])
+def test_question_choice_violation_is_repaired_once_without_executing_other_tools(
+    workspace, monkeypatch, violation
+):
+    choices = []
+    wrong = {
+        "plain_text": "问题：出口到哪里？A、新加坡 B、印尼，请输入字母。",
+        "different_tool": tools(("web_search", {"query": "must not search"})),
+        "multiple_tools": tools(("ask_user", question_input()), ("ask_user", question_input())),
+    }[violation]
+    corrected = tools(("ask_user", question_input()))
+    corrected["tool_calls"][0]["id"] = "call_corrected_question"
+    scenario(monkeypatch, [wrong, corrected], choices=choices, auto_discover=False)
+    response = send(workspace, {**workspace[4], "content": "做选择题"}, stream=True)
+    assert response.status_code == 200
+    assert len(choices) == 2 and choices[0] == choices[1]
+    result = last_run(workspace)
+    assert result["trace"][0]["question_request"]["questions"]
+    assert all(
+        call["execution_status"] == "failed" or call["tool"] == "ask_user"
+        for call in result["_task_state"]["calls"]
+    )
+    assert "请输入字母" not in response.text
+
+
+def test_repeated_question_choice_violation_is_not_presented_as_an_interactive_answer(workspace, monkeypatch):
+    choices = []
+    scenario(monkeypatch, ["A、新加坡 B、印尼"] * 2, choices=choices)
+    response = send(workspace, {**workspace[4], "content": "做选择题"}, stream=True)
+    assert response.status_code == 200
+    result = last_run(workspace)
+    assert len(choices) == 2
+    assert result["trace"][0]["delivery_status"] == "execution_failed"
+    assert "question_request" not in result["trace"][0]
+    assert "A、新加坡" not in response.text
+    assert "请重试" in response.text
+
+
+def test_explicit_question_input_can_be_repaired_without_falling_back_to_prose(workspace, monkeypatch):
+    invalid = question_input()
+    invalid["questions"][0]["options"] = [{"label": "一项"}]
+    corrected = tools(("ask_user", question_input()))
+    corrected["tool_calls"][0]["id"] = "call_fixed_input"
+    choices = []
+    scenario(monkeypatch, [tools(("ask_user", invalid)), corrected], choices=choices)
+    response = send(workspace, {**workspace[4], "content": "做选择题"})
+    assert response.status_code == 200
+    assert len(choices) == 2 and choices[0] == choices[1]
+    result = last_run(workspace)
+    assert result["trace"][0]["question_request"]["questions"]
+    assert result["_task_state"]["calls"][0]["error"] == "invalid_input"
+
+
+def test_failed_question_generation_never_leaks_incomplete_text_choices(workspace, monkeypatch):
+    error = ToolFailure("upstream_error", "stream interrupted")
+    error.partial_content = "A、新加坡 B、印尼，输入字母"
+    scenario(monkeypatch, [error])
+    response = send(workspace, {**workspace[4], "content": "做选择题"}, stream=True)
+    assert response.status_code == 200
+    assert "A、新加坡" not in response.text
+    assert "question_request" not in last_run(workspace)["trace"][0]
+    assert last_run(workspace)["trace"][0]["delivery_status"] == "execution_failed"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请选择出口目的地：\nA. 新加坡\nB. 印度尼西亚",
+        "你想先从哪个渠道开始？\n- 经销商\n- 线上平台",
+        "请回复选项序号：\n1、批发\n2、零售",
+        "您选择哪种？\n**A. 新加坡**\n**B. 印度尼西亚**",
+    ],
+)
+def test_plain_text_selection_prompts_are_detected_for_real_tool_correction(text):
+    assert has_text_choices(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "办理顺序：\n1、准备合同\n2、与客户确认",
+        "比较两种模式：\n- 批发对接企业\n- 零售面向个人",
+        "请选择出口目的地。",
+        "> 请选择：\n> A. 新加坡\n> B. 印度尼西亚\n以上是原文示例。",
+        "```text\n请选择：\nA. 新加坡\nB. 印度尼西亚\n```",
+    ],
+)
+def test_ordinary_lists_comparisons_and_quoted_examples_do_not_trigger_correction(text):
+    assert not has_text_choices(text)
+
+
+def test_proactive_selection_uses_a_real_question_without_a_keyword_request(workspace, monkeypatch):
+    choices = []
+    scenario(
+        monkeypatch,
+        ["请选择出口目的地：\nA. 新加坡\nB. 印度尼西亚", tools(("ask_user", question_input()))],
+        choices=choices,
+    )
+    response = send(workspace, {**workspace[4], "content": "这批茶的目的地还没定，继续帮我推进"})
+    assert response.status_code == 200
+    assert choices == ["auto", {"type": "function", "function": {"name": "ask_user"}}]
+    assert response.json()["messages"][-1]["trace"][0]["question_request"]
+    assert response.json()["messages"][-1]["content"] == question_input()["intro"]
+
+
+def test_user_declining_questions_excludes_the_question_tool(workspace, monkeypatch):
+    seen, choices = [], []
+    scenario(monkeypatch, ["B2B是企业之间的交易。"], seen, choices=choices)
+    response = send(workspace, {**workspace[4], "content": "不要选择题，直接解释B2B"})
+    assert response.status_code == 200
+    assert choices == ["auto"]
+    assert "ask_user" not in [d["function"]["name"] for d in seen[0][1]]
+
+
+def test_search_budget_still_allows_a_local_question_before_waiting_for_the_user(workspace, monkeypatch):
+    monkeypatch.setattr(
+        AgentTools,
+        "web",
+        lambda *args: {"sources": [{"url": "https://example.com/a", "excerpt": "渠道信息"}]},
+    )
+    searches = [tools(("web_search", {"query": query})) for query in ("市场", "渠道")]
+    for index, response in enumerate(searches):
+        response["tool_calls"][0]["id"] = f"search-before-question-{index}"
+    seen = []
+    scenario(monkeypatch, [*searches, tools(("ask_user", question_input()))], seen)
+    response = send(workspace)
+    assert response.status_code == 200
+    assert [d["function"]["name"] for d in seen[-1][1]] == ["ask_user"]
+    assert response.json()["messages"][-1]["trace"][0]["question_request"]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspace, monkeypatch, stream):
     seen = []
@@ -215,6 +422,7 @@ def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspa
         {"question": "  "},
         {"options": [{"label": "重复"}, {"label": "重复"}]},
         {"options": [{"label": "A"}, {"label": "a"}]},
+        {"options": [{"label": "新加坡", "multiple": True}, {"label": "印度尼西亚"}]},
         {"extra": "not accepted"},
     ],
 )
@@ -241,10 +449,15 @@ def test_question_request_byte_budget_and_corrupt_history_are_bounded():
 def test_invalid_question_tool_can_be_corrected_without_publishing_a_question(workspace, monkeypatch):
     invalid = question_input()
     invalid["questions"][0]["options"] = [{"label": "一项"}]
-    scenario(monkeypatch, [tools(("ask_user", invalid)), "请补充这批货的出口目的地。"])
+    corrected = tools(("ask_user", question_input()))
+    corrected["tool_calls"][0]["id"] = "call_repaired_proactive_question"
+    choices = []
+    scenario(monkeypatch, [tools(("ask_user", invalid)), corrected], choices=choices)
     response = send(workspace)
     assert response.status_code == 200
-    assert all("question_request" not in step for step in response.json()["messages"][-1]["trace"])
+    assert choices == ["auto", {"type": "function", "function": {"name": "ask_user"}}]
+    request = response.json()["messages"][-1]["trace"][0]["question_request"]
+    assert request["questions"][0]["options"] == question_input()["questions"][0]["options"]
 
 
 def test_clarification_for_a_file_request_does_not_claim_a_failed_file_delivery(workspace, monkeypatch):
@@ -1615,7 +1828,7 @@ def test_tool_error_can_be_repaired_but_identical_loop_is_bounded(workspace, mon
     response = send(workspace)
     assert response.status_code == 200
     assert "材料核对未完成" in response.json()["messages"][1]["content"]
-    assert seen[-1][1] == []
+    assert [d["function"]["name"] for d in seen[-1][1]] == ["ask_user"]
     with closing(workspace[1].db.connect()) as conn:
         state = json.loads(conn.execute("SELECT result FROM agent_runs").fetchone()[0])["_task_state"]
     assert [c for c in state["calls"] if c["tool"] not in {"tool_search", "update_task_brief"}][1][
@@ -2078,7 +2291,7 @@ def test_repeated_sources_end_research_without_losing_other_deliverables(workspa
     scenario(monkeypatch, [*rounds, "已有资料可支持模式比较，具体报价尚未取得。"], seen)
     response = send(workspace)
     assert response.status_code == 200, response.text
-    assert seen[-1][1] == []
+    assert [d["function"]["name"] for d in seen[-1][1]] == ["ask_user"]
     assert "具体报价尚未取得" in response.json()["messages"][1]["content"]
 
 

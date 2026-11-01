@@ -6,7 +6,13 @@
 
 常用工具直接提供参数定义：`ask_user`、`update_business_card`、`lookup_chinese_law`、`search_legal_evidence`、`read_law`、`get_law_versions`、`search_documents`、`list_documents`、`read_document`、`check_materials`、`web_search`、`draft_document`、`create_document_file`、`inspect_document_file`、`edit_document_file`、`load_skill`、`tool_search`、`read_tool_result`。当前节点指导、交接、显式记忆、识图及操作计划按需发现。`load_skill` 按需读取方法文档，发现结果只表示加载能力，不表示查过资料。`update_plan` 只记录操作步骤，不改变业务任务。
 
-信息不足而适合选项确认时，主 Agent 可调用 `ask_user`，一次提出一至三个单选或多选问题，并提供简短引导。程序保存真实问题并结束本轮，不再调用模型复述选项，也不默认替用户作答。网页使用 Vercel AI Elements `Question`、`QuestionOption`、`QuestionInput` 与 `QuestionSubmit`；题组逐题填写，可返回修改和自由补充，最后合为一条普通用户消息在原会话继续。用户回答不会绕过服务端核验或自动完成任务。
+凡需用户选择目的地、方案、路线、渠道或偏好，主 Agent 应主动调用 `ask_user`，无需用户先要求做选择题；一次提出一至三个单选或多选问题，并提供简短引导。程序保存真实问题并结束本轮，不再调用模型复述选项，也不默认替用户作答。网页使用 Vercel AI Elements `Question`、`QuestionOption`、`QuestionInput` 与 `QuestionSubmit`；题组逐题填写，可返回修改和自由补充，最后合为一条普通用户消息在原会话继续。用户回答不会绕过服务端核验或自动完成任务。
+
+用户本轮明确说“做选择题”“用单选题问我”或要求点选时，执行器只提供 `ask_user`，并经现有模型兼容接口传入具名 `tool_choice`；题目和选项仍由主模型结合历史生成。只识别直接的交互请求，否定、引用资料和解释或解答已有试题不会强制调用；其他咨询保留自主选用工具的方式。该做法对应 Vercel 官方的[具名工具选择](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling#tool-choice)，[Question 组件](https://elements.ai-sdk.dev/components/question)本身只负责收集回答，安装组件不会自动激活模型工具。
+
+具名选择仍在服务端校验：只返回文字、调用其他工具或一次返回多次提问时不接受为成功，也不执行这些工具，最多纠正一轮；参数校验继续受原有两轮错误额度约束。明确要求选择题时，未形成有效问题的正文不流到页面，供应商思考仍按现有协议展示。自主回复若仍出现“请选择”搭配字母、序号或项目列表的选择提示，程序清除临时文字，并在原有轮次和时间预算内要求模型实际调用工具；不把文字解析成工具参数或伪造表单。普通比较、办理步骤和引用代码不触发这项纠正。用户明确不要选择题或不要提问时不提供该工具。失败保留执行记录并提示重试；用户提交答案后恢复普通工具选择，不把当前请求变成持续提问模式。
+
+停止检索后，只要仍有提问额度和时间，保留本地 `ask_user` 以确认下一步选择，不重新开放搜索或写入。长度续写、格式修复、参数错误额度耗尽及最终轮次不开放提问；仍输出文字选择提示时明确失败，避免作为可交互问题保存。
 
 问题随现有消息 trace JSON 持久化，旧库无需结构升级；后续模型历史只加入用户可见的问题和选项，不恢复内部参数或思考。已保存且位于当前会话末尾的问题可回答；流式未保存的问题仅预览，历史问题只读。未发送的选择草稿按账号、业务、节点、会话与问题隔离，仅保存在当前标签页内，导航后可恢复，退出登录时一并清理。问题结构、边界与流式兼容规则见[接口契约](API_CONTRACT.md#交互式选择题)。
 

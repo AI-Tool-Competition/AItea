@@ -21,6 +21,10 @@ from app.contexts.conversations.application.document_delivery import (
     file_delivery_request,
 )
 from app.contexts.conversations.application.execution_plan import ExecutionBudget
+from app.contexts.conversations.application.question_requests import (
+    has_text_choices,
+    question_tool_preference,
+)
 from app.contexts.conversations.application.tool_output import tool_output_preview
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolRun, ToolSpec, failure_code
 from app.contexts.conversations.infrastructure.agent_transport import agent_turn
@@ -61,9 +65,11 @@ def has_tool_protocol(text):
 
 
 SYSTEM = (
-    "关键信息不足且适合给出选项时，用ask_user提问，支持单选、多选和其他回答；每轮只问一至三个真正影响下一步的问题。不要重复询问已确认的信息，不默认替用户选择。"
+    "凡需要用户选择目的地、方案、路线、渠道或偏好，都主动调用ask_user，让界面显示可点击的单选、多选及其他回答，无需用户先要求做选择题。用户说‘做选择题’、‘用选项问我’或要求点选时也必须调用，不能只在正文列A/B/C/D、项目列表或要求用户输入字母来代替。"
+    "结合当前对话出一至三个问题，已有事实不要重复问，不默认替用户选择。intro只写简短引导，不重复问题和选项；调用后等待用户回答，不继续替用户作答。知识测验可按用户主题出题；用户不要选择题、分析已有试题或解释选择题概念时直接回答。"
+    "多个渠道可同时采用、已准备的材料或用户说几种都可能时，设该题multiple=true；只有互斥或明确只选一个时才用单选。选项label写完整含义，不只写字母；multiple只放在每题上，不放在options内。"
     "你是茶渡，陪茶农和茶商梳理经营问题的咨询助手。用日常用语解释，让没有法律知识的人知道现在该做什么、找谁办、需要准备什么。法规术语首次出现时简短解释其实际作用。"
-    "先根据已有信息给出能用的建议，再用一两句具体问题询问会影响下一步的信息；给出易回答的选项，不一次索要整套资料。复用已经说过的信息，明确假设只用于本次分析。"
+    "先根据已有信息给出能用的建议；需要进一步确认时用ask_user提出易回答的问题，不一次索要整套资料。用户明确要先做选择题时先提问。复用已经说过的信息，明确假设只用于本次分析。"
     "用户原话、明确假设和限定范围优先；历史事实在用户未变更时延续。业务模板不代表本次交易事实。"
     "未要求翻译时，答复和文件正文沿用用户语言，姓名、茶名和公司名保留原样，不自行翻译。"
     "保持用户的经营目标：出口咨询继续围绕海外客户和出口安排，未定目的地先问国家或客户渠道，不擅自改为国内销售，也不先罗列未经检索的证照。"
@@ -84,7 +90,7 @@ SYSTEM = (
 )
 
 DELIVERY = (
-    "答复用中文，开头一两句直接给整体判断或推荐做法；省去问候、复述问题和‘下面给您分析’等引言。信息不全时先说现有条件下能给的建议，再问一两个影响选择的问题。"
+    "答复用中文，开头一两句直接给整体判断或推荐做法；省去问候、复述问题和‘下面给您分析’等引言。信息不全时先说现有条件下能给的建议；需用户选择时调用ask_user，不在正文模拟选择表单。"
     "多个相关问题组织成一份连贯答复，覆盖每项请求，按业务选择、关联事项或办理顺序展开；理由、事实和下一步放在对应内容里，不逐问重复小报告。"
     "自然段为主，比较方案、安排顺序或区分职责时按需用表格、列表或简短标题，不套用‘结论、为什么、法律依据’栏目。篇幅随实际问题需要，不以固定字数或段数漏掉请求，也不重复总结或追加邀请。"
     "法律判断须由实际读到的条文支持，不将其他事项的条款套用为本案依据，不补写原文中没有的法律引文。index_snapshot是索引快照，record_id是检索定位编号，均不能写成法规修订版次。法律判断旁引用已读原文的[S1]等编号，法名和条号可融入解释；详细出处由页面末尾引用入口展示，正文不另列依据清单。专门索要法规、原文或来源时直接交付所要内容。"
@@ -240,6 +246,9 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
     )
     sources = AnswerSources()
     state = {"executor": "evidence_qa", "calls": [], "delivery": "pending", "model_calls": 0}
+    question_preference = question_tool_preference(payload["content"])
+    question_required = question_preference == "required"
+    question_repairs = 0
     result = {
         "output": "",
         "trace": [trace],
@@ -574,9 +583,30 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 or no_progress
                 or run.deadline - monotonic() <= budget.answer_reserve
             )
-            enabled = (
-                set() if final_only else active & ({"read_law", "read_tool_result"} if read_only else active)
+            can_ask = (
+                question_preference != "none"
+                and turn < 5
+                and input_error_rounds < 2
+                and not repair_used
+                and not answer_prefix
+                and run.deadline - monotonic() > budget.answer_reserve
             )
+            if question_required and not can_ask:
+                return finalize("", error="本次未能生成可点击的选择题，请重试。")
+            if question_required:
+                enabled = {"ask_user"}
+                tool_choice = {"type": "function", "function": {"name": "ask_user"}}
+            else:
+                enabled = (
+                    set()
+                    if final_only
+                    else active & ({"read_law", "read_tool_result"} if read_only else active)
+                )
+                if can_ask:
+                    enabled.add("ask_user")
+                else:
+                    enabled.discard("ask_user")
+                tool_choice = "auto" if enabled else "none"
             if discovery_count >= budget.discovery:
                 enabled -= DISCOVERY
             definitions = [t.schema() for name, t in registry.items() if name in enabled]
@@ -584,7 +614,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 messages.append(
                     {
                         "role": "system",
-                        "content": "取证已结束。直接基于已有原文回答全部用户请求，具体说明未查明事项，不补造依据。",
+                        "content": "取证已结束。基于已有原文回答，具体说明未查明事项，不补造依据。若仍需用户选择，且本轮提供了ask_user，用它展示选择题并等待回答；不再检索或写入。",
                     }
                 )
             elif read_only:
@@ -616,7 +646,8 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                         attempt.output_started |= bool(text)
                         if len(content) > 20000:
                             raise ToolFailure("output_limit", "回复超过输出预算。")
-                        preview_answer(answer_prefix + content)
+                        if not question_required:
+                            preview_answer(answer_prefix + content)
 
                     return asyncio.run(
                         agent_turn(
@@ -629,7 +660,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                             on_summary=attempt.emit_text,
                             cache_key=provider_cache_key,
                             request_key=f"aitea-agent-{journal.id}-{turn}",
-                            tool_choice="none" if final_only else "auto",
+                            tool_choice=tool_choice,
                             max_tokens=token_limit,
                         )
                     )
@@ -659,7 +690,8 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 )
                 partial_text = getattr(error, "partial_content", "")
                 if (
-                    code in {"generation_truncated", "timeout", "connection_failed", "upstream_error"}
+                    not question_required
+                    and code in {"generation_truncated", "timeout", "connection_failed", "upstream_error"}
                     and isinstance(partial_text, str)
                     and partial_text.strip()
                     and not has_tool_protocol(partial_text)
@@ -737,6 +769,35 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                     )
                 return finalize("", error=message)
             calls = response.get("tool_calls") or []
+            if (
+                not calls
+                and question_preference != "none"
+                and has_text_choices(response.get("content") or "")
+            ):
+                if not can_ask:
+                    return finalize("", error="本次未能生成可点击的选择题，请重试。")
+                question_required = True
+                publish_answer("")
+            if question_required and (len(calls) != 1 or calls[0]["function"]["name"] != "ask_user"):
+                state.setdefault("output_errors", []).append({"question_tool_not_called": True})
+                if question_repairs or len(calls) > 12:
+                    return finalize("", error="模型未生成可点击的选择题，请重试。")
+                question_repairs += 1
+                # A provider may ignore named tool choice. Reject that output;
+                # never parse prose as a tool call or execute a different tool.
+                messages.append(response)
+                for call in calls:
+                    value, args = execute(call, allowed=set())
+                    record_call(call, value, args)
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": dump(value)})
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": "本轮用户要求可点击的选择题。只调用一次ask_user，生成有效问题和选项；不要以正文代替，也不要调用其他工具。",
+                    }
+                )
+                checkpoint()
+                continue
             if not calls:
                 output = answer_prefix + (response.get("content") or "")
                 invalid = sources.unknown(output)
@@ -773,7 +834,9 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                 if not broken:
                     export_answer_files(output)
                 return finalize(output)
-            if final_only:
+            if final_only and not (
+                can_ask and len(calls) == 1 and calls[0]["function"]["name"] == "ask_user"
+            ):
                 return finalize("", error="取证结束后仍返回工具请求，未生成答复。")
             if len(calls) > 12:
                 return finalize("", error="一次请求超过工具调用数量限制。")
@@ -819,6 +882,8 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
                         trace["question_request"] = value["question_request"]
                         state["awaiting_user"] = True
                         return finalize(value["intro"])
+                    if name == "ask_user" and value.get("error") == "invalid_input":
+                        question_required = True
                     progressed |= bool(
                         not value.get("error")
                         and not value.get("reused_result")

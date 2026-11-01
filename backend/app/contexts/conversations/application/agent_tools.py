@@ -382,7 +382,7 @@ class AskUserInput(ToolInput):
     questions: list[ChoiceQuestion] = Field(
         min_length=1,
         max_length=3,
-        description="只问影响下一步的未知信息；每题2至6个选项，multiple=true可多选。界面自动支持其他回答，不必另列其他选项。",
+        description="每题含question、options、multiple。可同时采用的渠道、已备材料等用multiple=true；只能择一的方案用false，multiple不属于选项。每题2至6个选项，界面自动支持其他回答。",
     )
 
     @field_validator("intro")
@@ -463,7 +463,7 @@ class AgentTools:
             (
                 "ask_user",
                 "确认关键信息",
-                "用可点击的单选或多选问题向用户确认关键事实或偏好。已有信息不重复询问；问题和选项由界面展示，不在intro重复。调用后本轮暂停，用户回答后在当前会话继续；不得假定选项已被用户选择。",
+                "凡需要用户选择目的地、方案、路线、渠道或偏好，都主动调用此工具展示可点击的单选或多选，无需用户先说做选择题。正文列选项不能代替此工具。也可按指定主题出知识测验。已有信息不重复询问；intro只写简短引导。调用后本轮暂停，用户回答后继续，不得替用户选择。",
                 AskUserInput,
                 self.ask_user,
                 False,
@@ -724,7 +724,7 @@ class AgentTools:
         capabilities = {
             "ask_user": (
                 "operations",
-                "当前缺少会影响下一步的事实或偏好，且适合通过选项或自由回答确认。",
+                "用户要求做选择题或点选回答，或需要通过选项确认会影响下一步的未知事实和偏好。",
                 "保存1至3个真实问题后结束本轮，等待用户回答；不替用户作答或改变任务状态。",
                 "local",
             ),

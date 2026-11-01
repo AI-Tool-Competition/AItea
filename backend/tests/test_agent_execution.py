@@ -423,8 +423,8 @@ def test_local_search_then_web_can_read_original_without_another_search(workspac
         seen,
     )
     assert send(workspace).status_code == 200
-    assert {t["function"]["name"] for t in seen[2][1]} == {"read_law", "read_tool_result"}
-    assert seen[3][1] == []
+    assert {t["function"]["name"] for t in seen[2][1]} == {"read_law", "read_tool_result", "ask_user"}
+    assert [t["function"]["name"] for t in seen[3][1]] == ["ask_user"]
     assert last_run(workspace)["_citation_associations"] == {"S2": "original"}
 
 

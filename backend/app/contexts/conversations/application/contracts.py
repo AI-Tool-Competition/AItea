@@ -64,14 +64,21 @@ class GuideRetry(StrictModel):
 
 
 class QuestionOption(StrictModel):
-    label: str = Field(min_length=1, max_length=120)
+    label: str = Field(
+        min_length=1, max_length=120, description="完整的可读选项文字，例如新加坡，不要只写A或B。"
+    )
     description: str = Field(default="", max_length=300)
 
 
 class ChoiceQuestion(StrictModel):
     question: str = Field(min_length=1, max_length=500)
-    options: list[QuestionOption] = Field(min_length=2, max_length=6)
-    multiple: StrictBool = False
+    options: list[QuestionOption] = Field(
+        min_length=2, max_length=6, description="每个选项只含label和可选description，不放multiple。"
+    )
+    multiple: StrictBool = Field(
+        default=False,
+        description="属于本题，不能放在选项内。多种渠道可同时采用、已有多项材料等设true；互斥方案或只选一项设false。",
+    )
 
     @model_validator(mode="after")
     def distinct_options(self):

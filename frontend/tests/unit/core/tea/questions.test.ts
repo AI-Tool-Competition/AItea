@@ -18,6 +18,12 @@ const valid = {
 
 it("bounds question snapshots and rejects malformed persisted or streamed requests", () => {
   expect(isQuestionRequest(valid)).toBe(true);
+  expect(
+    isQuestionRequest({
+      ...valid,
+      questions: Array.from({ length: 6 }, () => valid.questions[0]),
+    }),
+  ).toBe(true);
   for (const request of [
     null,
     { ...valid, id: "" },
@@ -25,12 +31,7 @@ it("bounds question snapshots and rejects malformed persisted or streamed reques
     { ...valid, unknown: true },
     {
       ...valid,
-      questions: [
-        ...valid.questions,
-        ...valid.questions,
-        ...valid.questions,
-        ...valid.questions,
-      ],
+      questions: Array.from({ length: 7 }, () => valid.questions[0]),
     },
   ]) {
     expect(isQuestionRequest(request)).toBe(false);

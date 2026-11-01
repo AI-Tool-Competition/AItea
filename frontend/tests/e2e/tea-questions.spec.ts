@@ -38,6 +38,38 @@ const question = {
         { label: "采购合同", description: "" },
       ],
     },
+    {
+      question: "产品是什么形态？",
+      multiple: false,
+      options: [
+        { label: "散茶", description: "" },
+        { label: "紧压茶", description: "" },
+      ],
+    },
+    {
+      question: "计划采用哪些包装？",
+      multiple: true,
+      options: [
+        { label: "散装", description: "" },
+        { label: "零售小包装", description: "" },
+      ],
+    },
+    {
+      question: "首批数量是否确定？",
+      multiple: false,
+      options: [
+        { label: "已经确定", description: "" },
+        { label: "还在估算", description: "" },
+      ],
+    },
+    {
+      question: "预计何时发货？",
+      multiple: false,
+      options: [
+        { label: "一个月内", description: "" },
+        { label: "尚未确定", description: "" },
+      ],
+    },
   ],
 };
 const stageId = fixture.case.current_stage_id;
@@ -141,6 +173,7 @@ for (const width of [1440, 390]) {
       exact: true,
     });
     await expect(destination).toBeEnabled();
+    await expect(page.getByLabel("问题进度")).toHaveText("1 / 6");
     const answer = page.locator(".tea-answer").first();
     await expect(answer.locator("ol > li")).toHaveCount(2);
     await expect(answer.locator("ol ul > li")).toHaveCount(2);
@@ -188,6 +221,23 @@ for (const width of [1440, 390]) {
     await expect(
       page.getByRole("checkbox", { name: "产品清单", exact: true }),
     ).toHaveAttribute("aria-checked", "true");
+    expect(posted).toHaveLength(0);
+    await page.getByRole("button", { name: "下一题" }).click();
+    await page.getByRole("radio", { name: "散茶", exact: true }).click();
+    await page.getByRole("button", { name: "下一题" }).click();
+    await page.getByRole("checkbox", { name: "散装", exact: true }).click();
+    await page
+      .getByRole("checkbox", { name: "零售小包装", exact: true })
+      .click();
+    await page.getByRole("button", { name: "下一题" }).click();
+    await page.getByRole("radio", { name: "还在估算", exact: true }).click();
+    await page.getByRole("button", { name: "下一题" }).click();
+    await expect(page.getByLabel("问题进度")).toHaveText("6 / 6");
+    await expect(page.getByRole("button", { name: "发送回答" })).toBeDisabled();
+    await page
+      .getByRole("textbox", { name: "其他情况或补充说明" })
+      .fill("两个月以后");
+    expect(posted).toHaveLength(0);
     await page.screenshot({
       path: test.info().outputPath(`choices-${width}.png`),
     });
@@ -200,7 +250,7 @@ for (const width of [1440, 390]) {
       stage_id: stageId,
       conversation_id: fixture.guide.id,
       content:
-        "1、这批茶的出口目的地是哪里？\n新加坡\n\n2、已经准备了哪些资料？\n产品清单、采购合同\n暂时还没有报价",
+        "1、这批茶的出口目的地是哪里？\n新加坡\n\n2、已经准备了哪些资料？\n产品清单、采购合同\n暂时还没有报价\n\n3、产品是什么形态？\n散茶\n\n4、计划采用哪些包装？\n散装、零售小包装\n\n5、首批数量是否确定？\n还在估算\n\n6、预计何时发货？\n两个月以后",
     });
     await expect(input).toHaveValue("还没发送的草稿");
     await expect(page.getByRole("radio")).toHaveCount(0);

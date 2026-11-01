@@ -25,7 +25,7 @@ const question = z
       options.length,
   );
 const request: z.ZodType<QuestionRequest> = z
-  .object({ id: text(100, true), questions: z.array(question).min(1).max(3) })
+  .object({ id: text(100, true), questions: z.array(question).min(1).max(6) })
   .strict()
   .refine(
     (value) =>

@@ -337,10 +337,19 @@ def test_proactive_selection_uses_a_real_question_without_a_keyword_request(work
     assert response.json()["messages"][-1]["content"] == question_input()["intro"]
 
 
-def test_user_declining_questions_excludes_the_question_tool(workspace, monkeypatch):
+@pytest.mark.parametrize(
+    "content",
+    [
+        "不要选择题，直接解释B2B",
+        "只确认收到整组回答，暂时不分析、不检索，也不再提问。",
+        "不用继续问我，直接按这些回答给建议。",
+        "先不出题，直接说明下一步。",
+    ],
+)
+def test_user_declining_questions_excludes_the_question_tool(workspace, monkeypatch, content):
     seen, choices = [], []
     scenario(monkeypatch, ["B2B是企业之间的交易。"], seen, choices=choices)
-    response = send(workspace, {**workspace[4], "content": "不要选择题，直接解释B2B"})
+    response = send(workspace, {**workspace[4], "content": content})
     assert response.status_code == 200
     assert choices == ["auto"]
     assert "ask_user" not in [d["function"]["name"] for d in seen[0][1]]
@@ -397,11 +406,30 @@ def test_requested_research_precedes_the_interactive_question(workspace, monkeyp
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspace, monkeypatch, stream):
+@pytest.mark.parametrize("question_count", [1, 6])
+def test_question_tool_pauses_persists_replays_and_keeps_visible_history(
+    workspace, monkeypatch, stream, question_count
+):
     seen = []
+    value = question_input()
+    if question_count > 1:
+        for question, labels, multiple in [
+            ("准备采用哪些渠道？", ["当地经销商", "自建网站"], True),
+            ("已备哪些材料？", ["产品清单", "采购合同"], True),
+            ("由谁安排出口？", ["本企业", "委托代理"], False),
+            ("预计何时发货？", ["一个月内", "尚未确定"], False),
+            ("希望先解决什么？", ["报价", "物流"], True),
+        ]:
+            value["questions"].append(
+                {
+                    "question": question,
+                    "options": [{"label": label, "description": ""} for label in labels],
+                    "multiple": multiple,
+                }
+            )
     scenario(
         monkeypatch,
-        [tools(("ask_user", question_input()), ("web_search", {"query": "should never execute"}))],
+        [tools(("ask_user", value), ("web_search", {"query": "should never execute"}))],
         seen,
     )
     response = send(workspace, stream=stream)
@@ -418,10 +446,10 @@ def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspa
     assistant = done["messages"][-1]
     trace = next(step for step in assistant["trace"] if step["id"] == "agent")
     request = QuestionRequest.model_validate(trace["question_request"])
-    assert request.questions[0].question == question_input()["questions"][0]["question"]
+    assert request.model_dump()["questions"] == value["questions"]
     assert len(seen) == 1  # no model round to restate a prepared question
     assert [call["call_id"] for call in last_run(workspace)["_task_state"]["calls"]] == ["call_ask_user_0"]
-    assert assistant["content"] == question_input()["intro"]
+    assert assistant["content"] == value["intro"]
     assert not any(
         task["status"] == "completed" for stage in done["case"]["stages"] for task in stage["tasks"]
     )
@@ -439,12 +467,37 @@ def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspa
     )
     assert "新加坡：由当地进口商清关" in history[-1]["content"]
     assert "（单选）" in history[-1]["content"]
+    for question in value["questions"]:
+        assert question["question"] in history[-1]["content"]
+        assert all(option["label"] in history[-1]["content"] for option in question["options"])
+    if question_count > 1:
+        assert "（可多选）" in history[-1]["content"]
     assert request.id not in json.dumps(history, ensure_ascii=False)
     assert "工具" not in history[-1]["content"]
     followup = []
     scenario(monkeypatch, ["已了解目的地，接下来核对进口主体。"], followup)
-    assert send(workspace, {**payload, "content": "新加坡", "client_message_id": "turn-2"}).status_code == 200
-    assert any("这批茶计划出口到哪里？" in str(message["content"]) for message in followup[0][0])
+    answer = "\n\n".join(
+        f"{index}、{question['question']}\n{question['options'][0]['label']}"
+        for index, question in enumerate(value["questions"], 1)
+    )
+    assert send(workspace, {**payload, "content": answer, "client_message_id": "turn-2"}).status_code == 200
+    assert any(answer in str(message["content"]) for message in followup[0][0])
+    for question in value["questions"]:
+        assert any(question["question"] in str(message["content"]) for message in followup[0][0])
+
+
+def test_question_batch_limit_matches_tool_and_stream_contracts(workspace):
+    value = question_input()
+    value["questions"] *= 6
+    assert len(AskUserInput.model_validate(value).questions) == 6
+    assert len(QuestionRequest(id="batch", questions=value["questions"]).questions) == 6
+    schema = legal_tools(workspace).registry["ask_user"].schema()["function"]["parameters"]
+    assert schema["properties"]["questions"]["maxItems"] == 6
+    value["questions"].append(value["questions"][0])
+    with pytest.raises(ValidationError):
+        AskUserInput.model_validate(value)
+    with pytest.raises(ValidationError):
+        QuestionRequest(id="too-many", questions=value["questions"])
 
 
 @pytest.mark.parametrize(

@@ -26,7 +26,11 @@ from app.contexts.conversations.application.agent_skills import (
     skill_catalog,
 )
 from app.contexts.conversations.application.document_delivery import file_delivery_request
-from app.contexts.conversations.application.contracts import ChoiceQuestion, QuestionRequest
+from app.contexts.conversations.application.contracts import (
+    MAX_QUESTIONS_PER_REQUEST,
+    ChoiceQuestion,
+    QuestionRequest,
+)
 from app.contexts.conversations.application.tool_runtime import ToolFailure, ToolInput, ToolSpec
 from app.contexts.conversations.infrastructure.agent_transport import gateway_tool
 from app.shared.domain.countries import resolve_country
@@ -381,8 +385,8 @@ class AskUserInput(ToolInput):
     )
     questions: list[ChoiceQuestion] = Field(
         min_length=1,
-        max_length=3,
-        description="每题含question、options、multiple。可同时采用的渠道、已备材料等用multiple=true；只能择一的方案用false，multiple不属于选项。每题2至6个选项，界面自动支持其他回答。",
+        max_length=MAX_QUESTIONS_PER_REQUEST,
+        description="一次调用的题组，1至6题都放在此数组，不要按题分别调用工具。每题含question、options、multiple，可混合单选与多选，按用户指定的方式逐题设置。例：目的地单选、优先事项多选，则两题的multiple分别为false和true，后题问希望先处理哪些事项，即使用户原话是最想先解决什么也保留其多选要求。每题2至6个选项，multiple不属于选项，界面自动支持其他回答。",
     )
 
     @field_validator("intro")
@@ -463,7 +467,7 @@ class AgentTools:
             (
                 "ask_user",
                 "确认关键信息",
-                "凡需要用户选择目的地、方案、路线、渠道或偏好，都主动调用此工具展示可点击的单选或多选，无需用户先说做选择题。正文列选项不能代替此工具。也可按指定主题出知识测验。已有信息不重复询问；intro只写简短引导。调用后本轮暂停，用户回答后继续，不得替用户选择。",
+                "凡需要用户选择目的地、方案、路线、渠道或偏好，都主动调用此工具展示可点击的选择题。一次调用可在questions数组提出1至6题，每题独立选用单选或多选。能独立回答的相关问题一起问，不要每题调用一次；依赖前题答案的问题等回答后再问。也可按指定主题和题数出知识测验。已有信息不重复询问；intro只写简短引导，不在正文重复选项。调用后本轮暂停，收到整组回答后继续，不得替用户选择。",
                 AskUserInput,
                 self.ask_user,
                 False,
@@ -725,7 +729,7 @@ class AgentTools:
             "ask_user": (
                 "operations",
                 "用户要求做选择题或点选回答，或需要通过选项确认会影响下一步的未知事实和偏好。",
-                "保存1至3个真实问题后结束本轮，等待用户回答；不替用户作答或改变任务状态。",
+                "一次保存1至6个真实问题，支持混合单选和多选；结束本轮，等待整组回答，不替用户作答或改变任务状态。",
                 "local",
             ),
             "guide_business": (

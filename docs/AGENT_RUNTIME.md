@@ -6,7 +6,7 @@
 
 常用工具直接提供参数定义：`ask_user`、`update_business_card`、`lookup_chinese_law`、`search_legal_evidence`、`read_law`、`get_law_versions`、`search_documents`、`list_documents`、`read_document`、`check_materials`、`web_search`、`draft_document`、`create_document_file`、`inspect_document_file`、`edit_document_file`、`load_skill`、`tool_search`、`read_tool_result`。当前节点指导、交接、显式记忆、识图及操作计划按需发现。`load_skill` 按需读取方法文档，发现结果只表示加载能力，不表示查过资料。`update_plan` 只记录操作步骤，不改变业务任务。
 
-凡需用户选择目的地、方案、路线、渠道或偏好，主 Agent 应主动调用 `ask_user`，无需用户先要求做选择题；一次提出一至三个单选或多选问题，并提供简短引导。程序保存真实问题并结束本轮，不再调用模型复述选项，也不默认替用户作答。网页使用 Vercel AI Elements `Question`、`QuestionOption`、`QuestionInput` 与 `QuestionSubmit`；题组逐题填写，可返回修改和自由补充，最后合为一条普通用户消息在原会话继续。用户回答不会绕过服务端核验或自动完成任务。
+凡需用户选择目的地、方案、路线、渠道或偏好，主 Agent 应主动调用 `ask_user`，无需用户先要求做选择题；一次调用通过 `questions` 数组提出一至六题，每题独立选择单选或多选，并提供简短引导。能独立回答的相关问题合为题组；只有一个缺项就只问一题，已知事实不重复询问。依赖前题答案才能确定选项的问题留待后续；用户要求超过六题时分组续问，不为每题并行调用工具。程序保存整组真实问题并结束本轮，不再调用模型复述选项，也不默认替用户作答。网页使用 Vercel AI Elements `Question`、`QuestionOption`、`QuestionInput` 与 `QuestionSubmit`；题组逐题填写，可返回修改和自由补充，最后合为一条普通用户消息在原会话继续。用户回答不会绕过服务端核验或自动完成任务。
 
 用户本轮明确说“做选择题”“用单选题问我”或要求点选时，直接提问场景只提供 `ask_user`，并经现有模型兼容接口传入具名 `tool_choice`；题目和选项仍由主模型结合历史生成。若同轮还要求检索、读取资料或查看附件，先保留普通工具调度，允许完成这些依赖；模型准备结束本轮却未生成选择题时，再约束为具名提问。只识别直接的交互请求，否定、引用资料和解释或解答已有试题不会强制调用；其他咨询保留自主选用工具的方式。该做法对应 Vercel 官方的[具名工具选择](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling#tool-choice)，[Question 组件](https://elements.ai-sdk.dev/components/question)本身只负责收集回答，安装组件不会自动激活模型工具。
 

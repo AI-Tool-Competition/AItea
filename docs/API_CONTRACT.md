@@ -301,7 +301,7 @@ The startup catalog `config/workflows/liubao-export.json` supplies exactly four 
 
 ### 交互式选择题
 
-`ask_user` 是主 Agent 的常用工具，无新增 HTTP 端点。输入为 `{intro,questions:[{question,options:[{label,description?}],multiple?:false}]}`：intro 为1–600字，问题为1–500字，每轮1–3题，每题2–6个选项，label为1–120字、description最多300字；同题选项忽略大小写不得重复，multiple仅接受布尔值。输入拒绝额外字段，字符串先去除首尾空白。
+`ask_user` 是主 Agent 的常用工具，无新增 HTTP 端点。输入为 `{intro,questions:[{question,options:[{label,description?}],multiple?:false}]}`：intro 为1–600字，问题为1–500字，一次调用包含1–6题，每题2–6个选项，label为1–120字、description最多300字；同题选项忽略大小写不得重复，multiple仅接受布尔值。题组可混合单选和多选，整组放在同一个questions数组中，不按题分别调用工具。输入拒绝额外字段，字符串先去除首尾空白。
 
 成功时现有 `step` 完整快照增加可选 `question_request={id,questions:[{question,options:[{label,description}],multiple}]}`，id为1–100字，完整结构最多16,000 UTF-8字节。无此字段的历史消息与旧流式事件保持兼容；最终 `done.messages[].trace` 保存相同结构。事件和历史渲染均检查结构，损坏的数据不能变成可提交表单。`ask_user` 本身不展示成重复的进度条目；公开问题在正文下使用 Vercel AI Elements Question 呈现。
 

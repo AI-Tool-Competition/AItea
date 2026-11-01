@@ -7,6 +7,8 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from app.shared.domain.models import StrictModel
 
+MAX_QUESTIONS_PER_REQUEST = 6
+
 
 class MessageInput(StrictModel):
     stage_id: str = Field(min_length=1, max_length=64)
@@ -77,7 +79,7 @@ class ChoiceQuestion(StrictModel):
     )
     multiple: StrictBool = Field(
         default=False,
-        description="属于本题，不能放在选项内。多种渠道可同时采用、已有多项材料等设true；互斥方案或只选一项设false。",
+        description="属于本题，不能放在选项内。用户指定多选时必须设true、指定单选时设false；未指定时，多种渠道可同时采用、已有多项材料等设true，互斥或仅选一项设false。题干须与选择方式一致。",
     )
 
     @model_validator(mode="after")
@@ -89,7 +91,7 @@ class ChoiceQuestion(StrictModel):
 
 class QuestionRequest(StrictModel):
     id: str = Field(min_length=1, max_length=100)
-    questions: list[ChoiceQuestion] = Field(min_length=1, max_length=3)
+    questions: list[ChoiceQuestion] = Field(min_length=1, max_length=MAX_QUESTIONS_PER_REQUEST)
 
     @model_validator(mode="after")
     def bounded_request(self):

@@ -363,6 +363,39 @@ def test_search_budget_still_allows_a_local_question_before_waiting_for_the_user
     assert response.json()["messages"][-1]["trace"][0]["question_request"]
 
 
+@pytest.mark.parametrize("plain_followup", [False, True])
+def test_requested_research_precedes_the_interactive_question(workspace, monkeypatch, plain_followup):
+    actual, seen, choices = [], [], []
+
+    def web(self, args, attempt):
+        actual.append(args.query)
+        return {"sources": [{"url": "https://example.com/expo", "excerpt": "展会介绍及报名入口"}]}
+
+    monkeypatch.setattr(AgentTools, "web", web)
+    scenario(
+        monkeypatch,
+        [
+            tools(("web_search", {"query": "新加坡 印尼 茶展"})),
+            *(["已查到展会信息，请告诉我目的地。"] if plain_followup else []),
+            tools(("ask_user", question_input())),
+        ],
+        seen,
+        choices=choices,
+        auto_discover=False,
+    )
+    response = send(
+        workspace,
+        {**workspace[4], "content": "先联网查询新加坡和印尼的茶展，再出选择题让我选目的地"},
+    )
+    assert response.status_code == 200
+    assert actual == ["新加坡 印尼 茶展"]
+    assert choices == ["auto", "auto"] + (
+        [{"type": "function", "function": {"name": "ask_user"}}] if plain_followup else []
+    )
+    assert "web_search" in [d["function"]["name"] for d in seen[0][1]]
+    assert response.json()["messages"][-1]["trace"][0]["question_request"]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_question_tool_pauses_persists_replays_and_keeps_visible_history(workspace, monkeypatch, stream):
     seen = []

@@ -247,7 +247,12 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
     sources = AnswerSources()
     state = {"executor": "evidence_qa", "calls": [], "delivery": "pending", "model_calls": 0}
     question_preference = question_tool_preference(payload["content"])
-    question_required = question_preference == "required"
+    # Research and attachment reads remain available before the question. A
+    # prose-only completion is still repaired into the requested form below.
+    question_required = question_preference == "required" and not re.search(
+        r"先|再|然后|根据|基于|结合|检索|搜索|联网|读取|查阅|查找|查询|资料|材料|文档|文件|图片|附件|截图|网页|链接|打开|分析|比较|核对|检查|技能|加载",
+        payload["content"],
+    )
     question_repairs = 0
     result = {
         "output": "",
@@ -772,7 +777,7 @@ def run_agent(service, owner, case, stage, payload, prepared, *, emit=None, chec
             if (
                 not calls
                 and question_preference != "none"
-                and has_text_choices(response.get("content") or "")
+                and (question_preference == "required" or has_text_choices(response.get("content") or ""))
             ):
                 if not can_ask:
                     return finalize("", error="本次未能生成可点击的选择题，请重试。")

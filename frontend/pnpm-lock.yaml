@@ -282,6 +282,9 @@ importers:
       '@types/gsap':
         specifier: ^3.0.0
         version: 3.0.0
+      '@types/mdast':
+        specifier: 4.0.4
+        version: 4.0.4
       '@types/node':
         specifier: ^20.14.10
         version: 20.19.33

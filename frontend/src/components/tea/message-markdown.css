@@ -198,32 +198,58 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  container-type: inline-size;
+  scrollbar-width: thin;
 }
 .tea-theme .tea-answer [data-streamdown="table-wrapper"] > div {
+  min-width: 0;
   border: 0;
   border-radius: 0;
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
 }
+/* Table presentation adapted from OpenAI Apps SDK UI Markdown at
+   0f00143c7a639906f1621fe58e1b6be7b5bea46d (MIT).
+   Source and license: frontend/THIRD_PARTY_NOTICES.md. */
 .tea-theme .tea-answer table {
   width: 100%;
-  min-width: 30rem;
-  border-collapse: collapse;
-  font-size: 0.9em;
-  line-height: 1.8;
+  min-width: 100%;
+  border: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+  line-height: 1.75;
+  table-layout: auto;
+}
+.tea-theme .tea-answer table:has(tr > :nth-child(3)) {
+  min-width: 40rem;
 }
 .tea-theme .tea-answer :is(th, td) {
-  padding: 11px 16px;
+  min-width: 9rem;
+  max-width: 36rem;
+  max-width: min(36rem, 100cqi);
+  padding: 12px 14px;
   border: 0;
   border-bottom: 1px solid var(--border);
   background: transparent;
   text-align: start;
   vertical-align: top;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .tea-theme .tea-answer :is(thead, tbody, tr) {
   border: 0;
   background: transparent;
 }
 .tea-theme .tea-answer th {
+  padding-block: 10px;
+  border-bottom-color: color-mix(in oklch, var(--foreground) 24%, transparent);
+  color: var(--foreground);
   font-weight: 600;
+  vertical-align: bottom;
+}
+.tea-theme .tea-answer td {
+  font-weight: 400;
 }
 .tea-theme .tea-answer tbody tr:last-child td {
   border-bottom: 0;
@@ -236,6 +262,10 @@
 }
 .tea-theme .tea-answer :is(th, td) p {
   margin: 0;
+}
+.tea-theme .tea-answer :is(th, td) [data-streamdown="inline-code"] {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .tea-theme .tea-answer > :first-child {
   margin-top: 0;

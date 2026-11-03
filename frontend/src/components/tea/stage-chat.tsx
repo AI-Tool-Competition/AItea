@@ -23,7 +23,7 @@ import {
   ClipboardSafeStreamdown,
 } from "@/components/ai-elements";
 import { Button } from "@/components/ui/button";
-import { streamdownPluginsWithoutRawHtml } from "@/core/streamdown";
+import { teaMarkdownPlugins } from "@/core/tea/markdown";
 import { messageQuestion } from "@/core/tea/questions";
 import type {
   Capabilities,
@@ -55,7 +55,7 @@ const Answer = memo(function Answer({
 }) {
   return (
     <ClipboardSafeStreamdown
-      {...streamdownPluginsWithoutRawHtml}
+      {...teaMarkdownPlugins}
       className="tea-answer"
       mode={streaming ? "streaming" : "static"}
       isAnimating={streaming}

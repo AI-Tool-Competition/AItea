@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
+
 import { expect, test } from "@playwright/test";
 
 import fixture from "../fixtures/tea-chat.json" with { type: "json" };
 
 const entry = process.env.PLAYWRIGHT_TEA_BASE_PATH ?? "/";
+const tableMarkdown = readFileSync(
+  new URL("../fixtures/tea-tables.md", import.meta.url),
+  "utf8",
+);
 const markdown = [
   "## 准备出口资料",
   "先核对主体、产品和目的地，再继续安排。",
@@ -10,6 +16,7 @@ const markdown = [
   "> 这里是待确认的信息，需要结合真实情况处理。",
   "使用 `product_id` 记录产品。",
   "| 资料 | 状态 |\n| --- | --- |\n| 产品清单 | 待核对 |\n| 采购合同 | 待补充 |",
+  tableMarkdown,
   "```typescript\n" +
     Array.from(
       { length: 72 },
@@ -92,11 +99,17 @@ const assistant = {
   ],
 };
 
-for (const width of [1440, 390]) {
-  test(`answers Vercel questions and renders readable Markdown at ${width}px`, async ({
+for (const { width, theme } of [
+  { width: 1440, theme: "dark" },
+  { width: 1440, theme: "light" },
+  { width: 390, theme: "dark" },
+  { width: 390, theme: "light" },
+] as const) {
+  test(`answers Vercel questions and renders readable Markdown at ${width}px in ${theme}`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ colorScheme: theme });
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -174,10 +187,75 @@ for (const width of [1440, 390]) {
     });
     await expect(destination).toBeEnabled();
     await expect(page.getByLabel("问题进度")).toHaveText("1 / 6");
+    // The root product stays dark. Exercise the same table's light-theme
+    // tokens after hydration without changing that product-level preference.
+    await page.evaluate((value) => {
+      document.documentElement.classList.toggle("dark", value === "dark");
+      document.documentElement.classList.toggle("light", value === "light");
+      document.documentElement.style.colorScheme = value;
+    }, theme);
     const answer = page.locator(".tea-answer").first();
     await expect(answer.locator("ol > li")).toHaveCount(2);
     await expect(answer.locator("ol ul > li")).toHaveCount(2);
-    await expect(answer.locator("table tbody tr")).toHaveCount(2);
+    await expect(
+      answer.locator("table").first().locator("tbody tr"),
+    ).toHaveCount(2);
+    const table = answer.locator("table").nth(1);
+    await expect(table.locator("tbody tr")).toHaveCount(3);
+    await expect(table.locator("br")).toHaveCount(20);
+    await expect(table).not.toContainText("<br>");
+    const tableLayout = await table.evaluate((node) => {
+      const wrapper = node.closest('[data-streamdown="table-wrapper"]')!;
+      const first = node.querySelector("tbody td")!;
+      const code = first.querySelector("code")!;
+      return {
+        firstColumn: first.getBoundingClientRect().width,
+        codeLines: code.getClientRects().length,
+        width: node.getBoundingClientRect().width,
+        visibleWidth: wrapper.clientWidth,
+        containerWidth: wrapper.parentElement!.clientWidth,
+      };
+    });
+    expect(tableLayout.firstColumn).toBeGreaterThanOrEqual(140);
+    expect(tableLayout.codeLines).toBe(1);
+    expect(tableLayout.visibleWidth).toBeLessThanOrEqual(
+      tableLayout.containerWidth,
+    );
+    if (width === 390) {
+      expect(tableLayout.width).toBeGreaterThan(tableLayout.visibleWidth);
+      const scroll = await table.evaluate((node) => {
+        const viewport = node.parentElement!;
+        viewport.scrollLeft = viewport.scrollWidth;
+        const cell = node.querySelector("tbody tr td:last-child")!;
+        const style = getComputedStyle(cell);
+        const bounds = cell.getBoundingClientRect();
+        return {
+          left: viewport.scrollLeft,
+          contentWidth:
+            bounds.width -
+            parseFloat(style.paddingLeft) -
+            parseFloat(style.paddingRight),
+          viewportWidth: viewport.clientWidth,
+          cellRight: bounds.right,
+          viewportRight: viewport.getBoundingClientRect().right,
+        };
+      });
+      expect(scroll.left).toBeGreaterThan(0);
+      expect(scroll.contentWidth).toBeLessThanOrEqual(scroll.viewportWidth + 1);
+      expect(scroll.cellRight).toBeLessThanOrEqual(scroll.viewportRight + 1);
+      await table.locator("..").screenshot({
+        path: test.info().outputPath(`table-${width}-scrolled.png`),
+      });
+      await table.evaluate((node) => {
+        node.parentElement!.scrollLeft = 0;
+      });
+    }
+    await table.locator("..").screenshot({
+      path: test.info().outputPath(`table-${width}.png`),
+    });
+    await expect(page.locator("html")).toHaveClass(
+      new RegExp(`\\b${theme}\\b`),
+    );
     const code = answer.locator('[data-streamdown="code-block"] pre');
     await expect(code).toBeVisible();
     await expect
